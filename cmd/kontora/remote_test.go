@@ -551,6 +551,72 @@ func TestRemoteDispatch_PauseSendsExactID(t *testing.T) {
 	assert.Equal(t, "/api/tickets/abc123def/pause", pausePath)
 }
 
+func TestRemoteDispatch_View(t *testing.T) {
+	const tail = "## Notes\n\n**2026-08-08**\n\none\n\n**2026-08-09**\n\ntwo\n\n**2026-08-10**\n\nthree\n\n## Code review\n\nfinding\n"
+	const body = "# Title\n\nDescription.\n\n" + tail
+	for _, tt := range []struct {
+		name    string
+		flags   []string
+		want    string
+		noNotes bool
+	}{
+		{name: "body", flags: []string{"--body"}, want: body},
+		{name: "notes", flags: []string{"--notes"}, want: tail},
+		{name: "last", flags: []string{"--last", "2"}, want: "**2026-08-09**\n\ntwo\n\n**2026-08-10**\n\nthree\n\n## Code review\n\nfinding\n"},
+		{name: "above count", flags: []string{"--last", "5"}, want: tail},
+		{name: "notes and last", flags: []string{"--notes", "--last", "1"}, want: "**2026-08-10**\n\nthree\n\n## Code review\n\nfinding\n"},
+		{name: "no notes", flags: []string{"--notes"}, noNotes: true},
+		{name: "no last notes", flags: []string{"--last", "2"}, noNotes: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/tickets":
+					_ = json.NewEncoder(w).Encode(map[string]any{"tickets": []map[string]string{{"id": "abc123"}}})
+				case "/api/tickets/abc123":
+					info := map[string]string{"id": "abc123", "body": body, "description_tail": tail}
+					if tt.noNotes {
+						info["body"], info["description_tail"] = "# Title\n", ""
+					}
+					_ = json.NewEncoder(w).Encode(info)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			args := append([]string{"view"}, tt.flags...)
+			args = append(args, "abc")
+			out, err := runCLI(t, []string{"KONTORA_URL=" + srv.URL, "PAGER=false"}, args...)
+			require.NoError(t, err, out)
+			assert.Equal(t, tt.want, out)
+		})
+	}
+}
+
+func TestViewFlagErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		flags []string
+		want  []string
+	}{
+		{name: "body and notes", flags: []string{"--body", "--notes"}, want: []string{"usage:", "--body", "--notes"}},
+		{name: "body and last", flags: []string{"--body", "--last", "2"}, want: []string{"usage:", "--body", "--last"}},
+		{name: "zero", flags: []string{"--last", "0"}, want: []string{"usage:", "--last", "positive"}},
+		{name: "negative", flags: []string{"--last", "-1"}, want: []string{"usage:", "--last", "positive"}},
+		{name: "not integer", flags: []string{"--last", "two"}, want: []string{"invalid value", "-last"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			args := append([]string{"view"}, tt.flags...)
+			args = append(args, "abc")
+			out, err := runCLI(t, nil, args...)
+			require.Error(t, err)
+			for _, want := range tt.want {
+				assert.Contains(t, out, want)
+			}
+		})
+	}
+}
+
 func TestRemoteDispatch_NoteAppends(t *testing.T) {
 	var notePath, noteText string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

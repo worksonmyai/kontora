@@ -145,18 +145,28 @@ the child default. Project matching uses the selected path and remains lexical.
 
 ### `kontora view TICKET_ID`
 
-Prints the ticket's status, pipeline position, and body.
+Prints the ticket's status, pipeline position, effective agent, and body. A ticket's `agent` override takes precedence over the pipeline stage's agent.
 
 | Flag | Description |
 |------|-------------|
 | `--body` | Print only the stored markdown body: no metadata, no styling, no synthesized relation sections. |
-| `--notes` | Print only the body from its `## Notes` heading to the end. Prints nothing for a ticket without notes. Cannot be combined with `--body`. |
+| `--notes` | Print stored markdown from the `## Notes` heading through the end of the body, including later sections. |
+| `--last N` | Print from the start of the Nth-last note through the end of the body. Requires a positive integer and implies `--notes`. |
+
+```sh
+kontora view TICKET_ID
+kontora view --body TICKET_ID
+kontora view --notes TICKET_ID
+kontora view --last 5 TICKET_ID
+```
+
+Legacy notes without bylines also count. If N exceeds the note count, `--last N` prints the whole Notes section, including its `## Notes` heading. Both note views retain trailing sections, including old review text outside Notes. If the ticket has no Notes section, both print nothing and exit 0. Combining `--body` with `--notes` or `--last` fails with a usage error.
 
 `--body` prints exactly what the file holds after the closing frontmatter delimiter, which is what `kontora update --body-file` writes back. Reading a body out, editing it, and writing it back changes nothing else in the ticket.
 
 `--notes` is for a reader that needs the history, not the plan. A long ticket's full output can exceed an agent's tool-output limit; the notes alone are usually much shorter.
 
-The default output goes through the [pager](#environment-variables) when one is set and stdout is a terminal. `--body` and `--notes` never do, so the round trip stays byte-stable.
+The default output goes through the [pager](#environment-variables) when one is set and stdout is a terminal. `--body`, `--notes` and `--last` never use a pager, in local or remote mode.
 
 ### `kontora edit TICKET_ID`
 
@@ -299,7 +309,15 @@ Replace `TICKET_ID` and each example path with the actual ticket ID and scratch 
 
 If a launched submission fails or lacks acknowledgement, its write outcome may be unknown. Read the ticket before resubmitting; do not retry or switch methods automatically.
 
-Notes trim surrounding whitespace and reject empty text. Summaries preserve spaces and internal newlines; the command does not force them onto one line or truncate them. At stage completion, the daemon captures the summary on the ticket and its `history` entry. Stage capture cuts text above 4,000 bytes at a UTF-8 boundary and appends `\n[truncated]`. A new stage clears the ticket's summary.
+Notes trim surrounding whitespace and reject empty text. Adding or editing a note shifts headings outside fenced code only as needed to make the shallowest heading at least h3. Relative heading levels stay the same, capped at h6. Notes whose shallowest heading is h3 or deeper need no shift. Backtick and tilde fenced code stays unchanged; Kontora appends a closing fence if needed.
+
+Outside fenced code, a line beginning with `# ` or `## ` at column zero ends the Notes section.
+
+Outside fenced code, only date-led bold-only lines or lines matching the full `at · author · id` grammar open notes. The first `·` field must start with `YYYY-MM-DD` for the date-led rule. The full grammar permits empty `at` and author fields, plus optional `re:<id>` and `edited` flags. Other bold text, such as `**Verification:**`, stays in the note. When adding or editing note text, Kontora stores byline-like bold lines with outer `__` delimiters instead of `**`. Both render as bold.
+
+Existing tickets are not migrated. Full-body writes do not normalize note text. See [Notes](tickets.md#notes) for the stored format.
+
+Summaries preserve spaces and internal newlines; the command does not force them onto one line or truncate them. At stage completion, the daemon captures the summary on the ticket and its `history` entry. Stage capture cuts text above 4,000 bytes at a UTF-8 boundary and appends `\n[truncated]`. A new stage clears the ticket's summary.
 
 | Flag | Description |
 |------|-------------|

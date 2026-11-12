@@ -43,13 +43,17 @@ const (
 var noteByline = regexp.MustCompile(`^\*\*(.+)\*\*$`)
 
 var noteIDPattern = regexp.MustCompile(`^[a-z0-9]{4}$`)
+var noteDatePattern = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}`)
+var noteHeading = regexp.MustCompile(`^( {0,3})(#{1,6})([\t ].*|)$`)
+var noteListMarker = regexp.MustCompile(`^(?:[-+*]|[0-9]{1,9}[.)])([ \t]+)`)
+var noteThematicBreak = regexp.MustCompile(`^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$`)
+var noteHTMLBlock = regexp.MustCompile(`(?i)^<(?:[a-z].*>|!--)`)
 
 // Note is one entry in a ticket body's "## Notes" section.
 //
 // The byline is a "·"-separated field list: timestamp, author, id, then
-// optional "re:<id>" and "edited" flags. A byline that does not match that
-// grammar is a note written before this format, or by hand: its whole text
-// lands in At and the note carries no id until a mutation mints one.
+// optional "re:<id>" and "edited" flags. Date-led legacy bylines keep their
+// whole text in At, with no id until a mutation mints one.
 type Note struct {
 	// ID is the minted 4-character id, or "#<index>" for a note whose byline
 	// carries none. Both forms address the note in the mutating methods.
@@ -76,9 +80,9 @@ type AddNoteOptions struct {
 	At       time.Time
 }
 
-// ParseNotes reads the "## Notes" section of a ticket body. A bold line opens
-// a note and everything up to the next one is its body. The section ends at
-// the next heading. Body content outside the section is not touched.
+// ParseNotes reads the "## Notes" section using date-led or structured bylines
+// outside fenced code. A column-zero "# " or "## " line outside fences ends it.
+// Body content outside the section is not touched.
 func ParseNotes(body string) []Note {
 	lines := strings.Split(body, "\n")
 	start, end := notesSection(lines)
@@ -98,11 +102,12 @@ func ParseNotes(body string) []Note {
 		buf = nil
 	}
 
+	var fence noteFence
 	for i := start; i < end; i++ {
-		if m := noteByline.FindStringSubmatch(strings.TrimSpace(lines[i])); m != nil {
+		if inner, ok := recognizedNoteByline(lines[i]); !fence.consume(lines[i]) && ok {
 			flush(i)
-			cur = Note{start: i, hasByline: true}
-			cur.At, cur.Author, cur.ID, cur.ParentID, cur.Edited = parseNoteByline(m[1])
+			cur = parseNoteByline(inner)
+			cur.start, cur.hasByline = i, true
 			continue
 		}
 		buf = append(buf, lines[i])
@@ -125,6 +130,7 @@ func (t *Ticket) AddNote(opts AddNoteOptions) (Note, error) {
 	if text == "" {
 		return Note{}, ErrNoteEmpty
 	}
+	text = normalizeNoteText(text)
 	if err := validNoteAuthor(opts.Author); err != nil {
 		return Note{}, err
 	}
@@ -171,7 +177,17 @@ func (t *Ticket) AddNote(opts AddNoteOptions) (Note, error) {
 		lines = append(lines, "## Notes", "")
 		start, end = len(lines), len(lines)
 	}
-	block := append([]string{formatNoteByline(note), ""}, strings.Split(text, "\n")...)
+	var fence noteFence
+	for _, line := range lines[start:end] {
+		fence.consume(line)
+	}
+	var block []string
+	// Full-body writes can leave a fence open across the append boundary.
+	if fence.length > 0 {
+		block = append(block, fence.closingLine(), "")
+	}
+	block = append(block, formatNoteByline(note), "")
+	block = append(block, strings.Split(text, "\n")...)
 	block = append(block, "")
 	if end > start && strings.TrimSpace(lines[end-1]) != "" {
 		block = append([]string{""}, block...)
@@ -187,6 +203,7 @@ func (t *Ticket) EditNote(ref, text string) (Note, error) {
 	if text == "" {
 		return Note{}, ErrNoteEmpty
 	}
+	text = normalizeNoteText(text)
 	id, _, err := t.EnsureNoteID(ref)
 	if err != nil {
 		return Note{}, err
@@ -280,7 +297,11 @@ func notesSection(lines []string) (int, int) {
 	if start < 0 {
 		return -1, -1
 	}
+	var fence noteFence
 	for i := start; i < len(lines); i++ {
+		if fence.consume(lines[i]) {
+			continue
+		}
 		if strings.HasPrefix(lines[i], "# ") || strings.HasPrefix(lines[i], "## ") {
 			return start, i
 		}
@@ -288,25 +309,172 @@ func notesSection(lines []string) (int, int) {
 	return start, len(lines)
 }
 
+func recognizedNoteByline(line string) (string, bool) {
+	m := noteByline.FindStringSubmatch(strings.TrimSpace(line))
+	if m == nil {
+		return "", false
+	}
+	first, _, _ := strings.Cut(m[1], "·")
+	note := parseNoteByline(m[1])
+	return m[1], noteDatePattern.MatchString(strings.TrimSpace(first)) || note.ID != ""
+}
+
+type noteFence struct {
+	marker      byte
+	length      int
+	indent      int
+	listIndents []int
+	paragraph   bool
+}
+
+// consume includes both delimiter lines in the fenced region. List indentation
+// is relative to the item's content, not the start of the source line.
+func (f *noteFence) consume(line string) bool {
+	trimmed, indent := noteIndent(line, 0)
+	if strings.TrimSpace(trimmed) == "" {
+		f.paragraph = false
+		return f.length > 0
+	}
+	lazy := f.paragraph && f.length == 0 && !noteParagraphBreak(trimmed)
+	f.paragraph = false
+	for !lazy && len(f.listIndents) > 0 && indent < f.listIndents[len(f.listIndents)-1] {
+		f.listIndents = f.listIndents[:len(f.listIndents)-1]
+		f.length = 0
+	}
+	base := 0
+	if len(f.listIndents) > 0 {
+		base = f.listIndents[len(f.listIndents)-1]
+	}
+	lazyAllowed := true
+	if f.length == 0 {
+		for indent-base <= 3 {
+			m := noteListMarker.FindStringSubmatch(trimmed)
+			if m == nil {
+				break
+			}
+			width := len(m[0]) - len(m[1])
+			_, contentIndent := noteIndent(m[1], indent+width)
+			base = contentIndent
+			// Match marked's refusal of lazy continuation after four-space padding.
+			lazyAllowed = contentIndent-indent-width < 4
+			// Overpadded markers use one space for the list's content indent.
+			if contentIndent-indent-width > 4 {
+				base = indent + width + 1
+			}
+			indent = contentIndent
+			f.listIndents = append(f.listIndents, base)
+			trimmed = trimmed[len(m[0]):]
+		}
+	}
+	if indent-base > 3 || trimmed == "" {
+		return f.length > 0
+	}
+	marker := trimmed[0]
+	n := 0
+	for n < len(trimmed) && trimmed[n] == marker {
+		n++
+	}
+	if f.length > 0 {
+		if marker == f.marker && n >= f.length && strings.TrimSpace(trimmed[n:]) == "" {
+			f.length = 0
+		}
+		return true
+	}
+	if (marker == '`' || marker == '~') && n >= 3 && (marker != '`' || !strings.Contains(trimmed[n:], "`")) {
+		f.marker, f.length, f.indent = marker, n, indent
+		return true
+	}
+	f.paragraph = lazyAllowed && !noteParagraphBreak(trimmed)
+	return false
+}
+
+func noteParagraphBreak(line string) bool {
+	return noteHeading.MatchString(line) || noteListMarker.MatchString(line) || noteThematicBreak.MatchString(line) || noteHTMLBlock.MatchString(line) ||
+		strings.HasPrefix(line, ">") || strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~")
+}
+
+func noteIndent(line string, column int) (string, int) {
+	i := 0
+	for i < len(line) {
+		switch line[i] {
+		case ' ':
+			column++
+		case '\t':
+			column += 4 - column%4
+		default:
+			return line[i:], column
+		}
+		i++
+	}
+	return "", column
+}
+
+func (f *noteFence) closingLine() string {
+	return strings.Repeat(" ", f.indent) + strings.Repeat(string(f.marker), f.length)
+}
+
+func normalizeNoteText(text string) string {
+	lines := strings.Split(text, "\n")
+	shallowest := 3
+	var fence noteFence
+	for _, line := range lines {
+		if fence.consume(line) {
+			continue
+		}
+		if m := noteHeading.FindStringSubmatch(line); m != nil {
+			shallowest = min(shallowest, len(m[2]))
+		}
+	}
+	fence = noteFence{}
+	for i, line := range lines {
+		if fence.consume(line) {
+			continue
+		}
+		if inner, ok := recognizedNoteByline(line); ok {
+			lines[i] = strings.Replace(line, "**"+inner+"**", "__"+inner+"__", 1)
+		} else if m := noteHeading.FindStringSubmatch(line); m != nil {
+			lines[i] = m[1] + strings.Repeat("#", min(6, len(m[2])+3-shallowest)) + m[3]
+		}
+	}
+	if fence.length > 0 {
+		lines = append(lines, fence.closingLine())
+	}
+	return strings.Join(lines, "\n")
+}
+
+// NotesTail returns the raw Notes section, or the last n notes and all later
+// sections. A nonpositive n or a count above the note count includes the heading.
+func NotesTail(body string, n int) string {
+	if n > 0 {
+		notes := ParseNotes(body)
+		if n <= len(notes) {
+			return strings.Join(strings.Split(body, "\n")[notes[len(notes)-n].start:], "\n")
+		}
+	}
+	_, tail := SplitDescription(body)
+	return tail
+}
+
 // parseNoteByline splits a byline's inner text into fields. Anything that does
 // not match the grammar exactly is returned whole as At, so a hand-written
 // byline survives a round trip unchanged.
-func parseNoteByline(inner string) (at, author, id, parent string, edited bool) {
+func parseNoteByline(inner string) Note {
 	fields := strings.Split(inner, noteFieldSep)
 	if len(fields) < 3 || !noteIDPattern.MatchString(fields[2]) {
-		return inner, "", "", "", false
+		return Note{At: inner}
 	}
+	note := Note{At: fields[0], Author: fields[1], ID: fields[2]}
 	for _, f := range fields[3:] {
 		switch {
 		case f == "edited":
-			edited = true
+			note.Edited = true
 		case strings.HasPrefix(f, "re:") && noteIDPattern.MatchString(f[3:]):
-			parent = f[3:]
+			note.ParentID = f[3:]
 		default:
-			return inner, "", "", "", false
+			return Note{At: inner}
 		}
 	}
-	return fields[0], fields[1], fields[2], parent, edited
+	return note
 }
 
 // formatNoteByline writes the byline for a note that carries an id. The author

@@ -116,14 +116,17 @@ func artifacts(opts SessionsOptions) session.Artifacts {
 }
 
 // historyRuns reduces a ticket's history to what the resolver needs. The agent
-// is the one the row recorded, falling back to the pipeline the ticket runs
-// today only for a row that names none. A row needs the agent when it predates
+// is the one the row recorded, falling back to the ticket override and then
+// today's pipeline only for a row that names none. A row needs the agent when it predates
 // the session_ref field, and repointing the stage at another agent since then
 // does not change which runtime wrote that run's files.
 func historyRuns(cfg *config.Config, t *ticket.Ticket) []session.Run {
 	runs := make([]session.Run, 0, len(t.History))
 	for _, h := range t.History {
 		agent := h.Agent
+		if agent == "" {
+			agent = t.Agent
+		}
 		if agent == "" {
 			agent = app.AgentForStage(cfg, t.Pipeline, h.Stage)
 		}

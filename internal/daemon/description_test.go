@@ -116,7 +116,7 @@ func TestDaemonDescriptionNoteOrder(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
 			d := h.newDaemon(h.cfg)
-			const tail = "## Notes\n\n**legacy**\n\nold note\n## Later\nkeep\n"
+			const tail = "## Notes\n\n**2026-08-08**\n\nold note\n## Later\nkeep\n"
 			path := h.writeTicket("tst-order.md", "---\nid: tst-order\nstatus: open\n---\n# Old\n\n"+tail)
 			d.tickets["tst-order"] = newTicketState(h.readTask("tst-order.md"), path)
 			addNote := func() { require.NoError(t, d.AddNote("tst-order", web.AddNoteRequest{Text: "new note"})) }

@@ -486,6 +486,27 @@ func TestViewIsNotPagedWhenPiped(t *testing.T) {
 	bodyOut, err := runCLI(t, pagerEnv, "view", "--config", configPath, "--body", id)
 	require.NoError(t, err, bodyOut)
 	assert.Equal(t, body, bodyOut, "--body stays byte-stable with a pager set")
+
+	const tail = "\n## Notes\n\n**2026-08-08**\n\none\n\n**2026-08-09**\n\ntwo\n\n## Later\n\nkeep\n"
+	for _, tt := range []struct {
+		name, suffix, want string
+		flags              []string
+	}{
+		{name: "no notes", flags: []string{"--notes"}},
+		{name: "no last notes", flags: []string{"--last", "2"}},
+		{name: "notes", suffix: tail, flags: []string{"--notes"}, want: strings.TrimPrefix(tail, "\n")},
+		{name: "last", suffix: tail, flags: []string{"--last", "1"}, want: "**2026-08-09**\n\ntwo\n\n## Later\n\nkeep\n"},
+		{name: "above count", suffix: tail, flags: []string{"--last", "5"}, want: strings.TrimPrefix(tail, "\n")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, os.WriteFile(filepath.Join(ticketsDir, id+".md"), append(append([]byte(nil), written...), []byte(tt.suffix)...), 0o644))
+			args := append([]string{"view", "--config", configPath}, tt.flags...)
+			args = append(args, id)
+			out, err := runCLI(t, pagerEnv, args...)
+			require.NoError(t, err, out)
+			assert.Equal(t, tt.want, out)
+		})
+	}
 }
 
 // The daemon runs unattended against whatever store it resolved, so it says

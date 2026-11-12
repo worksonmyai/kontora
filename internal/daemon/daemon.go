@@ -2890,6 +2890,7 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool, 
 	fmt.Fprintf(&b, "- Ticket file: %s\n", filePath)
 	fmt.Fprintf(&b, "- Worktree: %s\n", wtPath)
 	fmt.Fprintf(&b, "- `kontora view %s` — prints ticket contents to stdout\n", taskID)
+	fmt.Fprintf(&b, "- `kontora view --last 5 %s` prints recent notes and any later sections\n", taskID)
 	fmt.Fprintf(&b, "- `kontora view --notes %s` prints only the notes, for a ticket too long to read at once\n", taskID)
 	b.WriteString("- Do not search $HOME for tickets or config; use the paths above.\n")
 	b.WriteString("\n## Handoff instructions\n")

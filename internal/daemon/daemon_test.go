@@ -880,6 +880,7 @@ func TestBuildOperationalAppendix(t *testing.T) {
 				"Worktree: /home/user/.kontora/worktrees/tst-1234",
 				"kontora note tst-1234",
 				"kontora view tst-1234",
+				"kontora view --last 5 tst-1234",
 				"Do not search $HOME",
 			},
 			wantNone: []string{
@@ -900,6 +901,7 @@ func TestBuildOperationalAppendix(t *testing.T) {
 				"Worktree: /worktrees/pip-abcd",
 				"kontora note pip-abcd",
 				"kontora view pip-abcd",
+				"kontora view --last 5 pip-abcd",
 				"Do not search $HOME",
 				"IMPORTANT: When you finish your work",
 				"next stage of the pipeline",

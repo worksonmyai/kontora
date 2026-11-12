@@ -546,6 +546,10 @@ the row is read.
 
 Use `kontora note` to append a note under a `## Notes` section in the body. The next stage can read the note through `{{ .Ticket.Description }}`. The web UI also has a `notes` tab on the ticket page.
 
+Read notes with `kontora view --notes TICKET_ID`, or recent notes with `kontora view --last 5 TICKET_ID`. Both print stored markdown without a pager, locally or remotely, and retain later sections through the end of the body.
+
+`--last N` implies `--notes` and requires a positive integer. It starts at the beginning of the Nth-last note. Legacy notes without bylines also count. If N exceeds the note count, it prints the whole section, including `## Notes`. A ticket without that section prints nothing and exits 0. Neither flag can be combined with `--body`.
+
 Prefer Pi's `kontora_note({text: string})` tool when available; it targets the current ticket. Otherwise, use a file-writing tool to create a unique scratch file outside the repository. Submit the file through stdin:
 
 ```sh
@@ -554,7 +558,20 @@ kontora note TICKET_ID < /absolute/path/note.md
 
 Replace `TICKET_ID` and the example path with the actual ticket ID and scratch path. Do not put generated text in shell arguments or payload-bearing shell commands. Do not create the file with `echo` or `printf`. Put flags such as `--author` and `--reply-to` before the ticket ID.
 
-Positional text remains supported. Stdin removes trailing LF characters, and notes trim surrounding whitespace. For summaries, prefer `kontora_summary({text: string})` when available, or submit a scratch file through stdin:
+Positional text remains supported. Stdin removes trailing LF characters, and notes trim surrounding whitespace.
+
+Adding or editing a note normalizes its text so headings and byline-like text cannot split the note:
+
+- Outside fenced code, headings shift only when the shallowest heading is h1 or h2. That heading becomes h3.
+- Those headings shift by the same amount, preserving relative levels, except that levels above h6 become h6. Notes whose shallowest heading is h3 or deeper need no shift.
+- Backtick and tilde fenced code stays unchanged. If a fence remains open at the end, Kontora appends a closing fence.
+- A bold-only line outside fenced code that matches the byline rule below uses outer `__` instead of `**` when stored. Both render as bold.
+
+Outside fenced code, a line beginning with `# ` or `## ` at column zero ends the Notes section. Inside fences, those lines do not end Notes, and bold-only lines do not open notes.
+
+Existing tickets are not migrated. Old sections after Notes remain in the description editor's read-only area and in `kontora view --notes TICKET_ID`. Full-body writes, including `update --body-file` and API `body`, do not normalize note text.
+
+For summaries, prefer `kontora_summary({text: string})` when available, or submit a scratch file through stdin:
 
 ```sh
 kontora summary TICKET_ID < /absolute/path/summary.txt
@@ -562,7 +579,7 @@ kontora summary TICKET_ID < /absolute/path/summary.txt
 
 Summaries preserve spaces and internal newlines after stdin removes trailing LF characters. The CLI does not truncate summaries; later stage capture cuts text above 4,000 bytes and appends `\n[truncated]`. See the [CLI reference](cli.md#kontora-note-ticket_id-text-kontora-summary-ticket_id-text) for native input limits and process-list visibility.
 
-A note is a bold byline followed by its text. The byline is a `·`-separated field list: timestamp, author, note id, then optional flags.
+Kontora writes each note as a bold byline followed by its text. The byline is a `·`-separated field list: timestamp, author, note id, then optional flags.
 
 ```
 ## Notes
@@ -584,7 +601,12 @@ The id is 4 lowercase alphanumerics, unique within the ticket, and it is what th
 
 The author is a plain name and cannot contain `·`, a newline or `**`. Kontora signs its own notes `kontora`, an agent signs with its configured name from `$KONTORA_AGENT`, and a person signs with the [`author`](configuration.md#top-level-fields) config field. A ticket that pauses gets a `kontora` note carrying the reason, which is why a pause shows up in the conversation rather than as a lifecycle row.
 
-A byline that does not match this grammar is left alone: `**2026-03-06T12:00:00Z**` written before this format, or anything hand-typed, still parses, with no author and no id. Such a note is addressed by position (`#0`, `#1`) until something acts on it, at which point it is minted a real id in the same write.
+Outside fenced code, a bold-only line opens a note only when either condition holds:
+
+- Its first `·`-separated field starts with a `YYYY-MM-DD` date.
+- It matches the full `at · author · id` grammar, with only the optional `re:<id>` and `edited` flags after the id. Both `at` and author may be empty, as in `** ·  · cd34**`.
+
+Other bold-only lines, such as `**Verification:**`, remain note text. A date-led byline that does not match the full grammar still opens a legacy note. Its entire inner text becomes `at`, with no author or stored id. For example, `**2026-03-06T12:00:00Z**` still parses. Such a note is addressed by position (`#0`, `#1`) until an action mints a real id in the same write.
 
 Reactions are not in the body. They live in `<tickets_dir>/<ticket-id>.notes.json` beside the ticket file, so the body stays readable to the agent that receives it in a stage prompt. A ticket copied without that file keeps its conversation and loses its reactions.
 

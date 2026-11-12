@@ -13,6 +13,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/session"
+	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
 const (
@@ -304,6 +305,37 @@ func TestSessionsSweepsWithoutHistory(t *testing.T) {
 		"code ? session " + wantSession + " running now, or interrupted",
 		"implement ? session " + wantPi + " discovered in pi-sessions/implement; not attributable to a run",
 	}, f.run(SessionsOptions{}))
+}
+
+func TestHistoryRunsAgentFallback(t *testing.T) {
+	cases := []struct {
+		name     string
+		recorded string
+		override string
+		want     string
+		kind     string
+	}{
+		{"recorded agent wins", "claude-sonnet", "pi-agent", "claude-sonnet", session.KindClaude},
+		{"ticket override before stage", "", "pi-agent", "pi-agent", session.KindPi},
+		{"stage without override", "", "", "claude-sonnet", session.KindClaude},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t.TempDir())
+			cfg.Agents["pi-agent"] = config.Agent{Binary: "pi"}
+			cfg.Pipelines["default"] = config.Pipeline{
+				{Stage: "code", Agent: "claude-sonnet"},
+				{Stage: "review", Agent: "pi-agent"},
+			}
+			tkt := &ticket.Ticket{
+				Pipeline: "default",
+				Stage:    "review",
+				Agent:    tc.override,
+				History:  []ticket.HistoryEntry{{Stage: "code", Agent: tc.recorded, Run: 2}},
+			}
+			assert.Equal(t, []session.Run{{Stage: "code", Index: 2, Agent: tc.want, Kind: tc.kind}}, historyRuns(cfg, tkt))
+		})
+	}
 }
 
 // TestSessionsUsesTheRecordedAgent covers a stage that was repointed at another

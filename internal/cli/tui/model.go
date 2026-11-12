@@ -39,13 +39,16 @@ type (
 		seq  int
 		err  error
 	}
-	logsMsg          struct{ content string }
+	logsMsg struct {
+		content, id string
+		target      logTarget
+	}
 	tickMsg          struct{}
 	errMsg           struct{ err error }
 	actionResultMsg  struct{ err error }
 	fetchLogsRequest struct {
-		id    string
-		stage string
+		id     string
+		target logTarget
 	}
 	configMsg struct {
 		config web.ConfigInfo
@@ -138,9 +141,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.openDetail(web.TicketInfo(msg))
 
 	case fetchLogsRequest:
-		return m, m.fetchLogsCmd(msg.id, msg.stage)
+		if !m.logTargetCurrent(msg.id, msg.target) {
+			return m, nil
+		}
+		return m, m.fetchLogsCmd(msg.id, msg.target)
 
 	case logsMsg:
+		if !m.logTargetCurrent(msg.id, msg.target) {
+			return m, nil
+		}
 		m.detail.setLogs(msg.content)
 		return m, nil
 
@@ -161,14 +170,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.fetchTasksCmd()
 
 	case errMsg:
-		switch m.view {
-		case viewList:
-			m.list.err = msg.err
-		case viewDetail:
-			m.detail.err = msg.err
-		case viewCreate:
-			m.create.err = msg.err
-		}
+		m.setViewError(msg.err)
 		return m, nil
 
 	case agentConfigMsg:
@@ -179,14 +181,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case actionResultMsg:
 		if msg.err != nil {
-			switch m.view {
-			case viewList:
-				m.list.err = msg.err
-			case viewDetail:
-				m.detail.err = msg.err
-			case viewCreate:
-				m.create.err = msg.err
-			}
+			m.setViewError(msg.err)
 		}
 		return m, m.fetchTasksCmd()
 	}
@@ -205,6 +200,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m *model) setViewError(err error) {
+	switch m.view {
+	case viewList:
+		m.list.err = err
+	case viewDetail:
+		m.detail.err = err
+	case viewCreate:
+		m.create.err = err
+	}
+}
+
+func (m model) logTargetCurrent(id string, target logTarget) bool {
+	return m.view == viewDetail && m.detail.ticket.ID == id &&
+		(!target.graph || len(m.detail.logTargets) > 0) && m.detail.selectedLogTarget().same(target)
 }
 
 func (m model) handleTick() (model, tea.Cmd) {
@@ -288,6 +299,10 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case isKey(msg, "s"):
 		if sel := m.list.selected(); sel != nil {
+			if isGraph(*sel) {
+				m.list.err = errors.New("graph workflows do not support skip; open detail to restart at the configured entry")
+				return m, nil
+			}
 			if sel.IsRunning() {
 				m.list.err = errors.New("pause first and wait for the agent to stop before changing stages")
 				return m, nil
@@ -316,7 +331,36 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.detail.choosingEntry {
+		switch {
+		case isKey(msg, "esc", "q"):
+			m.detail.choosingEntry = false
+		case isKey(msg, "enter"):
+			m.detail.choosingEntry = false
+			if !m.source.Connected() || m.detail.ticket.IsRunning() {
+				return m, nil
+			}
+			if source, ok := m.source.(interface{ RestartWorkflow(string) error }); ok {
+				return m, actionCmd(func() error { return source.RestartWorkflow(m.detail.ticket.ID) })
+			}
+			m.detail.err = errors.New("workflow restart is unavailable")
+		}
+		return m, nil
+	}
 	switch {
+	case isKey(msg, "e"):
+		if !m.source.Connected() {
+			m.detail.err = errDaemonNotRunning
+			return m, nil
+		}
+		if m.detail.ticket.IsRunning() {
+			m.detail.err = errors.New("pause first and wait for the agent to stop before restarting the workflow")
+			return m, nil
+		}
+		if m.detail.ticket.GraphDefinition != nil {
+			m.detail.choosingEntry = true
+		}
+		return m, nil
 	case isKey(msg, "ctrl+c"):
 		return m, tea.Quit
 
@@ -329,6 +373,10 @@ func (m model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case isKey(msg, "r"):
 		return m, actionCmd(func() error { return m.source.RetryTicket(m.detail.ticket.ID) })
 	case isKey(msg, "s"):
+		if isGraph(m.detail.ticket) {
+			m.detail.err = errors.New("graph workflows do not support skip; restart at the configured entry instead")
+			return m, nil
+		}
 		if m.detail.ticket.IsRunning() {
 			m.detail.err = errors.New("pause first and wait for the agent to stop before changing stages")
 			return m, nil
@@ -487,14 +535,26 @@ func (m model) refreshTaskCmd(id string, seq int) tea.Cmd {
 	}
 }
 
-func (m model) fetchLogsCmd(id, stage string) tea.Cmd {
+func (m model) fetchLogsCmd(id string, target logTarget) tea.Cmd {
 	src := m.source
 	return func() tea.Msg {
-		content, err := src.FetchLogs(id, stage)
+		var content string
+		var err error
+		if target.graph {
+			reader, ok := src.(interface {
+				FetchRunLogs(string, string, int) (string, error)
+			})
+			if !ok {
+				return errMsg{err: errors.New("per-visit logs are unavailable")}
+			}
+			content, err = reader.FetchRunLogs(id, target.stage, target.run)
+		} else {
+			content, err = src.FetchLogs(id, target.stage)
+		}
 		if err != nil {
 			return errMsg{err: err}
 		}
-		return logsMsg{content: content}
+		return logsMsg{content: content, id: id, target: target}
 	}
 }
 
@@ -543,11 +603,10 @@ func (m model) openDetail(info web.TicketInfo) (model, tea.Cmd) {
 	m.detailRetry = false
 	// This body is newer than anything a refresh in flight can carry.
 	m.refreshSeq++
-	stage := ""
-	if len(info.Stages) > 0 {
-		stage = info.Stages[0]
+	if isGraph(info) && len(m.detail.logTargets) == 0 {
+		return m, nil
 	}
-	return m, m.fetchLogsCmd(info.ID, stage)
+	return m, m.fetchLogsCmd(info.ID, m.detail.selectedLogTarget())
 }
 
 func (m model) handleTaskRefreshed(msg taskRefreshedMsg) model {

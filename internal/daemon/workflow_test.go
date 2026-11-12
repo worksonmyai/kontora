@@ -145,6 +145,7 @@ func TestWorkflowExecution(t *testing.T) {
 				require.False(t, visits[row.NodeVisitID])
 				visits[row.NodeVisitID] = true
 			}
+			waitForAgentsDone(t, d, 5*time.Second)
 			stop()
 			outcomes := map[string]int64{"success": int64(tc.runs)}
 			if tc.outcome != "" {
@@ -244,6 +245,7 @@ func TestWorkflowCheck(t *testing.T) {
 				require.Empty(t, got.GraphState.Transitions)
 				require.Equal(t, "test", got.Stage)
 			}
+			waitForAgentsDone(t, d, 5*time.Second)
 			stop()
 			measured := collect()
 			if tc.interruption != nil {

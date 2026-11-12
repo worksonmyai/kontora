@@ -209,7 +209,7 @@ func normalizeTransfer(t *ticket.Ticket, md []byte) ([]byte, error) {
 	if err := root.Decode(&fields); err != nil {
 		return nil, err
 	}
-	for _, field := range []string{"stage", "attempt", "started_at", "completed_at", "claimed_by", "invocation_id",
+	for _, field := range []string{"graph_state", "stage", "attempt", "started_at", "completed_at", "claimed_by", "invocation_id",
 		"scheduled_at", "running_status", "annotation_return_status", "archived_from", "archived_at", "archived_by", "archive_note", "last_error", "last_log"} {
 		delete(fields, field)
 		delete(expected, field)

@@ -134,6 +134,7 @@ export function kontoraBoard() {
 
     // Stage position is the only progress signal, so the current stage counts as half done.
     cardStageProgress(ticket) {
+      if (ticket?.graph_definition || ticket?.graph_execution) return null;
       if (!ticket || this.epicIsAgent(ticket) || !this.executionActive(ticket) ||
           !ticket.stages || ticket.stages.length < 2) return null;
       var index = ticket.stages.indexOf(ticket.stage);
@@ -342,7 +343,7 @@ export function kontoraBoard() {
               ticket.waiting_tool, ticket.waiting_question,
               ticket.scheduled_at,
               this.reviewFinishedAt(ticket),
-              (ticket.stages || []).join('>'),
+              (ticket.stages || []).join('>'), JSON.stringify(ticket.graph_execution || null), !!ticket.graph_definition,
               this._cardRelationSummary(ticket),
               ticket.kind, ticket.epic_execution, epicSig,
               this.showPipelineBadges ? 1 : 0, this.showAgentMeta ? 1 : 0].join('\u0001');

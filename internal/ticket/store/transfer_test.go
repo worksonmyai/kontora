@@ -49,6 +49,11 @@ archived_by: somebody
 archive_note: old archive reason
 last_error: old error
 last_log: /foreign/log
+graph_state:
+  version: 1
+  execution_id: old-workflow
+  revision: 7
+  definition_fingerprint: old-definition
 pipeline: code
 agent: pi
 path: /foreign/repo
@@ -84,6 +89,7 @@ history:
 			assert.Empty(t, got.ArchivedBy)
 			assert.Empty(t, got.ArchiveNote)
 			assert.Empty(t, got.LastLog)
+			assert.Nil(t, got.GraphState)
 			assert.Empty(t, got.LastError)
 			assert.Equal(t, "code", got.Pipeline)
 			assert.Equal(t, "pi", got.Agent)

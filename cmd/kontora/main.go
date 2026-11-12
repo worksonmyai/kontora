@@ -94,6 +94,8 @@ var handlers = map[string]func(){
 	"summary":             cmdSummary,
 	"pause":               func() { cmdAction("pause") },
 	"retry":               func() { cmdAction("retry") },
+	"workflow-restart":    func() { cmdWorkflow("workflow-restart") },
+	"workflow-recover":    func() { cmdWorkflow("workflow-recover") },
 	"skip":                cmdSkip,
 	"set-stage":           cmdSetStage,
 	"cancel":              func() { cmdAction("cancel") },
@@ -1119,6 +1121,46 @@ func daemonClient(configPath, urlFlag, tokenFlag string) *remote.Client {
 		return rc
 	}
 	return cli.LocalClient(mustLoadConfig(configPath))
+}
+
+func cmdWorkflow(action string) {
+	fs := flag.NewFlagSet(action, flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	var executionID, revision string
+	if action == "workflow-recover" {
+		fs.StringVar(&executionID, "execution-id", "", "inspected workflow execution ID (required)")
+		fs.StringVar(&revision, "revision", "", "inspected workflow state revision (required)")
+	}
+	taskID := parseTicketFlags(fs, os.Args[2:])
+	if taskID == "" {
+		log.Fatalf("usage: kontora %s TICKET_ID", action)
+	}
+	rejectSelfMove(action, taskID)
+	var expectedRevision uint64
+	if action == "workflow-recover" {
+		var err error
+		expectedRevision, err = cli.ParseWorkflowRecovery(executionID, revision)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	// Resolve through the daemon in both modes. Never fall back to disk:
+	// journals and outstanding reservations are not represented by the ticket.
+	rc := daemonClient(*configPath, *urlFlag, *tokenFlag)
+	id := mustResolveRemote(rc, taskID)
+	var err error
+	message := "workflow restarted"
+	if action == "workflow-recover" {
+		err = rc.WorkflowRecover(id, executionID, expectedRevision)
+		message = "workflow recovery acknowledged"
+	} else {
+		err = rc.WorkflowRestart(id)
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+	confirm(id, message)
 }
 
 func cmdStats() {

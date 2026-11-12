@@ -82,10 +82,42 @@ Shell functions and aliases do not apply. Configure wrappers explicitly in
 ## stages and pipelines
 
 `stages:` maps a stage name to its prompt template, timeout, model and effort.
-`pipelines:` maps a pipeline name to an ordered list of steps, each naming a
-stage, an agent and its success and failure policies. See the `pipelines`
-topic. A step's `max_retries` defaults to `0` when omitted.
+`pipelines:` maps each name to either a legacy ordered step list or a version 2
+workflow graph. Legacy steps name a stage, agent and success/failure policies.
+A legacy step's `max_retries` defaults to `0` when omitted.
 With `on_failure: retry` and no retry budget, the first failure pauses the ticket.
+
+Graphs declare `version: 2`, `entry`, `nodes`, and `edges`. Each edge uses
+`from: {node: NODE_ID, port: PORT}` and `to: NODE_ID`. Node types are `agent`,
+`check`, `condition`, `loop`, and `end`. Execution is sequential and follows
+edges, never the YAML node list order. Distinct agent nodes can share one stage
+template. A condition compares the latest executable verdict or check exit code;
+a loop's positive `max` bounds its repeat transitions for the whole execution.
+Every port needs one destination; every cycle must cross `loop.repeat` and
+include an executable. Graph aliases, merge keys and unknown fields are refused.
+See `kontora skills show pipelines 'Workflow graphs'` for complete YAML and
+node fields. Do not use a legacy stage-list editor to author graphs.
+
+Graph agent nodes require version 2 invocation-bound results, including a
+declared verdict when configured. The ticket's `stage` is a node ID; daemon-owned
+`graph_state` holds the execution, revision, fingerprint, visits and loop counts.
+Changed effective definitions pause rather than silently changing live traversal.
+`retry` preserves executable identity and loop counts and is refused at `end`.
+`skip` and `set-stage` are refused for graphs.
+
+`kontora workflow-restart ID` creates a new execution at entry with fresh visit
+and loop counters, retaining history and worktree.
+`kontora workflow-recover --execution-id ID --revision N TICKET_ID` acknowledges
+termination for inspected state. Inspect processes, journals, results and
+worktree first; recovery does not start work. Both controls require the daemon.
+Graph annotations and Plannotator rework are deferred and refused.
+
+Upgrade every CLI and daemon sharing config or tickets together before enabling
+graphs. Execution remains disabled until combined verification passes.
+Production readiness depends on combined verification of execution, recovery,
+controls, clients and accounting. Recovery does not promise exactly-once shell
+effects or arbitrary detached-process containment. A missing tmux window alone
+does not prove termination.
 
 ## projects
 

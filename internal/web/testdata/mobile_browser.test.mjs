@@ -2041,6 +2041,34 @@ async function readableStageLabel(locator) {
   assert.ok(ratio >= 4.5, `Stage label contrast ${ratio.toFixed(2)}:1 must reach 4.5:1`);
 }
 
+describe('graph execution evidence', () => {
+  for (const width of [390, 1280]) for (const graph of [false, true]) {
+    test(`stale output identifies ${graph ? 'graph visit' : 'legacy stage'} / ${width}px`, async t => {
+      const record = ticket('kon-evidence', 'Recorded execution', { status: 'paused', stage: graph ? 'stop' : 'code', history: [
+        { stage: 'code', run: 0, node_visit_id: graph ? 'exec.1' : undefined, visit_attempt: 1, completed_at: stamp },
+      ] });
+      if (graph) {
+        record.graph_definition = { version: 2, entry: 'code', nodes: [{ id: 'code', type: 'agent', template: 'implement' }, { id: 'stop', type: 'end', status: 'paused' }], edges: [] };
+        record.graph_execution = { execution_id: 'exec', revision: 2, current_node: 'stop', visit_id: 'exec.1', visit: 1 };
+      }
+      await withPage(t, width, 'dark', async page => {
+        await page.route('**/api/tickets/kon-evidence/activity?*', route => route.fulfill({
+          contentType: 'application/json', body: JSON.stringify({ stale: true, live: false, source: 'plaintext', content: 'Saved attempt output' }),
+        }));
+        await openTicket(page, record.id);
+        await page.getByRole('button', { name: /^activity$/i }).filter({ visible: true }).click();
+        const warning = page.locator('[x-show="activity?.stale && !activity?.live"]:visible');
+        await expect(warning).toContainText(graph ? 'Showing the latest attempt of this visit.' : /[Ss]howing the latest run of this stage/, { useInnerText: true });
+        if (graph) {
+          await expect(warning).toContainText('visit exec.1', { useInnerText: true });
+          await expect(warning).not.toContainText('latest run of this stage', { useInnerText: true });
+          await expect(page.locator('[x-text="seg.name"]:visible')).not.toContainText(['stop']);
+        }
+      }, { records: [record] });
+    });
+  }
+});
+
 describe('custom execution activity', () => {
   for (const order of [[0, 1], [1, 0]]) test(`overlapping physical drags restore active controls after both failures / order=${order}`, async t => {
     const active = ticket('kon-live', 'Overlapping drag execution', { status: 'awaiting_data', execution_active: true,

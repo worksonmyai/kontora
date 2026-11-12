@@ -424,6 +424,17 @@ func (c *Client) Pause(id string) error { return c.postAction("/api/tickets/" + 
 // Retry re-queues a non-running ticket.
 func (c *Client) Retry(id string) error { return c.postAction("/api/tickets/" + id + "/retry") }
 
+func (c *Client) WorkflowRestart(id string) error {
+	return c.postAction("/api/tickets/" + url.PathEscape(id) + "/workflow-restart")
+}
+
+func (c *Client) WorkflowRecover(id, executionID string, revision uint64) error {
+	return c.doJSON(http.MethodPost, "/api/tickets/"+url.PathEscape(id)+"/workflow-recover", struct {
+		ExecutionID string `json:"execution_id"`
+		Revision    uint64 `json:"revision"`
+	}{executionID, revision}, nil)
+}
+
 // Run enqueues an open or todo ticket for processing.
 // Run enqueues a ticket and returns it as the daemon left it, so the caller can
 // see whether a dependency holds it back instead of asking again.

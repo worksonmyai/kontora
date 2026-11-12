@@ -91,6 +91,9 @@ func applyUpdate(cfg *config.Config, t *ticket.Ticket, req web.UpdateTicketReque
 		if err := t.SetField("pipeline", pipeline); err != nil {
 			return err
 		}
+		if err := app.ValidateWorkflowIdentity(cfg, t); err != nil {
+			return err
+		}
 	}
 	if req.Path != nil {
 		if err := t.SetField("path", *req.Path); err != nil {

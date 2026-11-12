@@ -451,6 +451,7 @@ export function kontoraMobile() {
     mobileStageState(seg) {
       var t = this.selectedTicket;
       if (seg.name === t?.stage && ['paused', 'human_review'].includes(t.status)) return this.statusLabel(t.status);
+      if (t?.graph_definition || t?.graph_execution) return { running: 'Running node', done: 'Recorded visit', queued: 'No recorded visit' }[seg.state];
       if (t?.status === 'done' && !seg.runs && !(seg.cost?.tracked_runs > 0)) {
         var stages = t.stages || [];
         var index = stages.indexOf(seg.name);

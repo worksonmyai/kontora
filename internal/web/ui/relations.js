@@ -249,6 +249,7 @@ export function kontoraRelations() {
     // already says it this way.
     childStageLine(c) {
       if (!c || !c.stage) return '—';
+      if (c.graph_execution || c.graph_definition) return c.stage + (c.graph_execution?.current_template ? ' · ' + c.graph_execution.current_template : '');
       if (this.executionActive(c) && c.stage_index && c.stage_count > 1) {
         return c.stage + ' ' + c.stage_index + '/' + c.stage_count;
       }
@@ -275,12 +276,14 @@ export function kontoraRelations() {
     // the same gap.
     childRowFromEvent(t) {
       var h = t.history || [];
-      var stages = t.stages || [];
+      var stages = (t.graph_definition || t.graph_execution) ? [] : t.stages || [];
       var i = stages.indexOf(t.stage);
       return {
         title: t.title,
         status: t.status,
         stage: t.stage,
+        graph_definition: t.graph_definition,
+        graph_execution: t.graph_execution,
         stage_index: i < 0 ? 0 : i + 1,
         stage_count: stages.length,
         started_at: (h.length && h[0].started_at) || t.started_at,

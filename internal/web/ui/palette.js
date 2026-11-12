@@ -115,7 +115,9 @@ export function kontoraPalette() {
     _paletteTicketSub(t) {
       var bits = [t.id];
       if (this.isSecondary(t)) bits.push(this.sourceLabel(t));
-      var stages = t.stages || [];
+      var graph = !!(t.graph_definition || t.graph_execution);
+      var stages = graph ? [] : t.stages || [];
+      if (graph) bits.push('node ' + (t.graph_execution?.current_node || t.stage || t.graph_definition?.entry || '—'));
       var at = t.stage ? stages.indexOf(t.stage) : -1;
       if (at >= 0) bits.push(t.stage + ' ' + (at + 1) + '/' + stages.length);
       else if (stages.length) bits.push(stages.length + ' stages');

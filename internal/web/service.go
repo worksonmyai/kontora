@@ -76,6 +76,8 @@ type TicketService interface {
 	DeleteTicket(id string) error
 	PauseTicket(id string) error
 	RetryTicket(id string) error
+	WorkflowRestart(id string) error
+	WorkflowRecover(id, executionID string, revision uint64) error
 	RunTicket(id string) error
 	SkipStage(id string) error
 	SetStage(id string, stage string) error
@@ -365,9 +367,13 @@ func (r UpdateTicketRequest) ValidateDescription() error {
 	return nil
 }
 
+type GraphDefinitionInfo = app.GraphDefinitionView
+type GraphExecutionInfo = app.GraphExecutionView
+
 type PipelineInfo struct {
-	Name   string   `json:"name"`
-	Stages []string `json:"stages"`
+	GraphDefinition *GraphDefinitionInfo `json:"graph_definition,omitempty"`
+	Name            string               `json:"name"`
+	Stages          []string             `json:"stages"`
 	// MaxRetries is the per-stage retry allowance, positionally aligned with
 	// Stages. It is the denominator of the "attempt 2 / 2" meter.
 	MaxRetries   []int  `json:"max_retries,omitempty"`
@@ -572,14 +578,16 @@ type TicketInfo struct {
 	WaitingTool     string     `json:"waiting_tool,omitempty"`
 	WaitingQuestion string     `json:"waiting_question,omitempty"`
 
-	Stages          []string      `json:"stages,omitempty"`
-	History         []HistoryInfo `json:"history,omitempty"`
-	Body            string        `json:"body,omitempty"`
-	Description     *string       `json:"description,omitempty"`
-	DescriptionTail *string       `json:"description_tail,omitempty"`
-	LastError       string        `json:"last_error,omitempty"`
-	LastLog         string        `json:"last_log,omitempty"`
-	Summary         string        `json:"summary,omitempty"`
+	GraphDefinition *GraphDefinitionInfo `json:"graph_definition,omitempty"`
+	GraphExecution  *GraphExecutionInfo  `json:"graph_execution,omitempty"`
+	Stages          []string             `json:"stages,omitempty"`
+	History         []HistoryInfo        `json:"history,omitempty"`
+	Body            string               `json:"body,omitempty"`
+	Description     *string              `json:"description,omitempty"`
+	DescriptionTail *string              `json:"description_tail,omitempty"`
+	LastError       string               `json:"last_error,omitempty"`
+	LastLog         string               `json:"last_log,omitempty"`
+	Summary         string               `json:"summary,omitempty"`
 	// FinalSummary is the ticket-level outcome. Like the other detail fields it
 	// is absent from board list payloads, which never render it.
 	FinalSummary string     `json:"final_summary,omitempty"`
@@ -712,12 +720,17 @@ const (
 )
 
 type HistoryInfo struct {
-	Imported      bool   `json:"imported,omitempty"`
-	RunOutcome    string `json:"run_outcome,omitempty"`
-	OutcomeReason string `json:"outcome_reason,omitempty"`
-	InvocationID  string `json:"invocation_id,omitempty"`
-	Stage         string `json:"stage"`
-	Agent         string `json:"agent,omitempty"`
+	WorkflowExecutionID   string `json:"workflow_execution_id,omitempty"`
+	NodeVisitID           string `json:"node_visit_id,omitempty"`
+	DefinitionFingerprint string `json:"definition_fingerprint,omitempty"`
+	Template              string `json:"template,omitempty"`
+	VisitAttempt          int    `json:"visit_attempt,omitempty"`
+	Imported              bool   `json:"imported,omitempty"`
+	RunOutcome            string `json:"run_outcome,omitempty"`
+	OutcomeReason         string `json:"outcome_reason,omitempty"`
+	InvocationID          string `json:"invocation_id,omitempty"`
+	Stage                 string `json:"stage"`
+	Agent                 string `json:"agent,omitempty"`
 	// Model and Effort are what Kontora passed the agent, not what the agent
 	// reported running as. Absent means Kontora passed no flag.
 	Model       string     `json:"model,omitempty"`
@@ -912,6 +925,8 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		BaseBranch:      v.BaseBranch,
 		ClaimedBy:       v.ClaimedBy,
 		ScheduledAt:     v.ScheduledAt,
+		GraphDefinition: v.GraphDefinition,
+		GraphExecution:  v.GraphExecution,
 		Stages:          v.Stages,
 		Body:            v.Body,
 		Description:     v.Description,
@@ -941,21 +956,26 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		info.History = make([]HistoryInfo, len(v.History))
 		for i, h := range v.History {
 			info.History[i] = HistoryInfo{
-				Imported:      h.Imported,
-				Stage:         h.Stage,
-				Agent:         h.Agent,
-				Model:         h.Model,
-				Effort:        h.Effort,
-				ExitCode:      h.ExitCode,
-				RunOutcome:    h.RunOutcome,
-				OutcomeReason: h.OutcomeReason,
-				InvocationID:  h.InvocationID,
-				Run:           h.Run,
-				StartedAt:     h.StartedAt,
-				CompletedAt:   h.CompletedAt,
-				Summary:       h.Summary,
-				Kind:          h.Kind,
-				SessionReused: h.SessionReused,
+				WorkflowExecutionID:   h.WorkflowExecutionID,
+				NodeVisitID:           h.NodeVisitID,
+				DefinitionFingerprint: h.DefinitionFingerprint,
+				Template:              h.Template,
+				VisitAttempt:          h.VisitAttempt,
+				Imported:              h.Imported,
+				Stage:                 h.Stage,
+				Agent:                 h.Agent,
+				Model:                 h.Model,
+				Effort:                h.Effort,
+				ExitCode:              h.ExitCode,
+				RunOutcome:            h.RunOutcome,
+				OutcomeReason:         h.OutcomeReason,
+				InvocationID:          h.InvocationID,
+				Run:                   h.Run,
+				StartedAt:             h.StartedAt,
+				CompletedAt:           h.CompletedAt,
+				Summary:               h.Summary,
+				Kind:                  h.Kind,
+				SessionReused:         h.SessionReused,
 			}
 		}
 	}

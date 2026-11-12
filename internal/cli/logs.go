@@ -33,6 +33,11 @@ func Logs(tasksDir, logsDir, taskID, stage string, w io.Writer) error {
 
 	logDir := filepath.Join(logsDir, resolvedID)
 	if stage != "" {
+		if t, err := ticket.ParseFile(filepath.Join(tasksDir, resolvedID+".md")); err == nil {
+			if path, _, graph := GraphRunLog(t, logsDir, stage, -1); graph {
+				return printFile(path, w)
+			}
+		}
 		err := printFile(filepath.Join(logDir, stage+".log"), w)
 		if err == nil || !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -69,9 +74,9 @@ func Logs(tasksDir, logsDir, taskID, stage string, w io.Writer) error {
 }
 
 // StageActivity returns the structured activity tape for one run of a stage.
-// When that run has no sidecar it returns tape == nil and the shared plaintext
-// <stage>.log instead, which is the permanent case for agents that write no
-// session JSONL.
+// When that run has no sidecar it returns tape == nil and plaintext:
+// <stage>.log for legacy runs, or <node>.<visit_id>.log for graph runs.
+// This is the permanent case for agents that write no session JSONL.
 //
 // Unlike Logs, a named stage with no log of its own is os.ErrNotExist rather
 // than the newest log in the directory: this response names the stage and run
@@ -113,7 +118,11 @@ func StageActivity(tasksDir, logsDir, taskID, stage string, run int) (tape *logf
 		return nil, "", readErr
 	}
 
-	data, err := os.ReadFile(session.LogPath(expandedLogsDir, resolvedID, stage))
+	path := session.LogPath(expandedLogsDir, resolvedID, stage)
+	if graphPath, _, graph := GraphRunLog(t, expandedLogsDir, stage, run); graph {
+		path = graphPath
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", err
 	}

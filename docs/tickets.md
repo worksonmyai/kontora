@@ -238,8 +238,9 @@ Activated supervisors and their children must submit an invocation-bound
 `complete` or `blocked` result for each stage, including resumed and rework
 execution. The requirement is independent of a custom `system_prompt`. Missing
 or invalid results after a clean run pause the same stage; notes or exit zero do
-not substitute for a report. Unrelated tickets, passive-epic children,
-annotations, and assistant-only runs retain their existing requirements.
+not substitute for a report. Non-graph unrelated tickets and passive-epic
+children, annotations, and assistant-only runs retain their existing
+requirements. Graph agent nodes independently require version 2 results.
 See [Supervised results](cli.md#supervised-results) for schema and transports.
 
 The supervisor must not publish or make off-machine writes, including through children, scripts, or tools. This prohibits pushes, pull requests, remote issues or comments, messages, uploads, and releases. Read-only external lookups are allowed. Results and progress notes stay local. These are agent instructions, not runtime enforcement.
@@ -354,7 +355,8 @@ These are set and updated by the daemon as the ticket progresses through its pip
 | Field | Description |
 |-------|-------------|
 | `kontora` | Boolean. When `true`, the daemon may manage and execute this ticket. Tickets without `kontora: true` are still listed, but are not auto-picked up and cannot be run/retried/skipped until initialized. Set by `kontora init`. |
-| `stage` | Current pipeline stage name. Set to the first stage on pickup. |
+| `stage` | Legacy pipeline stage name, or graph node ID. A new graph starts at its configured `entry`. |
+| `graph_state` | Graph execution identity, revision, definition fingerprint, executable visit identity and counter, loop counts, last result and transition trace. Daemon-managed; do not clear or edit it to restart work. |
 | `attempt` | Retry counter for the current stage. Reset to 0 on advance/back. |
 | `started_at` | When the current stage started. |
 | `running_status` | Snapshot of a custom-active stage's actual status. Written atomically with `status` on claim; absent or empty for default execution and parked tickets. |
@@ -401,7 +403,7 @@ open → todo → in_progress → done ──────→ archived
 | `open` | Drafted but not ready for the daemon to pick up. A [`scheduled_at`](#scheduled-pickup) stamp moves it to `todo` at a set time. |
 | `todo` | Ready for the daemon. The scheduler picks it up in creation order, once its `deps` are resolved. |
 | `in_progress` | An agent is currently working on it. |
-| `paused` | Stopped by a failure policy or by the user. Set `status: todo` to resume. |
+| `paused` | Stopped by a failure policy or by the user. Use explicit retry after inspection; graph recovery can require acknowledgement before work can resume. |
 | `human_review` | Parked for a person to look at, by a stage policy or `kontora move`. The agent's work is finished, so this releases the tickets that depend on it. |
 | `done` | All pipeline stages completed successfully. |
 | `cancelled` | Manually cancelled by the user. |
@@ -435,6 +437,41 @@ recovery and resume behavior, not a continuation of an interrupted shell sleep.
 
 Upgrade all CLI and daemon binaries sharing the store before enabling custom
 running statuses. Existing parked tickets need no migration and are not activated.
+
+## Graph workflow lifecycle
+
+A [version 2 graph](configuration.md#workflow-graphs) uses explicit nodes and
+edges. `stage` is the current node ID, even when several nodes reuse one stage
+template. YAML list order does not select the next node. Conditions and finite
+loops run sequentially, with at most one executable node active per ticket.
+Reaching an `end` node parks or completes the ticket in that node's status.
+
+`graph_state.execution_id` identifies one traversal. `visit_id` identifies an
+executable node visit, and `loop_counts` tracks each loop's consumed allowance.
+Saved `node_templates` and `loop_limits` describe the execution's configuration,
+not the latest configuration. Older evidence without saved limits shows `unknown`
+until admission verifies the matching configuration.
+Retry repeats the same executable visit with a fresh physical invocation; it
+keeps execution identity, visit identity and loop counts. Retry at an `end` node
+is refused, as are graph `skip` and `set-stage`.
+
+After inspection, `kontora workflow-restart TICKET_ID` starts a new execution at
+`entry` with fresh visit and loop counters. It retains history and the existing
+worktree; it does not undo prior side effects or erase failed attempts.
+For recovery requiring termination acknowledgement, inspect processes, journals,
+worktree and saved results first. Then use
+`kontora workflow-recover --execution-id EXECUTION_ID --revision N TICKET_ID`,
+with the execution identity and revision you inspected. This acknowledges
+termination for that saved state, not permission to assume a missing window
+means all descendants stopped. It does not itself rerun work or reset counts;
+use retry separately when the current executable visit is eligible.
+See [CLI controls](cli.md#kontora-workflow-recover-ticket_id) for the operator procedure.
+
+Graph annotations and Plannotator rework are deferred and refused. Upgrade all
+clients and daemons sharing config or ticket storage together. Graph production
+readiness requires combined verification of execution, recovery, controls,
+clients and accounting. Neither recovery nor restart guarantees exactly-once
+shell effects or containment of arbitrary detached processes.
 
 ## Dependency-aware scheduling
 
@@ -543,6 +580,25 @@ outcomes: preserve their runner status without inferring completion from exit
 codes or old prose. CLI, browser, summaries, statistics, and metrics must keep
 this distinction. Standalone supervised children record real history and must
 not also be counted as synthetic legacy runs.
+
+Graph history also records `workflow_execution_id`, `node_visit_id`,
+`definition_fingerprint`, and `template` for agent nodes.
+`stage` is the node ID; `template` is the reusable agent stage name. The graph's
+`last_result` retains the latest executable verdict and exit code. Check nodes
+record their observed runner outcome without pretending to be agent calls.
+Control-node transitions live in the graph trace rather than fake process rows.
+
+An intentional loop revisit has a new `node_visit_id`. A workflow restart has a
+new `workflow_execution_id`. Repeated attempts of the same executable visit keep
+both identities and get fresh `invocation_id` values. Statistics use execution
+and visit provenance to distinguish revisits from failure retries; a positive
+`run` index alone is not a graph retry. First-pass quality is measured per graph
+visit, with legacy ticket/stage accounting retained for rows without graph
+provenance. Unknown semantic outcomes remain unverified. Token spend still
+includes failed and annotation runs; annotation rows do not count as stage runs.
+History and sidecar indexes are retained across workflow restart, not reset to
+zero with the new traversal counters. Imported history remains excluded from
+local artifact and cost enrichment.
 
 `model` and `effort` are what the agent ran with for that run, resolved from the
 stage override, then the agent's own key, then the flags in the agent's `args`.

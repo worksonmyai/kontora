@@ -2451,7 +2451,7 @@ type spawnAgentParams struct {
 // activity view empty.
 func (p spawnAgentParams) sessionStage(rec *resumeRecord) string {
 	if p.graphState != nil {
-		return fmt.Sprintf("%s-visit-%d", p.stageName, p.graphState.Visit)
+		return fmt.Sprintf("%s-%s-visit-%d", p.stageName, p.graphState.ExecutionID, p.graphState.Visit)
 	}
 	if p.annotation && rec == nil {
 		return p.stageName + "-annotation"

@@ -194,10 +194,12 @@ func (m *mockService) DeleteTicket(id string) error {
 	}
 	return nil
 }
-func (m *mockService) PauseTicket(id string) error { return m.actionFn(id) }
-func (m *mockService) RetryTicket(id string) error { return m.actionFn(id) }
-func (m *mockService) RunTicket(id string) error   { return m.actionFn(id) }
-func (m *mockService) SkipStage(id string) error   { return m.actionFn(id) }
+func (m *mockService) PauseTicket(id string) error                  { return m.actionFn(id) }
+func (m *mockService) RetryTicket(id string) error                  { return m.actionFn(id) }
+func (m *mockService) WorkflowRestart(id string) error              { return m.actionFn(id) }
+func (m *mockService) WorkflowRecover(id, _ string, _ uint64) error { return m.actionFn(id) }
+func (m *mockService) RunTicket(id string) error                    { return m.actionFn(id) }
+func (m *mockService) SkipStage(id string) error                    { return m.actionFn(id) }
 func (m *mockService) ScheduleTicket(id string, req ScheduleTicketRequest) error {
 	if m.scheduleReq != nil {
 		*m.scheduleReq = req

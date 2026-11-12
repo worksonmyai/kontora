@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 
@@ -21,12 +22,17 @@ type PreparedExecutionSettings struct {
 type executionIdentity struct {
 	id, path, branch, rawBranch, base, parent, mode, pipeline, stage, agent string
 	kind                                                                    ticket.Kind
+	graphState, invocationID                                                string
 }
 
 func executionInputs(cfg *config.Config, t *ticket.Ticket) executionIdentity {
+	// GraphState contains only JSON-safe typed fields. Comparing the serialized
+	// value also catches a recovery or retry between preparation and mutation.
+	state, _ := json.Marshal(t.GraphState)
 	return executionIdentity{
 		id: t.ID, path: t.Path, branch: executionBranch(cfg, t), rawBranch: t.Branch, base: t.BaseBranch,
 		parent: t.Parent, kind: t.Kind, mode: t.EpicExecution, pipeline: t.Pipeline, stage: t.Stage, agent: t.Agent,
+		graphState: string(state), invocationID: t.InvocationID,
 	}
 }
 
@@ -117,6 +123,9 @@ func (p *PreparedExecutionSettings) Validate(repo MutationRepository, t *ticket.
 }
 
 func (p *PreparedExecutionSettings) check(t *ticket.Ticket, index map[string]*ticket.Ticket) error {
+	if err := ValidateWorkflowIdentity(p.cfg, t); err != nil {
+		return err
+	}
 	checkPair := func(epic, child *ticket.Ticket) error {
 		if !epic.IsAgentEpic() {
 			return nil

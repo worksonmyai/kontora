@@ -734,6 +734,10 @@ func assistantBoard(cfg *config.Config) []string {
 		names := slices.Sorted(maps.Keys(cfg.Pipelines))
 		parts := make([]string, 0, len(names))
 		for _, name := range names {
+			if graph := cfg.Pipelines[name].Graph; graph != nil {
+				parts = append(parts, fmt.Sprintf("%s (%s)", name, assistantGraph(graph)))
+				continue
+			}
 			stages := make([]string, 0, len(cfg.Pipelines[name].Legacy))
 			for _, step := range cfg.Pipelines[name].Legacy {
 				stages = append(stages, step.Stage)
@@ -769,6 +773,42 @@ func assistantBoard(cfg *config.Config) []string {
 	}
 
 	return lines
+}
+
+// Sorting keeps YAML reordering from changing the brief.
+func assistantGraph(graph *config.WorkflowGraph) string {
+	nodes := make([]string, 0, len(graph.Nodes))
+	for _, node := range graph.Nodes {
+		detail := node.Type
+		switch node.Type {
+		case "agent":
+			detail += fmt.Sprintf(" stage=%s agent=%s", node.Stage, node.Agent)
+			if len(node.Verdicts) > 0 {
+				verdicts := slices.Clone(node.Verdicts)
+				slices.Sort(verdicts)
+				detail += fmt.Sprintf(" verdicts=%q", verdicts)
+			}
+		case "check":
+			detail += fmt.Sprintf(" command=%q timeout=%s", node.Command, node.Timeout.Duration)
+		case "condition":
+			if node.When != nil {
+				detail += fmt.Sprintf(" %s equals %v", node.When.Field, node.When.Equals)
+			}
+		case "loop":
+			detail += fmt.Sprintf(" max=%d", node.Max)
+		case "end":
+			detail += " status=" + node.Status
+		}
+		nodes = append(nodes, fmt.Sprintf("%s [%s]", node.ID, detail))
+	}
+	slices.Sort(nodes)
+	edges := make([]string, 0, len(graph.Edges))
+	for _, edge := range graph.Edges {
+		edges = append(edges, fmt.Sprintf("%s.%s -> %s", edge.From.Node, edge.From.Port, edge.To))
+	}
+	slices.Sort(edges)
+	return fmt.Sprintf("graph v%d entry=%s; nodes (unordered): %s; edges: %s", graph.Version, graph.Entry,
+		strings.Join(nodes, ", "), strings.Join(edges, ", "))
 }
 
 // assistantCounts counts the tickets the daemon holds in memory, per status, in

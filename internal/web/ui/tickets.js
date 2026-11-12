@@ -486,6 +486,11 @@ export function kontoraTickets() {
             this.selectedTicket.parent = ticket.parent;
             this.selectedTicket.stage = ticket.stage;
             this.selectedTicket.attempt = ticket.attempt;
+            this.selectedTicket.graph_definition = ticket.graph_definition;
+            this.selectedTicket.graph_execution = ticket.graph_execution;
+            this.selectedTicket.invocation_id = ticket.invocation_id;
+            this.selectedTicket.started_at = ticket.started_at;
+            this.selectedTicket.finished_at = ticket.finished_at;
             // A schedule set or cleared by the CLI, by another browser, or by
             // the daemon's own promotion has to reach the panel's controls even
             // while the body is being typed into. It is not an edited field.
@@ -710,8 +715,54 @@ export function kontoraTickets() {
       return !!ticket?.can_annotate;
     },
 
+    isGraphTicket(t) {
+      return !!(t?.graph_definition || t?.graph_execution);
+    },
+
+    graphText(t) {
+      if (!this.isGraphTicket(t)) return '';
+      const d = t.graph_definition;
+      const x = t.graph_execution;
+      const lines = [];
+      if (d) lines.push('entry: ' + d.entry);
+      if (x) {
+        lines.push('current: ' + x.current_node + (x.current_template ? ' · template ' + x.current_template : ''));
+        lines.push('execution: ' + x.execution_id + ' · revision ' + x.revision + ' · visit ' + x.visit + ' · attempt ' + ((x.attempt || 0) + 1));
+        if (x.last_result) lines.push('result: ' + x.last_result.node_id + ' · visit ' + x.last_result.visit_id + ' · ' + x.last_result.outcome + (x.last_result.verdict ? ' · verdict ' + x.last_result.verdict : '') + (x.last_result.exit_code !== undefined ? ' · exit ' + x.last_result.exit_code : ''));
+        for (const loop of x.loops || []) lines.push('loop ' + loop.node_id + ': ' + loop.used + ' / ' + (loop.max > 0 ? loop.max : 'unknown') + (loop.exhausted ? ' · exhausted' : ''));
+      }
+      for (const n of d?.nodes || []) lines.push(n.id + ' [' + n.type + ']' + (n.template ? ' · template ' + n.template : '') + (n.command ? ' · ' + n.command : '') + (n.when ? ' · ' + n.when.field + ' = ' + JSON.stringify(n.when.equals) : '') + (n.type === 'loop' ? ' · max ' + n.max : '') + (n.status ? ' · ' + n.status : ''));
+      for (const e of d?.edges || []) {
+        const selected = (x?.selected_edges || []).some(s => s.from === e.from.node && s.port === e.from.port && s.to === e.to);
+        lines.push((selected ? '[selected] ' : '') + e.from.node + '.' + e.from.port + ' -> ' + e.to);
+      }
+      for (const e of x?.transitions || []) lines.push('r' + e.revision + ': ' + e.from + '.' + e.port + ' -> ' + e.to);
+      for (const previous of x?.previous_executions || []) {
+        lines.push('previous execution: ' + previous.execution_id);
+        for (const e of previous.transitions || []) lines.push('r' + e.revision + ': ' + e.from + '.' + e.port + ' -> ' + e.to);
+      }
+      return lines.join('\n');
+    },
+
+    canRestartGraph(ticket = this.selectedTicket) {
+      return this.isGraphTicket(ticket) && this.ticketCanControl(ticket) && !this.executionActive(ticket) &&
+        ticket.status !== 'archived' && !this.plannotatorInFlight?.[ticket.id];
+    },
+
+    async restartGraphWorkflow() {
+      const t = this.selectedTicket;
+      if (!this.canRestartGraph(t)) return;
+      if (!confirm('Restart at the configured graph entry with a new execution and fresh loop counters? History and worktree are retained.')) return;
+      try {
+        const res = await fetch('/api/tickets/' + encodeURIComponent(t.id) + '/workflow-restart', { method: 'POST' });
+        if (!res.ok) { this.error = (await res.json()).error || 'workflow-restart failed'; return; }
+        await this.resyncTickets();
+      } catch (e) { this.error = 'workflow-restart failed: ' + e.message; }
+    },
+
     historyLabel(h) {
       if (!h) return '';
+      if (h.node_visit_id) return h.stage + (h.template ? ' · ' + h.template : '') + ' · visit ' + h.node_visit_id + ' · attempt ' + (h.visit_attempt || 1);
       if (h.kind !== 'annotation') return h.stage;
       return h.stage + ' · annotation (' + (h.session_reused ? 'resumed' : 'fresh') + ')';
     },
@@ -753,7 +804,8 @@ export function kontoraTickets() {
     pipelineLabel(name) {
       var infos = this.configCache?.pipeline_infos || [];
       var info = infos.find(i => i.name === name);
-      if (info && info.stages.length) return name + '  (' + info.stages.join(' → ') + ')';
+      if (info?.graph_definition) return name + '  (graph · entry ' + info.graph_definition.entry + ')';
+      if (info?.stages?.length) return name + '  (' + info.stages.join(' → ') + ')';
       return name;
     },
 

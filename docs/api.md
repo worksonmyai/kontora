@@ -27,7 +27,9 @@ When the web server is enabled, the following endpoints are exposed:
 | `DELETE /api/tickets/{id}` | Delete the ticket markdown file without worktree cleanup. Requires `X-Kontora-Confirm: delete-ticket-file`. Only deletes files inside `tickets_dir`. |
 | `POST /api/tickets/{id}/run` | Queue a ticket. On a passive epic, explicitly activate a supervisor. See [Epics](#epics). |
 | `POST /api/tickets/{id}/pause` | Pause a running ticket. On an agent epic, stop only its supervisor; running children continue. |
-| `POST /api/tickets/{id}/retry` | Retry a paused ticket. |
+| `POST /api/tickets/{id}/retry` | Retry eligible stopped work. Graph retry keeps the executable visit and loop counts; refused at an `end` node. |
+| `POST /api/tickets/{id}/workflow-restart` | Start a new graph execution at entry (`{}` body), retaining history and worktree. |
+| `POST /api/tickets/{id}/workflow-recover` | Acknowledge inspected termination for graph state (`{"execution_id":"ID","revision":N}` body). |
 | `POST /api/tickets/{id}/skip` | Skip the current pipeline stage. |
 | `POST /api/tickets/{id}/set-stage` | Move ticket to a specific pipeline stage (`{"stage": "..."}` body). |
 | `POST /api/tickets/{id}/schedule` | Set or clear the ticket's future pickup time (`{"scheduled_at": "<RFC 3339>"}` or `{"clear": true}` body). A `scheduled_at` that is malformed or already past answers 400. Clearing is refused only while the ticket is running. Answers the updated ticket. See [scheduled pickup](tickets.md#scheduled-pickup). |
@@ -374,12 +376,59 @@ a custom status parks work and never launches a stage. The snapshot is not an
 editable API field. Upgrade all CLI and daemon binaries sharing the ticket store
 before enabling custom running statuses.
 
+### Graph workflows
+
+Author version 2 node/edge definitions in [YAML](configuration.md#workflow-graphs).
+Execution is sequential; node array order is not execution order. Graph ticket
+`stage` values are node IDs, not reusable stage template names or ordinal steps.
+Ticket payloads expose `graph_definition` (entry, typed nodes and explicit edges)
+and `graph_execution` (execution ID, revision, fingerprint, current node/template,
+visit identity, loop usage, last result and selected edges). Detail includes the
+transition trace. These are projections of daemon-owned `graph_state`, not
+editable update fields. Do not derive ordinal progress from definition arrays.
+Graph history adds `workflow_execution_id`,
+`node_visit_id`, `definition_fingerprint`, and agent `template` provenance.
+
+`POST /api/tickets/{id}/workflow-restart` accepts `{}`. It creates a new execution
+at entry with fresh visit and loop counters. History, sidecar indexes and the
+existing worktree are retained; prior effects are not undone. Execution must be
+stopped and unresolved recovery must be handled first.
+
+`POST /api/tickets/{id}/workflow-recover` accepts:
+
+```json
+{"execution_id":"EXECUTION_ID","revision":7}
+```
+
+Read the ticket and inspect processes, journals, results and worktree before
+sending the saved execution identity and revision. The request acknowledges
+termination for that inspected state. Stale identity or revision must be
+refetched and inspected, not automatically retried. Recovery does not start work
+or reset loop counts; retry is a separate operator action.
+
+Ordinary graph retry repeats the same executable identity with a fresh physical
+invocation, preserving execution ID, visit ID and loop counts. Retry at an `end`
+node is refused. `skip` and `set-stage` are refused for graphs even when stopped.
+Graph annotations and Plannotator rework are deferred and refused.
+
+Statistics distinguish intentional graph visits from retries by execution and
+visit provenance, not `run > 0`. First-pass denominators use graph visits;
+legacy rows retain ticket/stage accounting. Unknown semantic outcomes are never
+verified completions, and failed runs still contribute measured spend.
+
+Upgrade CLI, daemon and other clients sharing config or ticket storage together.
+Graph execution remains disabled until combined verification passes. Production
+readiness depends on combined execution, recovery, client and accounting
+verification. No endpoint promises exactly-once arbitrary shell effects or
+containment of arbitrary detached processes. A missing terminal window is not
+proof of termination.
+
 ### Stage changes
 
 `skip` and `set-stage` return 409 while execution or Plannotator review owns the ticket.
 Pause first, wait for termination, and close the review. A `paused` response alone does not confirm teardown finished.
 
-On a stopped ticket, `skip` queues the next stage. On the final stage, it marks the ticket done without successful run history.
+For legacy list pipelines only, on a stopped ticket, `skip` queues the next stage. On the final stage, it marks the ticket done without successful run history.
 `set-stage` leaves status and attempt unchanged and does not retry. An existing `todo` ticket remains eligible for pickup.
 
 A successful `retry` response means accepted and queued. Replacement cleanup runs before workspace preparation.
@@ -469,8 +518,9 @@ Activated epic supervisors and their actual children, including child rework,
 require invocation-bound `complete` or `blocked` results. This is not an additional
 HTTP lifecycle endpoint: agents use Pi's `kontora_result` or `kontora result`
 with daemon-bound execution context. See [schema, environment, and CLI transport](cli.md#supervised-results).
-Unrelated tickets, passive-epic children, annotations, and assistant-only runs
-retain their existing result requirements. Completing a stage is not whole-ticket
+Non-graph unrelated tickets and passive-epic children, annotations, and
+assistant-only runs retain their existing result requirements. Graph agent nodes
+independently require version 2 results. Completing a stage is not whole-ticket
 completion or human acceptance.
 
 Blocked results and missing/invalid results after a clean supervised run pause
@@ -703,6 +753,9 @@ The backend resolves current defaults rather than trusting a preview snapshot.
 
 Existing assignments are not migrated when config or membership changes. Changing
 `path` in ticket details preserves the stored pipeline; retarget it explicitly.
+
+For graph tickets, annotation requests are refused. Diff review remains
+available, but feedback cannot launch automatic rework.
 
 Both Plannotator endpoints return 202 once the session is accepted, and report its outcome over `GET /api/events` as a `plannotator_finished` event. They return 404 for an unknown ticket, 409 when a Plannotator process is already open for the ticket or its status does not allow the requested pass, and 500 when the `plannotator` binary is not installed. `GET /api/tickets` and `GET /api/tickets/{id}` carry `can_annotate`, which answers the same status rules the annotate endpoint enforces.
 

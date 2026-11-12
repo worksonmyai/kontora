@@ -246,6 +246,45 @@ func TestStatsSnapshotStandaloneOutcomes(t *testing.T) {
 	}
 }
 
+func TestStatsSnapshotGraphVisitQuality(t *testing.T) {
+	now := time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC)
+	start := now.Add(-time.Minute)
+	history := []ticket.HistoryEntry{
+		{WorkflowExecutionID: "exec-1", NodeVisitID: "visit-1", RunOutcome: ticket.RunOutcomeComplete},
+		{WorkflowExecutionID: "exec-1", NodeVisitID: "visit-2", RunOutcome: ticket.RunOutcomeFailed},
+		{WorkflowExecutionID: "exec-1", NodeVisitID: "visit-2", RunOutcome: ticket.RunOutcomeComplete},
+		{WorkflowExecutionID: "exec-2", NodeVisitID: "visit-1", RunOutcome: ticket.RunOutcomeComplete},
+	}
+	for i := range history {
+		history[i].Stage = "review"
+		history[i].Agent = "claude"
+		history[i].StartedAt = &start
+		history[i].CompletedAt = &now
+	}
+	tk := &ticket.Ticket{ID: "kon-graph-stats", Pipeline: "graph", History: history}
+	cfg := &config.Config{LogsDir: t.TempDir()}
+	d := &Daemon{tickets: map[string]*ticketState{tk.ID: {ticket: tk}}}
+	snapshot, _ := d.statsSnapshot(cfg, now)
+	require.Len(t, snapshot, 1)
+	projected := snapshot[0].ticket
+	require.Len(t, projected.History, len(history))
+	for i, run := range projected.History {
+		assert.Equal(t, history[i].WorkflowExecutionID, run.WorkflowExecutionID)
+		assert.Equal(t, history[i].NodeVisitID, run.NodeVisitID)
+		assert.Equal(t, i, run.Run, "stage counters increase across visits and executions")
+	}
+
+	result := stats.Compute([]stats.Ticket{projected}, stats.Options{Now: now, Days: 7})
+	assert.Equal(t, 4, result.Totals.Runs)
+	assert.InDelta(t, 200.0/3, result.Totals.FirstPassPct, 0.001, "two of three visits complete first pass")
+	require.Len(t, result.Stages, 1)
+	assert.Equal(t, 4, result.Stages[0].Runs)
+	assert.Equal(t, 25.0, result.Stages[0].RetryPct, "only one of four runs retries a visit")
+	require.Len(t, result.Agents, 1)
+	assert.InDelta(t, 200.0/3, result.Agents[0].FirstPassPct, 0.001)
+	assert.Equal(t, 1.0, result.Agents[0].RetriesPerTicket)
+}
+
 func TestStatsSnapshotRetargetedStandaloneRun(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	oldStart, oldEnd := now.Add(-2*time.Hour), now.Add(-time.Hour)

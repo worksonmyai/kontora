@@ -36,12 +36,13 @@ var fieldPlaceholders = [fieldCount]string{
 }
 
 type createModel struct {
-	fields  [fieldCount]textinput.Model
-	focused formField
-	width   int
-	height  int
-	err     error
-	initCmd tea.Cmd
+	fields        [fieldCount]textinput.Model
+	focused       formField
+	width         int
+	height        int
+	err           error
+	initCmd       tea.Cmd
+	pipelineInfos []web.PipelineInfo
 }
 
 func (m *createModel) setSize(width, height int) {
@@ -76,11 +77,12 @@ func newCreateModel(cfg web.ConfigInfo, width, height int) createModel {
 	cmd := fields[fieldTitle].Focus()
 
 	return createModel{
-		fields:  fields,
-		focused: fieldTitle,
-		width:   width,
-		height:  height,
-		initCmd: cmd,
+		fields:        fields,
+		focused:       fieldTitle,
+		width:         width,
+		height:        height,
+		initCmd:       cmd,
+		pipelineInfos: cfg.PipelineInfos,
 	}
 }
 
@@ -130,6 +132,14 @@ func (m createModel) View() string {
 		b.WriteByte('\n')
 		b.WriteString(m.fields[i].View())
 		b.WriteByte('\n')
+	}
+
+	for _, pipeline := range m.pipelineInfos {
+		if pipeline.Name == strings.TrimSpace(m.fields[fieldPipeline].Value()) && pipeline.GraphDefinition != nil {
+			b.WriteString(styleFaint.Render("  graph · starts at configured entry: " + pipeline.GraphDefinition.Entry))
+			b.WriteByte('\n')
+			break
+		}
 	}
 
 	if m.err != nil {

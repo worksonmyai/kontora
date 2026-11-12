@@ -49,6 +49,7 @@ type executionRecord struct {
 	Template             string                      `json:"template,omitempty"`
 	HookTermination      string                      `json:"hook_termination,omitempty"`
 	RunnerTermination    process.TerminationEvidence `json:"runner_termination,omitempty"`
+	RecoveryState        *ticket.GraphState          `json:"recovery_state,omitempty"`
 }
 
 type executionTransition struct {
@@ -650,6 +651,9 @@ func (d *Daemon) reconcileGraphExecutionLocked(cfg *config.Config, t *ticket.Tic
 	}
 	if t.InvocationID != "" && t.InvocationID != rec.Invocation.ID && !preparingExecutionBindingMatches(t, rec) {
 		d.reserveRecoveredExecutionLocked(t)
+		return true
+	}
+	if d.reconcileWorkflowAcknowledgementLocked(t, path, rec) {
 		return true
 	}
 	if rec.HookTermination == "pending" {

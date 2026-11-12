@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -19,6 +18,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/hook"
 	"github.com/worksonmyai/kontora/internal/pipeline"
 	"github.com/worksonmyai/kontora/internal/process"
+	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
@@ -87,9 +87,9 @@ func (d *Daemon) initializeWorkflow(cfg *config.Config, t *ticket.Ticket, graph 
 		_ = t.SetField("last_error", reason)
 		return errWorkflowNoSpawn
 	}
-	// Operator controls and graph clients must ship before normal pickup is enabled.
+	// Normal pickup stays disabled until combined verification passes.
 	if !d.graphWorkflowsReady {
-		return pause("graph workflow execution is unavailable until graph controls and clients are installed")
+		return pause("graph workflow execution is disabled pending combined verification")
 	}
 	if t.AnnotationReturnStatus != "" || t.IsAgentEpic() {
 		return pause("graph workflows do not support annotation runs or epic supervisors")
@@ -121,7 +121,12 @@ func (d *Daemon) initializeWorkflow(cfg *config.Config, t *ticket.Ticket, graph 
 		if t.InvocationID != "" {
 			return pause("workflow execution requires recovery acknowledgement before another invocation")
 		}
+		if node, ok := graph.Node(stage); ok && node.Type == "end" {
+			return pause("workflow is at an end node; use workflow-restart")
+		}
 	}
+	state = state.Clone()
+	populateWorkflowDisplay(state, graph)
 	after := pipeline.AdvanceGraph(graph, stage, state, nil)
 	if err := installGraphAdvance(t, after); err != nil {
 		return err
@@ -133,6 +138,26 @@ func (d *Daemon) initializeWorkflow(cfg *config.Config, t *ticket.Ticket, graph 
 		return errWorkflowNoSpawn
 	}
 	return nil
+}
+
+// Call only for a new execution or after verifying its definition fingerprint.
+func populateWorkflowDisplay(state *ticket.GraphState, graph *config.WorkflowGraph) {
+	if state.NodeTemplates == nil {
+		state.NodeTemplates = make(map[string]string)
+		for _, node := range graph.Nodes {
+			if node.Type == "agent" {
+				state.NodeTemplates[node.ID] = node.Stage
+			}
+		}
+	}
+	if state.LoopLimits == nil {
+		state.LoopLimits = make(map[string]int)
+		for _, node := range graph.Nodes {
+			if node.Type == "loop" {
+				state.LoopLimits[node.ID] = node.Max
+			}
+		}
+	}
 }
 
 func installGraphAdvance(t *ticket.Ticket, after pipeline.GraphAdvance) error {
@@ -188,7 +213,7 @@ func classifyGraphLaunch(p spawnAgentParams, run *agentRun) {
 }
 
 func graphLogPath(cfg *config.Config, t *ticket.Ticket) string {
-	return filepath.Join(expandTilde(cfg.LogsDir), t.ID, fmt.Sprintf("%s.visit-%d.log", t.Stage, t.GraphState.Visit))
+	return session.GraphLogPath(expandTilde(cfg.LogsDir), t.ID, t.Stage, t.GraphState.VisitID)
 }
 
 func (d *Daemon) runGraphTicket(root, task context.Context, cfg *config.Config, log *slog.Logger, t *ticket.Ticket, path string) {

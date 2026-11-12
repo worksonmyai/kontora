@@ -114,6 +114,7 @@ func TestDetailModel_SetTaskClampsLogStage(t *testing.T) {
 	m := newDetailModel(testDetailTicket(), 100, 30)
 	// Advance logStage to last stage (index 2 of 3 stages)
 	m.logStage = 2
+	m.setLogs("review transcript")
 
 	// Update with fewer stages — logStage must be clamped
 	updated := testDetailTicket()
@@ -121,18 +122,21 @@ func TestDetailModel_SetTaskClampsLogStage(t *testing.T) {
 	m.setTicket(updated)
 
 	assert.Equal(t, 0, m.logStage)
-	assert.Len(t, m.logStages, 1)
+	assert.Len(t, m.logTargets, 1)
+	assert.Empty(t, m.logContent)
 }
 
 func TestDetailModel_SetTaskClampsLogStageToZeroWhenEmpty(t *testing.T) {
 	m := newDetailModel(testDetailTicket(), 100, 30)
 	m.logStage = 2
+	m.setLogs("review transcript")
 
 	updated := testDetailTicket()
 	updated.Stages = nil
 	m.setTicket(updated)
 
 	assert.Equal(t, 0, m.logStage)
+	assert.Empty(t, m.logContent)
 }
 
 func TestDetailModel_SetSize(t *testing.T) {
@@ -250,7 +254,7 @@ func TestDetailModel_ViewSimpleTask(t *testing.T) {
 
 	assert.Contains(t, view, "branch")
 	assert.Contains(t, view, "kontora/sim-001")
-	assert.Equal(t, []string{"default"}, m.logStages)
+	assert.Equal(t, []logTarget{{stage: "default", label: "default"}}, m.logTargets)
 }
 
 func TestDetailModel_ViewSimpleTaskEmptyBranch(t *testing.T) {

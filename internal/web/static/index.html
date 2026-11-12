@@ -1984,6 +1984,12 @@
         </h1>
       </div>
 
+      <details x-show="isGraphTicket(selectedTicket)" class="px-6 pb-3 font-mono text-[11px] text-tx-3">
+        <summary>Workflow graph · execution</summary>
+        <pre class="whitespace-pre-wrap" x-text="graphText(selectedTicket)"></pre>
+        <button x-show="canRestartGraph()" @click="restartGraphWorkflow()" class="text-warn">Restart at configured entry</button>
+      </details>
+
       <!-- Stage ribbon: one segment per stage, grown by its real duration -->
       <div class="shrink-0 px-6 pb-[13px] border-b border-surface-700/60 flex items-end gap-5"
            x-show="!isSecondary(selectedTicket) && (stageRibbon().length > 0 || ribbonMeters().length > 0)">
@@ -2126,7 +2132,7 @@
               <div class="shrink-0 px-6 pt-[14px] flex items-center gap-2.5 flex-wrap">
                 <span class="side-label">activity</span>
                 <span class="font-mono text-[11px] text-tx-3" x-text="activityStage || 'latest'"></span>
-                <span x-show="activityRun > 0" class="font-mono text-[10.5px] text-surface-600" x-text="'attempt ' + (activityRun + 1)"></span>
+                <span x-show="activityRun > 0 || isGraphTicket(outputSubject())" class="font-mono text-[10.5px] text-surface-600" x-text="activityRunLabel()"></span>
                 <span x-show="activity?.live" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-st-progress/40 text-st-progress">live</span>
                 <span x-show="activity?.tape?.model" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activity?.tape?.model"></span>
                 <!-- The effort Kontora passed. No model chip beside it: the one
@@ -2136,7 +2142,8 @@
                 <span x-show="tapeTokens(activity?.tape)" class="font-mono text-[10.5px] text-surface-600" x-text="tapeTokens(activity?.tape) + ' tokens'"></span>
               </div>
               <div x-show="activity?.stale && !activity?.live" class="shrink-0 px-6 pt-2 font-mono text-[11px] text-warn">
-                showing the latest run of this stage — no structured record was kept for attempt <span x-text="activityRun + 1"></span>
+                <span x-show="isGraphTicket(outputSubject())">Showing the latest attempt of this visit. No structured record was kept for <span x-text="activityRunLabel()"></span>.</span>
+                <span x-show="!isGraphTicket(outputSubject())">showing the latest run of this stage — no structured record was kept for <span x-text="activityRunLabel()"></span></span>
               </div>
               <div x-show="activity?.tape?.truncated" class="shrink-0 px-6 pt-2 font-mono text-[11px] text-surface-600">
                 transcript truncated — open the raw log for the whole run
@@ -3338,14 +3345,14 @@
                 <div class="shrink-0 px-6 pt-2 flex items-center gap-2.5 flex-wrap">
                   <span class="side-label">activity</span>
                   <span class="font-mono text-[11px] text-tx-3" x-text="activityStage || 'latest'"></span>
-                  <span x-show="activityRun > 0" class="font-mono text-[10.5px] text-surface-600" x-text="'attempt ' + (activityRun + 1)"></span>
+                  <span x-show="activityRun > 0 || isGraphTicket(outputSubject())" class="font-mono text-[10.5px] text-surface-600" x-text="activityRunLabel()"></span>
                   <span x-show="activity?.live" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-st-progress/40 text-st-progress">live</span>
                   <span x-show="activity?.tape?.model" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activity?.tape?.model"></span>
                   <span x-show="activityEffort()" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activityEffort()"></span>
                   <span x-show="tapeTokens(activity?.tape)" class="font-mono text-[10.5px] text-surface-600" x-text="tapeTokens(activity?.tape) + ' tokens'"></span>
                 </div>
                 <div x-show="activity?.stale && !activity?.live" class="shrink-0 px-6 pt-2 font-mono text-[11px] text-warn">
-                  showing the latest run of this stage — no structured record was kept for attempt <span x-text="activityRun + 1"></span>
+                  showing the latest run of this stage — no structured record was kept for <span x-text="activityRunLabel()"></span>
                 </div>
                 <div x-show="activity?.tape?.truncated" class="shrink-0 px-6 pt-2 font-mono text-[11px] text-surface-600">Transcript truncated. Open the full raw stage log; it may show a different attempt.</div>
                 <div id="epic-activity-scroll" class="flex-1 min-h-0 overflow-y-auto px-6 pt-[14px] pb-2"
@@ -4363,6 +4370,11 @@
           </button>
         </div>
 
+        <details x-show="isGraphTicket(selectedTicket)" class="px-5 py-3 font-mono text-[11px] text-tx-3">
+          <summary>Workflow graph · execution</summary>
+          <pre class="whitespace-pre-wrap" x-text="graphText(selectedTicket)"></pre>
+        </details>
+
         <!-- Title, stage ribbon and meters -->
         <div class="archive-detail-title shrink-0 px-5 pt-3.5 pb-[13px] flex items-end gap-5">
           <div class="flex-1 min-w-0 flex flex-col gap-2.5">
@@ -5042,11 +5054,12 @@
                       <header :id="settingsFieldID(['pipelines', name])" tabindex="-1" :aria-label="name + ' pipeline, read-only'" class="flex items-center gap-2.5 p-[13px] px-[18px] border-b border-surface-700/40" style="background: hsl(var(--pipe-h) / .07)">
                         <span class="pipe-tag shrink-0" x-text="name"></span>
                         <span class="font-mono text-[11px] text-tx-4 truncate">
-                          <span x-text="settingsPlural(settingsConfig.pipelines[name].length, 'step', 'steps')"></span> · <span x-text="settingsPlural(new Set(settingsConfig.pipelines[name].map(s => s.agent)).size, 'agent', 'agents')"></span>
+                          <span x-text="settingsPipelineGraph(name) ? 'graph · entry ' + settingsPipelineGraph(name).entry : settingsPlural(settingsPipelineSteps(name).length, 'step', 'steps')"></span><span x-show="!settingsPipelineGraph(name)"> · <span x-text="settingsPlural(new Set(settingsPipelineSteps(name).map(s => s.agent)).size, 'agent', 'agents')"></span></span>
                         </span>
                       </header>
-                      <p x-show="!settingsConfig.pipelines[name].length" class="settings-help settings-inset">This pipeline has no steps.</p>
-                      <div class="settings-pipeline-flow p-[18px] flex items-stretch overflow-x-auto">
+                      <pre x-show="settingsPipelineGraph(name)" class="p-4 font-mono text-[11px] text-tx-3 whitespace-pre-wrap" x-text="settingsPipelineGraphText(name)"></pre>
+                      <p x-show="!settingsPipelineGraph(name) && !settingsPipelineSteps(name).length" class="settings-help settings-inset">This pipeline has no steps.</p>
+                      <div x-show="!settingsPipelineGraph(name)" class="settings-pipeline-flow p-[18px] flex items-stretch overflow-x-auto">
                         <template x-for="s in settingsPipelineSteps(name)" :key="s.index">
                           <span class="settings-pipeline-step flex items-stretch" :id="settingsFieldID(['pipelines', name, String(s.index)])" tabindex="-1" :aria-label="name + ', step ' + (s.index + 1) + ', ' + s.stage + ', read-only'">
                             <span class="settings-pipeline-card w-[196px] shrink-0 flex flex-col gap-2 p-3 rounded-[10px] border border-surface-700/55 bg-surface-850/55">
@@ -5077,7 +5090,7 @@
                             <span class="settings-label">Ends at</span>
                             <!-- slice, not [length - 1]: x-show hides this box for a
                                  pipeline with no steps but still evaluates the binding. -->
-                            <span class="status-chip" :data-status="(settingsConfig.pipelines[name].slice(-1)[0] || {}).on_success"
+                            <span class="status-chip" :data-status="settingsPipelineEnds(name).replace(/ /g, '_')"
                                   x-text="settingsPipelineEnds(name)"></span>
                           </span>
                         </span>
@@ -6263,14 +6276,14 @@
               <div class="shrink-0 px-4 flex items-center gap-2 flex-wrap">
                 <span class="side-label">activity</span>
                 <span class="font-mono text-[11px] text-tx-3" x-text="activityStage || 'latest'"></span>
-                <span x-show="activityRun > 0" class="font-mono text-[10.5px] text-surface-600" x-text="'attempt ' + (activityRun + 1)"></span>
+                <span x-show="activityRun > 0 || isGraphTicket(outputSubject())" class="font-mono text-[10.5px] text-surface-600" x-text="activityRunLabel()"></span>
                 <span x-show="activity?.live" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-st-progress/40 text-st-progress">live</span>
                 <span x-show="activity?.tape?.model" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activity?.tape?.model"></span>
                 <span x-show="activityEffort()" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activityEffort()"></span>
                 <span x-show="tapeTokens(activity?.tape)" class="font-mono text-[10.5px] text-surface-600" x-text="tapeTokens(activity?.tape) + ' tokens'"></span>
               </div>
               <div x-show="activity?.stale && !activity?.live" class="shrink-0 px-4 pt-2 font-mono text-[11px] text-warn">
-                showing the latest run of this stage — no structured record was kept for attempt <span x-text="activityRun + 1"></span>
+                showing the latest run of this stage — no structured record was kept for <span x-text="activityRunLabel()"></span>
               </div>
               <div x-show="activity?.tape?.truncated" class="shrink-0 px-4 pt-2 font-mono text-[11px] text-surface-600">Transcript truncated. Open the full raw stage log; it may show a different attempt.</div>
               <div id="epic-activity-scroll-mobile" class="flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-4"
@@ -6407,6 +6420,11 @@
           <template x-if="selectedTicket && !selectedTicket.kontora">
             <span class="mobile-label text-warn">not a kontora ticket</span>
           </template>
+          <details x-show="isGraphTicket(selectedTicket)" class="w-full font-mono text-[11px] text-tx-3">
+            <summary>Workflow graph · execution</summary>
+            <pre class="whitespace-pre-wrap" x-text="graphText(selectedTicket)"></pre>
+            <button x-show="canRestartGraph()" @click="restartGraphWorkflow()" class="text-warn">Restart at configured entry</button>
+          </details>
           <template x-if="selectedTicket && !isSecondary(selectedTicket) && !epicIsAgent(selectedTicket) && detailTab !== 'logs' && stageRibbon().length">
             <div class="mobile-stage-strip" role="list" aria-label="Pipeline stage progress">
               <template x-for="seg in stageRibbon()" :key="seg.name">
@@ -6473,14 +6491,15 @@
           <div class="shrink-0 px-4 flex items-center gap-2 flex-wrap">
             <span class="side-label">activity</span>
             <span class="font-mono text-[11px] text-tx-3" x-text="activityStage || 'latest'"></span>
-            <span x-show="activityRun > 0" class="font-mono text-[10.5px] text-surface-600" x-text="'attempt ' + (activityRun + 1)"></span>
+            <span x-show="activityRun > 0 || isGraphTicket(outputSubject())" class="font-mono text-[10.5px] text-surface-600" x-text="activityRunLabel()"></span>
             <span x-show="activity?.live" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-st-progress/40 text-st-progress">live</span>
             <span x-show="activity?.tape?.model" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activity?.tape?.model"></span>
             <span x-show="activityEffort()" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activityEffort()"></span>
             <span x-show="tapeTokens(activity?.tape)" class="font-mono text-[10.5px] text-surface-600" x-text="tapeTokens(activity?.tape) + ' tokens'"></span>
           </div>
           <div x-show="activity?.stale && !activity?.live" class="shrink-0 px-4 pt-2 font-mono text-[11px] text-warn">
-            Showing the latest run of this stage. No structured record was kept for attempt <span x-text="activityRun + 1"></span>.
+            <span x-show="isGraphTicket(outputSubject())">Showing the latest attempt of this visit. No structured record was kept for <span x-text="activityRunLabel()"></span>.</span>
+            <span x-show="!isGraphTicket(outputSubject())">Showing the latest run of this stage. No structured record was kept for <span x-text="activityRunLabel()"></span>.</span>
           </div>
           <div x-show="activity?.tape?.truncated" class="shrink-0 px-4 pt-2 font-mono text-[11px] text-surface-600">Transcript truncated. Open the full raw stage log; it may show a different attempt.</div>
           <!-- The desktop activity-scroll lives in !isMobile, so this id is shared.

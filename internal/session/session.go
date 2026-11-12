@@ -45,6 +45,10 @@ func LogPath(logsDir, ticketID, stage string) string {
 	return filepath.Join(logsDir, ticketID, stage+".log")
 }
 
+func GraphLogPath(logsDir, ticketID, nodeID, visitID string) string {
+	return filepath.Join(logsDir, ticketID, nodeID+"."+visitID+".log")
+}
+
 // EventsPath is the structured activity sidecar for one run of a stage. It sits
 // beside the stage log; the .json suffix keeps it out of every existing
 // log-directory scanner, all of which filter on .log.

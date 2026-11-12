@@ -58,9 +58,13 @@ type Run struct {
 	RunOutcome    string
 	OutcomeReason string
 	InvocationID  string
-	// Run is the zero-based attempt index of this run among the stage runs of
-	// the same stage, counted by the caller from the rows before it. It is not
-	// the run index that keys the sidecar file, which counts annotation rows too.
+	// Graph provenance identifies intentional visits independently of physical
+	// attempts. Repeated rows for the same execution and visit are retries.
+	WorkflowExecutionID string
+	NodeVisitID         string
+	// Run is the zero-based legacy stage attempt index, counted by the caller
+	// from preceding stage rows. Graph retries use provenance instead. This is
+	// not the sidecar index, which counts annotation rows too.
 	Run         int
 	StartedAt   *time.Time
 	CompletedAt *time.Time
@@ -184,9 +188,10 @@ type Stage struct {
 // counts included, so the tooltip's runs and tokens-per-run multiply out.
 // TokensPerRun is null when none of the agent's runs recorded usable token
 // counts, so an agent whose sessions all left a count unfilled is not reported
-// as free. FirstPassPct is the percentage of observed ticket/stage pairs that
-// completed verifiably on attempt zero with a zero runner exit. Unknown outcomes
-// remain in the denominator but never count as verified success.
+// as free. FirstPassPct is the percentage of observed legacy ticket/stage pairs
+// or graph node visits that completed verifiably without retries and with a
+// zero runner exit. Unknown outcomes remain in the denominator but never count
+// as verified success.
 type Agent struct {
 	Name             string  `json:"name"`
 	Model            string  `json:"model,omitempty"`
@@ -417,7 +422,7 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 	agents := map[string]*agentAcc{}
 	projects := map[string]*projectAcc{}
 	var cycles []int64
-	firstPassPairs := map[string]bool{} // ticket\x00stage → verified complete without retries
+	firstPassPairs := map[runKey]bool{}
 
 	for _, t := range tickets {
 		if inRange(t.CompletedAt, start, endExcl) {
@@ -435,7 +440,10 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 			}
 		}
 
+		visits := map[runKey]bool{}
 		for _, r := range t.History {
+			key := qualityKey(t.ID, r)
+			retry := recordVisitAttempt(visits, key, r)
 			if !inRange(r.StartedAt, start, endExcl) {
 				continue
 			}
@@ -470,7 +478,7 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 				if measured {
 					a.durations = append(a.durations, duration)
 				}
-				if r.Run > 0 {
+				if retry {
 					a.retries++
 				}
 				if r.Usage != nil {
@@ -478,7 +486,7 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 					a.tokenRuns++
 				}
 				a.tickets[t.ID] = struct{}{}
-				recordFirstPass(a.pairs, t.ID+"\x00"+r.Stage, r)
+				recordFirstPass(a.pairs, key, r, retry)
 			}
 
 			s := stageAccFor(stages, r.Stage)
@@ -498,7 +506,7 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 			if r.ExitCode != 0 {
 				s.runnerFailed++
 			}
-			if r.Run > 0 {
+			if retry {
 				s.retries++
 			}
 			if measured {
@@ -511,8 +519,7 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 				s.tokenPerRun = append(s.tokenPerRun, n)
 				s.tokenRuns++
 			}
-			key := t.ID + "\x00" + r.Stage
-			recordFirstPass(firstPassPairs, key, r)
+			recordFirstPass(firstPassPairs, key, r, retry)
 		}
 	}
 
@@ -544,8 +551,33 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 	return agg
 }
 
-func recordFirstPass(pairs map[string]bool, key string, r Run) {
-	verified := r.Run == 0 && r.RunOutcome == "complete" && r.ExitCode == 0
+type runKey struct {
+	ticket, stage, execution, visit string
+}
+
+func qualityKey(ticketID string, r Run) runKey {
+	key := runKey{ticket: ticketID, stage: r.Stage}
+	if r.WorkflowExecutionID != "" && r.NodeVisitID != "" {
+		key.execution, key.visit = r.WorkflowExecutionID, r.NodeVisitID
+	}
+	return key
+}
+
+// Call this outside the query window too, so a replacement attempt cannot appear
+// to be a first attempt.
+func recordVisitAttempt(visits map[runKey]bool, key runKey, r Run) bool {
+	if r.WorkflowExecutionID == "" || r.NodeVisitID == "" {
+		return r.Run > 0
+	}
+	retry := visits[key]
+	if r.Kind == "" {
+		visits[key] = true
+	}
+	return retry
+}
+
+func recordFirstPass(pairs map[runKey]bool, key runKey, r Run, retry bool) {
+	verified := !retry && r.RunOutcome == "complete" && r.ExitCode == 0
 	previous, seen := pairs[key]
 	pairs[key] = verified && (!seen || previous)
 }
@@ -574,7 +606,7 @@ type agentAcc struct {
 	runs      int
 	retries   int
 	tickets   map[string]struct{}
-	pairs     map[string]bool
+	pairs     map[runKey]bool
 }
 
 type projectAcc struct {
@@ -598,7 +630,7 @@ func agentAccFor(m map[string]*agentAcc, name string) *agentAcc {
 	a := &agentAcc{
 		models:  map[string]int{},
 		tickets: map[string]struct{}{},
-		pairs:   map[string]bool{},
+		pairs:   map[runKey]bool{},
 	}
 	m[name] = a
 	return a

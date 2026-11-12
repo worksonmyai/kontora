@@ -32,7 +32,7 @@ Commands that take a `TICKET_ID` accept a unique prefix, except for `result`, wh
 | `KONTORA_AGENT` | `kontora note` | The configured name of the agent the run belongs to. The daemon exports it to the agents it spawns, so an agent's own note is signed with the name it runs as. `--author` outranks it. |
 | `KONTORA_STAGE` | agents and hooks | The stage the run belongs to. |
 | `KONTORA_TICKET_ID` | stage agents and lifecycle commands | Current ticket; prevents an agent from changing its own lifecycle. |
-| `KONTORA_RESULT_VERSION` | `result` | Supervised result protocol version, currently `1`. |
+| `KONTORA_RESULT_VERSION` | `result` | Ticket result protocol version, currently `1`. |
 | `KONTORA_INVOCATION_ID` | `result` | Identity of this physical invocation; changes on retry and resume-to-fresh fallback. |
 | `KONTORA_RESULT_TICKET` | `result` | Exact ticket identity bound to this invocation. |
 | `KONTORA_RESULT_STAGE` | `result` | Stage identity bound to this invocation. |
@@ -63,6 +63,8 @@ Lists tickets. On a terminal with no flags it opens the kanban TUI; any filter, 
 | `--limit N` | Print at most N tickets. |
 | `--json` | Print JSON instead of a table. |
 | `--static` | Print the static table even on a terminal. |
+
+`ls --blocked` still lists dependency-blocked `todo` tickets, not executions paused by a `blocked` result.
 
 `--ready` and `--blocked` select opposite sets and cannot be combined; passing both exits non-zero. Both follow scheduler order, oldest `created` first. Every other listing keeps the board's order: by status, then most recently touched.
 
@@ -635,7 +637,7 @@ Use `kontora automation attach REF --run N` to select an exact run or use a conf
 
 Open the ticket's diff, or its markdown, in [Plannotator](https://plannotator.ai). The daemon spawns the binary, so in remote mode the window opens on the daemon host, not on the caller's screen. `review` needs the ticket to be in `human_review`.
 
-## Supervised results
+## Ticket results
 
 ### `kontora result [--input-file /absolute/path/result.json] TICKET_ID`
 
@@ -668,23 +670,33 @@ resubmission is idempotent; a conflicting submission cannot replace the first
 result. A late result cannot finalize a replacement invocation. Notes, summaries,
 final prose, question markers, and phase checkpoints are not terminal results.
 
-Activated epic supervisors and their children, including rework, must report.
-Passive-epic children, unrelated tickets, annotations, and assistant-only runs
-retain their existing result requirements. `complete` means the assigned current
-stage is complete, not the whole ticket or human acceptance. Review completion
-can still leave fixes for later stages. Fixture work is not complete if the
-stage still requires production foundations or other acceptance evidence.
+Every ticket execution must report, with no opt-out: pipeline stages, standalone
+workers, passive-epic children, activated supervisors, and their children. Fresh,
+resumed, and rework runs each need an invocation-bound report. Annotation-only
+runs, dashboard assistants, and summary generation are excluded. Automations
+keep their existing result contract.
 
-`blocked`, or a missing/invalid result after a clean supervised run, pauses the
-same stage without consuming a retry or deleting the worktree. It does not enter
-pipeline `retry` or `back` policies. A complete report cannot override execution
-or provider failures, hooks, or epic child validation. The daemon owns lifecycle
-transitions; do not mark your own ticket done. See [recovery](configuration.md#supervised-recovery)
-for interrupted runs and [local authority](tickets.md#epics) for escalation.
+`complete` is the agent's report that its assigned current stage is complete.
+It does not prove whole-ticket completion or human acceptance. Independent tests,
+hooks, review stages, and human review remain responsible for acceptance.
+A review stage can complete while fixes remain for later stages. Fixture work
+is not complete if the stage still requires production foundations or other evidence.
 
-Upgrade the CLI and daemon together. Verify effective Pi/Claude instructions
-before enabling autonomous local commits. Do not use rollout to restart live
-epics or migrate existing ticket state.
+`blocked`, or a missing/malformed result after a clean exit, pauses the same
+stage, preserving `attempt` and the worktree. It does not enter pipeline `retry`
+or `back` policies. A complete report cannot override interruption,
+execution/provider failures, hooks, or final validation, including epic child checks.
+Waiting for a question's answer is not terminal blockage; report `blocked` only
+when execution must stop. The daemon owns lifecycle transitions; do not mark
+your own ticket done. See [recovery](configuration.md#ticket-recovery) for interrupted
+runs and [local authority](tickets.md#epics) for escalation.
+
+Mandatory reporting does not turn ordinary workers into supervisors or grant
+new Git authority. Existing commit, merge, rebase, and publication limits remain.
+Upgrade the CLI and daemon together under operator control. Custom agents must
+support the result transport; a clean exit without a report pauses their ticket.
+Verify effective Pi/Claude instructions before enabling autonomous local commits.
+Do not use rollout to restart live executions or migrate existing ticket statuses.
 
 ## Analysis
 

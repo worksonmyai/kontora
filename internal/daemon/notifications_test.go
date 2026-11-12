@@ -130,7 +130,7 @@ created: 2026-01-01T00:00:00Z
 
 // notifyConfig is the harness config with one channel named tg as the default.
 func notifyConfig(h *testHarness) *config.Config {
-	cfg := h.defaultConfig("true", "true")
+	cfg := h.defaultConfig(h.cfg.Agents["agent1"].Binary, h.cfg.Agents["agent2"].Binary)
 	cfg.Notifications = config.Notifications{
 		Channels: map[string]config.NotifyChannel{
 			"tg": {Type: config.NotifyWebhook, URL: "https://example.invalid/tg"},
@@ -185,7 +185,9 @@ func TestNotifyOnPipelineOutcome(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
 			cfg := notifyConfig(h)
-			cfg.Agents["agent1"] = config.Agent{Binary: tt.agent}
+			if tt.want != ticket.StatusDone {
+				cfg.Agents["agent1"] = config.Agent{Binary: tt.agent}
+			}
 			rec := &notifyRecorder{}
 			d := h.newDaemon(cfg, WithNotifier(rec))
 			runDaemon(t, d)
@@ -210,7 +212,8 @@ func TestNotifyDoneCarriesTheRunSummary(t *testing.T) {
 		require.NoError(t, os.MkdirAll(p.SessionDir, 0o755))
 		line := `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Implemented the fix."}]}}`
 		require.NoError(t, os.WriteFile(filepath.Join(p.SessionDir, "session.jsonl"), []byte(line), 0o644))
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	cfg := notifyConfig(h)
@@ -275,9 +278,7 @@ func TestNotifyStaysSilentForRequestedChanges(t *testing.T) {
 			h := newHarness(t)
 			cfg := notifyConfig(h)
 			cfg.Notifications.AllChanges = tt.allChanges
-			cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
-			// Empty, or the rendered prompt is appended as a second argument
-			// and sleep exits 1 before the ticket can be paused.
+			cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "30"}}
 			cfg.Stages["step1"] = config.Stage{Prompt: ""}
 			rec := &notifyRecorder{}
 			d := h.newDaemon(cfg, WithNotifier(rec))
@@ -761,7 +762,7 @@ func TestNotificationsDeliverEndToEnd(t *testing.T) {
 			h := newHarness(t)
 			srv, requests := notifyWireServer(t, tt.status, `{"description":"nope"}`)
 
-			cfg := h.defaultConfig("true", "true")
+			cfg := h.cfg
 			cfg.Assistant.Companion.Enabled = tt.companion
 			cfg.Notifications = config.Notifications{
 				Attempts: new(attempts),
@@ -813,7 +814,7 @@ func TestNotificationsDeliverAfterARestart(t *testing.T) {
 	h := newHarness(t)
 	srv, requests := notifyWireServer(t, http.StatusOK, "ok")
 
-	cfg := h.defaultConfig("true", "true")
+	cfg := h.cfg
 	cfg.Notifications = config.Notifications{
 		Attempts: new(1),
 		Timeout:  config.Duration{Duration: 2 * time.Second},

@@ -84,11 +84,9 @@ func TestEpicContextInAgentPrompt(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, p RunnerParams) (process.Result, error) {
-				if tc.supervised {
-					completeEpicInvocation(t, p)
-				}
+				publishCompleteResult(t, p)
 				now := time.Now()
-				return process.Result{StartedAt: now, ExitedAt: now}, nil
+				return process.Result{StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone}, nil
 			})
 			epic := rd.h.epicMD("epc-a", "open")
 			if tc.supervised {
@@ -141,16 +139,16 @@ func TestEpicContextInAgentPrompt(t *testing.T) {
 				assert.NotContains(t, got, "kontora view --body")
 			}
 			assert.NotContains(t, got, "Epic brief that must not be inlined")
+			assert.Equal(t, 1, strings.Count(got, "## Mandatory stage result"))
+			assert.NotContains(t, got, "## Mandatory supervised result")
+			assert.True(t, spawns[0].RequireTermination)
 			if tc.supervised {
 				assert.Contains(t, got, "## Supervised local delivery")
-				assert.Contains(t, got, "## Mandatory supervised result")
 				assert.Contains(t, got, "## Prerequisites and escalation")
 				assert.Contains(t, got, "Narrower user, ticket, and stage instructions win")
 				assert.Contains(t, strings.Join(spawns[0].Args, " "), "Custom brief: do not commit.")
-				assert.True(t, spawns[0].RequireTermination)
 			} else {
 				assert.NotContains(t, got, "## Supervised local delivery", "passive epic context grants no authority")
-				assert.NotContains(t, got, "## Mandatory supervised result")
 			}
 			if tc.resume {
 				assert.Contains(t, spawns[0].Args, "--resume")

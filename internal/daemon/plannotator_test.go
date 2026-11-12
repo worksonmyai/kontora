@@ -256,7 +256,7 @@ func TestEpicAgentReviewFeedbackRunsSupervisorAndReturnsToReview(t *testing.T) {
 		completeEpicInvocation(t, p)
 		runs.record(p)
 		now := time.Now()
-		return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil
+		return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone}, nil
 	})
 	h.seedReviewWorktree(id)
 	h.writeTicket("epc-c1.md", h.epicChildMD("epc-c1", "done", id, "2026-01-02T00:00:00Z"))
@@ -337,7 +337,8 @@ func TestPlannotator_ReworkExitForeignClaimGuard(t *testing.T) {
 
 	ticketPath := filepath.Join(h.tasksDir, "tst-rg01.md")
 	var d *Daemon
-	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+		publishCompleteResult(t, p)
 		if tk, err := ticket.ParseFile(ticketPath); err == nil {
 			_ = tk.SetField("claimed_by", "other-host")
 			if data, mErr := tk.Marshal(); mErr == nil {
@@ -345,7 +346,7 @@ func TestPlannotator_ReworkExitForeignClaimGuard(t *testing.T) {
 				_ = os.WriteFile(ticketPath, data, 0o644)
 			}
 		}
-		return process.Result{ExitCode: 0, ExitedAt: time.Now()}, nil
+		return process.Result{ExitCode: 0, ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 	d = New(h.cfg,
 		WithLogger(testLogger(h.t)),
@@ -482,9 +483,12 @@ func TestPlannotator_ReworkConditionalExit(t *testing.T) {
 			}
 			h.cfg.Hooks = config.Hooks{config.HookStageEnd: {{Name: "end", Run: hookCommand}}}
 			var d *Daemon
-			d = h.newAnnotationDaemon(func(context.Context, RunnerParams) (process.Result, error) {
+			d = h.newAnnotationDaemon(func(_ context.Context, p RunnerParams) (process.Result, error) {
 				fresh := h.readTask(id + ".md")
-				assert.Equal(t, executionOf(snapshot), executionOf(fresh), "setup must not change the claim")
+				expected := executionOf(snapshot)
+				expected.invocation = p.Env["KONTORA_INVOCATION_ID"]
+				require.NotEmpty(t, expected.invocation, "rework has a bound result journal")
+				assert.Equal(t, expected, executionOf(fresh), "only the invocation binding changes during setup")
 				fresh.SetBody(fresh.Body + "\nsubmitted note\n")
 				require.NoError(t, fresh.SetField("summary", "submitted run summary"))
 				require.NoError(t, fresh.SetField("final_summary", "submitted final summary"))
@@ -498,9 +502,10 @@ func TestPlannotator_ReworkConditionalExit(t *testing.T) {
 					d.executions[id] = &executionClaim{expected: executionOf(snapshot)}
 				}
 				if tc.runnerError {
-					return process.Result{}, errors.New("runner failure")
+					return process.Result{Termination: process.TerminationProcessGroupGone}, errors.New("runner failure")
 				}
-				return process.Result{ExitCode: 0, ExitedAt: time.Now()}, nil
+				publishCompleteResult(t, p)
+				return process.Result{ExitCode: 0, ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 			})
 			d.tickets[id] = newTicketState(snapshot.Clone(), path)
 			claim := &executionClaim{expected: executionOf(snapshot), snapshot: snapshot}
@@ -528,7 +533,9 @@ func TestPlannotator_ReworkConditionalExit(t *testing.T) {
 			case tc.runnerError:
 				assert.Equal(t, ticket.StatusPaused, after.Status)
 				assert.Contains(t, after.LastError, "runner failure")
-				assert.Len(t, after.History, 2)
+				require.Len(t, after.History, 3)
+				assert.Equal(t, ticket.RunOutcomeFailed, after.History[2].RunOutcome)
+				assert.Equal(t, "submitted run summary", after.History[2].Summary)
 			default:
 				assert.Equal(t, ticket.StatusHumanReview, after.Status)
 				require.Len(t, after.History, 3)
@@ -543,7 +550,7 @@ func TestPlannotator_ReworkConditionalExit(t *testing.T) {
 // status=review.
 func TestPlannotator_ReworkCompletion(t *testing.T) {
 	h := newPlannotatorHarness(t)
-	// Use the default agent2=true so rework exits 0 immediately.
+	// Use the default success agent, which explicitly publishes completion.
 	reader := sdkmetric.NewManualReader()
 	d := h.newDaemonWithSpawner(WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
 
@@ -628,7 +635,8 @@ func TestPlannotator_ReworkStageModel(t *testing.T) {
 	var runs annotationRun
 	d := h.newAnnotationDaemon(func(_ context.Context, p RunnerParams) (process.Result, error) {
 		runs.record(p)
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -687,7 +695,8 @@ func TestPlannotatorReworkDisablesCheckpointCompaction(t *testing.T) {
 		data, err := os.ReadFile(p.Args[i+1])
 		require.NoError(t, err)
 		extensionContent = string(data)
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -730,7 +739,8 @@ func TestPlannotator_ReworkFinalSummary(t *testing.T) {
 	filePath := filepath.Join(h.tasksDir, "tst-prf01.md")
 
 	duringRework := make(chan string, 2)
-	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+		publishCompleteResult(t, p)
 		tk, err := ticket.ParseFile(filePath)
 		require.NoError(t, err)
 		duringRework <- tk.FinalSummary
@@ -738,7 +748,7 @@ func TestPlannotator_ReworkFinalSummary(t *testing.T) {
 		data, mErr := tk.Marshal()
 		require.NoError(t, mErr)
 		require.NoError(t, os.WriteFile(filePath, data, 0o644))
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	var prompt string

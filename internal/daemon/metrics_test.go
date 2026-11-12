@@ -82,7 +82,11 @@ func TestMetricsPipelineRun(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
-			d, collect := h.newMetricsDaemon(h.defaultConfig(tt.agent1Binary, "true"))
+			binary := tt.agent1Binary
+			if tt.wantStatus == ticket.StatusDone {
+				binary = h.cfg.Agents["agent1"].Binary
+			}
+			d, collect := h.newMetricsDaemon(h.defaultConfig(binary, h.cfg.Agents["agent2"].Binary))
 
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -117,8 +121,16 @@ func TestMetricsPipelineRun(t *testing.T) {
 				samples += dp.Count
 				assert.Equal(t, uint64(0), dp.BucketCounts[len(dp.BucketCounts)-1],
 					"a stage run must land in a finite bucket, not +Inf")
-				assert.Equal(t, dp.Count, dp.BucketCounts[0],
-					"a sub-second test run belongs to the first bucket")
+				require.Equal(t, uint64(1), dp.Count)
+				bucket := len(dp.Bounds)
+				for i, bound := range dp.Bounds {
+					if dp.Sum <= bound {
+						bucket = i
+						break
+					}
+				}
+				assert.Equal(t, dp.Count, dp.BucketCounts[bucket],
+					"the duration sample belongs to its measured bucket")
 			}
 			assert.Equal(t, total(tt.wantOutcomes), int64(samples),
 				"one duration sample per stage run")
@@ -139,7 +151,7 @@ func total(m map[string]int64) int64 {
 // once the queue drains, and every ticket contributes one queue-wait sample.
 func TestMetricsSchedulerGaugesAndQueueWait(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("true", "true")
+	cfg := h.cfg
 	cfg.MaxConcurrentAgents = 4
 	d, collect := h.newMetricsDaemon(cfg)
 
@@ -240,10 +252,11 @@ func TestMetricsQueueWaitIncludesTheSlotWait(t *testing.T) {
 	cfg := h.defaultConfig("true", "true")
 	// One slot, so the second ticket cannot start until the first is done.
 	cfg.MaxConcurrentAgents = 1
-	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		started := time.Now()
 		time.Sleep(runTime)
-		return process.Result{ExitCode: 0, StartedAt: started, ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: started, ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 	d, collect := h.newMetricsDaemon(cfg, WithRunner(runner))
 
@@ -584,7 +597,8 @@ func TestMetricsCrashRecoveryResumeReportsTheWholeSession(t *testing.T) {
 	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		appendFile(t, filepath.Join(claudeDir, "projects", "-worktree-"+resumeTicketID,
 			p.SessionID+".jsonl"), claudeAssistantLine(40, 7, 0, 0))
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 	rd := newResumeDaemon(t, "claude",
 		func(ctx context.Context, _ int, p RunnerParams) (process.Result, error) { return runner(ctx, p) },
@@ -646,7 +660,7 @@ func TestMetricsAgentErrorsRecordTheDetectionLayer(t *testing.T) {
 			runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 				tt.run(t, p)
 				now := time.Now()
-				return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil
+				return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone}, nil
 			}
 
 			cfg := h.defaultConfig(tt.agent.Binary, tt.agent.Binary)

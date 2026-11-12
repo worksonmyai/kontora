@@ -19,7 +19,7 @@ type Event struct {
 	Kind          EventKind
 	ExitCode      int
 	Timestamp     time.Time
-	RunOutcome    string // complete, blocked, protocol_error or failed; empty preserves legacy behavior
+	RunOutcome    string // complete, blocked, protocol_error or failed; clean exits require explicit complete
 	OutcomeReason string
 	InvocationID  string
 	ForcePause    bool
@@ -121,6 +121,24 @@ func handleAgentExited(t *ticket.Ticket, pipeline config.Pipeline, ev Event) (Ac
 		return Action{}, err
 	}
 
+	// A clean process exit is not a report that the assigned stage is complete.
+	// Execution failures still follow the configured failure policy.
+	if ev.ExitCode == 0 {
+		switch ev.RunOutcome {
+		case "complete", "blocked", "protocol_error", "failed":
+		default:
+			reason := "missing semantic outcome; explicit complete outcome required"
+			if ev.RunOutcome != "" {
+				reason = fmt.Sprintf("unknown semantic outcome %q; explicit complete outcome required", ev.RunOutcome)
+			}
+			if ev.OutcomeReason != "" {
+				reason += ": " + ev.OutcomeReason
+			}
+			ev.RunOutcome = "protocol_error"
+			ev.OutcomeReason = reason
+		}
+	}
+
 	step := pipeline[idx]
 	history := &ticket.HistoryEntry{
 		Stage:         step.Stage,
@@ -145,7 +163,7 @@ func handleAgentExited(t *ticket.Ticket, pipeline config.Pipeline, ev Event) (Ac
 		}, nil
 	}
 
-	if ev.ExitCode == 0 && ev.RunOutcome != "failed" {
+	if ev.ExitCode == 0 && ev.RunOutcome == "complete" {
 		return handleSuccess(step, idx, pipeline, ev, history)
 	}
 	return handleFailure(step, idx, pipeline, t, history)

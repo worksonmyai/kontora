@@ -402,6 +402,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		d.pauseExecution(taskCtx, t, filePath, scopeErr.Error())
 		return
 	}
+	rendered += stageResultInstructions()
 	rendered += supervisedInstructions(epicID)
 	// Rework spawns its agent here rather than through runAgentOnce, so the
 	// stage model and effort are resolved on this path too.
@@ -448,7 +449,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	logStart := fileSize(params.LogFile)
 	result, runnerErr := d.runner(taskCtx, params)
 	if errors.Is(runnerErr, process.ErrTerminationUncertain) {
-		retainOrdinaryReservation(taskCtx)
+		d.retainUncertainExecution(taskCtx, t, execution)
 		log.Error("rework termination unconfirmed; execution state retained", "err", runnerErr)
 		return
 	}

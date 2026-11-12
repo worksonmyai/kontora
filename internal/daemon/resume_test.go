@@ -18,6 +18,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/process"
+	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/worktree"
 )
@@ -319,9 +320,10 @@ type resumeDaemon struct {
 const resumeStage = "step1"
 
 // newResumeDaemon wires a daemon whose runner calls run with the 1-based
-// invocation count. A nil run exits cleanly.
+// invocation count. Each successful fixture must explicitly publish its result.
 func newResumeDaemon(t *testing.T, agentBinary string, run func(ctx context.Context, n int, p RunnerParams) (process.Result, error), opts ...Option) *resumeDaemon {
 	t.Helper()
+	require.NotNil(t, run)
 	h := newHarness(t)
 	claudeDir := t.TempDir()
 	cfg := h.defaultConfig(agentBinary, agentBinary)
@@ -335,10 +337,7 @@ func newResumeDaemon(t *testing.T, agentBinary string, run func(ctx context.Cont
 		rd.spawns = append(rd.spawns, p)
 		n := len(rd.spawns)
 		rd.mu.Unlock()
-		if run != nil {
-			return run(ctx, n, p)
-		}
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		return run(ctx, n, p)
 	}
 
 	rd.d = New(cfg, append([]Option{
@@ -437,8 +436,28 @@ func renderedPrompt(p RunnerParams) string {
 // the agent to begin the stage it is already halfway through.
 const resumeStagePrompt = "do step1 for " + resumeTicketID
 
+func assertResumeResultInstructions(t *testing.T, p RunnerParams, stage string) {
+	t.Helper()
+	assert.True(t, p.RequireTermination)
+	inv, err := session.InvocationFromEnv(func(key string) string { return p.Env[key] })
+	require.NoError(t, err)
+	assert.Equal(t, resumeTicketID, inv.TicketID)
+	assert.Equal(t, stage, inv.Stage)
+	got := renderedPrompt(p)
+	assert.Contains(t, got, "## Mandatory stage result")
+	assert.Contains(t, got, "kontora_result({outcome, summary, next_step?})")
+	assert.Contains(t, got, "kontora result --input-file")
+	assert.Contains(t, got, `outcome "complete" or "blocked"`)
+	assert.Contains(t, got, "a clean runner exit alone cannot advance it")
+	assert.Contains(t, got, "Do not use notes as a fallback if submission fails")
+	assert.NotContains(t, got, "Supervised local delivery")
+}
+
 func TestResumeClaudeContinuesRecordedSession(t *testing.T) {
-	rd := newResumeDaemon(t, "claude", nil)
+	rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, p RunnerParams) (process.Result, error) {
+		publishCompleteResult(t, p)
+		return process.Result{StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
+	})
 	rd.plantRecord(t, agentKindClaude, nil)
 
 	rd.run(t, ticket.StatusDone)
@@ -447,6 +466,7 @@ func TestResumeClaudeContinuesRecordedSession(t *testing.T) {
 	require.Len(t, spawns, 1)
 	assert.Equal(t, []string{"--resume", resumeTestSessionID},
 		spawns[0].Args[slices.Index(spawns[0].Args, "--resume"):][:2])
+	assertResumeResultInstructions(t, spawns[0], resumeStage)
 	assert.NotContains(t, spawns[0].Args, "--session-id", "a resumed run must not open a new session")
 	assert.Equal(t, resumeTestSessionID, spawns[0].SessionID,
 		"log materialization must keep reading the recorded session")
@@ -467,7 +487,8 @@ func TestResumePiContinuesStageSessionFile(t *testing.T) {
 		data, err := os.ReadFile(p.Args[i+1])
 		require.NoError(t, err)
 		extensionContent = string(data)
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 	})
 	agentCfg := rd.cfg.Agents["agent1"]
 	agentCfg.CheckpointCompactionTokens = 150000
@@ -483,6 +504,7 @@ func TestResumePiContinuesStageSessionFile(t *testing.T) {
 	assert.Equal(t,
 		filepath.Join(rd.h.logsDir, resumeTicketID, "pi-sessions", resumeStage, "interrupted.jsonl"),
 		spawns[0].Args[i+1])
+	assertResumeResultInstructions(t, spawns[0], resumeStage)
 	prompt := renderedPrompt(spawns[0])
 	assert.Contains(t, prompt, "was interrupted when the daemon restarted")
 	assert.Contains(t, prompt, "## Phase checkpoints")
@@ -502,7 +524,8 @@ func TestResumeClaudeKeepsCheckpointing(t *testing.T) {
 		data, err := os.ReadFile(p.Args[i+1])
 		require.NoError(t, err)
 		settings = string(data)
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 	})
 	agentCfg := rd.cfg.Agents["agent1"]
 	agentCfg.CheckpointCompactionTokens = 150000
@@ -513,6 +536,7 @@ func TestResumeClaudeKeepsCheckpointing(t *testing.T) {
 
 	spawns := rd.invocations(t)
 	require.Len(t, spawns, 1)
+	assertResumeResultInstructions(t, spawns[0], resumeStage)
 	prompt := renderedPrompt(spawns[0])
 	assert.Contains(t, prompt, "was interrupted when the daemon restarted")
 	assert.Contains(t, prompt, "## Phase checkpoints")
@@ -537,7 +561,10 @@ func TestResumeRejectedRecordRunsStageFresh(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rd := newResumeDaemon(t, "claude", nil)
+			rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, p RunnerParams) (process.Result, error) {
+				publishCompleteResult(t, p)
+				return process.Result{StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
+			})
 			rd.plantRecord(t, agentKindClaude, tc.mutate)
 
 			rd.run(t, ticket.StatusDone)
@@ -554,7 +581,10 @@ func TestResumeRejectedRecordRunsStageFresh(t *testing.T) {
 
 // A resumed run is the same stage continuing, so it runs on the same model.
 func TestResumeKeepsTheStageOverrides(t *testing.T) {
-	rd := newResumeDaemon(t, "claude", nil)
+	rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, p RunnerParams) (process.Result, error) {
+		publishCompleteResult(t, p)
+		return process.Result{StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
+	})
 	agentCfg := rd.cfg.Agents["agent1"]
 	agentCfg.Args = []string{"--model", "opus"}
 	rd.cfg.Agents["agent1"] = agentCfg
@@ -575,7 +605,10 @@ func TestResumeKeepsTheStageOverrides(t *testing.T) {
 }
 
 func TestResumeDisabledForAgentRunsStageFresh(t *testing.T) {
-	rd := newResumeDaemon(t, "claude", nil)
+	rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, p RunnerParams) (process.Result, error) {
+		publishCompleteResult(t, p)
+		return process.Result{StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
+	})
 	agentCfg := rd.cfg.Agents["agent1"]
 	agentCfg.Resume = new(false)
 	rd.cfg.Agents["agent1"] = agentCfg
@@ -593,7 +626,10 @@ func TestResumeDisabledForAgentRunsStageFresh(t *testing.T) {
 // A ticket with no pipeline runs under stage name "default", so it resumes on
 // the same code path. Its appendix leaves out the note about a next stage.
 func TestResumeSimpleTicket(t *testing.T) {
-	rd := newResumeDaemon(t, "claude", nil)
+	rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, p RunnerParams) (process.Result, error) {
+		publishCompleteResult(t, p)
+		return process.Result{StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
+	})
 	plantClaudeSession(t, rd.claudeDir, resumeTestSessionID)
 	writeRecordFile(t, rd.cfg, resumeTicketID, "default", resumeRecord{
 		SessionID: resumeTestSessionID,
@@ -612,11 +648,15 @@ func TestResumeSimpleTicket(t *testing.T) {
 	got := renderedPrompt(spawns[0])
 	assert.Contains(t, got, "was interrupted when the daemon restarted")
 	assertSafeHandoff(t, got, resumeTicketID, false)
+	assertResumeResultInstructions(t, spawns[0], "default")
 	assert.NoFileExists(t, resumeRecordPath(rd.cfg, resumeTicketID, "default"))
 }
 
 func TestResumePromptConfigured(t *testing.T) {
-	rd := newResumeDaemon(t, "claude", nil)
+	rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, p RunnerParams) (process.Result, error) {
+		publishCompleteResult(t, p)
+		return process.Result{StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
+	})
 	rd.cfg.ResumePrompt = "Continue the interrupted work on {{ .Ticket.ID }}"
 	rd.plantRecord(t, agentKindClaude, nil)
 
@@ -626,6 +666,7 @@ func TestResumePromptConfigured(t *testing.T) {
 	require.Len(t, spawns, 1)
 	got := renderedPrompt(spawns[0])
 	assert.Contains(t, got, "Continue the interrupted work on "+resumeTicketID)
+	assertResumeResultInstructions(t, spawns[0], resumeStage)
 	assertSafeHandoff(t, got, resumeTicketID, true)
 	assert.Contains(t, got, "## Operational Context")
 	assert.Contains(t, got, "Worktree: "+rd.wtPath)
@@ -635,12 +676,21 @@ func TestResumePromptConfigured(t *testing.T) {
 
 func TestResumeRecordLifecycle(t *testing.T) {
 	var recordDuringRun []byte
-	var recordPath string
-	rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, _ RunnerParams) (process.Result, error) {
+	var recordPath, invocationPath string
+	rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, p RunnerParams) (process.Result, error) {
 		recordDuringRun, _ = os.ReadFile(recordPath)
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		require.True(t, p.RequireTermination)
+		data, err := os.ReadFile(invocationPath)
+		require.NoError(t, err, "ordinary executions are journaled too")
+		var execution executionRecord
+		require.NoError(t, json.Unmarshal(data, &execution))
+		assert.Empty(t, execution.EpicID)
+		assert.Equal(t, p.Env["KONTORA_INVOCATION_ID"], execution.Invocation.ID)
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 	})
 	recordPath = rd.recordPath()
+	invocationPath = executionPath(rd.cfg, resumeTicketID)
 
 	rd.run(t, ticket.StatusDone)
 
@@ -654,6 +704,7 @@ func TestResumeRecordLifecycle(t *testing.T) {
 	assert.False(t, rec.StartedAt.IsZero())
 
 	assert.NoFileExists(t, recordPath, "a run the daemon saw end leaves no record")
+	assert.NoFileExists(t, invocationPath, "confirmed termination retires the journal")
 
 	// The completed-session record is written by the same return that retires the
 	// crash-recovery one. Only the annotation refine run reads it, so it must not
@@ -669,13 +720,15 @@ func TestResumeRecordLifecycle(t *testing.T) {
 // An ordinary retry of that stage must still start a new conversation: the
 // crash-recovery contract is that only a record of an unseen death resumes.
 func TestRetryAfterCleanCompletionStartsFresh(t *testing.T) {
-	rd := newResumeDaemon(t, "claude", func(_ context.Context, n int, _ RunnerParams) (process.Result, error) {
+	rd := newResumeDaemon(t, "claude", func(_ context.Context, n int, p RunnerParams) (process.Result, error) {
 		// Fail the first run so the pipeline's retry policy runs the stage again.
 		exit := 0
 		if n == 1 {
 			exit = 1
+		} else {
+			publishCompleteResult(t, p)
 		}
-		return process.Result{ExitCode: exit, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		return process.Result{ExitCode: exit, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 	})
 
 	rd.runWith(t, rd.h.taskMD(resumeTicketID, "todo", "retry-stage"), ticket.StatusDone)
@@ -714,7 +767,7 @@ func TestResumeRecordSurvivesDaemonShutdown(t *testing.T) {
 			runner := func(ctx context.Context, _ RunnerParams) (process.Result, error) {
 				once.Do(func() { close(running) })
 				<-ctx.Done()
-				return process.Result{ExitCode: -1, StartedAt: time.Now(), ExitedAt: time.Now()}, ctx.Err()
+				return process.Result{ExitCode: -1, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, ctx.Err()
 			}
 
 			d := New(cfg,
@@ -766,11 +819,12 @@ func TestResumeThatDoesNotStartFallsBackToFreshRun(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rd := newResumeDaemon(t, "claude", func(_ context.Context, n int, _ RunnerParams) (process.Result, error) {
+			rd := newResumeDaemon(t, "claude", func(_ context.Context, n int, p RunnerParams) (process.Result, error) {
 				if n == 1 {
-					return process.Result{ExitCode: 1, StartedAt: time.Now(), ExitedAt: time.Now()}, errors.New(tc.err)
+					return process.Result{ExitCode: 1, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, errors.New(tc.err)
 				}
-				return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+				publishCompleteResult(t, p)
+				return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 			})
 			rd.plantRecord(t, agentKindClaude, nil)
 
@@ -788,6 +842,56 @@ func TestResumeThatDoesNotStartFallsBackToFreshRun(t *testing.T) {
 	}
 }
 
+// Even inside the startup guard, an ordinary resumed agent's blocked report is
+// authoritative: a fresh fallback would discard the blocker and repeat work.
+func TestResumeQuickOrdinaryBlockedDoesNotFallback(t *testing.T) {
+	for _, standalone := range []bool{false, true} {
+		name := "pipeline"
+		if standalone {
+			name = "standalone"
+		}
+		t.Run(name, func(t *testing.T) {
+			rd := newResumeDaemon(t, "claude", func(_ context.Context, n int, p RunnerParams) (process.Result, error) {
+				assert.Equal(t, 1, n, "a blocked report must prevent fallback")
+				require.True(t, p.RequireTermination)
+				_, err := session.PublishResult(p.Env["KONTORA_RESULT_FILE"], session.Result{
+					Outcome: "blocked", Summary: "Need device", NextStep: "Approve device access",
+				})
+				require.NoError(t, err)
+				now := time.Now()
+				return process.Result{ExitCode: 1, StartedAt: now, ExitedAt: now, Termination: process.TerminationWindowGone},
+					errors.New("interactive agent exited too quickly (300ms < 2s)")
+			})
+			md := rd.h.taskMD(resumeTicketID, "todo", "retry-stage")
+			stage := resumeStage
+			if standalone {
+				stage = "default"
+				plantClaudeSession(t, rd.claudeDir, resumeTestSessionID)
+				writeRecordFile(t, rd.cfg, resumeTicketID, stage, resumeRecord{
+					SessionID: resumeTestSessionID, Stage: stage, Agent: agentKindClaude,
+					Worktree: rd.wtPath, Instance: rd.d.instanceName, StartedAt: time.Now().Add(-time.Minute),
+				})
+				md = simpleTaskMD(resumeTicketID, "todo", rd.h.repoDir)
+			} else {
+				rd.plantRecord(t, agentKindClaude, nil)
+			}
+			rd.runWith(t, md, ticket.StatusPaused)
+			spawns := rd.invocations(t)
+			require.Len(t, spawns, 1)
+			assert.Contains(t, spawns[0].Args, "--resume")
+			assertResumeResultInstructions(t, spawns[0], stage)
+			got := rd.h.readTask(resumeTicketID + ".md")
+			require.Len(t, got.History, 1)
+			assert.Equal(t, ticket.RunOutcomeBlocked, got.History[0].RunOutcome)
+			assert.Equal(t, 1, got.History[0].ExitCode, "runner failure must not become success")
+			assert.Contains(t, got.LastError, "Approve device access")
+			assert.Zero(t, got.Attempt)
+			assert.NoFileExists(t, executionPath(rd.cfg, resumeTicketID))
+			assert.NoFileExists(t, resumeRecordPath(rd.cfg, resumeTicketID, stage))
+		})
+	}
+}
+
 // Pausing is a deliberate restart. The daemon is still up when the agent dies,
 // so nothing is left to resume and the stage starts over on the next pickup.
 func TestResumeRecordRemovedOnUserPause(t *testing.T) {
@@ -795,7 +899,7 @@ func TestResumeRecordRemovedOnUserPause(t *testing.T) {
 	rd := newResumeDaemon(t, "claude", func(ctx context.Context, _ int, _ RunnerParams) (process.Result, error) {
 		close(running)
 		<-ctx.Done()
-		return process.Result{ExitCode: -1, StartedAt: time.Now(), ExitedAt: time.Now()}, ctx.Err()
+		return process.Result{ExitCode: -1, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, ctx.Err()
 	})
 
 	rd.h.writeTicket(resumeTicketID+".md", rd.h.taskMD(resumeTicketID, "todo", "one-stage"))
@@ -827,7 +931,7 @@ func TestResumeRecordRemovedOnUserPause(t *testing.T) {
 func TestResumeFailureAfterAgentWorkedPausesWithoutRerunning(t *testing.T) {
 	rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, _ RunnerParams) (process.Result, error) {
 		started := time.Now().Add(-time.Minute)
-		return process.Result{ExitCode: -1, StartedAt: started, ExitedAt: time.Now()},
+		return process.Result{ExitCode: -1, StartedAt: started, ExitedAt: time.Now(), Termination: process.TerminationWindowGone},
 			errors.New("sending /exit after hook: no such window")
 	})
 	rd.plantRecord(t, agentKindClaude, nil)
@@ -843,7 +947,7 @@ func TestResumeFailureAfterAgentWorkedPausesWithoutRerunning(t *testing.T) {
 
 func TestResumeFallbackFailurePausesWithoutRetrying(t *testing.T) {
 	rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, _ RunnerParams) (process.Result, error) {
-		return process.Result{ExitCode: 1, StartedAt: time.Now(), ExitedAt: time.Now()}, assert.AnError
+		return process.Result{ExitCode: 1, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, assert.AnError
 	})
 	rd.plantRecord(t, agentKindClaude, nil)
 

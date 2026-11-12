@@ -329,6 +329,7 @@ func TestEpicAgentRoleSurvivesFreshAndCustomResumePrompts(t *testing.T) {
 				return process.Result{StartedAt: now, ExitedAt: now}, nil
 			})
 			rd.cfg.ResumePrompt = "Custom continuation for {{ .Ticket.ID }}"
+			rd.cfg.SystemPrompt = "Custom system instructions"
 			rd.h.writeTicket("epc-c1.md", rd.h.epicChildMD("epc-c1", "done", resumeTicketID, "2026-01-02T00:00:00Z"))
 			if resume {
 				plantClaudeSession(t, rd.claudeDir, resumeTestSessionID)
@@ -344,7 +345,9 @@ func TestEpicAgentRoleSurvivesFreshAndCustomResumePrompts(t *testing.T) {
 			assert.Contains(t, got, "## Epic supervisor")
 			assert.Contains(t, got, "kontora skills show")
 			assert.Contains(t, got, "## Supervised local delivery")
-			assert.Contains(t, got, "## Mandatory supervised result")
+			assert.Contains(t, got, stageResultInstructions())
+			assert.Equal(t, 1, strings.Count(got, "## Mandatory stage result"))
+			assert.NotContains(t, got, "## Mandatory supervised result")
 			assert.Contains(t, got, "## Prerequisites and escalation")
 			assert.NotContains(t, got, "rebase local branches owned by this epic")
 			for _, clause := range []string{
@@ -405,23 +408,13 @@ func TestSupervisedInstructions(t *testing.T) {
 		"package/version, destination, and purpose", "Read-only external lookups are allowed",
 		"Never publish or write to external services", "children, scripts, or tools",
 		"Do not change pipelines or bypass configured review stages",
-		"kontora_result", "kontora result --input-file /absolute/path/result.json TICKET_ID",
-		"complete", "blocked", "summary is required", "blocked also requires next_step",
-		"current stage's assigned work, not the whole ticket",
-		"review stage can be complete while the ticket still needs fixes",
-		"Missing or invalid results pause the same stage",
-		"Notes, final prose, questions, and checkpoints are not terminal results",
-		"Read saved decisions", "investigate the missing prerequisite",
-		"Continue independent authorized work", "concrete question", "options, their costs",
-		"recommended default", "Save the question and answer together immediately",
-		"Do not weaken acceptance requirements", "Do not substitute emulation",
-		"Retry requires explicit operator action", "Saving an answer", "dismissing attention",
-		"children, branches, worktrees, dirty files, and interrupted Git operations",
 	} {
 		assert.Contains(t, got, clause)
 	}
 	assert.NotContains(t, got, "rebase local branches owned by this epic")
 	assert.NotContains(t, got, "kontora retry TICKET_ID")
+	assert.NotContains(t, got, "kontora_result")
+	assert.NotContains(t, got, "## Mandatory")
 	assert.Empty(t, supervisedInstructions(""), "absent supervision must not grant authority")
 }
 
@@ -445,6 +438,9 @@ func TestEpicAgentAnnotationExcludesSupervisorRole(t *testing.T) {
 	assert.Contains(t, p, "Clarify the epic scope.")
 	assert.NotContains(t, strings.ToLower(p), "epic supervisor")
 	assert.NotContains(t, p, "## Supervised local delivery")
+	assert.NotContains(t, p, "## Mandatory stage result")
+	assert.NotContains(t, strings.Join(runs.all()[0].Args, " "), "Submit a terminal complete or blocked result")
+	assert.Empty(t, runs.all()[0].Env[session.InvocationIDEnvVar])
 	assert.True(t, got.IsAgentEpic())
 	assert.Empty(t, got.AnnotationReturnStatus)
 }

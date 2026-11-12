@@ -127,82 +127,88 @@ func TestResultMalformedStartupRejectsUntrustedJournals(t *testing.T) {
 }
 
 func TestResultLiveUncertainReservationCanRecover(t *testing.T) {
-	for _, supervisor := range []bool{false, true} {
-		for _, dispatched := range []bool{false, true} {
-			t.Run(fmt.Sprintf("supervisor=%t/dispatched=%t", supervisor, dispatched), func(t *testing.T) {
-				f := newResultFixture(t)
-				f.h.cfg.MaxConcurrentAgents, f.h.cfg.MaxConcurrentEpicSupervisors = 1, 1
-				f.h.cfg.AutoPickUp = new(false)
-				require.NoError(t, f.tkt.SetField("status", "todo"))
-				if supervisor {
-					require.NoError(t, f.tkt.SetField("kind", "epic"))
-					require.NoError(t, f.tkt.SetField("epic_execution", "agent"))
-				}
-				f.write(t)
-				d := f.h.newDaemon(f.h.cfg, WithRunner(func(context.Context, RunnerParams) (process.Result, error) {
-					return process.Result{}, process.ErrTerminationUncertain
-				}))
-				var inspection atomic.Int32
-				d.windows = windowOps{
-					list: func(string) ([]string, error) {
-						switch inspection.Load() {
-						case 0:
-							return nil, errors.New("inspection unavailable")
-						case 1:
-							return []string{f.tkt.ID}, nil
-						default:
-							return nil, nil
-						}
-					},
-					kill: func(string, string) error { return errors.New("termination unconfirmed") },
-				}
-				d.tickets[f.tkt.ID] = newTicketState(f.tkt, f.path)
-				if dispatched {
-					d.enqueue(f.tkt)
-					ctx, cancel := context.WithCancel(context.Background())
-					var wg sync.WaitGroup
-					wg.Go(func() { d.dispatch(ctx, &wg) })
-					t.Cleanup(func() { cancel(); wg.Wait() })
-					require.Eventually(t, func() bool {
-						d.mu.Lock()
-						defer d.mu.Unlock()
-						_, retained := d.recoveredReservations[f.tkt.ID]
-						return retained
-					}, 5*time.Second, 10*time.Millisecond)
-					cancel()
-					wg.Wait()
-				} else {
-					d.runTicket(context.Background(), f.tkt.ID)
-				}
-				pool := d.ticketPool(f.tkt)
-				reservation, exists := d.recoveredReservations[f.tkt.ID]
-				require.True(t, exists)
-				assert.Same(t, pool, reservation.pool)
-				require.Equal(t, 1, pool.used, "the dispatcher token must transfer, not duplicate or disappear")
-				d.handleFileChanged(f.path)
-				assert.Contains(t, d.liveRuns, f.tkt.ID)
-				require.NoError(t, d.PauseTicket(f.tkt.ID))
-				d.background.Wait()
-				require.NoError(t, d.RetryTicket(f.tkt.ID))
-				inspection.Store(1)
-				d.handleFileChanged(f.path)
-				assert.Contains(t, d.running, f.tkt.ID)
-				assert.Equal(t, 1, pool.used, "Pause and Retry do not prove that the runner stopped")
-				assert.Len(t, d.runningBranches, 1)
-				inspection.Store(2)
-				d.handleFileChanged(f.path)
-				d.background.Wait()
-				assert.Empty(t, d.running)
-				assert.Zero(t, d.sem.used)
-				assert.Zero(t, d.epicSem.used)
-				assert.Empty(t, d.runningBranches)
-				assert.Empty(t, d.liveRuns)
-				assert.Empty(t, d.recoveredReservations)
-				got := f.h.readTask(resultTicketID + ".md")
-				assert.Equal(t, ticket.StatusTodo, got.Status)
-				assert.Empty(t, got.InvocationID)
-				assert.Empty(t, got.History)
-			})
+	for _, scope := range []string{"ordinary", "child", "supervisor"} {
+		for _, rework := range []bool{false, true} {
+			if scope == "supervisor" && rework {
+				continue
+			}
+			for _, dispatched := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/rework=%t/dispatched=%t", scope, rework, dispatched), func(t *testing.T) {
+					f := newScopedRecoveryFixture(t, scope)
+					f.h.cfg.MaxConcurrentAgents, f.h.cfg.MaxConcurrentEpicSupervisors = 1, 1
+					f.h.cfg.AutoPickUp = new(false)
+					require.NoError(t, f.tkt.SetField("status", "todo"))
+					if rework {
+						f.h.cfg.ReworkIsBuiltin = true
+						f.h.cfg.Stages[config.ReworkStageName] = config.Stage{Prompt: "Address review feedback"}
+						require.NoError(t, f.tkt.SetField("stage", config.ReworkStageName))
+					}
+					f.write(t)
+					d := f.h.newDaemon(f.h.cfg, WithRunner(func(context.Context, RunnerParams) (process.Result, error) {
+						return process.Result{}, process.ErrTerminationUncertain
+					}))
+					var inspection atomic.Int32
+					d.windows = windowOps{
+						list: func(string) ([]string, error) {
+							switch inspection.Load() {
+							case 0:
+								return nil, errors.New("inspection unavailable")
+							case 1:
+								return []string{f.tkt.ID}, nil
+							default:
+								return nil, nil
+							}
+						},
+						kill: func(string, string) error { return errors.New("termination unconfirmed") },
+					}
+					d.tickets[f.tkt.ID] = newTicketState(f.tkt, f.path)
+					if dispatched {
+						d.enqueue(f.tkt)
+						ctx, cancel := context.WithCancel(context.Background())
+						var wg sync.WaitGroup
+						wg.Go(func() { d.dispatch(ctx, &wg) })
+						t.Cleanup(func() { cancel(); wg.Wait() })
+						require.Eventually(t, func() bool {
+							d.mu.Lock()
+							defer d.mu.Unlock()
+							_, retained := d.recoveredReservations[f.tkt.ID]
+							return retained
+						}, 5*time.Second, 10*time.Millisecond)
+						cancel()
+						wg.Wait()
+					} else {
+						d.runTicket(context.Background(), f.tkt.ID)
+					}
+					pool := d.ticketPool(f.tkt)
+					reservation, exists := d.recoveredReservations[f.tkt.ID]
+					require.True(t, exists)
+					assert.Same(t, pool, reservation.pool)
+					require.Equal(t, 1, pool.used, "the dispatcher token must transfer, not duplicate or disappear")
+					d.handleFileChanged(f.path)
+					assert.Contains(t, d.liveRuns, f.tkt.ID)
+					require.NoError(t, d.PauseTicket(f.tkt.ID))
+					d.background.Wait()
+					require.NoError(t, d.RetryTicket(f.tkt.ID))
+					inspection.Store(1)
+					d.handleFileChanged(f.path)
+					assert.Contains(t, d.running, f.tkt.ID)
+					assert.Equal(t, 1, pool.used, "Pause and Retry do not prove that the runner stopped")
+					assert.Len(t, d.runningBranches, 1)
+					inspection.Store(2)
+					d.handleFileChanged(f.path)
+					d.background.Wait()
+					assert.Empty(t, d.running)
+					assert.Zero(t, d.sem.used)
+					assert.Zero(t, d.epicSem.used)
+					assert.Empty(t, d.runningBranches)
+					assert.Empty(t, d.liveRuns)
+					assert.Empty(t, d.recoveredReservations)
+					got := f.h.readTask(resultTicketID + ".md")
+					assert.Equal(t, ticket.StatusTodo, got.Status)
+					assert.Empty(t, got.InvocationID)
+					assert.Empty(t, got.History)
+				})
+			}
 		}
 	}
 }
@@ -245,7 +251,7 @@ func TestResultLiveUncertainInspectionReleasesReservation(t *testing.T) {
 }
 
 func TestResultStartupCommittedTransitionCleanup(t *testing.T) {
-	for _, mismatch := range []string{"none", "status", "stage", "attempt", "pipeline", "branch", "path", "summary", "last_error", "completed_at", "history", "duplicate history", "invocation_id", "claimed_by", "managed"} {
+	for _, mismatch := range []string{"none", "status", "stage", "attempt", "pipeline", "branch", "path", "summary", "last_error", "completed_at", "history", "duplicate history", "invocation_id", "claimed_by", "managed", "epic_execution"} {
 		t.Run(mismatch, func(t *testing.T) {
 			f := newResultFixture(t)
 			wt, _, err := f.d.worktrees.Create(worktree.CreateOpts{RepoPath: f.rec.RepoPath, RepoName: f.h.repoName, TaskID: f.tkt.ID, Branch: f.rec.Branch})
@@ -278,6 +284,9 @@ func TestResultStartupCommittedTransitionCleanup(t *testing.T) {
 				require.NoError(t, f.tkt.SetField("history", []ticket.HistoryEntry{row, row}))
 			case "managed":
 				require.NoError(t, f.tkt.SetField(mismatch, map[string]any{}))
+			case "epic_execution":
+				require.NoError(t, f.tkt.SetField("kind", "epic"))
+				require.NoError(t, f.tkt.SetField("epic_execution", "agent"))
 			default:
 				require.NoError(t, f.tkt.SetField(mismatch, "operator-edit"))
 			}

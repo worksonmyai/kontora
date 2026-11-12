@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,19 +16,32 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
-func TestSupervisedResultLifecycle(t *testing.T) {
+func TestResultLifecycle(t *testing.T) {
 	cases := []struct {
 		name, report, pipeline string
+		scope                  string
 		exit                   int
+		interruption           error
 		standalone             bool
 		want                   ticket.Status
 		outcome                string
 	}{
+		{name: "first stage blocked", report: `{"outcome":"blocked","summary":"Need evidence","next_step":"Provide device"}`, pipeline: "two-stage", want: ticket.StatusPaused, outcome: "blocked"},
+		{name: "first stage missing", pipeline: "two-stage", want: ticket.StatusPaused, outcome: "protocol_error"},
 		{name: "invalid", report: `{"outcome":"complete","summary":"done","extra":true}`, pipeline: "retry-stage", want: ticket.StatusPaused, outcome: "protocol_error"},
 		{name: "blocked runner failure", report: `{"outcome":"blocked","summary":"Need evidence","next_step":"Provide device"}`, pipeline: "retry-stage", exit: 1, want: ticket.StatusPaused, outcome: "blocked"},
 		{name: "complete review stage", report: `{"outcome":"complete","summary":"Review finished"}`, pipeline: "two-stage", want: ticket.StatusTodo, outcome: "complete"},
 		{name: "standalone blocked keeps files", report: `{"outcome":"blocked","summary":"Need evidence","next_step":"Provide device"}`, standalone: true, want: ticket.StatusPaused, outcome: "blocked"},
 		{name: "standalone missing keeps files", standalone: true, want: ticket.StatusPaused, outcome: "protocol_error"},
+		{name: "first stage zero exit timeout", report: `{"outcome":"complete","summary":"Finished"}`, pipeline: "two-stage", interruption: context.DeadlineExceeded, want: ticket.StatusPaused, outcome: "failed"},
+		{name: "standalone zero exit timeout", report: `{"outcome":"complete","summary":"Finished"}`, standalone: true, interruption: context.DeadlineExceeded, want: ticket.StatusPaused, outcome: "failed"},
+	}
+	baseCases := cases
+	for _, scope := range []string{"ordinary", "passive"} {
+		for _, tc := range baseCases {
+			tc.name, tc.scope = scope+"/"+tc.name, scope
+			cases = append(cases, tc)
+		}
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -43,22 +57,34 @@ func TestSupervisedResultLifecycle(t *testing.T) {
 				require.NoError(t, err)
 				assert.NotEqual(t, "spoof", inv.ID)
 				assert.Equal(t, "tst-child", inv.TicketID)
+				if tc.scope != "" {
+					assert.Contains(t, p.Args[len(p.Args)-1], "Mandatory stage result")
+					assert.NotContains(t, p.Args[len(p.Args)-1], "Supervised local delivery")
+				}
 				if tc.report != "" {
 					require.NoError(t, os.MkdirAll(filepath.Dir(inv.ResultPath), 0o700))
 					require.NoError(t, os.WriteFile(inv.ResultPath, []byte(tc.report), 0o600))
 				}
 				if tc.standalone {
 					require.NoError(t, os.WriteFile(filepath.Join(p.Dir, "untracked-evidence"), []byte("keep"), 0o600))
+					require.NoError(t, os.WriteFile(filepath.Join(p.Dir, "staged-evidence"), []byte("keep staged work"), 0o600))
+					out, err := exec.Command("git", "-C", p.Dir, "add", "staged-evidence").CombinedOutput()
+					require.NoError(t, err, "%s", out)
 				}
 				now := time.Now()
-				return process.Result{StartedAt: now, ExitedAt: now, ExitCode: tc.exit, Termination: process.TerminationProcessGroupGone}, nil
+				return process.Result{StartedAt: now, ExitedAt: now, ExitCode: tc.exit, Interruption: tc.interruption, Termination: process.TerminationProcessGroupGone}, nil
 			}), WithFinalSummarySpawner(func(context.Context, FinalSummaryParams) (string, error) { return "Summary", nil }))
 			h.writeTicket("epc-parent.md", h.agentEpicMD("epc-parent", "paused"))
 			md := h.taskMD("tst-child", "todo", tc.pipeline)
 			if tc.standalone {
 				md = simpleTaskMD("tst-child", "todo", h.repoDir)
 			}
-			md = strings.Replace(md, "kontora: true\n", "kontora: true\nparent: epc-parent\n", 1)
+			if tc.scope != "ordinary" {
+				md = strings.Replace(md, "kontora: true\n", "kontora: true\nparent: epc-parent\n", 1)
+			}
+			if tc.scope == "passive" {
+				h.writeTicket("epc-parent.md", h.epicMD("epc-parent", "open"))
+			}
 			h.writeTicket("tst-child.md", md)
 			require.NoError(t, d.initialScan(h.tasksDir))
 			d.runTicket(context.Background(), "tst-child")
@@ -77,8 +103,15 @@ func TestSupervisedResultLifecycle(t *testing.T) {
 			if tc.outcome == "blocked" {
 				assert.Contains(t, got.LastError, "Provide device")
 			}
+			if tc.outcome == "protocol_error" {
+				assert.Contains(t, got.LastError, "result protocol:")
+			}
 			if tc.standalone {
 				assert.FileExists(t, filepath.Join(worktree, "untracked-evidence"))
+				assert.FileExists(t, filepath.Join(worktree, "staged-evidence"))
+				out, err := exec.Command("git", "-C", worktree, "diff", "--cached", "--name-only").CombinedOutput()
+				require.NoError(t, err, "%s", out)
+				assert.Contains(t, string(out), "staged-evidence")
 			}
 			_, err := os.Stat(executionPath(h.cfg, "tst-child"))
 			assert.ErrorIs(t, err, os.ErrNotExist)

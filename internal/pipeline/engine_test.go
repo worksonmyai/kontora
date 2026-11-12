@@ -57,20 +57,22 @@ func TestEvaluate(t *testing.T) {
 	ts := time.Date(2026, 3, 5, 11, 0, 0, 0, time.UTC)
 
 	type testCase struct {
-		name             string
-		ticket           *ticket.Ticket
-		ev               Event
-		wantKind         ActionKind
-		wantErr          bool
-		wantFields       map[string]string
-		wantSpawnAgent   string
-		wantSpawnStage   string
-		wantHistory      bool
-		wantHistoryStage string
-		wantHistoryAgent string
-		wantHistoryExit  int
-		wantFieldsAbsent []string
-		pipeline         config.Pipeline
+		name               string
+		ticket             *ticket.Ticket
+		ev                 Event
+		wantKind           ActionKind
+		wantErr            bool
+		wantFields         map[string]string
+		wantSpawnAgent     string
+		wantSpawnStage     string
+		wantHistory        bool
+		wantHistoryStage   string
+		wantHistoryAgent   string
+		wantHistoryExit    int
+		wantHistoryOutcome string
+		wantHistoryReason  string
+		wantFieldsAbsent   []string
+		pipeline           config.Pipeline
 	}
 	tests := []testCase{
 		{
@@ -97,7 +99,7 @@ func TestEvaluate(t *testing.T) {
 		{
 			name:             "advance to next stage",
 			ticket:           testTicket("plan", ticket.StatusInProgress, 0),
-			ev:               Event{Kind: EventAgentExited, ExitCode: 0, Timestamp: ts},
+			ev:               Event{Kind: EventAgentExited, ExitCode: 0, RunOutcome: "complete", Timestamp: ts},
 			wantKind:         ActionAdvance,
 			wantFields:       map[string]string{"status": "todo", "stage": "code", "attempt": "0"},
 			wantHistory:      true,
@@ -108,13 +110,39 @@ func TestEvaluate(t *testing.T) {
 		{
 			name:             "pipeline completion",
 			ticket:           testTicket("commit", ticket.StatusInProgress, 0),
-			ev:               Event{Kind: EventAgentExited, ExitCode: 0, Timestamp: ts},
+			ev:               Event{Kind: EventAgentExited, ExitCode: 0, RunOutcome: "complete", Timestamp: ts},
 			wantKind:         ActionComplete,
 			wantFields:       map[string]string{"status": "done"},
 			wantHistory:      true,
 			wantHistoryStage: "commit",
 			wantHistoryAgent: "sonnet",
 			wantHistoryExit:  0,
+		},
+		{
+			name:               "missing report cannot advance first stage",
+			ticket:             testTicket("plan", ticket.StatusInProgress, 1),
+			ev:                 Event{Kind: EventAgentExited, Timestamp: ts, InvocationID: "inv-missing"},
+			wantKind:           ActionPause,
+			wantFields:         map[string]string{"status": "paused", "last_error": "missing semantic outcome; explicit complete outcome required"},
+			wantFieldsAbsent:   []string{"stage", "attempt", "completed_at"},
+			wantHistory:        true,
+			wantHistoryStage:   "plan",
+			wantHistoryAgent:   "opus",
+			wantHistoryOutcome: "protocol_error",
+			wantHistoryReason:  "missing semantic outcome; explicit complete outcome required",
+		},
+		{
+			name:               "unknown report cannot complete last stage",
+			ticket:             testTicket("commit", ticket.StatusInProgress, 1),
+			ev:                 Event{Kind: EventAgentExited, RunOutcome: "success", Timestamp: ts, InvocationID: "inv-unknown"},
+			wantKind:           ActionPause,
+			wantFields:         map[string]string{"status": "paused", "last_error": `unknown semantic outcome "success"; explicit complete outcome required`},
+			wantFieldsAbsent:   []string{"stage", "attempt", "completed_at"},
+			wantHistory:        true,
+			wantHistoryStage:   "commit",
+			wantHistoryAgent:   "sonnet",
+			wantHistoryOutcome: "protocol_error",
+			wantHistoryReason:  `unknown semantic outcome "success"; explicit complete outcome required`,
 		},
 		{
 			name:             "retry first attempt",
@@ -240,7 +268,7 @@ func TestEvaluate(t *testing.T) {
 		idx, err := stageIndex(tc.pipeline, tc.stage)
 		require.NoError(t, err)
 		for _, exitCode := range []int{0, 1} {
-			tests = append(tests, testCase{
+			failureCase := testCase{
 				name:             fmt.Sprintf("failed %s attempt %d policy %s exit %d", tc.stage, tc.attempt, tc.pipeline[idx].OnFailure, exitCode),
 				ticket:           testTicket(tc.stage, ticket.StatusInProgress, tc.attempt),
 				ev:               Event{Kind: EventAgentExited, ExitCode: exitCode, RunOutcome: "failed", OutcomeReason: "validation failed", InvocationID: "inv-failed", Timestamp: ts},
@@ -252,14 +280,36 @@ func TestEvaluate(t *testing.T) {
 				wantHistoryAgent: tc.pipeline[idx].Agent,
 				wantHistoryExit:  exitCode,
 				pipeline:         tc.pipeline,
-			})
+			}
+			tests = append(tests, failureCase)
+			for _, outcome := range []string{"", "unknown", "complete"} {
+				tt := failureCase
+				tt.name = fmt.Sprintf("outcome %q %s attempt %d policy %s exit %d", outcome, tc.stage, tc.attempt, tc.pipeline[idx].OnFailure, exitCode)
+				tt.ev.RunOutcome = outcome
+				tt.ev.OutcomeReason = "agent context"
+				if exitCode == 0 {
+					if outcome == "complete" {
+						continue // Success transitions have their own fixtures.
+					}
+					reason := "missing semantic outcome; explicit complete outcome required: agent context"
+					if outcome != "" {
+						reason = fmt.Sprintf("unknown semantic outcome %q; explicit complete outcome required: agent context", outcome)
+					}
+					tt.wantKind = ActionPause
+					tt.wantFields = map[string]string{"status": "paused", "last_error": reason}
+					tt.wantFieldsAbsent = []string{"stage", "attempt", "completed_at"}
+					tt.wantHistoryOutcome = "protocol_error"
+					tt.wantHistoryReason = reason
+				}
+				tests = append(tests, tt)
+			}
 			// Neither blocked nor protocol errors enter the failure policy,
 			// even when the runner failed or retries have been exhausted.
 			for _, disposition := range []struct {
 				outcome    string
 				forcePause bool
-			}{{"blocked", false}, {"protocol_error", false}, {"failed", true}} {
-				tt := tests[len(tests)-1]
+			}{{"blocked", false}, {"protocol_error", false}, {"failed", true}, {"complete", true}} {
+				tt := failureCase
 				tt.name = fmt.Sprintf("%s forced=%t %s attempt %d policy %s exit %d", disposition.outcome, disposition.forcePause, tc.stage, tc.attempt, tc.pipeline[idx].OnFailure, exitCode)
 				tt.ev.RunOutcome = disposition.outcome
 				tt.ev.ForcePause = disposition.forcePause
@@ -320,8 +370,15 @@ func TestEvaluate(t *testing.T) {
 				assert.Equal(t, tt.wantHistoryStage, action.History.Stage)
 				assert.Equal(t, tt.wantHistoryAgent, action.History.Agent)
 				assert.Equal(t, tt.wantHistoryExit, action.History.ExitCode)
-				assert.Equal(t, tt.ev.RunOutcome, string(action.History.RunOutcome))
-				assert.Equal(t, tt.ev.OutcomeReason, action.History.OutcomeReason)
+				wantOutcome, wantReason := tt.ev.RunOutcome, tt.ev.OutcomeReason
+				if tt.wantHistoryOutcome != "" {
+					wantOutcome = tt.wantHistoryOutcome
+				}
+				if tt.wantHistoryReason != "" {
+					wantReason = tt.wantHistoryReason
+				}
+				assert.Equal(t, wantOutcome, string(action.History.RunOutcome))
+				assert.Equal(t, wantReason, action.History.OutcomeReason)
 				assert.Equal(t, tt.ev.InvocationID, action.History.InvocationID)
 				assert.Equal(t, tt.ticket.StartedAt, action.History.StartedAt)
 				require.NotNil(t, action.History.CompletedAt)
@@ -344,7 +401,7 @@ func TestEvaluateCustomStatusOnSuccess(t *testing.T) {
 	tk := testTicket("code", ticket.StatusInProgress, 0)
 	ts := time.Date(2026, 3, 5, 11, 0, 0, 0, time.UTC)
 
-	action, err := Evaluate(tk, pipeline, Event{Kind: EventAgentExited, ExitCode: 0, Timestamp: ts})
+	action, err := Evaluate(tk, pipeline, Event{Kind: EventAgentExited, ExitCode: 0, RunOutcome: "complete", Timestamp: ts})
 	require.NoError(t, err)
 
 	assert.Equal(t, ActionPark, action.Kind)
@@ -382,7 +439,7 @@ func TestEvaluateLastStageCustomOnSuccess(t *testing.T) {
 	tk := testTicket("code", ticket.StatusInProgress, 0)
 	ts := time.Date(2026, 3, 5, 11, 0, 0, 0, time.UTC)
 
-	action, err := Evaluate(tk, pipeline, Event{Kind: EventAgentExited, ExitCode: 0, Timestamp: ts})
+	action, err := Evaluate(tk, pipeline, Event{Kind: EventAgentExited, ExitCode: 0, RunOutcome: "complete", Timestamp: ts})
 	require.NoError(t, err)
 	assert.Equal(t, ActionPark, action.Kind)
 }
@@ -411,7 +468,7 @@ func TestEvaluateCompleteSetsCompletedAt(t *testing.T) {
 	tk := testTicket("commit", ticket.StatusInProgress, 0)
 	ts := time.Date(2026, 3, 5, 11, 0, 0, 0, time.UTC)
 
-	action, err := Evaluate(tk, pipeline, Event{Kind: EventAgentExited, ExitCode: 0, Timestamp: ts})
+	action, err := Evaluate(tk, pipeline, Event{Kind: EventAgentExited, ExitCode: 0, RunOutcome: "complete", Timestamp: ts})
 	require.NoError(t, err)
 
 	for _, f := range action.Fields {
@@ -427,7 +484,7 @@ func TestEvaluateHistoryStartedAtFromTask(t *testing.T) {
 	tk := testTicket("plan", ticket.StatusInProgress, 0)
 	ts := time.Date(2026, 3, 5, 11, 0, 0, 0, time.UTC)
 
-	action, err := Evaluate(tk, pipeline, Event{Kind: EventAgentExited, ExitCode: 0, Timestamp: ts})
+	action, err := Evaluate(tk, pipeline, Event{Kind: EventAgentExited, ExitCode: 0, RunOutcome: "complete", Timestamp: ts})
 	require.NoError(t, err)
 
 	require.NotNil(t, action.History)
@@ -452,7 +509,7 @@ created: 2026-03-05T09:00:00Z
 	require.NoError(t, err)
 
 	ts := time.Date(2026, 3, 5, 11, 0, 0, 0, time.UTC)
-	action, err := Evaluate(tk, pipeline, Event{Kind: EventAgentExited, ExitCode: 0, Timestamp: ts})
+	action, err := Evaluate(tk, pipeline, Event{Kind: EventAgentExited, ExitCode: 0, RunOutcome: "complete", Timestamp: ts})
 	require.NoError(t, err)
 
 	require.NotNil(t, action.History)

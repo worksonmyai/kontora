@@ -262,8 +262,8 @@ func TestDaemon_GetTicket_NotFound(t *testing.T) {
 
 func TestDaemon_PauseTicket(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "sleep")
-	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
+	cfg := h.cfg
+	cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "30"}}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
@@ -288,8 +288,8 @@ func TestDaemon_PauseTicket(t *testing.T) {
 
 func TestDaemon_RetryTicket(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "sleep")
-	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
+	cfg := h.cfg
+	cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "30"}}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
@@ -318,8 +318,8 @@ func TestDaemon_RetryTicket(t *testing.T) {
 
 func TestDaemon_SkipStage(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "true")
-	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
+	cfg := h.cfg
+	cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "30"}}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	cfg.Stages["step2"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
@@ -348,7 +348,7 @@ func TestDaemon_SkipStage(t *testing.T) {
 	// Skip step1 → step2.
 	require.NoError(t, d.SkipStage("tst-s01"))
 
-	// Agent2 is "true" so it should complete quickly.
+	// Agent2 explicitly publishes completion, so step2 should finish quickly.
 	h.waitForStatus("tst-s01.md", ticket.StatusDone, 10*time.Second)
 
 	result := h.readTask("tst-s01.md")
@@ -388,8 +388,8 @@ func TestDaemon_SetStage(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
-			cfg := h.defaultConfig("sleep", "true")
-			cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
+			cfg := h.cfg
+			cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "30"}}
 			cfg.Stages["step1"] = config.Stage{Prompt: ""}
 			cfg.Stages["step2"] = config.Stage{Prompt: ""}
 			d := h.newDaemon(cfg)
@@ -1726,8 +1726,8 @@ func TestDaemon_UpdateTicket_Agent(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
-			cfg := h.defaultConfig("sleep", "sleep")
-			cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
+			cfg := h.cfg
+			cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "30"}}
 			cfg.Stages["step1"] = config.Stage{Prompt: ""}
 			d := h.newDaemon(cfg)
 
@@ -1811,8 +1811,8 @@ created: 2026-01-01T00:00:00Z
 
 func TestDaemon_UpdateTicket_InProgressRejects(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "sleep")
-	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
+	cfg := h.cfg
+	cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "30"}}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 

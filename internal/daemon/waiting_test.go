@@ -109,7 +109,8 @@ func TestWaiting_MarkerDrivesTicketState(t *testing.T) {
 		// Stay alive past the removal so the poller sees the cleared state
 		// while the run is still going.
 		time.Sleep(4 * fastWaitPoll)
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	d := h.newDaemon(cfg, WithRunner(runner), WithWaitPollInterval(fastWaitPoll))
@@ -169,7 +170,8 @@ func TestWaiting_StaleMarkerIsDeletedBeforeTheRun(t *testing.T) {
 	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		_, err := os.Stat(stageWaitPath(cfg, p.TicketID, "step1"))
 		sawStale <- err == nil
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	d := h.newDaemon(cfg, WithRunner(runner), WithWaitPollInterval(fastWaitPoll))
@@ -201,7 +203,7 @@ func TestWaiting_CancelledRunClearsState(t *testing.T) {
 		writeWaitMarker(t, stageWaitPath(cfg, p.TicketID, "step1"),
 			"ask_user_question", "call-1", "Answer me", time.Now())
 		<-runCtx.Done()
-		return process.Result{ExitCode: -1, StartedAt: time.Now(), ExitedAt: time.Now()}, runCtx.Err()
+		return process.Result{ExitCode: -1, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, runCtx.Err()
 	}
 
 	d := h.newDaemon(cfg, WithRunner(runner), WithWaitPollInterval(fastWaitPoll))
@@ -248,7 +250,7 @@ func TestWaiting_TimeoutNamesTheQuestion(t *testing.T) {
 		// Give the poller time to read it, then fail the way the tmux runner
 		// fails when the stage deadline fires.
 		time.Sleep(6 * fastWaitPoll)
-		return process.Result{ExitCode: -1, StartedAt: time.Now(), ExitedAt: time.Now()}, context.DeadlineExceeded
+		return process.Result{ExitCode: -1, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, context.DeadlineExceeded
 	}
 
 	d := h.newDaemon(cfg, WithRunner(runner), WithWaitPollInterval(fastWaitPoll))
@@ -265,8 +267,10 @@ func TestWaiting_TimeoutNamesTheQuestion(t *testing.T) {
 	assert.Contains(t, tkt.LastError, "runner failed: context deadline exceeded")
 	assert.Contains(t, tkt.LastError, "ask_user_question")
 	assert.Contains(t, tkt.LastError, "Should I drop the column?")
-	assert.Contains(t, tkt.Body, "runner failed: context deadline exceeded", "the pause reason is appended as a note")
-	assert.Contains(t, tkt.Body, "Should I drop the column?")
+	require.Len(t, tkt.History, 1)
+	assert.Equal(t, ticket.RunOutcomeFailed, tkt.History[0].RunOutcome)
+	assert.Contains(t, tkt.History[0].OutcomeReason, "runner failed: context deadline exceeded")
+	assert.Contains(t, tkt.History[0].OutcomeReason, "Should I drop the column?")
 	assert.NoFileExists(t, stageWaitPath(cfg, "tst-tmo", "step1"))
 
 	cancel()
@@ -309,9 +313,10 @@ func TestWaiting_NoMarkerForOtherAgents(t *testing.T) {
 	t.Run("a pi run that asks nothing reports nothing", func(t *testing.T) {
 		h := newHarness(t)
 		cfg := h.defaultConfig("pi", "pi")
-		runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+		runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 			time.Sleep(4 * fastWaitPoll)
-			return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+			publishCompleteResult(t, p)
+			return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 		}
 		d := h.newDaemon(cfg, WithRunner(runner), WithWaitPollInterval(fastWaitPoll))
 

@@ -20,10 +20,10 @@ search that matches nothing still exits 0.
 When `KONTORA_TICKET_ID` is set, this process is the agent running that ticket's
 current stage. You cannot change that ticket's status: `done`, `cancel`, `move`,
 `pause`, `retry`, `skip`, `set-stage` and `schedule` aimed at it are refused, as
-is `archive`. Kontora owns the next status. For unsupervised execution, exit 0 when
-the stage's work is done and non-zero when it is not. Activated epic supervisors
-and their children must also submit an explicit result; exit zero alone cannot
-advance supervised work. See `kontora skills show cli 'kontora result'`.
+is `archive`. Kontora owns the next status. Every ticket execution must submit an
+explicit result, with no opt-out; exit zero alone cannot advance work.
+On clean execution, exit 0; use non-zero for execution failure. Neither replaces
+the mandatory report. See `kontora skills show cli 'kontora result'`.
 
 Record what you did with `note` and `summary` through the Handoff submission
 method below. Neither command has the lifecycle restriction. Every verb works
@@ -67,9 +67,11 @@ kontora result --input-file /absolute/path/result.json TICKET_ID
 kontora result TICKET_ID < /absolute/path/result.json
 ```
 
-Mandatory for activated epic supervisors and their actual children, including
-fresh, resumed, and rework runs. Unrelated tickets, passive-epic children,
-annotations, and assistant-only runs retain their existing requirements.
+Mandatory for every ticket execution, with no opt-out: pipeline stages, standalone
+workers, passive-epic children, activated supervisors, and their children. Fresh,
+resumed, and rework runs each need an invocation-bound report, independently of
+custom `system_prompt` text. Annotation-only runs, dashboard assistants, and
+summary generation are excluded. Automations keep their existing result contract.
 
 Prefer Pi's `kontora_result({outcome, summary, next_step?})` tool when available;
 it is independent of checkpoint compaction and binds the current invocation.
@@ -83,8 +85,10 @@ CLI reads stdin; the input-file path must be absolute.
 ```
 
 Only `complete` and `blocked` outcomes are allowed. `summary` must be nonblank;
-`blocked` also requires nonblank `next_step`. `complete` means this stage's assigned
-work, not the whole ticket. A review stage can complete while fixes remain.
+`blocked` also requires nonblank `next_step`. `complete` is the agent's report
+that this stage's assigned work is complete, not proof of whole-ticket acceptance.
+Independent tests, hooks, review stages, and human review remain responsible for
+acceptance. A review stage can complete while fixes remain.
 Fixture work alone is not complete when production foundations or other required
 evidence remain. All payload fields are strings; optional `next_step` may be
 omitted for complete. Only those three fields are accepted. The limit is 32 KiB
@@ -99,20 +103,30 @@ fallback. Check acknowledgement: identical resubmission is idempotent; conflicti
 replacement is rejected. Old results cannot finalize newer work.
 
 Notes, summaries, final prose, questions, and phase checkpoints are not terminal
-results. Missing/invalid reports after a clean run pause the same stage; blocked
-also pauses without consuming a retry, entering pipeline retry/back policies, or
-removing the worktree. Complete cannot override execution/provider errors, hooks,
-or epic child checks. Do not change your own lifecycle status.
+results. A blocked result, or a missing/malformed report after a clean exit,
+pauses the same stage. The pause preserves `attempt` and the worktree without
+entering pipeline retry/back policies. Complete cannot override interruption,
+execution/provider errors, hooks, or final validation, including epic child checks.
+Waiting for a question's answer is not terminal blockage; report blocked only
+when execution must stop. Do not change your own lifecycle status.
+
+Ordinary workers remain workers. Reporting grants no new commit, merge, rebase,
+or publication authority. Custom agents must support the result transport.
 
 If requirements or authority block work, investigate and resolve permitted local
 setup, then ask a concrete resource/authority/scope question with attempted checks,
 options, costs, and a recommended default. Save the question and answer together
 immediately and confirm persistence. Do not weaken requirements or substitute
-emulation for required real-device evidence. When no authorized work remains,
-submit blocked and stop. Retry requires explicit operator action; saving an
+emulation for required real-device evidence. If execution must stop because no
+authorized work remains, submit blocked and stop. Retry requires explicit operator action; saving an
 answer, reading a notification, or dismissing attention does not restart work.
-On Retry inspect saved decisions, current children, worktrees, dirty files, and
-interrupted Git operations. Upgrade CLI and daemon together.
+On Retry inspect saved decisions, applicable child state, worktrees, dirty files,
+and interrupted Git operations. Ordinary invocation journals and legacy ticket
+windows without journals follow the same recovery safeguards; see
+`kontora skills show pipelines 'Ticket results and recovery'`.
+Upgrade CLI and daemon together under operator control. Verify effective Pi/Claude
+instructions before enabling autonomous local commits. Do not restart live
+executions or migrate existing ticket statuses as part of rollout.
 
 ## Common flags
 
@@ -163,8 +177,9 @@ it print a table instead. Prefer `--json` when parsing.
 - `--json` — print JSON.
 - `--static` — print the table even on a terminal.
 
-`--ready` and `--blocked` cannot be combined. `--json` prints an array of
-objects with `id`, `title`, `status`, `kontora`, `path`, `project`, `pipeline`,
+`ls --blocked` still selects dependency-blocked `todo` tickets, not executions
+paused by a blocked result. `--ready` and `--blocked` cannot be combined.
+`--json` prints an array of objects with `id`, `title`, `status`, `kontora`, `path`, `project`, `pipeline`,
 `stage`, `agent`, `created_at`, `started_at`, `completed_at`, `deps`, `links`,
 `parent`, `kind`, `epic_execution`, `child_order`, `branch`, `base_branch`,
 `ready` and `blockers`. `epic_execution: "agent"` identifies a supervisor.

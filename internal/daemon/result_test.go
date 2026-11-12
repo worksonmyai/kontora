@@ -88,6 +88,7 @@ func TestResultClassification(t *testing.T) {
 	for _, tc := range []struct {
 		name, report, failure, want, reason string
 		exit                                int
+		interruption                        error
 		reported                            bool
 	}{
 		{name: "missing zero exit", want: "protocol_error", reason: "missing current-invocation report"},
@@ -98,6 +99,8 @@ func TestResultClassification(t *testing.T) {
 		{name: "complete cannot hide nonzero", report: "complete", exit: 7, want: "failed", reason: "agent exited with code 7", reported: true},
 		{name: "complete cannot hide runner failure", report: "complete", failure: "transport failed", want: "failed", reason: "transport failed", reported: true},
 		{name: "missing nonzero", exit: 7, want: "failed", reason: "agent exited with code 7"},
+		{name: "complete cannot hide zero exit timeout", report: "complete", interruption: context.DeadlineExceeded, want: "failed", reason: "context deadline exceeded", reported: true},
+		{name: "missing zero exit timeout", interruption: context.DeadlineExceeded, want: "failed", reason: "context deadline exceeded"},
 		{name: "malformed", report: "malformed", want: "protocol_error", reason: "result protocol:", reported: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -108,7 +111,7 @@ func TestResultClassification(t *testing.T) {
 				publishDaemonResult(t, path, tc.report)
 			}
 			rec := &executionRecord{Invocation: session.Invocation{ResultPath: path}}
-			run := agentRun{Result: process.Result{ExitCode: tc.exit}}
+			run := agentRun{Result: process.Result{ExitCode: tc.exit, Interruption: tc.interruption}}
 			classifyExecution(rec, &run, tc.failure)
 			assert.Same(t, rec, run.Execution)
 			assert.Equal(t, tc.want, run.Outcome)
@@ -116,7 +119,7 @@ func TestResultClassification(t *testing.T) {
 			assert.Equal(t, tc.reported, run.Reported)
 		})
 	}
-	t.Run("standalone has no protocol", func(t *testing.T) {
+	t.Run("excluded invocation has no protocol", func(t *testing.T) {
 		run := agentRun{Result: process.Result{ExitCode: 0}}
 		classifyExecution(nil, &run, "")
 		assert.Empty(t, run.Outcome)
@@ -190,32 +193,57 @@ func TestResultRecovery(t *testing.T) {
 }
 
 func TestResultRecoveryTransitionReplay(t *testing.T) {
-	for _, existing := range []bool{false, true} {
-		t.Run(fmt.Sprintf("history_already_written=%t", existing), func(t *testing.T) {
-			f := newResultFixture(t)
-			ended := time.Date(2026, 1, 1, 2, 0, 0, 0, time.UTC)
-			row := ticket.HistoryEntry{Stage: "step2", Agent: "agent2", Run: 3, ExitCode: 0,
-				InvocationID: f.rec.Invocation.ID, RunOutcome: "complete", OutcomeReason: "validated", CompletedAt: &ended}
-			f.rec.Phase = "transition"
-			f.rec.Transition = &executionTransition{Status: ticket.StatusDone, Stage: "step2", Attempt: 2,
-				CompletedAt: &ended, Summary: "accepted summary", History: row}
-			require.NoError(t, saveExecution(f.h.cfg, f.rec))
-			require.NoError(t, f.tkt.SetField("last_error", "old failure"))
-			if existing {
-				require.NoError(t, f.tkt.SetField("history", []ticket.HistoryEntry{row}))
+	for _, scope := range []string{"ordinary", "child", "supervisor"} {
+		for _, legacy := range []bool{false, true} {
+			for _, state := range []string{"fresh", "history already written", "execution mode changed"} {
+				t.Run(fmt.Sprintf("%s/legacy=%t/%s", scope, legacy, state), func(t *testing.T) {
+					f := newScopedRecoveryFixture(t, scope)
+					if legacy {
+						f.rec.Kind, f.rec.EpicExecution = "", ""
+					}
+					ended := time.Date(2026, 1, 1, 2, 0, 0, 0, time.UTC)
+					row := ticket.HistoryEntry{Stage: "step2", Agent: "agent2", Run: 3, ExitCode: 0,
+						InvocationID: f.rec.Invocation.ID, RunOutcome: "complete", OutcomeReason: "validated", CompletedAt: &ended}
+					f.rec.Phase = "transition"
+					f.rec.Transition = &executionTransition{Status: ticket.StatusDone, Stage: "step2", Attempt: 2,
+						CompletedAt: &ended, Summary: "accepted summary", History: row}
+					require.NoError(t, saveExecution(f.h.cfg, f.rec))
+					require.NoError(t, f.tkt.SetField("last_error", "old failure"))
+					if state == "history already written" {
+						require.NoError(t, f.tkt.SetField("history", []ticket.HistoryEntry{row}))
+					}
+					if state == "execution mode changed" {
+						if scope == "supervisor" {
+							require.NoError(t, f.tkt.DeleteField("epic_execution"))
+						} else {
+							require.NoError(t, f.tkt.SetField("kind", "epic"))
+							require.NoError(t, f.tkt.SetField("epic_execution", "agent"))
+						}
+					}
+					f.write(t)
+					got := f.reconcile(t)
+					if state == "execution mode changed" {
+						assert.NotEqual(t, ticket.StatusDone, got.Status)
+						assert.Empty(t, got.History)
+						assert.Empty(t, got.InvocationID)
+						assert.NoFileExists(t, executionPath(f.h.cfg, got.ID))
+						assert.Empty(t, f.d.running)
+						assert.Zero(t, f.d.sem.used)
+						assert.Zero(t, f.d.epicSem.used)
+						return
+					}
+					assert.Equal(t, ticket.StatusDone, got.Status)
+					assert.Equal(t, "accepted summary", got.Summary)
+					assert.Equal(t, &ended, got.CompletedAt)
+					assert.Empty(t, got.LastError)
+					assert.Empty(t, got.InvocationID)
+					require.Len(t, got.History, 1)
+					assert.Equal(t, row, got.History[0])
+					assert.NoFileExists(t, executionPath(f.h.cfg, got.ID))
+					assert.Equal(t, got.History, f.reconcile(t).History)
+				})
 			}
-			f.write(t)
-			got := f.reconcile(t)
-			assert.Equal(t, ticket.StatusDone, got.Status)
-			assert.Equal(t, "accepted summary", got.Summary)
-			assert.Equal(t, &ended, got.CompletedAt)
-			assert.Empty(t, got.LastError)
-			assert.Empty(t, got.InvocationID)
-			require.Len(t, got.History, 1)
-			assert.Equal(t, row, got.History[0])
-			assert.NoFileExists(t, executionPath(f.h.cfg, got.ID))
-			assert.Equal(t, got.History, f.reconcile(t).History)
-		})
+		}
 	}
 }
 
@@ -441,13 +469,9 @@ func TestResultRecoveryLegacyScope(t *testing.T) {
 			f.d.mu.Lock()
 			handled := f.d.reconcileExecutionLocked(f.tkt, f.path)
 			f.d.mu.Unlock()
-			assert.Equal(t, supervised, handled, "standalone legacy tickets stay with the existing recovery path")
+			assert.True(t, handled, "all legacy executions require termination confirmation")
 			got := f.h.readTask(resultTicketID + ".md")
-			if supervised {
-				assert.Equal(t, ticket.StatusTodo, got.Status)
-			} else {
-				assert.Equal(t, ticket.StatusInProgress, got.Status)
-			}
+			assert.Equal(t, ticket.StatusTodo, got.Status)
 			assert.Equal(t, 2, got.Attempt)
 			assert.Equal(t, "step2", got.Stage)
 			assert.Empty(t, got.History)
@@ -504,25 +528,46 @@ func TestResultBindingIsolatesInvocationsAndOverridesEnvironment(t *testing.T) {
 	standalone := RunnerParams{Env: first.Invocation.Env()}
 	rec, err := f.d.bindExecution(f.tkt, p, &standalone, "")
 	require.NoError(t, err)
+	require.NotNil(t, rec)
+	assert.Empty(t, rec.EpicID)
+	assert.NotEqual(t, first.Invocation.ID, rec.Invocation.ID)
+	assert.NotEqual(t, second.Invocation.ID, rec.Invocation.ID)
+	for key, value := range rec.Invocation.Env() {
+		assert.Equal(t, value, standalone.Env[key])
+	}
+	assert.True(t, standalone.RequireTermination)
+	require.NotNil(t, standalone.TerminalReported)
+	assert.False(t, standalone.TerminalReported())
+	loaded, err := loadExecution(f.h.cfg, f.tkt.ID)
+	require.NoError(t, err)
+	assert.Equal(t, rec, loaded)
+
+	p.annotation = true
+	annotation := RunnerParams{Env: first.Invocation.Env()}
+	rec, err = f.d.bindExecution(f.tkt, p, &annotation, "")
+	require.NoError(t, err)
 	assert.Nil(t, rec)
 	for key := range first.Invocation.Env() {
-		assert.Empty(t, standalone.Env[key], "standalone must clear inherited %s", key)
+		assert.Empty(t, annotation.Env[key])
 	}
-	assert.False(t, standalone.RequireTermination)
-	assert.Nil(t, standalone.TerminalReported)
+	assert.False(t, annotation.RequireTermination)
+	assert.Nil(t, annotation.TerminalReported)
 }
 
 func TestResultSupervisedPipelineOutcomes(t *testing.T) {
 	for _, tc := range []struct {
-		name, report, failure, onFailure, wantStage, wantOutcome string
-		exit, attempt, wantAttempt                               int
-		want                                                     ticket.Status
-		hookReject, providerReject                               bool
+		name, report, failure, onFailure, onSuccess, wantStage, wantOutcome string
+		exit, attempt, wantAttempt                                          int
+		want                                                                ticket.Status
+		hookReject, providerReject                                          bool
+		interruption                                                        error
 	}{
 		{name: "missing pauses rather than retries", onFailure: "retry", attempt: 1, wantAttempt: 1, want: ticket.StatusPaused, wantStage: "step2", wantOutcome: "protocol_error"},
 		{name: "blocked preserves retry count", report: "blocked", onFailure: "retry", attempt: 1, wantAttempt: 1, want: ticket.StatusPaused, wantStage: "step2", wantOutcome: "blocked"},
 		{name: "blocked does not go back", report: "blocked", onFailure: "back", attempt: 1, wantAttempt: 1, want: ticket.StatusPaused, wantStage: "step2", wantOutcome: "blocked"},
 		{name: "complete", report: "complete", want: ticket.StatusDone, wantStage: "step2", wantOutcome: "complete"},
+		{name: "complete parks without error", report: "complete", onSuccess: "human_review", want: ticket.StatusHumanReview, wantStage: "step2", wantOutcome: "complete"},
+		{name: "zero exit timeout retains retry behavior", report: "complete", interruption: context.DeadlineExceeded, onFailure: "retry", attempt: 1, wantAttempt: 2, want: ticket.StatusTodo, wantStage: "step2", wantOutcome: "failed"},
 		{name: "failed retains retry behavior", report: "complete", exit: 4, onFailure: "retry", attempt: 1, wantAttempt: 2, want: ticket.StatusTodo, wantStage: "step2", wantOutcome: "failed"},
 		{name: "failed retains back behavior", report: "complete", exit: 4, onFailure: "back", attempt: 1, want: ticket.StatusTodo, wantStage: "step1", wantOutcome: "failed"},
 		{name: "runner rejects complete", report: "complete", failure: "runner transport failed", onFailure: "retry", attempt: 1, wantAttempt: 1, want: ticket.StatusPaused, wantStage: "step2", wantOutcome: "failed"},
@@ -538,6 +583,9 @@ func TestResultSupervisedPipelineOutcomes(t *testing.T) {
 			}
 			cfg.Pipelines["two-stage"][1].OnFailure = onFailure
 			cfg.Pipelines["two-stage"][1].MaxRetries = 3
+			if tc.onSuccess != "" {
+				cfg.Pipelines["two-stage"][1].OnSuccess = tc.onSuccess
+			}
 			cfg.Agents["agent2"] = config.Agent{Binary: "true", FailurePatterns: []string{"provider unavailable"}}
 			if tc.hookReject {
 				cfg.Hooks = config.Hooks{config.HookStageEnd: {{Name: "reject", Run: "exit 1", OnFailure: "pause"}}}
@@ -571,7 +619,7 @@ func TestResultSupervisedPipelineOutcomes(t *testing.T) {
 				if tc.failure != "" {
 					runnerErr = errors.New(tc.failure)
 				}
-				return process.Result{ExitCode: tc.exit, StartedAt: now, ExitedAt: now}, runnerErr
+				return process.Result{ExitCode: tc.exit, StartedAt: now, ExitedAt: now, Interruption: tc.interruption}, runnerErr
 			}
 			d, collect := h.newMetricsDaemon(cfg, WithRunner(runner))
 			d.tickets[resultTicketID] = newTicketState(h.readTask(resultTicketID+".md"), path)
@@ -601,6 +649,9 @@ func TestResultSupervisedPipelineOutcomes(t *testing.T) {
 				assert.NotEmpty(t, got.History[0].OutcomeReason)
 				assert.Nil(t, got.CompletedAt)
 			}
+			if tc.wantOutcome == "complete" {
+				assert.Empty(t, got.LastError)
+			}
 			assert.FileExists(t, filepath.Join(wtPath, "agent-work.txt"), "even accepted dirty work must be retained")
 			assert.NoFileExists(t, executionPath(cfg, resultTicketID))
 			assert.Empty(t, d.running)
@@ -615,11 +666,11 @@ func TestResultStandaloneKeepsDirtyFilesWithoutReport(t *testing.T) {
 	var wtPath string
 	d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
 		calls++
-		for key := range (session.Invocation{}).Env() {
-			assert.Empty(t, p.Env[key])
-		}
-		assert.False(t, p.RequireTermination)
-		assert.Nil(t, p.TerminalReported)
+		_, err := session.InvocationFromEnv(func(key string) string { return p.Env[key] })
+		require.NoError(t, err)
+		assert.True(t, p.RequireTermination)
+		require.NotNil(t, p.TerminalReported)
+		assert.False(t, p.TerminalReported())
 		wtPath = p.Dir
 		require.NoError(t, os.WriteFile(filepath.Join(p.Dir, "unfinished.txt"), []byte("not committed\n"), 0o644))
 		now := time.Now()
@@ -629,9 +680,11 @@ func TestResultStandaloneKeepsDirtyFilesWithoutReport(t *testing.T) {
 	d.runTicket(context.Background(), resultTicketID)
 	assert.Equal(t, 1, calls)
 	got := h.readTask(resultTicketID + ".md")
-	assert.Equal(t, ticket.StatusDone, got.Status)
+	assert.Equal(t, ticket.StatusPaused, got.Status)
 	assert.Empty(t, got.InvocationID)
-	assert.Empty(t, got.LastError)
+	assert.Contains(t, got.LastError, "result protocol: missing")
+	require.Len(t, got.History, 1)
+	assert.Equal(t, ticket.RunOutcomeProtocolError, got.History[0].RunOutcome)
 	assert.FileExists(t, filepath.Join(wtPath, "unfinished.txt"))
 	assert.NoFileExists(t, executionPath(h.cfg, resultTicketID))
 }

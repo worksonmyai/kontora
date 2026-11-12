@@ -77,23 +77,24 @@ const defaultResumePrompt = "Your previous run on ticket {{ .Ticket.ID }} — {{
 
 // defaultStageBrief is appended to a stage agent's own system prompt. It states
 // what the stage prompt cannot: the daemon decides the ticket's next status
-// from the exit code, so an agent that closes its own ticket is read as a human
-// override and the step's on_success is thrown away. The verbs it names are the
-// ones rejectSelfMove refuses, said here in the same terms so the refusal is not
-// a surprise the agent argues with.
+// from execution, explicit results, and final validation. An agent that closes
+// its own ticket is read as a human override and the step's on_success is thrown
+// away. The verbs it names are the ones rejectSelfMove refuses, said here in the
+// same terms so the refusal is not a surprise the agent argues with.
 var defaultStageBrief = template.Must(template.New("stage-brief").Parse(
 	`You are running as stage "{{ .Stage }}" of Kontora ticket {{ .Ticket }}, in a
 git worktree Kontora created for it.
 
-Kontora decides the ticket's next status when you exit. Exit 0 when the stage's
-work is done and non-zero when it is not; the pipeline reads that and moves the
-ticket itself.
+Submit a terminal complete or blocked result as instructed in the run prompt.
+Kontora validates the result and decides the ticket's next status when you exit.
+A clean exit alone does not complete the stage.
 
 Do not set the status yourself. The kontora verbs done, cancel, move, pause,
 retry, skip, set-stage and schedule are refused on {{ .Ticket }} while you are
 its stage, and editing the ticket file by hand races the daemon, which owns it.
 
 Record what you did using the shared handoff instructions in the run prompt.
+Notes and summaries do not replace the required terminal result.
 Run "kontora skills list" for the reference topics and
 "kontora skills show <topic>" for one.`))
 
@@ -1057,7 +1058,7 @@ func (d *Daemon) initialScan(dir string) error {
 			if t.IsPassiveEpic() {
 				continue
 			}
-			if t.Status != ticket.StatusInProgress || !t.Kontora {
+			if (t.Status != ticket.StatusInProgress || !t.Kontora) && t.ClaimedBy != d.instanceName {
 				epicID, scopeErr := d.supervision(t, t.AnnotationReturnStatus != "")
 				if epicID == "" && scopeErr == nil {
 					continue
@@ -1873,6 +1874,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		return
 	}
 
+	normalizeExecutionOutcome(&run)
 	if err := d.beginFinalization(cfg, run.Execution, run); err != nil {
 		log.Error("persist finalization marker", "err", err)
 		return
@@ -2082,14 +2084,16 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		return
 	}
 
+	p.runData.Result = p.result
+	normalizeExecutionOutcome(&p.runData)
 	if err := d.beginFinalization(p.cfg, p.runData.Execution, p.runData); err != nil {
 		p.log.Error("persist finalization marker", "err", err)
 		return
 	}
 	// stage_end runs before the exit is evaluated, so a hook still sees the
 	// worktree as the agent left it. It runs after the guards above, because an
-	// exit those discard is not this stage's outcome to act on. Its failure
-	// cannot change what the pipeline decides; it is applied after the action.
+	// exit those discard is not this stage's outcome to act on.
+	// A hook failure can reject completion before pipeline evaluation.
 	hookErr := d.runHooks(taskCtx, p.cfg, p.log, hook.Context{
 		Event:      config.HookStageEnd,
 		TicketID:   p.ticketID,
@@ -2270,8 +2274,8 @@ func (d *Daemon) startFinalSummary(ctx context.Context, t *ticket.Ticket, p hand
 	if t.HasOwnershipMetadata() || ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)) != nil {
 		return
 	}
-	terminalSuccess := kind == pipeline.ActionComplete ||
-		(kind == pipeline.ActionPark && p.result.ExitCode == 0)
+	terminalSuccess := p.runData.Outcome == "complete" &&
+		(kind == pipeline.ActionComplete || kind == pipeline.ActionPark)
 	if !terminalSuccess {
 		return
 	}
@@ -2471,9 +2475,8 @@ type agentAttempt struct {
 // spawnAgentRun runs the stage's agent and returns its outcome. When a record
 // names a session the run may continue, it continues in that session; if that
 // invocation dies before the agent does anything, the run happens once more in a
-// new session rather than pausing the ticket. On a spawn or runner failure the
-// ticket is paused and ok=false is returned so the caller can return
-// immediately.
+// new session rather than pausing the ticket.
+// Setup failures pause and return ok=false; journal-bound runner failures return ok=true for the caller to finalize and pause.
 func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spawnAgentParams) (agentRun, bool) {
 	if !d.executionCurrent(taskCtx, t, p.filePath) {
 		return agentRun{}, false
@@ -2619,6 +2622,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	if scopeErr != nil {
 		return agentAttempt{pauseReason: scopeErr.Error()}
 	}
+	rendered, brief := stageResultPrompts(p, rendered)
 	rendered += supervisedInstructions(epicID)
 	rendered, promptErr := epicInvocationPrompt(t, p, rendered, rec != nil)
 	if promptErr != nil {
@@ -2654,7 +2658,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	if p.agentCfg.IsPi() {
 		waitFile = stageWaitPath(p.cfg, p.ticketID, p.stageName)
 	}
-	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, stageBrief(p.cfg.SystemPrompt, p.ticketID, p.stageName), tmux.ChannelName(d.tmuxSession, p.ticketID), ckpt.compactChannel, model, effort, waitFile, rec, !p.annotation)
+	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, brief, tmux.ChannelName(d.tmuxSession, p.ticketID), ckpt.compactChannel, model, effort, waitFile, rec, !p.annotation)
 	if err != nil {
 		p.log.Error("build agent args failed", "err", err)
 		return agentAttempt{pauseReason: "build agent args failed: " + err.Error()}
@@ -2797,7 +2801,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 }
 
 func (d *Daemon) validateAgentAttempt(taskCtx context.Context, p spawnAgentParams, params RunnerParams, logStart int64, startedAt time.Time, run agentRun) agentAttempt {
-	// Non-zero exits already follow the pipeline's failure policy.
+	// Non-zero exits already prevent success.
 	if run.Result.ExitCode == 0 && taskCtx.Err() == nil {
 		if reason, kind, detected := d.detectAgentError(p.agentCfg, params, logStart, startedAt); detected {
 			p.log.Warn("agent error detected despite clean exit", "stage", p.stageName, "reason", reason, "kind", kind)

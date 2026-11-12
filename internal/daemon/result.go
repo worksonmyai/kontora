@@ -28,6 +28,8 @@ type executionRecord struct {
 	Invocation           session.Invocation   `json:"invocation"`
 	PreviousInvocationID *string              `json:"previous_invocation_id,omitempty"`
 	EpicID               string               `json:"epic_id"`
+	Kind                 ticket.Kind          `json:"kind,omitempty"`
+	EpicExecution        string               `json:"epic_execution,omitempty"`
 	Instance             string               `json:"instance"`
 	Worktree             string               `json:"worktree"`
 	Pipeline             string               `json:"pipeline"`
@@ -78,7 +80,7 @@ func loadExecution(cfg *config.Config, id string) (*executionRecord, error) {
 	if err := json.Unmarshal(data, &rec); err != nil {
 		return nil, err
 	}
-	if rec.Invocation.TicketID != id || rec.Invocation.ID == "" || rec.EpicID == "" {
+	if rec.Invocation.TicketID != id || rec.Invocation.ID == "" {
 		return nil, fmt.Errorf("invalid active invocation")
 	}
 	if _, err := session.InvocationFromEnv(func(key string) string { return rec.Invocation.Env()[key] }); err != nil {
@@ -143,10 +145,10 @@ func (d *Daemon) bindExecution(t *ticket.Ticket, p spawnAgentParams, params *Run
 	for _, key := range []string{"KONTORA_RESULT_VERSION", "KONTORA_INVOCATION_ID", "KONTORA_RESULT_TICKET", "KONTORA_RESULT_STAGE", "KONTORA_RESULT_FILE"} {
 		params.Env[key] = ""
 	}
-	if epicID == "" {
+	if p.annotation {
 		return nil, nil
 	}
-	if err := validateSupervisedAgent(p.agentCfg); err != nil {
+	if err := validateResultAgent(p.agentCfg); err != nil {
 		return nil, err
 	}
 	id := newSessionID()
@@ -159,7 +161,7 @@ func (d *Daemon) bindExecution(t *ticket.Ticket, p spawnAgentParams, params *Run
 		return nil, err
 	}
 	inv := session.Invocation{Version: 1, ID: id, TicketID: p.ticketID, Stage: p.stageName, ResultPath: resultPath}
-	rec := &executionRecord{Invocation: inv, EpicID: epicID, Instance: d.instanceName,
+	rec := &executionRecord{Invocation: inv, EpicID: epicID, Kind: t.Kind, EpicExecution: t.EpicExecution, Instance: d.instanceName,
 		Worktree: p.wtPath, Pipeline: t.Pipeline, TicketStage: t.Stage, Attempt: t.Attempt,
 		Branch: t.Branch, RepoPath: t.Path, RepoCommonDir: commonDir, Phase: "preparing", Agent: p.agentName, Run: p.run}
 	expected := executionOf(t)
@@ -236,6 +238,8 @@ func classifyExecution(rec *executionRecord, run *agentRun, failure string) {
 		run.Outcome, run.OutcomeReason = "blocked", report.Summary+" Next step: "+report.NextStep
 	case failure != "":
 		run.Outcome, run.OutcomeReason = "failed", failure
+	case run.Result.Interruption != nil:
+		run.Outcome, run.OutcomeReason = "failed", run.Result.Interruption.Error()
 	case run.Result.ExitCode != 0:
 		run.Outcome, run.OutcomeReason = "failed", fmt.Sprintf("agent exited with code %d", run.Result.ExitCode)
 	case err != nil:
@@ -250,8 +254,34 @@ func classifyExecution(rec *executionRecord, run *agentRun, failure string) {
 	}
 }
 
+func normalizeExecutionOutcome(run *agentRun) {
+	if run.pauses() {
+		return
+	}
+	switch {
+	case run.Result.Interruption != nil:
+		run.Outcome, run.OutcomeReason = "failed", run.Result.Interruption.Error()
+	case run.Result.ExitCode != 0:
+		run.Outcome = "failed"
+		if run.OutcomeReason == "" {
+			run.OutcomeReason = fmt.Sprintf("agent exited with code %d", run.Result.ExitCode)
+		}
+	case run.Outcome != "complete" && run.Outcome != "failed":
+		run.Outcome, run.OutcomeReason = "protocol_error", "result protocol: missing valid completion result"
+	}
+}
+
+func executionModeMatches(t *ticket.Ticket, rec *executionRecord) bool {
+	kind, execution := rec.Kind, rec.EpicExecution
+	// Older supervisor journals identify their mode only through their own epic ID.
+	if kind == "" && execution == "" && rec.EpicID != "" && rec.EpicID == rec.Invocation.TicketID {
+		kind, execution = ticket.KindEpic, ticket.EpicExecutionAgent
+	}
+	return t.Kind == kind && t.EpicExecution == execution
+}
+
 func executionLifecycleMatches(t *ticket.Ticket, rec *executionRecord) bool {
-	return t.Stage == rec.TicketStage && t.Pipeline == rec.Pipeline && t.Attempt == rec.Attempt &&
+	return t.Kontora && executionModeMatches(t, rec) && t.Stage == rec.TicketStage && t.Pipeline == rec.Pipeline && t.Attempt == rec.Attempt &&
 		t.Branch == rec.Branch && t.Path == rec.RepoPath && !t.HasOwnershipMetadata()
 }
 
@@ -267,7 +297,7 @@ func preparingExecutionMatches(t *ticket.Ticket, rec *executionRecord) bool {
 func committedExecutionMatches(t *ticket.Ticket, rec *executionRecord) bool {
 	tr := rec.Transition
 	if rec.Phase != "transition" || tr == nil || t.InvocationID != "" || t.ID != rec.Invocation.TicketID ||
-		t.Pipeline != rec.Pipeline || t.Branch != rec.Branch || t.Path != rec.RepoPath ||
+		!executionModeMatches(t, rec) || t.Pipeline != rec.Pipeline || t.Branch != rec.Branch || t.Path != rec.RepoPath ||
 		t.Status != tr.Status || t.Stage != tr.Stage || t.Attempt != tr.Attempt ||
 		!reflect.DeepEqual(t.CompletedAt, tr.CompletedAt) || t.LastError != tr.LastError || t.Summary != tr.Summary {
 		return false
@@ -381,7 +411,7 @@ func (d *Daemon) reconcileExecutionLocked(t *ticket.Ticket, path string) bool {
 	}
 	if errors.Is(err, os.ErrNotExist) && t.InvocationID == "" {
 		epicID, scopeErr := d.supervision(t, t.AnnotationReturnStatus != "")
-		if scopeErr == nil && epicID == "" {
+		if t.AnnotationReturnStatus != "" {
 			return false
 		}
 		if scopeErr != nil {
@@ -390,7 +420,7 @@ func (d *Daemon) reconcileExecutionLocked(t *ticket.Ticket, path string) bool {
 			}
 			return true
 		}
-		rec = &executionRecord{Invocation: session.Invocation{TicketID: t.ID}, EpicID: epicID, Instance: d.instanceName,
+		rec = &executionRecord{Invocation: session.Invocation{TicketID: t.ID}, EpicID: epicID, Kind: t.Kind, EpicExecution: t.EpicExecution, Instance: d.instanceName,
 			TicketStage: t.Stage, Pipeline: t.Pipeline, Attempt: t.Attempt, Branch: t.Branch, RepoPath: t.Path, Phase: "legacy"}
 		err = nil
 	}
@@ -408,9 +438,7 @@ func (d *Daemon) reconcileExecutionLocked(t *ticket.Ticket, path string) bool {
 		d.reserveRecoveredExecutionLocked(t)
 		return true
 	}
-	if rec.Phase == "recovered" && t.Status == ticket.StatusTodo && t.InvocationID == rec.Invocation.ID &&
-		t.Stage == rec.TicketStage && t.Pipeline == rec.Pipeline && t.Attempt == rec.Attempt &&
-		t.Branch == rec.Branch && t.Path == rec.RepoPath {
+	if rec.Phase == "recovered" && t.Status == ticket.StatusTodo && t.InvocationID == rec.Invocation.ID && executionLifecycleMatches(t, rec) {
 		d.releaseRecoveredExecutionLocked(t.ID)
 		return true
 	}
@@ -421,10 +449,8 @@ func (d *Daemon) reconcileExecutionLocked(t *ticket.Ticket, path string) bool {
 }
 
 func (d *Daemon) reconcileLegacyOverrideLocked(t *ticket.Ticket) {
-	_, retained := d.recoveredReservations[t.ID]
-	epicID, scopeErr := d.supervision(t, t.AnnotationReturnStatus != "")
-	// Operator state does not prove that a journal-less supervised runner stopped.
-	if (retained || epicID != "" || scopeErr != nil) && !d.confirmRecoveryTerminationLocked(t) {
+	// Operator state does not prove that an owned journal-less runner stopped.
+	if !d.confirmRecoveryTerminationLocked(t) {
 		return
 	}
 	d.releaseRecoveredExecutionLocked(t.ID)
@@ -592,11 +618,15 @@ func (d *Daemon) pauseRecoveryLocked(t *ticket.Ticket, path, reason string) {
 		d.reserveRecoveredExecutionLocked(t)
 		return
 	}
-	if current.Status != ticket.StatusInProgress || d.claimedElsewhere(current) || current.InvocationID != t.InvocationID || current.Stage != t.Stage || current.HasOwnershipMetadata() {
+	if d.claimedElsewhere(current) || current.InvocationID != t.InvocationID || current.Stage != t.Stage || current.HasOwnershipMetadata() {
 		*t = *current
 		return
 	}
 	*t = *current
+	if t.Status != ticket.StatusInProgress {
+		d.releaseRecoveredExecutionLocked(t.ID)
+		return
+	}
 	_ = t.SetField("status", string(ticket.StatusPaused))
 	_ = t.SetField("last_error", reason)
 	if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
@@ -849,6 +879,8 @@ func (d *Daemon) recordStoppedInvocation(root, ctx context.Context, path, agent,
 }
 
 func evaluateAgentExit(t *ticket.Ticket, p *handleExitParams, hookErr error) (pipeline.Action, error) {
+	p.runData.Result = p.result
+	normalizeExecutionOutcome(&p.runData)
 	if hookErr != nil && p.runData.Execution != nil && p.runData.Outcome == "complete" {
 		p.runData.Outcome, p.runData.OutcomeReason, p.runData.ForcePause = "failed", hookErr.Error(), true
 	}
@@ -861,6 +893,10 @@ func setAgentExitError(t *ticket.Ticket, p handleExitParams, action pipeline.Act
 	switch {
 	case p.runData.pauses():
 		_ = t.SetField("last_error", p.runData.OutcomeReason)
+	case p.runData.Outcome == "failed" && p.runData.OutcomeReason != "" && (action.Kind == pipeline.ActionPause || action.Kind == pipeline.ActionPark):
+		_ = t.SetField("last_error", p.runData.OutcomeReason)
+	case action.History != nil && action.History.RunOutcome == ticket.RunOutcomeProtocolError:
+		_ = t.SetField("last_error", action.History.OutcomeReason)
 	case action.Kind == pipeline.ActionPause, action.Kind == pipeline.ActionPark && p.result.ExitCode != 0:
 		_ = t.SetField("last_error", fmt.Sprintf("agent exited with code %d (stage: %s)", p.result.ExitCode, p.stageName))
 	default:
@@ -869,13 +905,14 @@ func setAgentExitError(t *ticket.Ticket, p handleExitParams, action pipeline.Act
 }
 
 func applySimpleExit(t *ticket.Ticket, run agentRun, hookErr, completionErr error) {
+	normalizeExecutionOutcome(&run)
 	switch {
 	case run.pauses():
 		_ = t.SetField("status", string(ticket.StatusPaused))
 		_ = t.SetField("last_error", run.OutcomeReason)
-	case run.Result.ExitCode != 0:
+	case run.Outcome == "failed":
 		_ = t.SetField("status", string(ticket.StatusPaused))
-		_ = t.SetField("last_error", fmt.Sprintf("agent exited with code %d", run.Result.ExitCode))
+		_ = t.SetField("last_error", run.OutcomeReason)
 	case hookErr != nil:
 		// A paused ticket still needs the summary of the work the agent finished.
 		_ = t.SetField("status", string(ticket.StatusPaused))

@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 
 	"github.com/worksonmyai/kontora/internal/config"
@@ -32,6 +31,7 @@ func (d *Daemon) finalizeRework(ctx, taskCtx context.Context, p spawnAgentParams
 	if !ok {
 		return
 	}
+	normalizeExecutionOutcome(&run)
 	if hookErr != nil && run.Outcome == "complete" {
 		run.Outcome, run.OutcomeReason = "failed", hookErr.Error()
 	}
@@ -59,9 +59,9 @@ func (d *Daemon) finalizeRework(ctx, taskCtx context.Context, p spawnAgentParams
 		case run.pauses():
 			_ = current.SetField("status", string(ticket.StatusPaused))
 			_ = current.SetField("last_error", run.OutcomeReason)
-		case run.Result.ExitCode != 0:
+		case run.Outcome == "failed":
 			_ = current.SetField("status", string(ticket.StatusPaused))
-			_ = current.SetField("last_error", fmt.Sprintf("rework agent exited with code %d", run.Result.ExitCode))
+			_ = current.SetField("last_error", run.OutcomeReason)
 		case hookErr != nil:
 			_ = current.SetField("status", string(ticket.StatusPaused))
 			_ = current.SetField("last_error", hookErr.Error())

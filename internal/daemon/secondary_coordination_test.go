@@ -42,12 +42,12 @@ func newSecondaryCoordination(t *testing.T) *secondaryCoordination {
 			params.OnReady()
 		}
 		<-ctx.Done()
-		return process.Result{}, ctx.Err()
+		return process.Result{Termination: process.TerminationProcessGroupGone}, ctx.Err()
 	}))
 	p.destinationDaemon = p.destination.newDaemon(p.destination.cfg, WithRunner(func(ctx context.Context, _ RunnerParams) (process.Result, error) {
 		p.destinationStarts.Add(1)
 		<-ctx.Done()
-		return process.Result{}, ctx.Err()
+		return process.Result{Termination: process.TerminationProcessGroupGone}, ctx.Err()
 	}))
 	return p
 }

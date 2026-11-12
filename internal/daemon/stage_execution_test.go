@@ -28,10 +28,11 @@ func TestStageChangeWaitsForTeardown(t *testing.T) {
 			<-ctx.Done()
 			close(stopping)
 			<-released
-			return process.Result{StartedAt: now, ExitedAt: time.Now(), ExitCode: -1}, ctx.Err()
+			return process.Result{StartedAt: now, ExitedAt: time.Now(), ExitCode: -1, Termination: process.TerminationProcessGroupGone}, ctx.Err()
 		}
 		secondRuns.Add(1)
-		return process.Result{StartedAt: now, ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{StartedAt: now, ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -61,6 +62,10 @@ func TestStageChangeWaitsForTeardown(t *testing.T) {
 	waitForAgentsDone(t, d, 5*time.Second)
 	assert.EqualValues(t, 1, firstRuns.Load())
 	assert.EqualValues(t, 1, secondRuns.Load())
-	require.Len(t, done.History, 1)
-	assert.Equal(t, "step2", done.History[0].Stage)
+	require.Len(t, done.History, 2)
+	assert.Equal(t, "step1", done.History[0].Stage)
+	assert.Equal(t, ticket.RunOutcomeFailed, done.History[0].RunOutcome)
+	assert.Contains(t, done.History[0].OutcomeReason, "cancelled by operator")
+	assert.Equal(t, "step2", done.History[1].Stage)
+	assert.Equal(t, ticket.RunOutcomeComplete, done.History[1].RunOutcome)
 }

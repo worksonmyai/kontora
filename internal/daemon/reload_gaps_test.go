@@ -99,7 +99,8 @@ func TestReload_KeepsPendingReview(t *testing.T) {
 
 func TestReload_EnablesAutoPickUp(t *testing.T) {
 	h := newReloadHarness(t)
-	d := h.newDaemonWithConfig(t, h.yaml(configOpts{extra: "auto_pick_up: false\n"}))
+	success := successfulAgentScript(t)
+	d := h.newDaemonWithConfig(t, h.yaml(configOpts{agent1Binary: success, extra: "auto_pick_up: false\n"}))
 	h.writeTicket("tst-apreload.md", h.taskMD("tst-apreload", "todo", "one-stage"))
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	errCh := make(chan error, 1)
@@ -112,7 +113,7 @@ func TestReload_EnablesAutoPickUp(t *testing.T) {
 		return exists
 	}, 5*time.Second, 10*time.Millisecond)
 	assert.Equal(t, ticket.StatusTodo, h.readTask("tst-apreload.md").Status)
-	h.writeConfigAtomic(t, h.yaml(configOpts{extra: "auto_pick_up: true\n"}))
+	h.writeConfigAtomic(t, h.yaml(configOpts{agent1Binary: success, extra: "auto_pick_up: true\n"}))
 	require.NoError(t, d.reloadConfig())
 	h.waitForStatus("tst-apreload.md", ticket.StatusDone, 5*time.Second)
 }

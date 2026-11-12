@@ -35,7 +35,7 @@ func TestExecutionRealTmuxAPIRetryReleasesCapacity(t *testing.T) {
 	h.cfg.MaxConcurrentAgents = 1
 	marker := filepath.Join(t.TempDir(), "first-attempt")
 	agent := filepath.Join(t.TempDir(), "agent")
-	require.NoError(t, os.WriteFile(agent, []byte(fmt.Sprintf("#!/bin/sh\nif [ \"$%s\" = tst-retry ] && [ ! -f %q ]; then touch %q; exit 1; fi\nexit 0\n", config.TicketEnvVar, marker, marker)), 0o755))
+	require.NoError(t, os.WriteFile(agent, []byte(fmt.Sprintf("#!/bin/sh\nset -eu\nif [ \"$%s\" = tst-retry ] && [ ! -f %q ]; then touch %q; exit 1; fi\nmkdir -p \"$(dirname \"$KONTORA_RESULT_FILE\")\"\nprintf '%%s\\n' '{\"outcome\":\"complete\",\"summary\":\"Agent finished.\"}' > \"$KONTORA_RESULT_FILE\"\n", config.TicketEnvVar, marker, marker)), 0o755))
 	agentCfg := h.cfg.Agents["agent1"]
 	agentCfg.Binary = agent
 	h.cfg.Agents["agent1"] = agentCfg
@@ -51,7 +51,7 @@ func TestExecutionRealTmuxAPIRetryReleasesCapacity(t *testing.T) {
 	waitForAgentsDone(t, d, 5*time.Second)
 	windows, err := tmux.ListWindows(h.tmuxSession)
 	require.NoError(t, err)
-	assert.Contains(t, windows, "tst-retry")
+	assert.NotContains(t, windows, "tst-retry", "confirmed journal termination removes the failed attempt's window")
 	srv, err := web.New(d, d.broker, "127.0.0.1", 0, "", nil, h.tmuxSession, testLogger(t))
 	require.NoError(t, err)
 	require.NoError(t, srv.Start())

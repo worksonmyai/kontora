@@ -185,49 +185,67 @@ After a clean exit, Kontora also checks Claude and Pi session records for
 structured failures. A synthetic Claude API error, or a final Pi assistant
 message with an `error` or `aborted` stop reason, pauses the ticket before
 pipeline evaluation. The failure does not consume a retry or advance the
-stage. Kontora adds the reason as a system note. If Pi wrote no session file,
-Kontora uses the process exit code and output patterns instead.
+stage. Kontora records the reason in `last_error` and failed history. If Pi wrote
+no session file, Kontora uses the process exit code and output patterns instead. Result validation
+still applies.
 
-For unsupervised work, a daemon restart mid-stage puts the ticket back to `todo`
-and schedules the stage again. For `claude` and `pi` the run resumes the
-interrupted conversation and gets `resume_prompt` instead of the stage prompt,
-so the agent continues rather than starting over on its half-finished work.
-Supervised work first follows the reconciliation rules below.
+After a daemon restart mid-stage, all ticket executions first follow the
+reconciliation rules below. Recovery can pause a ticket rather than schedule
+replacement work. When recovery permits conversation reuse, `claude` and `pi`
+resume the interrupted conversation with `resume_prompt` instead of the stage
+prompt. Otherwise the agent starts fresh on top of its half-finished work.
 
-## Supervised results and recovery
+## Ticket results and recovery
 
-Activated epic supervisors and actual children, including child rework, must
-submit `complete` or `blocked` for each invocation. Scope comes from actual
-membership, not display order or whether the supervisor is running, and is
-snapshotted for recovery. Unrelated tickets, passive-epic children, annotations,
-and assistant-only runs retain their existing result requirements. Instructions
-for local authority, results, and escalation apply to fresh, resumed, and rework
-execution independently of a custom `system_prompt`; stored pipelines and review
-stages are unchanged. See `kontora skills show cli 'kontora result'` for the
-schema, environment, CLI and native tool.
+Every ticket execution must submit invocation-bound `complete` or `blocked`, with
+no opt-out. This includes pipeline stages, standalone workers, passive-epic
+children, activated supervisors, and their children on fresh, resumed, and rework
+runs. Annotation-only runs, dashboard assistants, and summary generation are
+excluded. Automations keep their existing result contract. Result instructions
+apply independently of a custom `system_prompt`. See
+`kontora skills show cli 'kontora result'` for schema, environment, and transports.
 
-Complete means the current stage's work, not whole-ticket acceptance. A clean
-runner exit without a valid result pauses the same stage with a protocol error.
-Blocked also pauses, preserves the worktree and retry count, and never enters
-pipeline `retry` or `back` policies. Complete cannot override execution/provider
-failures, hooks, or epic child checks. An early submitted blocked result prevents
-resume-to-fresh fallback. Each physical launch gets a fresh invocation identity.
+Actual epic membership remains snapshotted for local-authority instructions and
+recovery, not inferred from display order or whether the supervisor is running.
+Within verified epic scope, local-authority and escalation instructions also apply
+on fresh, resumed, and rework runs independently of `system_prompt`.
+Ordinary workers remain workers. Reporting grants no new commit, merge, rebase,
+or publication authority. Stored pipelines and review stages remain unchanged.
+
+Complete is the agent's report that its current stage is complete. Independent
+tests, hooks, review stages, and human review remain responsible for acceptance.
+A review stage can complete while fixes remain for later stages.
+
+A blocked result, or a missing/malformed report after a clean exit, pauses the
+same stage, preserving `attempt` and the worktree. It never enters pipeline
+`retry` or `back` policies. Complete cannot override interruption,
+execution/provider failures, hooks, or final validation, including epic child checks.
+An early submitted blocked result prevents resume-to-fresh fallback.
+Each physical launch gets a fresh invocation identity.
+
+Waiting for a question's answer is not terminal blockage. Report blocked only
+when execution must stop. `ls --blocked` still selects dependency-blocked `todo`
+tickets, not paused executions.
 
 The daemon persists active invocation metadata before launch independently of
-optional conversation resume records. Startup and stale-self-claim recovery
-reconcile the recorded scope, report, and finalization before replacement:
+optional conversation resume records, including for ordinary workers. Startup
+and stale-self-claim recovery reconcile journals, recorded scope, reports, and
+finalization for all ticket executions before replacement:
 
+- Check owned legacy ticket windows without journals too, including paused or
+  `todo` tickets. Preserve operator-selected status until termination is confirmed.
 - Confirm termination first. If uncertain, retain the reservation and prevent
   branch reuse; failed cleanup or persistence must not enqueue work. A missing
   tmux window is not proof that arbitrary detached descendants stopped.
 - No terminal report: resume the same stage under a fresh identity after confirmed
   termination. A complete report without confirmed finalization also resumes for
   inspection; it cannot advance from the report alone.
-- Blocked or malformed report: pause with its reason.
+- Blocked or malformed report: pause with its reason, preserving stage, `attempt`,
+  and worktree.
 - Persist a finalization marker before hooks and a replayable transition after
-  hooks and child checks. Replay that transition idempotently, using invocation
-  identity to prevent duplicate history, without rerunning hooks. Unknown hook
-  effects pause for inspection rather than guessing.
+  hooks and final validation, including applicable child checks. Replay the transition
+  idempotently, using invocation identity to prevent duplicate history, without rerunning hooks.
+  Unknown hook effects pause for inspection rather than guessing.
 - Retire metadata only after atomic ticket replacement succeeds. Foreign claims
   and explicit operator lifecycle changes take precedence.
 
@@ -237,25 +255,27 @@ covers daemon-process interruption, not exactly-once arbitrary shell effects or
 host-power-loss durability. Metrics are emitted once per logical run within a
 live daemon, not guaranteed exactly once across restart.
 
-Supervised Pi ticket agents require TUI mode inside tmux. Their launches reject
+All Pi ticket executions require TUI mode inside tmux. Their launches reject
 `--print`/`-p` and `--mode json`/`rpc`: Pi's non-TUI abort does not clear queues.
-Unrelated tickets and dashboard assistant modes are unchanged.
+Dashboard assistant modes are unchanged.
 
 `KONTORA_EXIT_CODE` remains runner exit status. `KONTORA_RUN_OUTCOME` gives hooks
-the pre-hook semantic outcome; later hooks and child checks can reject completion.
+the pre-hook semantic outcome; later hooks and final validation can reject completion.
 History's optional `run_outcome`, `outcome_reason`, and `invocation_id` describe
 the final outcome separately. Legacy rows without semantic outcomes remain
-unverified task outcomes, even with exit zero; do not reinterpret their prose.
-Standalone supervised children with real history are counted once, not again as
+unknown/unverified task outcomes, even with exit zero; do not reinterpret their prose.
+Standalone ticket executions with real history are counted once, not again as
 synthetic legacy runs.
 
 Save escalation answers immediately. Saving an answer, reading a notification,
 or dismissing attention does not restart execution. Retry requires explicit
-operator action and inspection of saved decisions, child state, branches,
+operator action and inspection of saved decisions, applicable child state, branches,
 worktrees, dirty files, and interrupted Git operations. Do not silently weaken
 requirements or replace required real-device evidence with emulation.
 
-Upgrade CLI and daemon together and verify effective Pi/Claude instructions
-before enabling autonomous local commits. Do not restart live epics or migrate
-ticket state as part of rollout. Authority limits are agent instructions, not an
-OS publication boundary or independent proof of reported completion.
+Upgrade CLI and daemon together under operator control. Custom agents must
+support the result transport before running tickets. Verify effective Pi/Claude
+instructions before enabling autonomous local commits. Do not restart live
+executions or migrate existing ticket statuses as part of rollout. Authority
+limits are agent instructions, not an OS publication boundary or independent
+proof of reported completion.

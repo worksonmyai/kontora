@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.39.0](https://github.com/worksonmyai/kontora/compare/v0.38.0...v0.39.0) - 2026-11-12
+
+- web: improve settings configuration workflows (#83)
+- Run pipeline stages in custom status columns (#82)
+- Improve mobile terminal and description editing (#81)
+- Fix ticket notes, agent labels, and partial views (#79)
+- Add notification defaults and command-made status notifications (#80)
+- cli: complete automation support (#78)
+- Add kontora view --notes
+- Name unmerged human_review dependencies in the prompt
+- Ask for shorter handoff notes
+- docs: remove standing orchestrator components page
+
 ## [0.38.0](https://github.com/worksonmyai/kontora/compare/v0.37.0...v0.38.0) - 2026-11-11
 
 - Restore mobile colors and progress parity (#76)

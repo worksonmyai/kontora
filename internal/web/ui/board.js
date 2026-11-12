@@ -688,7 +688,9 @@ export function kontoraBoard() {
       // for a key two mixins define.
       if (key === '/' && this.currentView === 'settings') {
         this._keySeq = '';
-        var search = document.getElementById('settings-search');
+        var search = ['settings-search', 'settings-search-compact']
+          .map(id => document.getElementById(id))
+          .find(input => input && (!input.getClientRects || input.getClientRects().length > 0));
         if (search) { e.preventDefault(); search.focus(); return; }
       }
       if (this._keySeq && now - this._keySeqAt > KEY_SEQ_MS) this._keySeq = '';

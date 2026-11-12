@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,20 +14,26 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/automation"
+	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 func TestReload_SaveRawConfig(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		symlink  bool
-		relative bool
-		chained  bool
-		deleted  bool
-		wantErr  bool
+		name        string
+		symlink     bool
+		relative    bool
+		chained     bool
+		deleted     bool
+		wantErr     bool
+		conditional bool
 	}{
 		{name: "ordinary"},
+		{name: "conditional ordinary", conditional: true},
+		{name: "conditional symlink", symlink: true, conditional: true},
 		{name: "deleted ordinary", deleted: true},
 		{name: "symlink", symlink: true},
 		{name: "relative symlink", symlink: true, relative: true},
@@ -56,7 +63,12 @@ func TestReload_SaveRawConfig(t *testing.T) {
 
 			before := d.config()
 			updated := h.yaml(configOpts{branchPrefix: "updated"})
-			err := d.PutRawConfig(updated)
+			var err error
+			if tc.conditional {
+				err = d.PutRawConfigIf(updated, h.yaml(configOpts{}))
+			} else {
+				err = d.PutRawConfig(updated)
+			}
 			if tc.wantErr {
 				require.ErrorIs(t, err, os.ErrNotExist)
 				assert.NoFileExists(t, target)
@@ -78,6 +90,99 @@ func TestReload_SaveRawConfig(t *testing.T) {
 					assert.Equal(t, target, got)
 				}
 			}
+		})
+	}
+}
+
+func TestReload_SaveRawConfig_ReloadFailure(t *testing.T) {
+	for _, mode := range []string{"ordinary", "conditional", "deleted ordinary", "symlink"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newReloadHarness(t)
+			original := h.yaml(configOpts{})
+			d := h.newDaemonWithConfig(t, original)
+			before := d.config()
+			if mode == "deleted ordinary" {
+				require.NoError(t, os.Remove(h.configPath))
+			}
+			if mode == "symlink" {
+				d.configPath = filepath.Join(filepath.Dir(h.configPath), "link.yaml")
+				require.NoError(t, os.Symlink(h.configPath, d.configPath))
+			}
+			secondary := t.TempDir()
+			updated := h.yaml(configOpts{branchPrefix: "updated", extra: fmt.Sprintf("secondary_tickets_dirs: [%q, %q]\n", secondary, secondary)})
+			candidate, err := config.LoadReader(strings.NewReader(updated))
+			require.NoError(t, err, "document validation must succeed before writing")
+			_, reloadErr := candidate.SecondarySources()
+			require.Error(t, reloadErr)
+
+			if mode == "conditional" {
+				err = d.PutRawConfigIf(updated, original)
+			} else {
+				err = d.PutRawConfig(updated)
+			}
+			require.EqualError(t, err, "config saved but reload failed: "+reloadErr.Error())
+			var savedErr *web.ConfigSavedReloadError
+			require.ErrorAs(t, err, &savedErr)
+			assert.EqualError(t, savedErr.Err, reloadErr.Error())
+			assert.ErrorIs(t, err, savedErr.Err)
+			onDisk, readErr := os.ReadFile(h.configPath)
+			require.NoError(t, readErr)
+			assert.Equal(t, updated, string(onDisk))
+			assert.Same(t, before, d.config(), "reload failure must not publish the saved configuration")
+			assert.Equal(t, "kontora", d.config().BranchPrefix)
+			if mode == "symlink" {
+				target, readErr := os.Readlink(d.configPath)
+				require.NoError(t, readErr)
+				assert.Equal(t, h.configPath, target)
+			}
+		})
+	}
+}
+
+func TestReload_SaveRawConfig_PreWriteFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		conditional bool
+		deleted     bool
+		stale       bool
+		want        error
+	}{
+		{name: "invalid ordinary", want: web.ErrInvalidConfig},
+		{name: "invalid conditional", conditional: true, want: web.ErrInvalidConfig},
+		{name: "invalid deleted ordinary", deleted: true, want: web.ErrInvalidConfig},
+		{name: "stale conditional", conditional: true, stale: true, want: automation.ErrConflict},
+		{name: "deleted conditional", conditional: true, deleted: true, want: os.ErrNotExist},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newReloadHarness(t)
+			original := h.yaml(configOpts{})
+			d := h.newDaemonWithConfig(t, original)
+			before := d.config()
+			if tc.deleted {
+				require.NoError(t, os.Remove(h.configPath))
+			}
+			content, expected := "unknown_field: true\n", original
+			if tc.stale {
+				content = h.yaml(configOpts{branchPrefix: "updated"})
+				expected = "stale"
+			}
+			var err error
+			if tc.conditional {
+				err = d.PutRawConfigIf(content, expected)
+			} else {
+				err = d.PutRawConfig(content)
+			}
+			require.ErrorIs(t, err, tc.want)
+			var savedErr *web.ConfigSavedReloadError
+			assert.False(t, errors.As(err, &savedErr), "pre-write failure must not claim persistence")
+			if tc.deleted {
+				assert.NoFileExists(t, h.configPath)
+			} else {
+				onDisk, readErr := os.ReadFile(h.configPath)
+				require.NoError(t, readErr)
+				assert.Equal(t, original, string(onDisk))
+			}
+			assert.Same(t, before, d.config())
 		})
 	}
 }

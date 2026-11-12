@@ -23,6 +23,19 @@ func TestStaticIndexJS(t *testing.T) {
 	}
 }
 
+func TestSettingsJS(t *testing.T) {
+	bundle := writeBundle(t)
+	for _, name := range []string{"settings.test.mjs", "settings_picker.test.mjs", "settings_routes.test.mjs"} {
+		t.Run(name, func(t *testing.T) {
+			cmd := nodeTest(t, name)
+			cmd.Env = append(os.Environ(), "KONTORA_BUNDLE="+bundle)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("node settings tests failed:\n%s", out)
+			}
+		})
+	}
+}
+
 func TestStatsOutcomesJS(t *testing.T) {
 	if out, err := nodeTest(t, "stats_outcomes.test.mjs").CombinedOutput(); err != nil {
 		t.Fatalf("node stats outcome tests failed:\n%s", out)

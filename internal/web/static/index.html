@@ -903,7 +903,7 @@
 </head>
 
 <body class="app-shell bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal || _initOpening) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (automationsDeleteOpen) automationsCloseDelete(); else if (automationsMenu) automationsMenu = false; else if (currentView === 'automations' && (automationsDetail || automationsEditing)) { if (terminalRW && terminalWanted()) toggleTerminalRW(); else automationsBack(); } else if (sheet) closeSheet(); else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail(); else if (selectedEpic) closeEpic(); else if (assistantEscape()) {}"
+      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal || _initOpening) closeInitModal(); else if (settingsGuard) { if (!settingsSaving) settingsGuardKeepEditing(); } else if (automationsDeleteOpen) automationsCloseDelete(); else if (automationsMenu) automationsMenu = false; else if (currentView === 'automations' && (automationsDetail || automationsEditing)) { if (terminalRW && terminalWanted()) toggleTerminalRW(); else automationsBack(); } else if (sheet) closeSheet(); else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail(); else if (selectedEpic) closeEpic(); else if (assistantEscape()) {}"
       @dragenter.prevent="if ($event.dataTransfer && $event.dataTransfer.types.includes('Files')) uploadDragging = true"
       @dragover.prevent>
 
@@ -1256,24 +1256,32 @@
   </div>
 
   <!-- Unsaved-settings guard: in-app navigation out of a dirty Settings view. -->
-  <div id="settings-guard-layer" x-show="settingsGuard" x-transition.opacity x-cloak class="fixed inset-0 z-[80] flex items-center justify-center bg-black/60" @click.self="settingsGuard = false">
+  <div id="settings-guard-layer" x-show="settingsGuard" x-cloak class="fixed inset-0 z-[80] flex items-center justify-center bg-black/60" @click.self="if (!settingsSaving) settingsGuardKeepEditing()">
     <div role="dialog" aria-modal="true" aria-labelledby="settings-guard-title"
          class="bg-surface-900 border border-surface-700 rounded-xl shadow-xl p-5 w-[28rem] max-w-[90%] mx-4 slide-up" @click.stop>
       <h2 id="settings-guard-title" class="text-base font-semibold text-tx-hi m-0 mb-2">Leave settings?</h2>
-      <p class="text-[13px] leading-[1.5] text-tx-3 mb-4">
-        You have <span x-text="settingsChangedPaths().length"></span> unsaved <span x-text="settingsChangedPaths().length === 1 ? 'change' : 'changes'"></span> to config.yaml. Leaving now throws them away.
+      <p x-show="settingsDirty() || _settingsHasDrafts()" class="text-[13px] leading-[1.5] text-tx-3 mb-4">
+        Settings has unsaved changes or unfinished rows. Save your changes, discard the draft, or keep editing. Discard does not undo a file already saved.
       </p>
+      <div x-show="settingsReloadWarning" role="alert" class="settings-reload-warning mb-3">
+        <p>Configuration was saved to disk, but the daemon did not reload. Retry apply, leave without applying, or keep editing.</p>
+        <p x-text="settingsReloadWarning"></p>
+        <button type="button" @click="settingsRetryApply()" :disabled="settingsSaving || settingsDirty() || _settingsHasDrafts()" class="settings-button">Retry apply</button>
+        <p x-show="settingsDirty() || _settingsHasDrafts()">Save or discard new edits before retrying the saved configuration.</p>
+      </div>
+      <p x-show="settingsSavedAt && !settingsDirty() && !_settingsHasDrafts() && !settingsReloadWarning && !settingsSaving" role="status" class="text-sm text-tx-2 mb-3">Configuration was saved to disk. The daemon reloaded.<span x-show="settingsSavedRestart"> Restart to apply restart-only settings.</span></p>
       <div x-show="settingsErrors.length" class="mb-3">
         <template x-for="e in settingsErrors" :key="e">
           <div class="font-mono text-[11.5px] text-err whitespace-pre-wrap break-words" x-text="e"></div>
         </template>
       </div>
-      <div class="flex justify-end gap-2">
-        <button type="button" @click="settingsGuard = false"
+      <p x-show="settingsSaving" role="status" class="text-sm text-tx-2">Saving configuration. Wait before leaving.</p>
+      <div class="settings-guard-actions flex justify-end gap-2">
+        <button type="button" @click="settingsGuardKeepEditing()" :disabled="settingsSaving"
                 class="font-mono text-[12px] h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 transition-colors">keep editing</button>
-        <button type="button" @click="settingsGuardDiscard()"
-                class="font-mono text-[12px] h-8 px-4 rounded bg-err/15 border border-err/30 text-err hover:bg-err/25 transition-colors">discard changes</button>
-        <button type="button" @click="settingsGuardSave()" :disabled="settingsSaving"
+        <button type="button" @click="settingsGuardDiscard()" :disabled="settingsSaving"
+                class="font-mono text-[12px] h-8 px-4 rounded bg-err/15 border border-err/30 text-err hover:bg-err/25 transition-colors" x-text="settingsDirty() || _settingsHasDrafts() ? 'discard changes' : 'leave settings'">discard changes</button>
+        <button type="button" x-show="settingsDirty() || _settingsHasDrafts()" @click="if (settingsDirty() || _settingsHasDrafts()) settingsGuardSave()" :disabled="settingsSaving"
                 class="font-mono text-[12px] h-8 px-4 rounded bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">save &amp; leave</button>
       </div>
     </div>
@@ -4556,15 +4564,16 @@
 
     <!-- Settings -->
     <template x-if="!loading && currentView === 'settings'">
-    <div id="settings-view" class="flex flex-1 min-w-0 min-h-0">
+    <div id="settings-view" class="flex flex-1 min-w-0 min-h-0"
+         x-data="{ sectionTitle(key) { return { web: 'Server & access', plannotator: 'Review', display: 'Appearance' }[key] || (key.charAt(0).toUpperCase() + key.slice(1)); }, fieldTitle(key) { return this.settingsFieldLabel(key); }, fieldInfo(key) { return this.settingsFieldCatalogue().find(field => field.id === this.settingsFieldIdentity(key)) || {}; } }">
 
       <!-- Section rail -->
       <nav class="settings-section-rail w-[214px] shrink-0 bg-surface-frame border-r border-surface-700/50 flex flex-col min-h-0" aria-label="Settings sections">
         <div class="p-3 pb-2.5 border-b border-surface-700/35">
           <div class="relative flex items-center">
             <svg class="absolute left-[9px] w-3 h-3 text-surface-600 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-            <input id="settings-search" type="text" aria-label="Search settings" placeholder="search settings"
-                   x-model="settingsQuery" @keydown.escape="if (settingsQuery) { $event.stopPropagation(); settingsQuery = '' }"
+            <input id="settings-search" type="text" aria-label="Search settings" placeholder="Search settings"
+                   x-model="settingsQuery" @input="settingsQueryChanged()" @keydown.escape="if (settingsQuery) { $event.stopPropagation(); settingsQuery = ''; settingsQueryChanged() }"
                    class="w-full py-1.5 pl-7 pr-[30px] rounded-md bg-surface-900 border border-edge-input font-mono text-[11.5px] text-tx placeholder:text-surface-600 focus:outline-none focus:border-accent/40">
             <span class="absolute right-1.5 font-mono text-[10px] text-tx-faint border border-edge-input rounded-[3px] px-1 pointer-events-none">/</span>
           </div>
@@ -4573,17 +4582,16 @@
         <div class="flex-1 min-h-0 overflow-y-auto p-2.5 pb-3.5 flex flex-col gap-3.5">
           <template x-for="g in settingsNavGroups" :key="g.title">
             <div class="flex flex-col gap-0.5">
-              <div class="flex items-center gap-1.5 px-2 pb-1.5" :data-pipe-color="g.hue">
-                <span class="w-[5px] h-[5px] rounded-full shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                <span class="font-mono text-[9.5px] font-bold uppercase tracking-[.14em] text-tx-faint" x-text="g.title"></span>
+              <div class="settings-nav-group flex items-center gap-1.5 px-2 pb-1.5">
+                <span class="settings-nav-heading" x-text="sectionTitle(g.title)"></span>
               </div>
               <template x-for="key in g.keys" :key="key">
-                <button @click="settingsSection = key" :aria-current="settingsSection === key"
+                <button type="button" @click="settingsNavigate(key)" :aria-current="settingsSection === key ? 'page' : null"
                         class="relative flex items-center gap-2 min-h-[32px] py-[5px] pr-2 pl-2.5 rounded-md text-left transition-colors"
                         :class="settingsSection === key ? 'bg-surface-850 text-tx' : (settingsSectionMatches(key) ? 'text-tx-3 hover:bg-surface-900' : 'text-tx-faint hover:bg-surface-900')">
                   <span class="absolute left-0 top-[7px] bottom-[7px] w-0.5 rounded-[2px]" :class="settingsSection === key ? 'bg-accent' : 'bg-transparent'"></span>
                   <span class="flex flex-col gap-px min-w-0 flex-1">
-                    <span class="font-mono text-[12px]" x-text="key"></span>
+                    <span class="font-mono text-[12px]" x-text="sectionTitle(key)"></span>
                     <span class="text-[10.5px] text-tx-faint truncate" x-text="settingsSectionSummary(key)"></span>
                   </span>
                   <span class="font-mono text-[10px] text-surface-600 shrink-0" x-text="settingsSectionCount(key)"></span>
@@ -4598,8 +4606,8 @@
             <span class="w-[5px] h-[5px] rounded-full bg-accent shrink-0"></span>
             <span class="text-accent"><span x-text="settingsChangedPaths().length"></span> unsaved <span x-text="settingsChangedPaths().length === 1 ? 'edit' : 'edits'"></span></span>
           </div>
-          <div class="text-tx-4 mb-[3px]" x-show="!settingsDirty()">in sync with disk</div>
-          <div class="text-tx-4 break-all" x-text="configCache?.config_path || 'Config path unavailable'"></div>
+          <div class="text-tx-4 mb-[3px]" x-show="settingsState === 'ok' && !settingsDirty() && !_settingsHasDrafts()">No unsaved changes</div>
+          <div class="settings-technical text-tx-4 break-all" x-text="configCache?.config_path || 'Config path unavailable'"></div>
         </div>
       </nav>
 
@@ -4608,9 +4616,9 @@
         <div class="flex-1 min-h-0 overflow-y-auto">
           <div class="settings-content max-w-[62rem] p-6 px-7 pb-12 flex flex-col gap-6">
             <label class="settings-mobile-section font-mono text-sm text-tx-3" for="settings-mobile-section">Settings section
-              <select id="settings-mobile-section" x-model="settingsSection" class="w-full mt-2 px-3 py-2 rounded bg-surface-900 border border-edge-input text-tx">
+              <select id="settings-mobile-section" :value="settingsSection" @change="settingsNavigate($event.target.value)" class="w-full mt-2 px-3 py-2 rounded bg-surface-900 border border-edge-input text-tx">
                 <template x-for="section in settingsSections" :key="section.key">
-                  <option :value="section.key" x-text="section.label"></option>
+                  <option :value="section.key" x-text="sectionTitle(section.key)"></option>
                 </template>
               </select>
             </label>
@@ -4618,10 +4626,10 @@
             <section class="settings-mobile-section" aria-label="Settings filter">
               <label class="font-mono text-sm text-tx-3" for="settings-search-compact">Search settings</label>
               <div class="flex items-center gap-2 mt-2">
-                <input id="settings-search-compact" type="search" x-model="settingsQuery" placeholder="search settings"
-                       @keydown.escape="if (settingsQuery) { $event.stopPropagation(); settingsQuery = '' }"
+                <input id="settings-search-compact" type="search" x-model="settingsQuery" placeholder="Search settings"
+                       @input="settingsQueryChanged()" @keydown.escape="if (settingsQuery) { $event.stopPropagation(); settingsQuery = ''; settingsQueryChanged() }"
                        class="flex-1 min-w-0 px-3 py-2 rounded bg-surface-900 border border-edge-input text-tx focus:outline-none focus:border-accent">
-                <button type="button" x-show="settingsQuery" @click="settingsQuery = ''" aria-label="Clear settings search"
+                <button type="button" x-show="settingsQuery" @click="settingsQuery = ''; settingsQueryChanged()" aria-label="Clear settings search"
                         class="px-3 py-2 rounded border border-edge-input font-mono text-sm text-tx-3">clear</button>
               </div>
             </section>
@@ -4629,65 +4637,71 @@
             <!-- Page header -->
             <div class="flex items-start justify-between gap-4">
               <div class="flex flex-col gap-1 min-w-0">
-                <h1 class="text-[20px] font-semibold text-tx-hi tracking-[-.01em] capitalize m-0" x-text="settingsSection"></h1>
-                <p class="m-0 text-[12.5px] text-tx-3 max-w-[52ch]" x-text="settingsSections.find(s => s.key === settingsSection).blurb"></p>
+                <h1 class="text-[20px] font-semibold text-tx-hi tracking-[-.01em] capitalize m-0" x-text="settingsQuery.trim() ? 'Search settings' : sectionTitle(settingsSection)"></h1>
+                <p x-show="!settingsQuery.trim()" class="m-0 text-[12.5px] text-tx-3 max-w-[52ch]" x-text="settingsSection === 'plannotator' ? 'Configure Plannotator for diff review and ticket annotations.' : settingsSection === 'display' ? 'Changes apply immediately in this browser. Appearance is not written to config.yaml.' : settingsSections.find(s => s.key === settingsSection)?.blurb"></p>
               </div>
               <div x-show="settingsState === 'ok'" x-cloak class="flex items-center gap-2 shrink-0">
-                <span class="inline-flex items-center gap-1.5 h-[26px] px-2.5 rounded-full border font-mono text-[11px]"
-                      :class="settingsClientErrors().length ? 'border-err/30 bg-err/10 text-err' : 'border-ok/[0.28] bg-ok/10 text-ok'">
-                  <span class="w-[5px] h-[5px] rounded-full" :class="settingsClientErrors().length ? 'bg-err' : 'bg-ok'"></span>
-                  <span x-text="settingsClientErrors().length ? settingsClientErrors().length + (settingsClientErrors().length === 1 ? ' problem' : ' problems') : 'config valid'"></span>
-                </span>
+                <span x-show="settingsClientErrors().length" class="text-err text-sm" x-text="settingsClientErrors().length + ' problems to fix'"></span>
                 <span x-show="settingsRestartPending()" x-cloak
                       class="inline-flex items-center h-[26px] px-2.5 rounded-full border border-warn/25 bg-warn/10 text-warn font-mono text-[11px]"
-                      x-text="'restart to apply · ' + settingsRestartPending()"></span>
+                      x-text="'Restart to apply: ' + settingsRestartPending()"></span>
               </div>
             </div>
 
             <!-- Load states -->
-            <div x-show="settingsLoading" class="font-mono text-sm text-surface-600">loading config…</div>
+            <div x-show="settingsLoading && settingsSection !== 'display'" role="status" class="font-mono text-sm text-surface-600">Loading configuration…</div>
 
-            <div x-show="!settingsLoading && settingsState === 'unavailable'" x-cloak
+            <div x-show="!settingsLoading && settingsState === 'unavailable' && settingsSection !== 'display'" x-cloak
                  class="border border-edge-card rounded-lg bg-surface-900 p-5">
-              <div class="font-mono text-[13px] font-bold text-tx-hi mb-1.5">No config file</div>
+              <div class="settings-label mb-1.5">No configuration file</div>
               <p class="text-[12px] leading-[1.6] text-tx-3 m-0">This daemon is running without a config file, so there is nothing to edit here. On the daemon host, run <span class="font-mono text-tx-2">kontora setup</span> to create one, or <span class="font-mono text-tx-2">kontora setup --agent</span> to have a coding agent do it. Then restart the daemon and reload this page.</p>
             </div>
 
-            <div x-show="!settingsLoading && settingsLoadError" x-cloak
+            <div x-show="!settingsLoading && settingsLoadError && settingsSection !== 'display'" x-cloak
                  class="border border-err/30 bg-err/10 rounded-lg p-5">
-              <div class="font-mono text-[10px] font-bold tracking-[.1em] uppercase text-err mb-1.5">could not read config.yaml</div>
-              <p class="font-mono text-[11.5px] leading-[1.6] text-tx-2 m-0 whitespace-pre-wrap break-words" x-text="settingsLoadError"></p>
+              <div class="settings-label text-err mb-1.5">Could not read config.yaml</div>
+              <p class="settings-technical leading-[1.6] text-tx-2 m-0 whitespace-pre-wrap break-words" x-text="settingsLoadError"></p>
               <p x-show="settingsConfig" class="text-[12px] text-tx-3">Showing the last loaded config.</p>
               <button type="button" @click="_settingsRefreshForm(true)" :disabled="settingsDirty() || _settingsHasDrafts() || settingsSaving"
                       class="font-mono text-sm text-accent disabled:opacity-50">retry</button>
             </div>
 
-            <template x-if="settingsState === 'ok'">
-              <div class="flex flex-col gap-6">
+            <section x-show="settingsQuery.trim()" x-cloak aria-label="Settings search results" class="settings-search-results">
+              <p role="status" x-text="settingsSearchResults().length + (settingsSearchResults().length === 1 ? ' result' : ' results')"></p>
+              <template x-for="result in settingsSearchResults()" :key="result.id">
+                <button type="button" @click="settingsRevealField(result.id)" class="settings-search-result">
+                  <span class="settings-result-context"><span x-text="sectionTitle(result.section)"></span><span x-show="result.entity" x-text="' / ' + result.entity"></span></span>
+                  <span class="settings-result-label" x-text="result.label"></span>
+                  <span class="settings-help" x-text="result.help"></span>
+                </button>
+              </template>
+              <div x-show="!settingsSearchResults().length" class="settings-empty">
+                <p>No settings match this search.</p>
+                <button type="button" @click="settingsQuery = ''; settingsQueryChanged()" class="settings-button">Clear search</button>
+              </div>
+            </section>
 
-                <!-- Config overview, on every section -->
-                <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
-                  <template x-for="t in settingsOverviewTiles()" :key="t.label">
-                    <div class="relative overflow-hidden border border-edge-card rounded-[10px] bg-surface-900 p-3 px-3.5 flex flex-col gap-1.5" :data-pipe-color="t.hue">
-                      <span class="absolute left-0 top-0 bottom-0 w-0.5" style="background: hsl(var(--pipe-h) / .6)"></span>
-                      <span class="font-mono text-[9.5px] font-bold uppercase tracking-[.14em] text-tx-faint" x-text="t.label"></span>
-                      <span class="flex items-baseline gap-[7px]">
-                        <span class="font-mono text-[22px] font-bold leading-none tabular-nums" style="color: hsl(var(--pipe-h))" x-text="t.value"></span>
-                        <span class="text-[11px] text-tx-4" x-text="t.unit"></span>
-                      </span>
-                      <span class="text-[11px] text-tx-4 truncate" x-text="t.foot"></span>
-                    </div>
-                  </template>
-                </div>
+            <p x-show="settingsRevealMessage" x-cloak role="status" class="settings-help" x-text="settingsRevealMessage"></p>
+
+            <section x-show="settingsClientIssues().length" x-cloak aria-label="Settings problems" class="settings-issues" role="status">
+              <h2>Check these settings</h2>
+              <template x-for="(issue, i) in settingsClientIssues()" :key="i">
+                <button type="button" @click="settingsRevealField(issue.id)" x-text="(issue.blocking ? 'Fix: ' : 'Check: ') + issue.message"></button>
+              </template>
+            </section>
+
+            <template x-if="settingsState === 'ok'">
+              <fieldset :disabled="settingsSaving" :aria-busy="settingsSaving" x-show="!settingsQuery.trim()" class="settings-daemon-fields flex flex-col gap-6">
 
                 <!-- ===== stages ===== -->
-                <div x-show="settingsSection === 'stages'" class="flex flex-col gap-2.5">
+                <div id="settings-section-stages" tabindex="-1" aria-label="Stage settings" x-show="settingsSection === 'stages'" class="flex flex-col gap-2.5">
+                  <p x-show="!settingsStageNames().length" class="settings-empty">No stages configured. Add a stage to start a prompt template.</p>
                   <template x-for="name in settingsStageNames()" :key="name">
                     <div>
                       <!-- Open stage -->
                       <template x-if="settingsOpenStage === name">
                         <section class="border border-accent/40 rounded-xl bg-surface-900 overflow-hidden" style="box-shadow: 0 0 0 3px rgba(var(--accent), .08)">
-                          <button @click="settingsToggleStage(name)" class="w-full flex items-center gap-2.5 p-[13px] px-[18px] bg-surface-850/55 border-b border-surface-700/40 text-left">
+                          <button type="button" :id="settingsFieldID(['stages', name])" aria-expanded="true" @click="settingsToggleStage(name)" class="w-full flex items-center gap-2.5 p-[13px] px-[18px] bg-surface-850/55 border-b border-surface-700/40 text-left">
                             <span class="font-mono text-[13px] font-bold text-tx-hi shrink-0" x-text="name"></span>
                             <span x-show="settingsConfig.stages[name].builtin"
                                   class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px shrink-0">built-in</span>
@@ -4707,63 +4721,63 @@
                               <span class="text-[12px] leading-[1.55] text-tx-3">kontora injects this stage and runs it out of band after a plannotator review. Saving an edit writes <span class="font-mono text-tx-2">stages.rework</span> into config.yaml, and it then becomes an ordinary stage: add a rework step to the pipeline, or a ticket sent back for rework pauses.</span>
                             </div>
 
-                            <div class="flex flex-wrap items-center gap-1.5">
-                              <span class="font-mono text-[9.5px] font-bold tracking-[.14em] uppercase text-tx-faint mr-1">insert</span>
-                              <template x-for="t in settingsTokens" :key="t.token">
-                                <button type="button" :title="t.help"
-                                        @click="insertTemplateToken('stage-prompt-' + name, name, t.token)"
-                                        class="font-mono text-[11px] py-1 px-[9px] rounded-md border border-surface-700/60 bg-surface-800 text-accent-bright hover:border-accent/40 hover:bg-surface-850 transition-colors"
-                                        x-text="t.token"></button>
-                              </template>
+                            <div class="settings-token-insert">
+                              <label :for="settingsFieldID(['stages', name, 'insert'])" class="settings-label">Insert template token</label>
+                              <select :id="settingsFieldID(['stages', name, 'insert'])" @change="if ($event.target.value) insertTemplateToken(settingsFieldID(['stages', name, 'prompt']), name, $event.target.value); $event.target.value = ''" class="settings-input">
+                                <option value="">Choose a token</option>
+                                <template x-for="t in settingsTokens" :key="t.token"><option :value="t.token" x-text="t.token + ' · ' + t.help"></option></template>
+                              </select>
                             </div>
 
                             <div class="flex flex-col gap-1.5">
-                              <textarea :id="'stage-prompt-' + name" x-model="settingsConfig.stages[name].prompt" spellcheck="false" :aria-label="name + ' prompt'"
+                              <label :for="settingsFieldID(['stages', name, 'prompt'])" class="settings-label">Prompt</label>
+                              <textarea :id="settingsFieldID(['stages', name, 'prompt'])" x-model="settingsConfig.stages[name].prompt" spellcheck="false" :aria-label="name + ' prompt'"
                                         class="w-full min-h-[210px] resize-y bg-surface-deep border border-surface-700 rounded-lg py-[14px] px-4 font-mono text-[12.5px] leading-[1.75] text-tx focus:outline-none focus:border-accent/40"></textarea>
                               <span class="font-mono text-[10.5px] text-tx-faint">
-                                <span x-text="(settingsConfig.stages[name].prompt || '').split('\n').length"></span> lines · <span x-text="(settingsConfig.stages[name].prompt || '').length"></span> chars · Go text/template, rendered before the agent starts
+                                <span x-text="(settingsConfig.stages[name].prompt || '').split('\n').length"></span> lines, <span x-text="(settingsConfig.stages[name].prompt || '').length"></span> characters. Go text/template runs before the agent starts.
                               </span>
                             </div>
 
-                            <div x-show="settingsRowVisible('timeout', 'There is no default. Left empty, the stage runs until the agent exits.', 'stages')"
+                            <div
                                  class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 pt-3 border-t border-surface-700/30 items-start">
                               <div class="flex flex-col gap-1 min-w-0">
-                                <label :for="'stage-timeout-' + name" class="font-mono text-[12.5px] text-tx-2">timeout</label>
-                                <span class="text-[11.5px] leading-[1.55] text-tx-4">There is no default. Left empty, the stage runs until the agent exits.</span>
+                                <label :for="settingsFieldID(['stages', name, 'timeout'])" class="settings-label">Timeout</label>
+                                <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="fieldInfo(['stages', name, 'timeout']).help">There is no default. Left empty, the stage runs until the agent exits.</span>
                               </div>
                               <div class="flex items-center gap-3 flex-wrap min-w-0">
-                                <input :id="'stage-timeout-' + name" type="text" x-model="settingsConfig.stages[name].timeout" placeholder="no limit"
+                                <input :id="settingsFieldID(['stages', name, 'timeout'])" type="text" x-model="settingsConfig.stages[name].timeout" placeholder="no limit"
                                        class="w-[110px] bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
-                                       :class="settingsDurationValid(settingsConfig.stages[name].timeout) ? 'border-edge-input' : 'border-err'">
+                                       :aria-invalid="!!settingsFieldIssue(settingsFieldID(['stages', name, 'timeout']))" :aria-describedby="settingsFieldID(['stages', name, 'timeout'], 'issue')">
+                                <p :id="settingsFieldID(['stages', name, 'timeout'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue(settingsFieldID(['stages', name, 'timeout']))"></p>
                                 <button type="button" x-show="settingsPathDirty('stages.' + name)" @click="revertSettingsStage(name)"
                                         class="font-mono text-[11.5px] h-[34px] px-3 rounded-[7px] bg-surface-900 border border-surface-700/70 text-tx-3 hover:text-tx-2 transition-colors">revert</button>
                               </div>
                             </div>
 
-                            <!-- model and effort: one value for every agent, or a map
-                                 keyed by agent name or agent kind. The control is one
-                                 block in ui/settings.js, rendered here and in general. -->
-                            <div x-show="settingsRowVisible('model effort', 'One value for every agent, or a map keyed by agent name or kind.', 'stages')"
+                            <details class="settings-disclosure" data-settings-overrides>
+                              <summary>Overrides <span class="settings-key">Model and effort</span></summary>
+                            <div
                                  class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 pt-3 border-t border-surface-700/30 items-start">
                               <div class="flex flex-col gap-1 min-w-0">
-                                <span class="font-mono text-[12.5px] text-tx-2">model &amp; effort</span>
+                                <span class="settings-label">Model and effort</span>
                                 <span class="text-[11.5px] leading-[1.55] text-tx-4">One value for every agent, or a map keyed by agent name or kind.</span>
                               </div>
                               <div class="flex flex-col gap-3 min-w-0">
                                 <template x-for="field in ['model', 'effort']" :key="field">
                                   <div class="flex flex-col"
-                                       x-data="{ p: 'stages.' + name + '.' + field, label: field, labelClass: 'text-[11px]', inputId: 'stage-' + field + '-' + name, hint: &quot;the agent's own&quot; }"
+                                       x-data="{ p: 'stages.' + name + '.' + field, label: fieldTitle(field), labelClass: 'text-[11px]', inputId: settingsFieldID(['stages', name, field]), hint: &quot;the agent's own&quot; }"
                                        x-html="settingsPerAgentControl"></div>
                                 </template>
                               </div>
                             </div>
+                            </details>
                           </div>
                         </section>
                       </template>
 
                       <!-- Closed stage -->
                       <template x-if="settingsOpenStage !== name">
-                        <button @click="settingsToggleStage(name)"
+                        <button type="button" :id="settingsFieldID(['stages', name])" aria-expanded="false" @click="settingsToggleStage(name)"
                                 class="w-full flex items-center gap-3 p-[13px] px-[18px] border border-edge-card rounded-xl bg-surface-900 text-left hover:border-edge-hover transition-colors">
                           <span class="font-mono text-[13px] font-semibold text-tx-2 w-[92px] shrink-0 truncate" x-text="name"></span>
                           <span x-show="settingsConfig.stages[name].builtin"
@@ -4796,9 +4810,9 @@
                   </div>
                   <div x-show="settingsNewStageOpen" x-cloak class="flex items-center gap-2">
                     <input x-ref="newStage" type="text" x-model="settingsNewStage" placeholder="stage name" aria-label="New stage name"
-                           @keydown.enter.prevent="settingsAddStage()" @keydown.escape="settingsNewStageOpen = false; settingsNewStage = ''"
+                           @keydown.enter.prevent="settingsAddStage(); settingsNavigate('stages')" @keydown.escape="settingsNewStageOpen = false; settingsNewStage = ''"
                            class="flex-1 min-w-0 bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
-                    <button type="button" @click="settingsAddStage()" :disabled="!settingsNewStage.trim() || !!settingsConfig.stages[settingsNewStage.trim()]"
+                    <button type="button" @click="settingsAddStage(); settingsNavigate('stages')" :disabled="!settingsNewStage.trim() || Object.hasOwn(settingsConfig.stages, settingsNewStage.trim())"
                             class="font-mono text-[12px] h-8 px-4 rounded-md bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">add</button>
                     <button type="button" @click="settingsNewStageOpen = false; settingsNewStage = ''"
                             class="font-mono text-[12px] h-8 px-4 rounded-md bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
@@ -4806,210 +4820,123 @@
                 </div>
 
                 <!-- ===== general ===== -->
-                <div x-show="settingsSection === 'general'" class="flex flex-col gap-[18px]">
-                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
-                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="indigo">
-                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">locations</h2>
-                      <span class="text-[11.5px] text-tx-4">Directories on the daemon host.</span>
-                    </header>
-                    <div x-show="settingsRowVisible('secondary_tickets_dirs', 'Secondary ticket folders', 'general')"
-                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
-                      <div class="flex flex-col gap-1">
-                        <label for="gen-secondary_tickets_dirs" class="font-mono text-[12.5px] text-tx-2">secondary_tickets_dirs</label>
-                        <span class="font-mono text-[9.5px] text-warn">restart to apply</span>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4">One folder per line. Browse and edit tickets here. Claim a ticket into primary before running it. Relationships stay within each folder.</span>
-                      </div>
-                      <div class="flex flex-col gap-1.5 min-w-0">
-                        <textarea id="gen-secondary_tickets_dirs" x-model="settingsConfig.general.secondary_tickets_dirs" rows="4" placeholder="~/org/team-tickets"
-                                  class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"></textarea>
-                        <span x-show="settingsPathDirty('secondary_tickets_dirs')" class="font-mono text-[10.5px] text-tx-faint">changed: takes effect after a daemon restart</span>
-                      </div>
-                    </div>
-                    <template x-for="f in settingsGeneralGroup('locations').filter(f => f.key !== 'secondary_tickets_dirs')" :key="f.key">
-                      <div x-show="settingsRowVisible(f.key, f.help, 'general')" class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
-                        <div class="flex flex-col gap-1 min-w-0">
-                          <span class="flex items-center gap-[7px] flex-wrap">
-                            <label :for="'gen-' + f.key" class="font-mono text-[12.5px] text-tx-2" x-text="f.key"></label>
-                            <span x-show="settingsIsRestartOnly(f.key)" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
-                            <span x-show="!settingsConfig.general[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px">default</span>
-                          </span>
-                          <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
-                        </div>
-                        <div class="flex flex-col gap-1.5 min-w-0">
-                          <input :id="'gen-' + f.key" type="text" x-model="settingsConfig.general[f.key]" :placeholder="f.placeholder"
-                                 class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
-                          <span class="font-mono text-[10.5px] text-tx-faint"
-                                x-text="settingsIsRestartOnly(f.key) && settingsPathDirty(f.key) ? 'changed — takes effect after a daemon restart' : (settingsConfig.general[f.key] ? '' : 'default · ' + f.placeholder)"></span>
-                        </div>
-                      </div>
-                    </template>
-                  </section>
-
+                <div id="settings-section-general" tabindex="-1" aria-label="General settings" x-show="settingsSection === 'general'" class="flex flex-col gap-[18px]">
                   <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
                     <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="amber">
                       <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">execution</h2>
-                      <span class="text-[11.5px] text-tx-4">What runs, how much of it, and under whose name.</span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">Execution</h2>
+                      <span class="text-[11.5px] text-tx-4">Agent defaults and limits for starting work.</span>
                     </header>
 
-                    <div x-data="{ f: settingsGeneralFields.find(x => x.key === 'max_concurrent_agents') }"
-                         x-show="settingsRowVisible(f.key, f.help, 'general')"
-                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
-                      <div class="flex flex-col gap-1 min-w-0">
-                        <span class="flex items-center gap-[7px] flex-wrap">
-                          <label id="gen-max_concurrent_agents-label" for="gen-max_concurrent_agents" class="font-mono text-[12.5px] text-tx-2">max_concurrent_agents</label>
-                        </span>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
-                      </div>
-                      <div class="flex flex-col gap-2.5 min-w-0">
-                        <div class="flex gap-1.5 flex-wrap" role="radiogroup" aria-labelledby="gen-max_concurrent_agents-label">
-                          <template x-for="n in settingsConcurrencyOptions" :key="n">
-                            <button type="button" role="radio" @click="settingsSetConcurrency(n)"
-                                    :aria-checked="settingsConcurrencyIs(n) && !settingsConcurrencyOther()"
-                                    class="h-[34px] min-w-[34px] px-2.5 rounded-[7px] border font-mono text-[12.5px] transition-colors"
-                                    :class="settingsConcurrencyIs(n) && !settingsConcurrencyOther() ? 'border-accent/50 bg-accent/[0.14] text-accent-bright' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'"
-                                    x-text="n"></button>
-                          </template>
-                          <!-- The way back to a value the stepper does not offer.
-                               Without it, picking one of the options above is a
-                               one-way door out of 7, 10, 12 and unset. -->
-                          <button type="button" role="radio" aria-label="another value"
-                                  @click="settingsConcurrencyCustom = true; $nextTick(() => $refs.concurrencyOther && $refs.concurrencyOther.focus())"
-                                  :aria-checked="settingsConcurrencyOther()"
-                                  class="h-[34px] px-2.5 rounded-[7px] border font-mono text-[12.5px] transition-colors"
-                                  :class="settingsConcurrencyOther() ? 'border-accent/50 bg-accent/[0.14] text-accent-bright' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">other</button>
-                        </div>
-                        <input x-show="settingsConcurrencyOther()" x-cloak x-ref="concurrencyOther" id="gen-max_concurrent_agents" type="text"
-                               x-model="settingsConfig.general.max_concurrent_agents" :placeholder="f.placeholder"
-                               class="w-[110px] bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
-                               :class="settingsIntValid(settingsConfig.general.max_concurrent_agents) ? 'border-edge-input' : 'border-err'">
-                        <div class="flex items-center gap-2 flex-wrap" x-show="settingsSlots().total">
-                          <span class="flex gap-[3px]">
-                            <template x-for="i in settingsSlots().pills" :key="i">
-                              <span class="w-[30px] h-[5px] rounded-full" :class="i <= settingsSlots().busy ? 'bg-st-progress' : 'bg-surface-700'"></span>
-                            </template>
-                            <span x-show="settingsSlots().pills < settingsSlots().total" class="font-mono text-[11px] leading-none text-tx-faint">…</span>
-                          </span>
-                          <span class="font-mono text-[11px] text-tx-4" x-text="settingsSlotsLabel()"></span>
-                        </div>
-                        <span class="font-mono text-[10.5px] text-tx-faint"
-                              x-text="settingsConcurrency().trim() ? '' : 'default · ' + f.placeholder"></span>
-                      </div>
-                    </div>
-
                     <div x-data="{ f: settingsGeneralFields.find(x => x.key === 'default_agent') }"
-                         x-show="settingsRowVisible(f.key, f.help, 'general')"
                          class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                       <div class="flex flex-col gap-1 min-w-0">
-                        <span class="font-mono text-[12.5px] text-tx-2">default_agent</span>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
+                        <label :id="agentPickerLabelID('settings-default')" :for="_agentPickerPopoverSupported ? agentPickerTriggerID('settings-default') : agentPickerFallbackID('settings-default')" class="settings-label">Default agent</label>
+                        <code class="settings-key">default_agent</code>
                       </div>
                       <div class="flex flex-col gap-1.5 min-w-0">
-                        <div class="flex gap-2 flex-wrap" role="radiogroup" aria-label="default_agent">
-                          <!-- settingsDefaultAgentChoices keeps a card for a name
-                               agents: no longer declares, so a value that blocks
-                               every save is on screen instead of hidden. -->
-                          <template x-for="name in settingsDefaultAgentChoices()" :key="name">
-                            <button type="button" role="radio" @click="settingsConfig.general.default_agent = name"
-                                    :aria-checked="settingsConfig.general.default_agent === name"
-                                    class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
-                                    :class="settingsConfig.general.default_agent === name ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
-                              <span class="font-mono text-[12.5px]" x-text="name"></span>
-                              <span class="text-[10.5px]" :class="settingsConfig.agents[name] ? 'text-tx-faint' : 'text-err'"
-                                    x-text="settingsConfig.agents[name] ? (settingsConfig.agents[name].effort.trim() || 'own effort') + ' · ' + (agentRunningCount(name) ? agentRunningCount(name) + ' running' : 'idle') : 'not in agents — the save is blocked'"></span>
-                            </button>
-                          </template>
-                          <button type="button" role="radio" @click="settingsConfig.general.default_agent = ''"
-                                  :aria-checked="!settingsConfig.general.default_agent"
-                                  class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
-                                  :class="!settingsConfig.general.default_agent ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
-                            <span class="font-mono text-[12.5px]">unset</span>
-                            <span class="text-[10.5px] text-tx-faint" x-text="'default · ' + f.placeholder"></span>
-                          </button>
-                        </div>
+                        <div x-data="{ pickerHost: 'settings-default' }" x-html="agentPickerControl" class="settings-agent-picker"></div>
+                        <p :id="settingsFieldID(['default_agent'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue(settingsFieldID(['default_agent']))"></p>
+                        <p class="settings-help" x-text="f.help"></p>
                         <span class="font-mono text-[10.5px] text-tx-faint" x-show="!settingsAgentNames().length">no agents configured yet</span>
                       </div>
                     </div>
 
-                    <div x-show="settingsRowVisible('auto_pick_up', 'Off leaves todo tickets queued until you start them by hand.', 'general')"
+                    <template x-for="f in settingsGeneralFields.filter(f => ['max_concurrent_agents', 'max_concurrent_epic_supervisors'].includes(f.key))" :key="f.key">
+                      <div class="settings-row">
+                        <div>
+                          <label :id="'gen-' + f.key + '-label'" :for="'gen-' + f.key" class="settings-label" x-text="fieldTitle(f.key)"></label>
+                          <code class="settings-key" x-text="f.key"></code>
+                          <p class="settings-help" x-text="f.help"></p>
+                        </div>
+                        <div>
+                          <input :id="'gen-' + f.key" type="text" inputmode="numeric" x-model="settingsConfig.general[f.key]" :placeholder="f.placeholder"
+                                 class="settings-number" :aria-describedby="settingsFieldID([f.key], 'issue')" :aria-invalid="!!settingsFieldIssue('gen-' + f.key)">
+                          <p :id="settingsFieldID([f.key], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue('gen-' + f.key)"></p>
+                        </div>
+                      </div>
+                    </template>
+
+                    <div
                          class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                       <div class="flex flex-col gap-1 min-w-0">
-                        <span class="font-mono text-[12.5px] text-tx-2">auto_pick_up</span>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Off leaves todo tickets queued until you start them by hand.</span>
+                        <label for="gen-auto_pick_up" class="settings-label" x-text="fieldInfo(['auto_pick_up']).label">Automatic pickup</label>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="fieldInfo(['auto_pick_up']).help">Off leaves todo tickets queued until you start them by hand.</span>
                       </div>
                       <div class="flex flex-col gap-1.5 min-w-0">
-                        <button type="button" role="switch" aria-label="auto_pick_up" :aria-checked="settingsConfig.auto_pick_up"
+                        <button id="gen-auto_pick_up" type="button" role="switch" aria-label="Automatic pickup" :aria-checked="settingsConfig.auto_pick_up"
                                 @click="settingsConfig.auto_pick_up = !settingsConfig.auto_pick_up"
                                 class="flex items-center gap-3 self-start">
                           <span class="relative w-10 h-[22px] rounded-full transition-colors shrink-0" :class="settingsConfig.auto_pick_up ? 'bg-accent' : 'bg-surface-700'">
-                            <span class="absolute top-[3px] w-4 h-4 rounded-full bg-accent-fg transition-[left] duration-150" :style="settingsConfig.auto_pick_up ? 'left:21px' : 'left:2px'"></span>
+                            <span class="absolute top-[3px] left-[2px] w-4 h-4 rounded-full bg-accent-fg transition-transform duration-150" :style="settingsConfig.auto_pick_up ? 'transform:translateX(19px)' : 'transform:translateX(0)'"></span>
                           </span>
                           <span class="text-[12.5px] text-tx-2" x-text="settingsConfig.auto_pick_up ? 'On — todo tickets start automatically' : 'Off — start tickets by hand'"></span>
                         </button>
                       </div>
                     </div>
 
-                    <template x-for="f in settingsGeneralTextRows('execution')" :key="f.key">
-                      <div x-show="settingsRowVisible(f.key, f.help, 'general')" class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
-                        <div class="flex flex-col gap-1 min-w-0">
-                          <span class="flex items-center gap-[7px] flex-wrap">
-                            <label :for="'gen-' + f.key" class="font-mono text-[12.5px] text-tx-2" x-text="f.key"></label>
-                            <span x-show="settingsIsRestartOnly(f.key)" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
-                            <span x-show="!settingsConfig.general[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px">default</span>
-                          </span>
-                          <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
-                        </div>
-                        <div class="flex flex-col gap-1.5 min-w-0">
-                          <input :id="'gen-' + f.key" type="text" x-model="settingsConfig.general[f.key]" :placeholder="f.placeholder"
-                                 class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
-                          <span class="font-mono text-[10.5px] text-tx-faint"
-                                x-text="settingsIsRestartOnly(f.key) && settingsPathDirty(f.key) ? 'changed — takes effect after a daemon restart' : (settingsConfig.general[f.key] ? '' : 'default · ' + f.placeholder)"></span>
-                        </div>
-                      </div>
-                    </template>
+
                   </section>
 
-                  <!-- The final-summary pass. Both take the same two shapes as a
-                       stage model and effort, so they use the same control. -->
-                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
-                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="mauve">
-                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">final summary</h2>
-                      <span class="text-[11.5px] text-tx-4">The pass that writes final_summary after a run.</span>
-                    </header>
+                  <details class="settings-disclosure">
+                    <summary>Paths and naming</summary>
+                    <template x-for="f in settingsGeneralFields.filter(f => ['tickets_dir', 'worktrees_dir', 'logs_dir', 'branch_prefix', 'instance_name'].includes(f.key))" :key="f.key">
+                      <div class="settings-row">
+                        <div>
+                          <label :for="'gen-' + f.key" class="settings-label" x-text="f.label || fieldTitle(f.key)"></label>
+                          <code class="settings-key" x-text="f.key"></code>
+                          <p class="settings-help" x-text="f.help"></p>
+                          <p x-show="settingsIsRestartOnly(f.key)" class="settings-warning">Restart the daemon to apply.</p>
+                        </div>
+                        <input :id="'gen-' + f.key" type="text" x-model="settingsConfig.general[f.key]" :placeholder="f.placeholder" class="settings-input">
+                      </div>
+                    </template>
+                    <div class="settings-row">
+                      <div>
+                        <label for="gen-secondary_tickets_dirs" class="settings-label">Secondary ticket directories</label>
+                        <code class="settings-key">secondary_tickets_dirs</code>
+                        <p class="settings-help">One directory per line. Claim a ticket into the primary directory before running it. Relationships stay within each directory.</p>
+                        <p class="settings-warning">Restart the daemon to apply.</p>
+                      </div>
+                      <textarea id="gen-secondary_tickets_dirs" x-model="settingsConfig.general.secondary_tickets_dirs" rows="4" placeholder="~/org/team-tickets" class="settings-input"></textarea>
+                    </div>
+                  </details>
+
+                  <details class="settings-disclosure">
+                    <summary>Final summary overrides</summary>
+                    <p class="settings-help settings-inset">These overrides apply to the pass that writes <code>final_summary</code> after a run.</p>
                     <template x-for="path in ['summary_model', 'summary_effort']" :key="path">
-                      <div x-show="settingsRowVisible(path, 'final summary pass', 'general')" class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                         <div class="flex flex-col gap-1 min-w-0">
-                          <span class="font-mono text-[12.5px] text-tx-2" x-text="path"></span>
+                          <span class="settings-label" x-text="path === 'summary_model' ? 'Summary model' : 'Summary effort'"></span>
                           <span class="text-[11.5px] leading-[1.55] text-tx-4"
-                                x-text="path === 'summary_model' ? 'Model for the final-summary pass that writes final_summary. Left empty, the pass uses the model the stage agent already selects. The pass writes no history entry, so this pair is not shown on a run.' : 'Reasoning effort for that same pass, and likewise not shown on a run.'"></span>
+                                x-text="fieldInfo([path]).help"></span>
                         </div>
                         <div class="flex flex-col gap-1.5 min-w-0">
-                          <div x-data="{ p: path, label: path, labelClass: 'sr-only', inputId: 'gen-' + path, hint: &quot;the stage agent's own&quot; }"
+                          <div x-data="{ p: path, label: fieldTitle(path), labelClass: 'sr-only', inputId: 'gen-' + path, hint: &quot;the agent's configured default&quot; }"
                                x-html="settingsPerAgentControl"></div>
-                          <span class="font-mono text-[10.5px] text-tx-faint" x-text="settingsPerAgentLabel(path) || 'unset — the stage agent decides'"></span>
+                          <span class="settings-help" x-text="settingsPerAgentLabel(path) || 'Uses the agent’s configured default'"></span>
                         </div>
                       </div>
                     </template>
-                  </section>
+                  </details>
                 </div>
 
                 <!-- ===== environment ===== -->
-                <div x-show="settingsSection === 'environment'" class="flex flex-col gap-[18px]">
+                <div id="settings-section-environment" tabindex="-1" aria-label="Environment settings" x-show="settingsSection === 'environment'" class="flex flex-col gap-[18px]">
                   <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
                     <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="indigo">
                       <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">process environment</h2>
-                      <span class="text-[11.5px] text-tx-4">Exported into every agent process, before its own env.</span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">Process environment</h2>
+                      <span class="text-[11.5px] text-tx-4">Added to the daemon environment for every agent process.</span>
                     </header>
                     <div class="p-4 px-[18px] flex flex-col gap-2.5">
                       <template x-for="key in settingsEnvKeys()" :key="key">
-                        <div x-show="settingsRowVisible(key, '', 'environment')" class="flex items-center gap-2.5">
+                        <div class="flex items-center gap-2.5">
                           <input type="text" :value="key" readonly aria-label="variable name"
                                  class="w-[232px] flex-none bg-surface-850 border border-surface-700/60 rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none">
                           <span class="font-mono text-surface-600">=</span>
-                          <input type="text" x-model="settingsConfig.environment[key]" :aria-label="key + ' value'"
+                          <input :id="settingsFieldID(['environment', key])" type="text" x-model="settingsConfig.environment[key]" :aria-label="key + ' value'"
                                  class="flex-1 min-w-0 bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
                           <button type="button" @click="settingsRemoveEnv(key)" :aria-label="'Remove ' + key"
                                   class="w-[30px] h-[30px] shrink-0 flex items-center justify-center border border-surface-700/60 rounded-[7px] text-surface-600 hover:text-err hover:border-err/30 transition-colors">
@@ -5020,7 +4947,7 @@
                       <p x-show="!settingsEnvKeys().length" class="m-0 text-[11.5px] text-tx-faint">None. Agents inherit the daemon's own environment.</p>
 
                       <button type="button" x-show="!settingsNewEnvOpen" @click="settingsNewEnvOpen = true; $nextTick(() => $refs.newEnv && $refs.newEnv.focus())"
-                              class="w-full flex items-center justify-center gap-1.5 p-[11px] border border-dashed border-surface-700 rounded-[9px] text-surface-600 font-mono text-[12px] hover:text-tx-3 hover:border-edge-hover transition-colors">
+                              class="settings-button self-start">
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
                         add variable
                       </button>
@@ -5028,54 +4955,51 @@
                         <input x-ref="newEnv" type="text" x-model="settingsNewEnvKey" placeholder="VARIABLE_NAME" aria-label="New variable name"
                                @keydown.enter.prevent="settingsAddEnv()" @keydown.escape="settingsNewEnvOpen = false; settingsNewEnvKey = ''"
                                class="w-[232px] flex-none bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
-                        <button type="button" @click="settingsAddEnv()" :disabled="!settingsNewEnvKey.trim() || settingsNewEnvKey.trim() in settingsConfig.environment"
+                        <button type="button" @click="settingsAddEnv()" :disabled="!settingsNewEnvKey.trim() || Object.hasOwn(settingsConfig.environment, settingsNewEnvKey.trim())"
                                 class="font-mono text-[12px] h-8 px-4 rounded-md bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">add</button>
                         <button type="button" @click="settingsNewEnvOpen = false; settingsNewEnvKey = ''"
                                 class="font-mono text-[12px] h-8 px-4 rounded-md bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
                       </div>
                     </div>
-                    <div class="m-[0_18px_18px] flex gap-2.5 p-3 px-3.5 rounded-[9px] border border-surface-700/60 bg-surface-850/50">
-                      <span class="font-mono text-[12px] text-tx-faint">i</span>
-                      <span class="text-[12px] leading-[1.55] text-tx-3">An agent's own <span class="font-mono text-tx-2">environment</span> block in config.yaml overrides what is set here.</span>
-                    </div>
                   </section>
                 </div>
 
                 <!-- ===== agents ===== -->
-                <div x-show="settingsSection === 'agents'" class="flex flex-col gap-3.5">
+                <div id="settings-section-agents" tabindex="-1" aria-label="Agent settings" x-show="settingsSection === 'agents'" class="flex flex-col gap-3.5">
                   <template x-for="name in settingsAgentNames()" :key="name">
-                    <section x-show="settingsRowVisible(name, settingsAgentCommand(name), 'agents')" class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
-                      <header class="flex items-center gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40">
-                        <span class="w-[7px] h-[7px] rounded-full shrink-0" :class="agentRunningCount(name) ? 'bg-st-progress' : 'bg-surface-600'"></span>
+                    <details name="settings-agent" class="settings-disclosure settings-agent" :data-settings-agent="name">
+                      <summary :id="settingsFieldID(['agents', name])" class="settings-entity-summary">
                         <h2 class="m-0 font-mono text-[13px] font-bold text-tx-hi shrink-0" x-text="name"></h2>
-                        <span x-show="configCache?.default_agent === name"
+                        <span x-show="settingsConfig.general.default_agent === name"
                               class="font-mono text-[9.5px] uppercase tracking-[.08em] text-accent border border-accent/30 bg-accent/[0.12] rounded px-[5px] py-px shrink-0">default</span>
                         <span x-show="settingsPathDirty('agents.' + name)" class="w-[5px] h-[5px] rounded-full bg-accent shrink-0"></span>
-                        <span class="font-mono text-[11px] text-tx-4 min-w-0 truncate" x-text="settingsAgentCommand(name)"></span>
+                        <span class="settings-technical text-tx-4 min-w-0 truncate" x-text="settingsAgentCommand(name)"></span>
                         <span class="ml-auto shrink-0 font-mono text-[10px] rounded-[5px] py-0.5 px-[7px] whitespace-nowrap"
                               :class="settingsAgentSkipsPermissions(name) ? 'text-warn bg-warn/10 border border-warn/20' : 'text-tx-faint border border-surface-700/70'"
                               x-text="settingsAgentSkipsPermissions(name) ? 'skips permissions' : (agentRunningCount(name) ? agentRunningCount(name) + ' running' : 'idle')"></span>
-                      </header>
+                      </summary>
+                      <p class="settings-help settings-inset">Existing chats keep their original agent. Removing that agent or changing its CLI kind prevents those chats from resuming.</p>
                       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 px-[18px]">
                         <div class="flex flex-col gap-1.5 min-w-0">
-                          <label :for="'agent-bin-' + name" class="font-mono text-[11.5px] text-tx-3">binary</label>
-                          <input :id="'agent-bin-' + name" type="text" x-model="settingsConfig.agents[name].binary"
+                          <label :for="settingsFieldID(['agents', name, 'binary'])" class="settings-label">Binary</label>
+                          <input :id="settingsFieldID(['agents', name, 'binary'])" type="text" x-model="settingsConfig.agents[name].binary"
                                  class="w-full bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
-                                 :class="settingsConfig.agents[name].binary.trim() ? 'border-edge-input' : 'border-err'">
-                          <span class="text-[11px]" :class="settingsConfig.agents[name].binary.trim() ? 'text-tx-faint' : 'text-err'"
-                                x-text="settingsConfig.agents[name].binary.trim() ? 'Resolved on PATH. nono and op are wrappers — the binary after -- is the real agent.' : 'agent &quot;' + name + '&quot;: binary is required'"></span>
+                                 :aria-invalid="!!settingsFieldIssue(settingsFieldID(['agents', name, 'binary']))" :aria-describedby="settingsFieldID(['agents', name, 'binary'], 'issue')">
+                          <p :id="settingsFieldID(['agents', name, 'binary'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue(settingsFieldID(['agents', name, 'binary']))"></p>
+                          <span class="settings-help">Resolved on PATH. For nono and op wrappers, the binary after <code>--</code> is the agent.</span>
                         </div>
 
                         <div class="flex flex-col gap-1.5 min-w-0">
-                          <label :for="'agent-effort-' + name" class="font-mono text-[11.5px] text-tx-3">effort</label>
-                          <input :id="'agent-effort-' + name" type="text" x-model="settingsConfig.agents[name].effort" placeholder="the CLI's own default"
+                          <label :for="settingsFieldID(['agents', name, 'effort'])" class="settings-label">Effort</label>
+                          <input :id="settingsFieldID(['agents', name, 'effort'])" type="text" x-model="settingsConfig.agents[name].effort" placeholder="the CLI's own default"
                                  class="w-full bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
-                                 :class="settingsConfig.agents[name].effort.trim() && !settingsAgentKindOf(name) ? 'border-err' : 'border-edge-input'">
+                                 :aria-invalid="!!settingsFieldIssue(settingsFieldID(['agents', name, 'effort']))" :aria-describedby="settingsFieldID(['agents', name, 'effort'], 'issue')">
+                          <p :id="settingsFieldID(['agents', name, 'effort'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue(settingsFieldID(['agents', name, 'effort']))"></p>
                           <span class="text-[11px] text-tx-faint">Only claude and pi take a flag for it. An effort on any other binary is rejected when the config is saved.</span>
                         </div>
 
                         <div class="flex flex-col gap-1.5 min-w-0">
-                          <span class="font-mono text-[11.5px] text-tx-3">runs now</span>
+                          <span class="settings-label">Running sessions</span>
                           <div class="flex items-center gap-2 h-[34px] px-3 rounded-[7px] border border-surface-700/50 bg-surface-850/60">
                             <span class="font-mono text-[12.5px] text-tx-2" x-text="agentRunningCount(name) + (agentRunningCount(name) === 1 ? ' session' : ' sessions')"></span>
                             <span class="text-[11px] text-tx-faint truncate" x-show="!agentRunningCount(name)">idle</span>
@@ -5085,53 +5009,56 @@
                         </div>
 
                         <div class="md:col-span-2 flex flex-col gap-1.5 min-w-0">
-                          <label :for="'agent-args-' + name" class="font-mono text-[11.5px] text-tx-3">args</label>
-                          <textarea :id="'agent-args-' + name" x-model="settingsConfig.agents[name].args" spellcheck="false"
+                          <label :for="settingsFieldID(['agents', name, 'args'])" class="settings-label">Arguments</label>
+                          <textarea :id="settingsFieldID(['agents', name, 'args'])" x-model="settingsConfig.agents[name].args" spellcheck="false"
                                     class="w-full min-h-[84px] resize-y bg-surface-deep border border-surface-700 rounded-lg py-[11px] px-[14px] font-mono text-[12px] leading-[1.7] text-tx focus:outline-none focus:border-accent/40"></textarea>
                           <span class="text-[11px] text-tx-faint">One argument per line. Everything after -- is the real agent when the binary is a wrapper.</span>
                         </div>
 
-                        <div class="flex flex-col gap-1.5 min-w-0">
-                          <span class="font-mono text-[11.5px] text-tx-3">failure_patterns</span>
+                        <details class="settings-disclosure md:col-span-3">
+                          <summary :id="settingsFieldID(['agents', name, 'failure_patterns'])">Failure patterns <span class="settings-key">Read-only</span></summary>
                           <div class="flex flex-wrap gap-1.5" x-show="settingsFailurePatterns(name).patterns.length">
                             <template x-for="p in settingsFailurePatterns(name).patterns" :key="p">
-                              <span class="font-mono text-[10.5px] text-tx-log bg-surface-800 border border-surface-700/60 rounded-[5px] py-0.5 px-1.5" x-text="p"></span>
+                              <code class="settings-technical text-tx-log bg-surface-800 border border-surface-700/60 rounded-[5px] py-0.5 px-1.5" x-text="p"></code>
                             </template>
                           </div>
                           <span class="text-[11px] text-tx-faint"
                                 x-text="settingsFailurePatterns(name).mode === 'default' ? 'Using the 8 built-in defaults: API errors, usage limits, prompt-too-long, provider quota. Set an explicit list in config.yaml to override, or [] to disable pattern matching.' : (settingsFailurePatterns(name).mode === 'disabled' ? 'Set to []. Output pattern matching is off. Structured session errors from Claude and Pi still pause the ticket, as do non-zero exits.' : 'An explicit list in config.yaml, replacing the built-in defaults.')"></span>
-                        </div>
+                        </details>
                       </div>
-                    </section>
+                    </details>
                   </template>
+                  <p x-show="!settingsAgentNames().length" class="settings-empty">No agents configured. Add an agent definition in config.yaml.</p>
                 </div>
 
                 <!-- ===== pipelines (read-only) ===== -->
-                <div x-show="settingsSection === 'pipelines'" class="flex flex-col gap-3.5">
+                <div id="settings-section-pipelines" tabindex="-1" aria-label="Pipelines, read-only" x-show="settingsSection === 'pipelines'" class="flex flex-col gap-3.5">
+                  <p class="settings-help">Read-only. Edit pipelines in <code>config.yaml</code>. Stages share one git worktree and pass artifacts as files.</p>
+                  <p x-show="!settingsPipelineNames().length" class="settings-empty">No pipelines configured.</p>
                   <template x-for="name in settingsPipelineNames()" :key="name">
-                    <!-- The filter and the header read the config directly. Only
-                         the flow diagram needs settingsPipelineSteps, which
-                         resolves a model per step for the agent that runs it. -->
-                    <section x-show="settingsRowVisible(name, settingsConfig.pipelines[name].map(s => s.stage + ' ' + s.agent + ' ' + s.running_status).join(' '), 'pipelines')"
+                    <!-- The flow diagram resolves a model per step for the agent that runs it. -->
+                    <section
                              class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden" :data-pipe-color="pipelineColorByName(name)">
-                      <header class="flex items-center gap-2.5 p-[13px] px-[18px] border-b border-surface-700/40" style="background: hsl(var(--pipe-h) / .07)">
+                      <header :id="settingsFieldID(['pipelines', name])" tabindex="-1" :aria-label="name + ' pipeline, read-only'" class="flex items-center gap-2.5 p-[13px] px-[18px] border-b border-surface-700/40" style="background: hsl(var(--pipe-h) / .07)">
                         <span class="pipe-tag shrink-0" x-text="name"></span>
                         <span class="font-mono text-[11px] text-tx-4 truncate">
                           <span x-text="settingsPlural(settingsConfig.pipelines[name].length, 'step', 'steps')"></span> · <span x-text="settingsPlural(new Set(settingsConfig.pipelines[name].map(s => s.agent)).size, 'agent', 'agents')"></span>
                         </span>
                       </header>
-                      <div class="p-[18px] flex items-stretch overflow-x-auto">
+                      <p x-show="!settingsConfig.pipelines[name].length" class="settings-help settings-inset">This pipeline has no steps.</p>
+                      <div class="settings-pipeline-flow p-[18px] flex items-stretch overflow-x-auto">
                         <template x-for="s in settingsPipelineSteps(name)" :key="s.index">
-                          <span class="flex items-stretch">
-                            <span class="w-[196px] shrink-0 flex flex-col gap-2 p-3 rounded-[10px] border border-surface-700/55 bg-surface-850/55">
+                          <span class="settings-pipeline-step flex items-stretch" :id="settingsFieldID(['pipelines', name, String(s.index)])" tabindex="-1" :aria-label="name + ', step ' + (s.index + 1) + ', ' + s.stage + ', read-only'">
+                            <span class="settings-pipeline-card w-[196px] shrink-0 flex flex-col gap-2 p-3 rounded-[10px] border border-surface-700/55 bg-surface-850/55">
                               <span class="flex items-center gap-[7px] min-w-0">
-                                <span class="font-mono text-[10px] text-surface-600" x-text="s.index"></span>
+                                <span class="font-mono text-[10px] text-surface-600" x-text="s.index + 1"></span>
                                 <span class="font-mono text-[12.5px] font-semibold text-tx-hi truncate" x-text="s.stage"></span>
                                 <span class="ml-auto font-mono text-[10px] text-tx-4 shrink-0" x-text="s.timeout"></span>
                               </span>
                               <span class="flex items-center gap-1.5 min-w-0">
                                 <span class="w-[5px] h-[5px] rounded-full shrink-0" :class="s.running ? 'bg-st-progress' : 'bg-surface-600'"></span>
                                 <span class="font-mono text-[11px] text-tx-2 truncate" x-text="s.agent"></span>
+                                <span x-show="s.running" class="settings-key">Running</span>
                                 <span class="font-mono text-[10px] text-tx-faint truncate" x-text="s.model"></span>
                               </span>
                               <span class="flex flex-col gap-[3px] pt-2 border-t border-surface-700/45 font-mono text-[10.5px] min-w-0">
@@ -5140,14 +5067,14 @@
                                 <span class="text-err/85 truncate">✕ <span x-text="s.on_failure"></span><span x-show="s.max_retries > 0"> · max <span x-text="s.max_retries"></span></span></span>
                               </span>
                             </span>
-                            <span class="flex items-center justify-center w-[30px] shrink-0 text-surface-600">
+                            <span class="settings-pipeline-connector flex items-center justify-center w-[30px] shrink-0 text-surface-600" aria-hidden="true">
                               <svg width="30" height="12" viewBox="0 0 30 12" fill="none"><path d="M2 6h22" stroke="currentColor" stroke-width="1.2" stroke-dasharray="3 3"/><path d="M23 2.5 27.5 6 23 9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                             </span>
                           </span>
                         </template>
-                        <span x-show="settingsPipelineEnds(name)" class="flex items-center shrink-0">
+                        <span x-show="settingsPipelineEnds(name)" class="settings-pipeline-ending flex items-center shrink-0">
                           <span class="flex flex-col gap-1 py-3 px-3.5 rounded-[10px] border border-dashed border-surface-700 bg-surface-850/40">
-                            <span class="font-mono text-[9.5px] uppercase tracking-[.12em] text-tx-faint">ends at</span>
+                            <span class="settings-label">Ends at</span>
                             <!-- slice, not [length - 1]: x-show hides this box for a
                                  pipeline with no steps but still evaluates the binding. -->
                             <span class="status-chip" :data-status="(settingsConfig.pipelines[name].slice(-1)[0] || {}).on_success"
@@ -5157,69 +5084,73 @@
                       </div>
                     </section>
                   </template>
-                  <p class="m-0 text-[11.5px] text-tx-faint">Pipelines are read-only here — they are edited in config.yaml. Stages share one git worktree; artifacts pass between them as files.</p>
+
                 </div>
 
                 <!-- ===== projects (read-only) ===== -->
-                <div x-show="settingsSection === 'projects'" class="flex flex-col gap-3">
+                <div id="settings-section-projects" tabindex="-1" aria-label="Projects, read-only" x-show="settingsSection === 'projects'" class="flex flex-col gap-3">
+                  <p class="settings-help">Read-only. Edit projects in <code>config.yaml</code>. Expand a project to see its paths and defaults.</p>
+                  <p x-show="!settingsProjectNames().length" class="settings-empty">No projects configured.</p>
                   <template x-for="name in settingsProjectNames()" :key="name">
-                    <section x-show="settingsRowVisible(name, settingsConfig.projects[name].path + ' ' + settingsConfig.projects[name].pipeline + ' epic_child_pipeline ' + settingsConfig.projects[name].epic_child_pipeline, 'projects')"
-                             class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden" :data-pipe-color="pipelineColorByName(name)">
-                      <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] border-b border-surface-700/40" style="background: hsl(var(--pipe-h) / .06)">
-                        <span class="font-mono text-[13px] font-bold shrink-0" style="color: hsl(var(--pipe-h))" x-text="name"></span>
-                        <span class="font-mono text-[11.5px] text-tx-4 min-w-0 truncate" x-text="settingsConfig.projects[name].path"></span>
+                    <details class="settings-disclosure settings-project" :data-settings-project="name">
+                      <summary :id="settingsFieldID(['projects', name])" class="settings-entity-summary">
+                        <span class="settings-label font-bold shrink-0" x-text="name"></span>
+                        <span class="settings-technical text-tx-4 min-w-0 truncate" x-text="settingsConfig.projects[name].path"></span>
                         <span class="ml-auto shrink-0 font-mono text-[10.5px] text-tx-faint"
                               x-text="settingsProjectTickets(name).running ? settingsProjectTickets(name).running + ' running' : 'idle'"></span>
-                      </header>
-                      <div class="grid grid-cols-2 lg:grid-cols-5 gap-3.5 p-4 px-[18px]">
+                      </summary>
+                      <div class="settings-project-details grid grid-cols-2 lg:grid-cols-3 gap-3.5 p-4 px-[18px]">
                         <span class="flex flex-col gap-1 min-w-0">
-                          <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">pipeline</span>
-                          <span class="font-mono text-[12.5px] text-tx-2 truncate" x-text="settingsConfig.projects[name].pipeline || 'default'"></span>
+                          <span class="settings-label">Path</span>
+                          <span :id="settingsFieldID(['projects', name, 'path'])" tabindex="-1" :aria-label="name + ' path, read-only'" class="settings-technical" x-text="settingsConfig.projects[name].path"></span>
                         </span>
                         <span class="flex flex-col gap-1 min-w-0">
-                          <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">epic_child_pipeline</span>
-                          <span class="font-mono text-[12.5px] text-tx-2 truncate" x-text="settingsConfig.projects[name].epic_child_pipeline || 'inherits pipeline default'"></span>
+                          <span class="settings-label">Pipeline</span>
+                          <span :id="settingsFieldID(['projects', name, 'pipeline'])" tabindex="-1" :aria-label="name + ' default pipeline'" class="settings-technical" x-text="settingsConfig.projects[name].pipeline || 'default'"></span>
                         </span>
                         <span class="flex flex-col gap-1 min-w-0">
-                          <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">agent</span>
-                          <span class="font-mono text-[12.5px] text-tx-2 truncate" x-text="settingsConfig.projects[name].agent || 'inherits default'"></span>
+                          <span class="settings-label">Epic child pipeline</span><code class="settings-key">epic_child_pipeline</code>
+                          <span :id="settingsFieldID(['projects', name, 'epic_child_pipeline'])" tabindex="-1" :aria-label="name + ' epic child pipeline'" class="settings-technical" x-text="settingsConfig.projects[name].epic_child_pipeline || 'inherits pipeline default'"></span>
                         </span>
                         <span class="flex flex-col gap-1 min-w-0">
-                          <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">branch prefix</span>
-                          <span class="font-mono text-[12.5px] text-tx-2 truncate"
+                          <span class="settings-label">Agent</span>
+                          <span :id="settingsFieldID(['projects', name, 'agent'])" tabindex="-1" :aria-label="name + ' default agent'" class="settings-technical" x-text="settingsConfig.projects[name].agent || 'inherits default'"></span>
+                        </span>
+                        <span class="flex flex-col gap-1 min-w-0">
+                          <span class="settings-label">Branch prefix</span>
+                          <span :id="settingsFieldID(['projects', name, 'branch_prefix'])" tabindex="-1" :aria-label="name + ' branch prefix'" class="settings-technical"
                                 x-text="(settingsConfig.projects[name].branch_prefix || settingsConfig.general.branch_prefix || 'kontora') + '/…'"></span>
                         </span>
                         <span class="flex flex-col gap-1 min-w-0">
-                          <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">tickets</span>
+                          <span class="settings-label">Tickets</span>
                           <span class="font-mono text-[12.5px] text-tx-2 truncate" x-text="settingsProjectTickets(name).total + ' on the board'"></span>
                         </span>
                         <span class="flex flex-col gap-1 min-w-0">
-                          <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">notify_channels</span>
-                          <span class="font-mono text-[12.5px] text-tx-2 truncate"
+                          <span class="settings-label">Notification channels</span><code class="settings-key">notify_channels</code>
+                          <span :id="settingsFieldID(['projects', name, 'notify_channels'])" tabindex="-1" :aria-label="name + ' notification channels'" class="settings-technical"
                                 x-text="settingsConfig.projects[name].notify_channels.length ? settingsConfig.projects[name].notify_channels.join(', ') : 'inherits default'"></span>
                         </span>
                       </div>
-                    </section>
+                    </details>
                   </template>
-                  <p class="m-0 text-[11.5px] text-tx-faint">Projects are read-only here — they are edited in config.yaml.</p>
                 </div>
 
                 <!-- ===== web ===== -->
-                <div x-show="settingsSection === 'web'" class="flex flex-col gap-[18px]">
+                <div id="settings-section-web" tabindex="-1" aria-label="Server and access settings" x-show="settingsSection === 'web'" class="flex flex-col gap-[18px]">
                   <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
                     <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="indigo">
                       <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">listener</h2>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">Listener</h2>
                       <span class="text-[11.5px] text-tx-4">Where the daemon binds. Both need a restart.</span>
                     </header>
-                    <div x-show="settingsRowVisible('host', 'Bind to a tailnet IP to reach this daemon from another machine.', 'web')"
+                    <div
                          class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                       <div class="flex flex-col gap-1 min-w-0">
                         <span class="flex items-center gap-[7px] flex-wrap">
-                          <label for="web-host" class="font-mono text-[12.5px] text-tx-2">host</label>
+                          <label for="web-host" class="settings-label" x-text="fieldInfo(['web', 'host']).label">Listen address</label><code class="settings-key">web.host</code>
                           <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
                         </span>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Bind to a tailnet IP to reach this daemon from another machine.</span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="fieldInfo(['web', 'host']).help">Bind to a tailnet IP to reach this daemon from another machine.</span>
                       </div>
                       <div class="flex flex-col gap-1.5 min-w-0">
                         <input id="web-host" type="text" x-model="settingsConfig.web.host" placeholder="127.0.0.1"
@@ -5228,19 +5159,20 @@
                               x-text="['', '127.0.0.1', 'localhost'].includes(settingsConfig.web.host.trim()) ? 'loopback only — nothing outside this machine can connect' : 'reachable from anything that can route to this address'"></span>
                       </div>
                     </div>
-                    <div x-show="settingsRowVisible('port', 'Port for the dashboard and the /api and /ws endpoints.', 'web')"
+                    <div
                          class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                       <div class="flex flex-col gap-1 min-w-0">
                         <span class="flex items-center gap-[7px] flex-wrap">
-                          <label for="web-port" class="font-mono text-[12.5px] text-tx-2">port</label>
+                          <label for="web-port" class="settings-label">Port</label>
                           <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
                         </span>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Port for the dashboard and the /api and /ws endpoints.</span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="fieldInfo(['web', 'port']).help">Port for the dashboard and the /api and /ws endpoints.</span>
                       </div>
                       <div class="flex flex-col gap-1.5 min-w-0">
-                        <input id="web-port" type="text" x-model="settingsConfig.web.port" placeholder="8080"
+                        <input id="web-port" type="text" inputmode="numeric" x-model="settingsConfig.web.port" placeholder="8080"
                                class="w-[110px] bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
-                               :class="settingsIntValid(settingsConfig.web.port) ? 'border-edge-input' : 'border-err'">
+                               :aria-invalid="!!settingsFieldIssue('web-port')" :aria-describedby="settingsFieldID(['web', 'port'], 'issue')">
+                        <p :id="settingsFieldID(['web', 'port'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue('web-port')"></p>
                       </div>
                     </div>
                   </section>
@@ -5248,17 +5180,17 @@
                   <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
                     <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="rose">
                       <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">access</h2>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">Authentication</h2>
                       <span class="text-[11.5px] text-tx-4">The one credential gating /api and /ws.</span>
                     </header>
-                    <div x-show="settingsRowVisible('token', 'Required on every /api and /ws request once set.', 'web')"
+                    <div
                          class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                       <div class="flex flex-col gap-1 min-w-0">
                         <span class="flex items-center gap-[7px] flex-wrap">
-                          <label for="web-token" class="font-mono text-[12.5px] text-tx-2">token</label>
+                          <label for="web-token" class="settings-label">Access token</label><code class="settings-key">web.token</code>
                           <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
                         </span>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Required on every /api and /ws request once set. GET /health and the static UI stay public.</span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="fieldInfo(['web', 'token']).help">Required on every /api and /ws request once set. GET /health and the static UI stay public.</span>
                       </div>
                       <div class="flex flex-col gap-1.5 min-w-0">
                         <!-- Masked by default: this is the credential for every /api and /ws call. -->
@@ -5275,59 +5207,36 @@
                     </div>
                     <div class="m-[0_18px_18px] flex gap-2.5 p-3 px-3.5 rounded-[9px] border border-warn/[0.22] bg-warn/[0.08]">
                       <span class="font-mono text-[12px] text-warn">!</span>
-                      <span class="text-[12px] leading-[1.55] text-tx-3" x-text="settingsWebAdvisory()"></span>
+                      <span class="text-[12px] leading-[1.55] text-tx-3"><strong>After save and restart: </strong><span x-text="settingsWebAdvisory()"></span></span>
                     </div>
                   </section>
                 </div>
 
                 <!-- ===== assistant ===== -->
-                <div x-show="settingsSection === 'assistant'" class="flex flex-col gap-[18px]">
-                  <section class="companion-settings" x-show="settingsRowVisible('companion', 'enabled name Kotik inbox observation', 'assistant')" aria-label="Companion settings">
-                    <h3>Companion inbox</h3>
-                    <label class="companion-setting-toggle"><input type="checkbox" x-model="settingsConfig.assistant.companion.enabled"> Enable observation</label>
-                    <p>The inbox works without an agent. Briefings and investigations run only when you ask.</p>
-                    <label for="companion-name">Name</label>
-                    <input id="companion-name" type="text" x-model="settingsConfig.assistant.companion.name" placeholder="Kotik">
-                  </section>
+                <div id="settings-section-assistant" tabindex="-1" aria-label="Assistant settings" x-show="settingsSection === 'assistant'" class="flex flex-col gap-[18px]">
                   <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
                     <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="mauve">
                       <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">session</h2>
-                      <span class="text-[11.5px] text-tx-4">Frozen into a chat when it is created.</span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">Chat</h2>
+                      <span class="text-[11.5px] text-tx-4">Defaults for board chat.</span>
                     </header>
-                    <div x-show="settingsRowVisible('agent', 'Only an agent running claude or pi works: a chat is one agent session.', 'assistant')"
+                    <div
                          class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                       <div class="flex flex-col gap-1 min-w-0">
-                        <span class="font-mono text-[12.5px] text-tx-2">agent</span>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Only an agent running claude or pi works: a chat is one agent session, and those are the CLIs that take a session id.</span>
+                        <label :id="agentPickerLabelID('settings-assistant')" :for="_agentPickerPopoverSupported ? agentPickerTriggerID('settings-assistant') : agentPickerFallbackID('settings-assistant')" class="settings-label" x-text="fieldInfo(['assistant', 'agent']).label">Chat agent</label>
+                        <span class="settings-help" x-text="fieldInfo(['assistant', 'agent']).help">Select a Claude or Pi agent for new chats. Leave empty to disable AI turns in all chats.</span>
                       </div>
                       <div class="flex flex-col gap-1.5 min-w-0">
-                        <div class="flex gap-2 flex-wrap" role="radiogroup" aria-label="assistant agent">
-                          <template x-for="name in settingsAgentNames()" :key="name">
-                            <button type="button" role="radio" @click="settingsConfig.assistant.agent = name"
-                                    :aria-checked="settingsConfig.assistant.agent === name"
-                                    class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
-                                    :class="settingsConfig.assistant.agent === name ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
-                              <span class="font-mono text-[12.5px]" x-text="name"></span>
-                              <span class="text-[10.5px] text-tx-faint" x-text="settingsAgentKindOf(name) ? 'session id supported' : 'no session id — unsupported'"></span>
-                            </button>
-                          </template>
-                          <button type="button" role="radio" @click="settingsConfig.assistant.agent = ''"
-                                  :aria-checked="!settingsConfig.assistant.agent"
-                                  class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
-                                  :class="!settingsConfig.assistant.agent ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
-                            <span class="font-mono text-[12.5px]">none</span>
-                            <span class="text-[10.5px] text-tx-faint">New AI turns are disabled. The companion inbox needs no agent.</span>
-                          </button>
-                        </div>
+                        <div x-data="{ pickerHost: 'settings-assistant' }" x-html="agentPickerControl" class="settings-agent-picker"></div>
+                        <p :id="settingsFieldID(['assistant', 'agent'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue(settingsFieldID(['assistant', 'agent']))"></p>
                       </div>
                     </div>
                     <template x-for="key in ['model', 'effort']" :key="key">
-                      <div x-show="settingsRowVisible(key, 'assistant ' + key, 'assistant')" class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                         <div class="flex flex-col gap-1 min-w-0">
-                          <label :for="'as-' + key" class="font-mono text-[12.5px] text-tx-2" x-text="key"></label>
+                          <label :for="'as-' + key" class="settings-label" x-text="fieldTitle(key)"></label>
                           <span class="text-[11.5px] leading-[1.55] text-tx-4"
-                                x-text="key === 'model' ? 'Overrides the model the agent would pick for a chat turn.' : 'Reasoning effort for a chat turn.'"></span>
+                                x-text="fieldInfo(['assistant', key]).help"></span>
                         </div>
                         <div class="flex flex-col gap-1.5 min-w-0">
                           <input :id="'as-' + key" type="text" x-model="settingsConfig.assistant[key]" :placeholder="&quot;the agent's own &quot; + key"
@@ -5335,23 +5244,39 @@
                         </div>
                       </div>
                     </template>
-                    <div class="m-[0_18px_18px] flex gap-2.5 p-3 px-3.5 rounded-[9px] border border-surface-700/60 bg-surface-850/50">
-                      <span class="font-mono text-[12px] text-tx-faint">i</span>
-                      <span class="text-[12px] leading-[1.55] text-tx-3">A chat freezes its agent, model, effort and working directory when it is created, so a change here reaches new chats only. Repointing <span class="font-mono text-tx-2">agent</span> makes every existing chat refuse to continue.</span>
+                    <div class="settings-row">
+                      <div>
+                        <label for="as-autonomy" class="settings-label">Default permission mode</label>
+                        <code class="settings-key">assistant.autonomy</code>
+                        <p class="settings-help" x-text="fieldInfo(['assistant', 'autonomy']).help">Default for new chats. Open chats keep their selected mode.</p>
+                      </div>
+                      <div>
+                      <select id="as-autonomy" x-model="settingsConfig.assistant.autonomy" class="settings-input" :aria-invalid="!!settingsFieldIssue('as-autonomy')" :aria-describedby="settingsFieldID(['assistant', 'autonomy'], 'issue')">
+                        <option value="">Default: ask first</option>
+                        <template x-for="a in assistantAutonomies()" :key="a.key"><option :value="a.key" :selected="a.key === settingsConfig.assistant.autonomy" x-text="a.label + ': ' + a.hint"></option></template>
+                      </select>
+                      <p :id="settingsFieldID(['assistant', 'autonomy'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue('as-autonomy')"></p>
+                      </div>
                     </div>
+                    <p class="settings-help settings-inset">Existing chats keep their original agent, working directory and explicit model or effort overrides. Inherited defaults can still change. Removing an agent or changing its CLI kind prevents its chats from resuming.</p>
                   </section>
 
-                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
-                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="amber">
-                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">limits</h2>
-                      <span class="text-[11.5px] text-tx-4">Where a turn runs, and for how long.</span>
-                    </header>
+                  <section class="companion-settings" aria-label="Companion settings">
+                    <h3>Companion inbox</h3>
+                    <label class="companion-setting-toggle"><input id="companion-enabled" type="checkbox" x-model="settingsConfig.assistant.companion.enabled"> Enable observation</label>
+                    <p>The inbox works independently of the chat agent. Briefings and investigations run only when you ask.</p>
+                    <label for="companion-name">Name</label>
+                    <input id="companion-name" type="text" x-model="settingsConfig.assistant.companion.name" placeholder="Kotik" :aria-invalid="!!settingsFieldIssue('companion-name')" :aria-describedby="settingsFieldID(['assistant', 'companion', 'name'], 'issue')">
+                    <p :id="settingsFieldID(['assistant', 'companion', 'name'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue('companion-name')"></p>
+                  </section>
+
+                  <details class="settings-disclosure" data-settings-advanced="assistant">
+                    <summary>Advanced</summary>
                     <template x-for="f in settingsAssistantFields" :key="f.key">
-                      <div x-show="settingsRowVisible(f.key, f.help, 'assistant')" class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                         <div class="flex flex-col gap-1 min-w-0">
                           <span class="flex items-center gap-[7px] flex-wrap">
-                            <label :for="'as-' + f.key" class="font-mono text-[12.5px] text-tx-2" x-text="f.key"></label>
+                            <label :for="'as-' + f.key" class="settings-label" x-text="f.label || fieldTitle(f.key)"></label><code class="settings-key" x-text="'assistant.' + f.key"></code>
                             <span x-show="!settingsConfig.assistant[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px">default</span>
                           </span>
                           <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
@@ -5359,82 +5284,44 @@
                         <div class="flex flex-col gap-1.5 min-w-0">
                           <input :id="'as-' + f.key" type="text" x-model="settingsConfig.assistant[f.key]" :placeholder="f.placeholder"
                                  class="w-full max-w-[30rem] bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
-                                 :class="f.key === 'timeout' && !settingsDurationValid(settingsConfig.assistant[f.key]) ? 'border-err' : 'border-edge-input'">
+                                 :aria-invalid="!!settingsFieldIssue('as-' + f.key)" :aria-describedby="settingsFieldID(['assistant', f.key], 'issue')">
+                          <p :id="settingsFieldID(['assistant', f.key], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue('as-' + f.key)"></p>
                           <span class="font-mono text-[10.5px] text-tx-faint" x-text="settingsConfig.assistant[f.key] ? '' : 'default · ' + f.placeholder"></span>
                         </div>
                       </div>
                     </template>
-                    <div x-show="settingsRowVisible('autonomy', 'The mode a new chat starts in.', 'assistant')"
-                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
-                      <div class="flex flex-col gap-1 min-w-0">
-                        <span class="flex items-center gap-[7px] flex-wrap">
-                          <span class="font-mono text-[12.5px] text-tx-2">autonomy</span>
-                          <span x-show="!settingsConfig.assistant.autonomy" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px">default</span>
-                        </span>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4">The mode a new chat starts in. Changing it moves the pane's own switch; a running chat keeps the mode it was given.</span>
-                      </div>
-                      <div class="flex flex-col gap-1.5 min-w-0">
-                        <div class="flex gap-2 flex-wrap" role="radiogroup" aria-label="assistant autonomy">
-                          <template x-for="a in assistantAutonomies()" :key="a.key">
-                            <button type="button" role="radio" @click="settingsConfig.assistant.autonomy = a.key"
-                                    :aria-checked="settingsConfig.assistant.autonomy === a.key"
-                                    class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
-                                    :class="settingsConfig.assistant.autonomy === a.key ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
-                              <span class="font-mono text-[12.5px]" x-text="a.label"></span>
-                              <span class="text-[10.5px] text-tx-faint" x-text="a.hint"></span>
-                            </button>
-                          </template>
-                          <!-- The <select> this replaced carried an empty option.
-                               Without a card for it, the first click writes the
-                               key into config.yaml for good. -->
-                          <button type="button" role="radio" @click="settingsConfig.assistant.autonomy = ''"
-                                  :aria-checked="!settingsConfig.assistant.autonomy"
-                                  class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
-                                  :class="!settingsConfig.assistant.autonomy ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
-                            <span class="font-mono text-[12.5px]">unset</span>
-                            <span class="text-[10.5px] text-tx-faint">the default, ask first</span>
-                          </button>
-                        </div>
-                        <span class="font-mono text-[10.5px] text-tx-faint" x-show="!settingsConfig.assistant.autonomy">unset — a new chat starts in ask first</span>
-                      </div>
-                    </div>
-                  </section>
 
-                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
-                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="cyan">
-                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">brief</h2>
-                      <span class="text-[11.5px] text-tx-4">Replaces the built-in system brief rather than adding to it.</span>
-                    </header>
-                    <div x-show="settingsRowVisible('prompt', 'A prompt here has to describe the board and the verbs itself.', 'assistant')"
+                    <div
                          class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                       <div class="flex flex-col gap-1 min-w-0">
-                        <label for="as-prompt" class="font-mono text-[12.5px] text-tx-2">prompt</label>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4">A prompt here has to describe the board and the verbs itself.</span>
+                        <label for="as-prompt" class="settings-label" x-text="fieldInfo(['assistant', 'prompt']).label">Custom assistant prompt</label>
+                        <code class="settings-key">assistant.prompt</code>
+                        <span class="settings-help" x-text="fieldInfo(['assistant', 'prompt']).help">Replaces Kontora's default board-chat instructions. Leave empty to use the default.</span>
                       </div>
                       <div class="flex flex-col gap-1.5 min-w-0">
                         <textarea id="as-prompt" x-model="settingsConfig.assistant.prompt" spellcheck="false"
-                                  placeholder="empty — the built-in brief is used"
+                                  placeholder="Leave empty to use Kontora's default instructions"
                                   class="w-full max-w-[34rem] min-h-[150px] resize-y bg-surface-deep border border-surface-700 rounded-lg py-3 px-3.5 font-mono text-[12px] leading-[1.7] text-tx focus:outline-none focus:border-accent/40"></textarea>
-                        <span class="font-mono text-[10.5px] text-tx-faint" x-show="!settingsConfig.assistant.prompt.trim()">using the built-in brief</span>
+                        <p class="settings-help">Applies to subsequent turns, including existing chats. A custom prompt removes automatic board and page guidance. It does not replace the agent CLI's own instructions, companion instructions, or tool approval rules.</p>
+                        <button type="button" x-show="settingsConfig.assistant.prompt" @click="settingsConfig.assistant.prompt = ''" class="settings-button">Use default prompt</button>
                       </div>
                     </div>
-                  </section>
+                  </details>
                 </div>
 
                 <!-- ===== plannotator ===== -->
-                <div x-show="settingsSection === 'plannotator'" class="flex flex-col gap-[18px]">
+                <div id="settings-section-plannotator" tabindex="-1" aria-label="Review settings" x-show="settingsSection === 'plannotator'" class="flex flex-col gap-[18px]">
                   <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
                     <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="mauve">
                       <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">review</h2>
-                      <span class="text-[11.5px] text-tx-4">Human review of the diff, and annotation of the ticket.</span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">Review</h2>
+                      <span class="text-[11.5px] text-tx-4">Plannotator diff review and ticket annotations.</span>
                     </header>
                     <template x-for="f in settingsPlannotatorFields" :key="f.key">
-                      <div x-show="settingsRowVisible(f.key, f.help, 'plannotator')" class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                         <div class="flex flex-col gap-1 min-w-0">
                           <span class="flex items-center gap-[7px] flex-wrap">
-                            <label :for="'pl-' + f.key" class="font-mono text-[12.5px] text-tx-2" x-text="f.key"></label>
+                            <label :for="'pl-' + f.key" class="settings-label" x-text="f.label || fieldTitle(f.key)"></label><code class="settings-key" x-text="'plannotator.' + f.key"></code>
                             <span x-show="settingsIsRestartOnly('plannotator.' + f.key)" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
                             <span x-show="!settingsConfig.plannotator[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px">default</span>
                           </span>
@@ -5443,7 +5330,8 @@
                         <div class="flex flex-col gap-1.5 min-w-0">
                           <input :id="'pl-' + f.key" type="text" x-model="settingsConfig.plannotator[f.key]" :placeholder="f.placeholder"
                                  class="w-full max-w-[30rem] bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
-                                 :class="f.key === 'timeout' && !settingsDurationValid(settingsConfig.plannotator[f.key]) ? 'border-err' : 'border-edge-input'">
+                                 :aria-invalid="!!settingsFieldIssue('pl-' + f.key)" :aria-describedby="settingsFieldID(['plannotator', f.key], 'issue')">
+                          <p :id="settingsFieldID(['plannotator', f.key], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue('pl-' + f.key)"></p>
                           <span class="font-mono text-[10.5px] text-tx-faint" x-text="settingsIsRestartOnly('plannotator.' + f.key) && settingsPathDirty('plannotator.' + f.key) ? 'changed; restart the daemon to apply' : (settingsConfig.plannotator[f.key] ? '' : 'default · ' + f.placeholder)"></span>
                         </div>
                       </div>
@@ -5456,80 +5344,37 @@
                 </div>
 
                 <!-- ===== notifications ===== -->
-                <div x-show="settingsSection === 'notifications'" class="flex flex-col gap-3.5">
+                <div id="settings-section-notifications" tabindex="-1" aria-label="Notification settings" x-show="settingsSection === 'notifications'" class="flex flex-col gap-3.5">
                   <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
                     <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="mauve">
                       <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">delivery</h2>
-                      <span class="text-[11.5px] text-tx-4">Delivery attempts and retry timing. Changes apply on reload.</span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">Delivery</h2>
+                      <span class="text-[11.5px] text-tx-4">Notification changes apply on reload.</span>
                     </header>
-                    <div x-show="settingsRowVisible('enabled', 'Off sends nothing, whatever a ticket asks for.', 'notifications')"
+                    <div
                          class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                       <div class="flex flex-col gap-1 min-w-0">
                         <span class="flex items-center gap-[7px] flex-wrap">
-                          <span class="font-mono text-[12.5px] text-tx-2">enabled</span>
+                          <label for="notif-enabled" class="settings-label">Enable notifications</label>
                         </span>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Off sends nothing, whatever a ticket asks for.</span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="fieldInfo(['notifications', 'enabled']).help">Off sends nothing, whatever a ticket asks for.</span>
                       </div>
                       <div class="flex flex-col gap-1.5 min-w-0">
-                        <button type="button" role="switch" aria-label="notifications enabled" :aria-checked="settingsConfig.notifications.enabled"
+                        <button id="notif-enabled" type="button" role="switch" aria-label="Notifications enabled" :aria-checked="settingsConfig.notifications.enabled"
                                 @click="settingsConfig.notifications.enabled = !settingsConfig.notifications.enabled"
                                 class="flex items-center gap-2.5 bg-transparent border-0 p-0 cursor-pointer">
                           <span class="relative w-10 h-[22px] rounded-full transition-colors shrink-0" :class="settingsConfig.notifications.enabled ? 'bg-accent' : 'bg-surface-700'">
-                            <span class="absolute top-[3px] w-4 h-4 rounded-full bg-accent-fg transition-[left] duration-150" :style="settingsConfig.notifications.enabled ? 'left:21px' : 'left:2px'"></span>
+                            <span class="absolute top-[3px] left-[2px] w-4 h-4 rounded-full bg-accent-fg transition-transform duration-150" :style="settingsConfig.notifications.enabled ? 'transform:translateX(19px)' : 'transform:translateX(0)'"></span>
                           </span>
-                          <span class="text-[12.5px] text-tx-2" x-text="settingsConfig.notifications.enabled ? 'On — a ticket is delivered to the channels it names' : 'Off — nothing is delivered'"></span>
+                          <span class="text-[12.5px] text-tx-2" x-text="settingsConfig.notifications.enabled ? 'On: use ticket, project, then fallback channels' : 'Off — nothing is delivered'"></span>
                         </button>
                       </div>
                     </div>
-                    <template x-for="f in [
-                        { key: 'timeout', placeholder: '10s', help: 'Bounds one delivery attempt.' },
-                        { key: 'attempts', placeholder: '3', help: 'How many attempts one notification gets. 1 sends once and does not retry.' },
-                        { key: 'backoff', placeholder: '1s', help: 'Wait before the second attempt, doubled for each after it.' },
-                      ]" :key="f.key">
-                      <div x-show="settingsRowVisible(f.key, f.help, 'notifications')"
-                           class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
-                        <div class="flex flex-col gap-1 min-w-0">
-                          <span class="flex items-center gap-[7px] flex-wrap">
-                            <label :for="'notif-' + f.key" class="font-mono text-[12.5px] text-tx-2" x-text="f.key"></label>
-                          </span>
-                          <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
-                        </div>
-                        <div class="flex flex-col gap-1.5 min-w-0">
-                          <input :id="'notif-' + f.key" type="text" x-model="settingsConfig.notifications[f.key]" :placeholder="f.placeholder"
-                                 class="w-[110px] bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
-                                 :class="(f.key === 'attempts' ? settingsIntValid(settingsConfig.notifications[f.key]) : settingsDurationValid(settingsConfig.notifications[f.key])) ? 'border-edge-input' : 'border-err'">
-                          <span class="font-mono text-[10.5px] text-tx-faint" x-text="settingsConfig.notifications[f.key].trim() ? '' : 'default · ' + f.placeholder"></span>
-                        </div>
-                      </div>
-                    </template>
-                  </section>
 
-                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
-                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="indigo">
-                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">default</h2>
-                      <span class="text-[11.5px] text-tx-4">Where a notification goes when neither the ticket nor its project names a channel.</span>
-                    </header>
-                    <div class="p-4 px-[18px] flex flex-col gap-2.5">
-                      <div class="flex flex-wrap items-center gap-2">
-                        <template x-for="c in settingsNotifDefaultChoices()" :key="c">
-                          <button type="button" class="notify-chip" :data-kind="c === settingsNotifNone ? 'silence' : 'channel'"
-                                  :data-on="settingsNotifDefaultOn(c) ? '1' : null" :aria-pressed="settingsNotifDefaultOn(c)"
-                                  @click="settingsNotifToggleDefault(c)" x-text="c"></button>
-                        </template>
-                      </div>
-                      <p class="m-0 text-[11.5px] text-tx-faint"
-                         x-text="settingsConfig.notifications.default.length
-                           ? (settingsNotifDefaultOn(settingsNotifNone)
-                              ? 'Silenced: a ticket that names no channel of its own is not delivered anywhere.'
-                              : 'A ticket that names no channel of its own goes to ' + settingsConfig.notifications.default.join(', ') + '.')
-                           : 'Unset: a ticket has to name a channel, or its project has to.'"></p>
-                    </div>
                   </section>
 
                   <template x-for="name in settingsNotifChannelNames()" :key="name">
-                    <section x-show="settingsRowVisible(name, settingsNotifChannel(name).type, 'notifications')"
+                    <section :id="settingsFieldID(['notifications', 'channels', name])" tabindex="-1" :aria-label="name + ' notification channel'"
                              class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
                       <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="cyan">
                         <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
@@ -5542,38 +5387,37 @@
 
                       <div class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                         <div class="flex flex-col gap-1 min-w-0">
-                          <span class="font-mono text-[12.5px] text-tx-2">type</span>
+                          <label :for="settingsFieldID(['notifications', 'channels', name, 'type'])" class="settings-label">Channel type</label>
                           <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="(settingsNotifTypeSpec(name) || {}).blurb || 'Pick what this channel delivers over.'"></span>
                         </div>
-                        <div class="notify-seg" role="radiogroup" aria-label="channel type">
-                          <template x-for="t in settingsNotifTypes" :key="t.key">
-                            <button type="button" role="radio" :aria-checked="settingsNotifChannel(name).type === t.key"
-                                    @click="settingsNotifChannel(name).type = t.key" x-text="t.key"></button>
-                          </template>
-                        </div>
+                        <select :id="settingsFieldID(['notifications', 'channels', name, 'type'])" x-model="settingsNotifChannel(name).type" :aria-label="name + ' channel type'" class="settings-input"
+                                :aria-invalid="!!settingsFieldIssue(settingsFieldID(['notifications', 'channels', name, 'type']))" :aria-describedby="settingsFieldID(['notifications', 'channels', name, 'type'], 'issue')">
+                          <template x-for="t in settingsNotifTypes" :key="t.key"><option :value="t.key" :selected="t.key === settingsNotifChannel(name).type" x-text="fieldTitle(t.key)"></option></template>
+                        </select>
+                        <p :id="settingsFieldID(['notifications', 'channels', name, 'type'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue(settingsFieldID(['notifications', 'channels', name, 'type']))"></p>
                       </div>
 
                       <div class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                         <div class="flex flex-col gap-1 min-w-0">
-                          <span class="font-mono text-[12.5px] text-tx-2">secret</span>
+                          <span class="settings-label">Credential</span>
                           <span class="text-[11.5px] leading-[1.55] text-tx-4"
-                                x-text="((settingsNotifTypeSpec(name) || {}).secret || 'The credential.') + ' Named here, never written: the daemon reads it when it starts.'"></span>
+                                x-text="((settingsNotifTypeSpec(name) || {}).secret || 'The credential.') + ' Enter an environment variable name or file path, not the secret value.'"></span>
                         </div>
                         <div class="flex flex-col gap-1.5 min-w-0">
-                          <div class="notify-seg notify-seg-sm" role="radiogroup" aria-label="secret source">
-                            <button type="button" role="radio" :aria-checked="settingsNotifSecretMode(name) === 'env'"
-                                    @click="settingsNotifSetSecretMode(name, 'env')">env var</button>
-                            <button type="button" role="radio" :aria-checked="settingsNotifSecretMode(name) === 'file'"
-                                    @click="settingsNotifSetSecretMode(name, 'file')">file</button>
-                            <button type="button" role="radio" x-show="settingsNotifHasField(name, 'url')" :aria-checked="settingsNotifSecretMode(name) === 'none'"
-                                    @click="settingsNotifSetSecretMode(name, 'none')">none</button>
-                          </div>
-                          <input x-show="settingsNotifSecretMode(name) === 'env'" type="text" x-model="settingsNotifChannel(name).secret_env"
-                                 :aria-label="name + ' secret_env'" placeholder="KONTORA_TELEGRAM_TOKEN"
-                                 class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
-                          <input x-show="settingsNotifSecretMode(name) === 'file'" type="text" x-model="settingsNotifChannel(name).secret_file"
-                                 :aria-label="name + ' secret_file'" placeholder="~/.config/kontora/telegram-token"
-                                 class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
+                          <label :for="settingsFieldID(['notifications', 'channels', name, 'secret_source'])" class="settings-label">Credential source</label>
+                          <select :id="settingsFieldID(['notifications', 'channels', name, 'secret_source'])" :value="settingsNotifSecretMode(name)" @change="settingsNotifSetSecretMode(name, $event.target.value)" class="settings-input">
+                            <option value="env">Environment variable</option>
+                            <option value="file">File</option>
+                            <template x-if="settingsNotifHasField(name, 'url')"><option value="none">No credential</option></template>
+                          </select>
+                          <input :id="settingsFieldID(['notifications', 'channels', name, 'secret_env'])" x-show="settingsNotifSecretMode(name) === 'env'" type="text" x-model="settingsNotifChannel(name).secret_env"
+                                 :aria-label="name + ' credential environment variable'" placeholder="KONTORA_TELEGRAM_TOKEN" class="settings-input"
+                                 :aria-invalid="!!settingsFieldIssue(settingsFieldID(['notifications', 'channels', name, 'secret_env']))" :aria-describedby="settingsFieldID(['notifications', 'channels', name, 'secret_env'], 'issue')">
+                          <p :id="settingsFieldID(['notifications', 'channels', name, 'secret_env'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue(settingsFieldID(['notifications', 'channels', name, 'secret_env']))"></p>
+                          <input :id="settingsFieldID(['notifications', 'channels', name, 'secret_file'])" x-show="settingsNotifSecretMode(name) === 'file'" type="text" x-model="settingsNotifChannel(name).secret_file"
+                                 :aria-label="name + ' credential file'" placeholder="~/.config/kontora/telegram-token" class="settings-input"
+                                 :aria-invalid="!!settingsFieldIssue(settingsFieldID(['notifications', 'channels', name, 'secret_file']))" :aria-describedby="settingsFieldID(['notifications', 'channels', name, 'secret_file'], 'issue')">
+                          <p :id="settingsFieldID(['notifications', 'channels', name, 'secret_file'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue(settingsFieldID(['notifications', 'channels', name, 'secret_file']))"></p>
                           <span class="font-mono text-[10.5px] text-tx-faint" x-text="settingsNotifSecretLabel(name)"></span>
                         </div>
                       </div>
@@ -5581,46 +5425,49 @@
                       <div x-show="settingsNotifHasField(name, 'chat_id')"
                            class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                         <div class="flex flex-col gap-1 min-w-0">
-                          <span class="font-mono text-[12.5px] text-tx-2">chat_id</span>
+                          <label :for="settingsFieldID(['notifications', 'channels', name, 'chat_id'])" class="settings-label">Chat ID</label><code class="settings-key">chat_id</code>
                           <span class="text-[11.5px] leading-[1.55] text-tx-4">The chat the bot posts into. Negative for a group.</span>
                         </div>
-                        <input type="text" x-model="settingsNotifChannel(name).chat_id" :aria-label="name + ' chat_id'" placeholder="123456789"
-                               class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
+                        <div>
+                          <input :id="settingsFieldID(['notifications', 'channels', name, 'chat_id'])" type="text" inputmode="numeric" x-model="settingsNotifChannel(name).chat_id" :aria-label="name + ' chat ID'" placeholder="123456789" class="settings-input"
+                                 :aria-invalid="!!settingsFieldIssue(settingsFieldID(['notifications', 'channels', name, 'chat_id']))" :aria-describedby="settingsFieldID(['notifications', 'channels', name, 'chat_id'], 'issue')">
+                          <p :id="settingsFieldID(['notifications', 'channels', name, 'chat_id'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue(settingsFieldID(['notifications', 'channels', name, 'chat_id']))"></p>
+                        </div>
                       </div>
 
                       <div x-show="settingsNotifHasField(name, 'channel')"
                            class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                         <div class="flex flex-col gap-1 min-w-0">
-                          <span class="font-mono text-[12.5px] text-tx-2">channel</span>
+                          <label :for="settingsFieldID(['notifications', 'channels', name, 'channel'])" class="settings-label">Channel</label>
                           <span class="text-[11.5px] leading-[1.55] text-tx-4">Overrides the channel the incoming webhook was made for. Optional.</span>
                         </div>
-                        <input type="text" x-model="settingsNotifChannel(name).channel" :aria-label="name + ' channel'" placeholder="the webhook's own channel"
+                        <input :id="settingsFieldID(['notifications', 'channels', name, 'channel'])" type="text" x-model="settingsNotifChannel(name).channel" :aria-label="name + ' channel'" placeholder="the webhook's own channel"
                                class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
                       </div>
 
                       <div x-show="settingsNotifHasField(name, 'url')"
                            class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                         <div class="flex flex-col gap-1 min-w-0">
-                          <span class="font-mono text-[12.5px] text-tx-2">url</span>
+                          <label :for="settingsFieldID(['notifications', 'channels', name, 'url'])" class="settings-label">Webhook URL</label>
                           <span class="text-[11.5px] leading-[1.55] text-tx-4">Where the ticket is posted as JSON. http or https.</span>
                         </div>
                         <div class="flex flex-col gap-1.5 min-w-0">
-                          <input type="text" x-model="settingsNotifChannel(name).url" :aria-label="name + ' url'" placeholder="https://example.com/hooks/kontora"
-                                 class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
-                          <div class="notify-seg notify-seg-sm" role="radiogroup" aria-label="method">
-                            <template x-for="m in settingsNotifMethods" :key="m">
-                              <button type="button" role="radio"
-                                      :aria-checked="(settingsNotifChannel(name).method.trim().toUpperCase() || 'POST') === m"
-                                      @click="settingsNotifChannel(name).method = m" x-text="m"></button>
-                            </template>
-                          </div>
+                          <input :id="settingsFieldID(['notifications', 'channels', name, 'url'])" type="url" x-model="settingsNotifChannel(name).url" :aria-label="name + ' webhook URL'" placeholder="https://example.com/hooks/kontora" class="settings-input"
+                                 :aria-invalid="!!settingsFieldIssue(settingsFieldID(['notifications', 'channels', name, 'url']))" :aria-describedby="settingsFieldID(['notifications', 'channels', name, 'url'], 'issue')">
+                          <p :id="settingsFieldID(['notifications', 'channels', name, 'url'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue(settingsFieldID(['notifications', 'channels', name, 'url']))"></p>
+                          <label :for="settingsFieldID(['notifications', 'channels', name, 'method'])" class="settings-label">HTTP method</label>
+                          <select :id="settingsFieldID(['notifications', 'channels', name, 'method'])" :value="settingsNotifChannel(name).method.trim().toUpperCase()" @change="settingsNotifChannel(name).method = $event.target.value" class="settings-input" :aria-invalid="!!settingsFieldIssue(settingsFieldID(['notifications', 'channels', name, 'method']))" :aria-describedby="settingsFieldID(['notifications', 'channels', name, 'method'], 'issue')">
+                            <option value="">Default: POST</option>
+                            <template x-for="m in settingsNotifMethods" :key="m"><option :value="m" :selected="m === settingsNotifChannel(name).method.trim().toUpperCase()" x-text="m"></option></template>
+                          </select>
+                          <p :id="settingsFieldID(['notifications', 'channels', name, 'method'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue(settingsFieldID(['notifications', 'channels', name, 'method']))"></p>
                         </div>
                       </div>
 
                       <div x-show="settingsNotifHasField(name, 'headers')"
                            class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                         <div class="flex flex-col gap-1 min-w-0">
-                          <span class="font-mono text-[12.5px] text-tx-2">headers</span>
+                          <span class="settings-label">HTTP headers</span>
                           <span class="text-[11.5px] leading-[1.55] text-tx-4">Sent with every request. Two names that differ only in case are one header, and the save is refused.</span>
                         </div>
                         <div class="flex flex-col gap-1.5 min-w-0">
@@ -5629,8 +5476,11 @@
                               <input type="text" :value="key" readonly :aria-label="name + ' header'"
                                      class="w-40 flex-none bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none">
                               <span class="text-surface-600 font-mono">=</span>
-                              <input type="text" x-model="settingsNotifChannel(name).headers[key]" :aria-label="name + ' ' + key"
-                                     class="w-56 bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                              <div>
+                                <input :id="settingsFieldID(['notifications', 'channels', name, 'headers', key])" type="text" x-model="settingsNotifChannel(name).headers[key]" :aria-label="name + ' ' + key" class="settings-input"
+                                       :aria-invalid="!!settingsFieldIssue(settingsFieldID(['notifications', 'channels', name, 'headers', key]))" :aria-describedby="settingsFieldID(['notifications', 'channels', name, 'headers', key], 'issue')">
+                                <p :id="settingsFieldID(['notifications', 'channels', name, 'headers', key], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue(settingsFieldID(['notifications', 'channels', name, 'headers', key]))"></p>
+                              </div>
                               <button type="button" @click="settingsNotifRemoveHeader(name, key)" :aria-label="'Remove ' + key"
                                       class="w-7 h-7 shrink-0 flex items-center justify-center border border-surface-700/50 rounded text-surface-600 hover:text-err hover:border-err/30 transition-colors">
                                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
@@ -5683,24 +5533,51 @@
                   <p x-show="settingsNewChannelName.trim() === settingsNotifNone" x-cloak class="m-0 text-[11.5px] text-err">
                     "none" is reserved for the opt-out and cannot name a channel.</p>
 
-                  <div class="flex gap-2.5 p-3 px-3.5 rounded-[9px] border border-warn/[0.22] bg-warn/[0.08]">
-                    <span class="font-mono text-[12px] text-warn">!</span>
-                    <span class="text-[12px] leading-[1.55] text-tx-3" x-text="settingsNotifAdvisory()"></span>
-                  </div>
+                  <section class="settings-panel" aria-labelledby="notif-default-label">
+                    <h2 id="notif-default-label" class="settings-inset">Fallback destinations</h2>
+                    <div class="settings-inset">
+                      <p class="settings-help" x-text="fieldInfo(['notifications', 'default']).help">Used when neither the ticket nor its project sets notification channels.</p>
+                      <div id="notif-default" tabindex="-1" aria-label="Fallback notification channels" class="flex flex-wrap items-center gap-2">
+                        <template x-for="c in settingsNotifDefaultChoices()" :key="c">
+                          <button type="button" class="notify-chip" :data-kind="c === settingsNotifNone ? 'silence' : 'channel'" :data-on="settingsNotifDefaultOn(c) ? '1' : null" :aria-pressed="settingsNotifDefaultOn(c)" @click="settingsNotifToggleDefault(c)" x-text="c"></button>
+                        </template>
+                      </div>
+                      <p class="settings-help" x-text="settingsNotifDefaultOn(settingsNotifNone) || !settingsConfig.notifications.default.length ? 'No fallback channels. Ticket and project channel settings still apply.' : 'Fallback channels: ' + settingsConfig.notifications.default.join(', ')"></p>
+                    </div>
+                  </section>
+                  <details class="settings-disclosure" data-settings-advanced="notifications">
+                    <summary>Advanced delivery settings</summary>
+                    <template x-for="f in settingsNotificationFields" :key="f.key">
+                      <div class="settings-row">
+                        <div>
+                          <label :for="'notif-' + f.key" class="settings-label" x-text="f.label || fieldTitle(f.key)"></label>
+                          <code class="settings-key" x-text="'notifications.' + f.key"></code>
+                          <p class="settings-help" x-text="f.help"></p>
+                        </div>
+                        <div>
+                          <input :id="'notif-' + f.key" type="text" :inputmode="f.key === 'attempts' ? 'numeric' : 'text'" x-model="settingsConfig.notifications[f.key]" :placeholder="f.placeholder" class="settings-number"
+                                 :aria-invalid="!!settingsFieldIssue('notif-' + f.key)" :aria-describedby="settingsFieldID(['notifications', f.key], 'issue')">
+                          <p :id="settingsFieldID(['notifications', f.key], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue('notif-' + f.key)"></p>
+                        </div>
+                      </div>
+                    </template>
+                    <p class="settings-help settings-inset">The daemon reads credentials for new or changed channels on reload. Unchanged channels keep their running credentials.</p>
+                  </details>
+                  <p class="settings-warning" x-text="settingsNotifAdvisory()"></p>
                 </div>
 
                 <!-- ===== statuses ===== -->
-                <div x-show="settingsSection === 'statuses'" class="flex flex-col gap-3.5">
+                <div id="settings-section-statuses" tabindex="-1" aria-label="Status settings" x-show="settingsSection === 'statuses'" class="flex flex-col gap-3.5">
                   <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
                     <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="mauve">
                       <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">built-in</h2>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">Built-in statuses</h2>
                       <span class="text-[11.5px] text-tx-4">The board columns kontora ships with, in lifecycle order.</span>
                     </header>
                     <div class="p-4 px-[18px] flex flex-wrap gap-2">
                       <template x-for="s in settingsBuiltinStatuses" :key="s">
-                        <span x-show="settingsRowVisible(s, '', 'statuses')" class="status-chip" :data-status="s">
-                          <span x-text="s"></span>
+                        <span :id="settingsFieldID(['statuses', s])" tabindex="-1" :aria-label="s + ', built-in status'" class="status-chip" :data-status="s">
+                          <span x-text="fieldTitle(s)"></span><code class="settings-key" x-text="s"></code>
                           <span class="text-[10px] font-normal tracking-normal text-tx-faint" x-text="settingsStatusCount(s)"></span>
                         </span>
                       </template>
@@ -5710,14 +5587,14 @@
                   <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
                     <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="green">
                       <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">custom</h2>
-                      <span class="text-[11.5px] text-tx-4">Extra columns a pipeline step can route to.</span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">Custom statuses</h2>
+                      <span class="text-[11.5px] text-tx-4">Extra columns a pipeline step can route to. Save &amp; reload applies additions and removals.</span>
                     </header>
                     <div class="p-4 px-[18px] flex flex-col gap-2.5">
                       <div class="flex flex-wrap items-center gap-2">
                         <template x-for="s in settingsConfig.statuses" :key="s">
-                          <span x-show="settingsRowVisible(s, '', 'statuses')" class="status-chip" :class="s.match(/^[a-z][a-z0-9_]*$/) ? '' : 'border-err text-err'">
-                            <span x-text="s"></span>
+                          <span :id="settingsFieldID(['statuses', s])" tabindex="-1" :aria-label="s + ', custom status'" class="status-chip" :class="s.match(/^[a-z][a-z0-9_]*$/) ? '' : 'border-err text-err'">
+                            <span x-text="fieldTitle(s)"></span><code class="settings-key" x-text="s"></code>
                             <span class="text-[10px] font-normal tracking-normal text-tx-faint" x-text="settingsStatusCount(s)"></span>
                             <button type="button" @click="settingsRemoveStatus(s)" :aria-label="'Remove ' + s" class="text-surface-600 hover:text-err">✕</button>
                           </span>
@@ -5725,7 +5602,7 @@
                         <button type="button" x-show="!settingsNewStatusOpen" @click="settingsNewStatusOpen = true; $nextTick(() => $refs.newStatus && $refs.newStatus.focus())"
                                 class="font-mono text-[10px] uppercase tracking-[.08em] py-[5px] px-3 rounded-full border border-dashed border-surface-700 text-surface-600 hover:text-tx-3 hover:border-edge-hover transition-colors">add status</button>
                       </div>
-                      <p x-show="!settingsConfig.statuses.length && !settingsNewStatusOpen" class="m-0 text-[11.5px] text-tx-faint">None. A custom status must match [a-z][a-z0-9_]* and can be used as an on_success or on_failure target.</p>
+                      <p x-show="!settingsConfig.statuses.length && !settingsNewStatusOpen" class="m-0 text-[11.5px] text-tx-faint">No custom statuses. For example, needs_review displays as “Needs review”. Use lowercase letters, digits and underscores, starting with a letter. Pipeline steps can route to these statuses.</p>
                       <div x-show="settingsNewStatusOpen" x-cloak class="flex items-center gap-2">
                         <input x-ref="newStatus" type="text" x-model="settingsNewStatus" placeholder="needs_review" aria-label="New status name"
                                @keydown.enter.prevent="settingsAddStatus()" @keydown.escape="settingsNewStatusOpen = false; settingsNewStatus = ''"
@@ -5742,90 +5619,88 @@
                   </section>
                 </div>
 
+              </fieldset>
+            </template>
+
                 <!-- ===== display (localStorage, never written to YAML) ===== -->
-                <div x-show="settingsSection === 'display'" class="flex flex-col gap-[18px]">
+                <div id="settings-section-display" tabindex="-1" aria-label="Appearance settings" x-show="settingsSection === 'display' && !settingsQuery.trim()" class="flex flex-col gap-[18px]">
                   <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
                     <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="green">
                       <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">board</h2>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">Board</h2>
                       <span class="text-[11.5px] text-tx-4">Stored in this browser, never written to config.yaml.</span>
                     </header>
 
-                    <div x-show="settingsRowVisible('pipeline_badges', 'Show the pipeline tag on every card.', 'display')"
+                    <div
                          class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                       <div class="flex flex-col gap-1 min-w-0">
-                        <span class="font-mono text-[12.5px] text-tx-2">pipeline_badges</span>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Show the pipeline tag on every card.</span>
+                        <label :for="settingsFieldID(['display', 'pipeline_badges'])" class="settings-label">Pipeline badges</label>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="fieldInfo(['display', 'pipeline_badges']).help">Show the pipeline tag on every card.</span>
                       </div>
-                      <button type="button" role="switch" aria-label="pipeline_badges" :aria-checked="showPipelineBadges" @click="toggleShowBadges()"
+                      <button :id="settingsFieldID(['display', 'pipeline_badges'])" type="button" role="switch" aria-label="Pipeline badges" :aria-checked="showPipelineBadges" @click="toggleShowBadges()"
                               class="flex items-center gap-3 self-start">
                         <span class="relative w-10 h-[22px] rounded-full transition-colors shrink-0" :class="showPipelineBadges ? 'bg-accent' : 'bg-surface-700'">
-                          <span class="absolute top-[3px] w-4 h-4 rounded-full bg-accent-fg transition-[left] duration-150" :style="showPipelineBadges ? 'left:21px' : 'left:2px'"></span>
+                          <span class="absolute top-[3px] left-[2px] w-4 h-4 rounded-full bg-accent-fg transition-transform duration-150" :style="showPipelineBadges ? 'transform:translateX(19px)' : 'transform:translateX(0)'"></span>
                         </span>
                         <span class="text-[12.5px] text-tx-2" x-text="showPipelineBadges ? 'Shown on cards' : 'Hidden'"></span>
                       </button>
                     </div>
 
-                    <div x-show="settingsRowVisible('agent_meta', 'Show agent, model and effort under the card title.', 'display')"
+                    <div
                          class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                       <div class="flex flex-col gap-1 min-w-0">
-                        <span class="font-mono text-[12.5px] text-tx-2">agent_meta</span>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Show agent, model and effort under the card title.</span>
+                        <label :for="settingsFieldID(['display', 'agent_meta'])" class="settings-label">Agent details</label>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="fieldInfo(['display', 'agent_meta']).help">Show agent, model and effort under the card title.</span>
                       </div>
-                      <button type="button" role="switch" aria-label="agent_meta" :aria-checked="showAgentMeta" @click="toggleShowAgentMeta()"
+                      <button :id="settingsFieldID(['display', 'agent_meta'])" type="button" role="switch" aria-label="Agent details" :aria-checked="showAgentMeta" @click="toggleShowAgentMeta()"
                               class="flex items-center gap-3 self-start">
                         <span class="relative w-10 h-[22px] rounded-full transition-colors shrink-0" :class="showAgentMeta ? 'bg-accent' : 'bg-surface-700'">
-                          <span class="absolute top-[3px] w-4 h-4 rounded-full bg-accent-fg transition-[left] duration-150" :style="showAgentMeta ? 'left:21px' : 'left:2px'"></span>
+                          <span class="absolute top-[3px] left-[2px] w-4 h-4 rounded-full bg-accent-fg transition-transform duration-150" :style="showAgentMeta ? 'transform:translateX(19px)' : 'transform:translateX(0)'"></span>
                         </span>
                         <span class="text-[12.5px] text-tx-2" x-text="showAgentMeta ? 'Shown on cards' : 'Hidden'"></span>
                       </button>
                     </div>
 
-                    <div x-show="settingsRowVisible('theme', 'Also togglable with c then t.', 'display')"
+                    <div
                          class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                       <div class="flex flex-col gap-1 min-w-0">
-                        <span class="font-mono text-[12.5px] text-tx-2">theme</span>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Also togglable with c then t.</span>
+                        <label :for="settingsFieldID(['display', 'theme'])" class="settings-label">Theme</label>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="fieldInfo(['display', 'theme']).help">Also togglable with c then t.</span>
                       </div>
-                      <div class="flex gap-2 flex-wrap" role="radiogroup" aria-label="theme">
-                        <template x-for="t in [{ key: 'dark', light: false }, { key: 'light', light: true }]" :key="t.key">
-                          <button type="button" role="radio" @click="lightTheme !== t.light && toggleTheme()"
-                                  :aria-checked="lightTheme === t.light"
-                                  class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
-                                  :class="lightTheme === t.light ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
-                            <span class="font-mono text-[12.5px]" x-text="t.key"></span>
-                            <span class="text-[10.5px] text-tx-faint" x-text="lightTheme === t.light ? 'current' : ''"></span>
-                          </button>
-                        </template>
-                      </div>
+                      <select :id="settingsFieldID(['display', 'theme'])" :value="lightTheme ? 'light' : 'dark'" @change="if (lightTheme !== ($event.target.value === 'light')) toggleTheme()" aria-label="Theme" class="settings-input">
+                        <option value="dark">Dark</option><option value="light">Light</option>
+                      </select>
                     </div>
                   </section>
+                  <p x-show="settingsDirty() || _settingsHasDrafts()" class="settings-help">Daemon settings still have unsaved changes. Appearance changes do not save that draft.</p>
                 </div>
-              </div>
-            </template>
           </div>
         </div>
 
+        <!-- Save outcomes remain visible after the submitted draft becomes clean. -->
+        <div x-show="settingsReloadWarning" x-cloak role="alert" class="settings-reload-warning">
+          <p x-text="settingsReloadWarning"></p>
+          <button type="button" @click="settingsRetryApply()" :disabled="settingsSaving || settingsDirty() || _settingsHasDrafts()" class="settings-button">Retry apply</button>
+          <p x-show="settingsDirty() || _settingsHasDrafts()">Save or discard new edits before retrying the saved configuration.</p>
+        </div>
+        <div x-show="settingsErrors.length" x-cloak role="alert" class="settings-save-errors">
+          <template x-for="(error, i) in settingsErrors" :key="i"><p x-text="error"></p></template>
+        </div>
+
         <!-- Post-save strip. Cleared by the next edit, which makes the review bar reappear. -->
-        <div x-show="settingsSavedAt && !settingsDirty()" x-cloak
+        <div x-show="settingsSavedAt && !settingsDirty() && !settingsReloadWarning" x-cloak role="status"
              class="shrink-0 border-t border-ok/40 bg-ok/[0.14] p-2 px-6 font-mono text-[11px] text-ok">
-          saved <span x-text="settingsSavedAt"></span> · daemon reloaded<span x-show="settingsSavedRestart"> · restart to apply</span>
+          Saved at <span x-text="settingsSavedAt"></span>. The daemon reloaded.<span x-show="settingsSavedRestart"> Restart to apply restart-only settings.</span>
         </div>
 
         <!-- Review bar -->
-        <div x-show="settingsDirty()" x-cloak class="shrink-0 border-t border-surface-700/60 bg-surface-deep slide-up">
+        <div x-show="settingsDirty() || _settingsHasDrafts() || settingsSaving" x-cloak class="shrink-0 border-t border-surface-700/60 bg-surface-deep slide-up">
           <div x-show="settingsDiffOpen" x-cloak class="max-h-64 overflow-auto py-2.5 border-b border-surface-700/40">
-            <div x-show="settingsErrors.length" class="bg-err/10 border-b border-err/25 p-2.5 px-6 mb-2">
-              <div class="font-mono text-[10px] font-bold tracking-[.1em] uppercase text-err mb-1">daemon rejected the config</div>
-              <template x-for="e in settingsErrors" :key="e">
-                <div class="font-mono text-[11.5px] text-tx-2 whitespace-pre-wrap break-words" x-text="e"></div>
-              </template>
-            </div>
             <template x-for="h in settingsDiffHunks()" :key="h.path">
               <div>
-                <div class="font-mono text-[11px] text-tx-faint pt-2 pb-1 px-6" x-text="'@@ ' + h.path + ' @@'"></div>
+                <div class="settings-technical text-tx-faint pt-2 pb-1 px-6" x-text="'@@ ' + h.path + ' @@'"></div>
                 <template x-for="(l, i) in h.lines" :key="i">
-                  <div class="font-mono text-[11.5px] leading-[1.6] px-6 whitespace-pre-wrap break-words"
+                  <div class="settings-technical leading-[1.6] px-6 whitespace-pre-wrap break-words"
                        :class="l.kind === 'del' ? 'text-err bg-err/[.08]' : (l.kind === 'add' ? 'text-ok bg-ok/10' : 'text-tx-4')"
                        x-text="(l.kind === 'del' ? '- ' : (l.kind === 'add' ? '+ ' : '  ')) + l.text"></div>
                 </template>
@@ -5844,7 +5719,7 @@
             </button>
             <span class="font-mono text-[11px] shrink-0" :class="settingsSaving ? 'text-tx-3' : 'text-surface-600'"
                   x-text="settingsSaving ? 'writing config.yaml' : 'not written yet'"></span>
-            <button type="button" @click="discardSettings()"
+            <button type="button" @click="discardSettings()" :disabled="settingsSaving"
                     class="shrink-0 font-mono text-[12px] h-8 px-4 rounded-md bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 transition-colors">discard</button>
             <button type="button" @click="saveSettings()" :disabled="settingsSaving"
                     class="shrink-0 font-mono text-[12px] h-8 px-4 rounded-md bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">save &amp; reload</button>

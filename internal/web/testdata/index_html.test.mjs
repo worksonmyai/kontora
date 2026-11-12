@@ -6862,6 +6862,14 @@ async function settingsState(text = SETTINGS_FIXTURE, overrides = {}) {
   return state;
 }
 
+// Slice a section independently of its order or extra visibility conditions.
+function settingsSectionMarkup(html, key) {
+  const bounds = [...html.matchAll(/<div\b[^>]*\bx-show="settingsSection === '([a-z]+)'[^"]*"/g)];
+  const index = bounds.findIndex(match => match[1] === key);
+  assert.ok(index >= 0, `missing settings section ${key}`);
+  return html.slice(bounds[index].index, bounds[index + 1]?.index ?? html.length);
+}
+
 // Alpine wraps the x-data object in a deep reactive Proxy, so in the browser
 // every read of settingsConfig hands back a Proxy rather than the stored
 // object. loadKontoraState returns the bare object, which hides anything that
@@ -6903,11 +6911,11 @@ function settingsFetch({ raw = SETTINGS_FIXTURE, put = { status: 204, ok: true }
   return { fetch, sent, puts: () => of("PUT"), gets: () => of("GET") };
 }
 
-test("settings loads the fixture clean and defaults to the stages section", async () => {
+test("settings loads the fixture clean and defaults to General", async () => {
   const state = await settingsState();
 
   assert.equal(state.settingsState, "ok");
-  assert.equal(state.settingsSection, "stages");
+  assert.equal(state.settingsSection, "general");
   assert.deepEqual([...state.settingsChangedPaths()], []);
   assert.equal(state.settingsDirty(), false);
 });
@@ -7734,7 +7742,7 @@ test("draft inputs survive reloads before and during a fetch", async (t) => {
 
 test("a failed background refresh keeps the editor and can retry on reopen", async (t) => {
   const html = fs.readFileSync(htmlPath, "utf8");
-  assert.match(html, /x-show="!settingsLoading && settingsLoadError"/);
+  assert.match(html, /x-show="!settingsLoading && settingsLoadError && settingsSection !== 'display'"/);
   assert.match(html, /@click="_settingsRefreshForm\(true\)"/);
   for (const failure of ["network", "http", "yaml"]) await t.test(failure, async () => {
     let reads = 0;
@@ -7958,8 +7966,9 @@ test("the Settings markup has no stale notification or worker restart markers", 
   const notifications = html.split("<!-- ===== notifications ===== -->")[1].split("<!-- =====")[0];
   assert.ok(notifications);
   assert.doesNotMatch(notifications, /restart/i);
-  const workers = html.split("x.key === 'max_concurrent_agents'")[1].split("x.key === 'default_agent'")[0];
-  assert.ok(workers);
+  const general = settingsSectionMarkup(html, "general");
+  const workers = general.match(/<template x-for="f in settingsGeneralFields\.filter\(f => \['max_concurrent_agents', 'max_concurrent_epic_supervisors'\]\.includes\(f\.key\)\)"[\s\S]*?<\/template>/)?.[0];
+  assert.ok(workers, "worker and supervisor limit controls must remain present");
   assert.doesNotMatch(workers, /restart/i);
   const plannotator = html.split("<!-- ===== plannotator ===== -->")[1].split("<!-- =====")[0];
   assert.match(plannotator, /x-show="settingsIsRestartOnly\('plannotator\.' \+ f\.key\)"[^>]*>restart<\/span>/);
@@ -8153,7 +8162,10 @@ test("index.html wires the settings shell to the guard and the section rail", ()
   assert.ok(direct[0].index > html.indexOf(`x-show="col.key === 'open' && colHover"`));
 
   // The guard closes before the create form and every other overlay below it.
-  assert.match(html, /else if \(settingsGuard\) settingsGuard = false;[\s\S]*?else if \(automationsDeleteOpen\) automationsCloseDelete\(\);[\s\S]*?else if \(sheet\) closeSheet\(\); else if \(currentView === 'new'\)/);
+  const guardEscape = html.match(/else if \(settingsGuard\) \{ if \(!settingsSaving\) (\w+)\(\); \}/);
+  assert.ok(guardEscape, "Escape must not dismiss the guard while saving");
+  assert.equal(typeof loadKontoraState()[guardEscape[1]], "function", "the guard Escape handler must exist");
+  assert.match(html, /else if \(automationsDeleteOpen\) automationsCloseDelete\(\);[\s\S]*?else if \(sheet\) closeSheet\(\); else if \(currentView === 'new'\)/);
 
   assert.match(html, /<template x-if="!loading && currentView === 'settings'">/);
   assert.match(html, /w-\[214px\][^"]*bg-surface-frame border-r border-surface-700\/50/);
@@ -8176,24 +8188,19 @@ test("index.html wires the settings shell to the guard and the section rail", ()
 
 test("index.html renders every settings section the rail lists", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
-  const app = fs.readFileSync(settingsPath, "utf8");
-
-  const rail = [...app.matchAll(/\{ key: '([a-z]+)', label:/g)].map((m) => m[1]);
+  const rail = [...loadKontoraState().settingsSections].map(section => section.key);
   assert.deepEqual(rail, [
-    "general", "environment", "agents", "stages", "pipelines",
-    "projects", "web", "assistant", "plannotator", "notifications", "statuses", "display",
+    "general", "environment", "agents", "stages", "pipelines", "statuses",
+    "projects", "web", "assistant", "plannotator", "notifications", "display",
   ]);
   for (const key of rail) {
-    assert.match(html, new RegExp(`x-show="settingsSection === '${key}'"`), key);
+    assert.ok(settingsSectionMarkup(html, key), key);
   }
 
   // Read-only sections carry no editable control. Each runs to the next
   // section's x-show, so the slice does not depend on how the markup indents.
   for (const key of ["pipelines", "projects"]) {
-    const start = html.indexOf(`x-show="settingsSection === '${key}'"`);
-    const end = html.indexOf(`x-show="settingsSection === '`, start + 1);
-    assert.ok(start > 0 && end > start, key);
-    assert.equal(/x-model/.test(html.slice(start, end)), false, key);
+    assert.doesNotMatch(settingsSectionMarkup(html, key), /x-model/, key);
   }
 
   // A stage has no default timeout, so a placeholder naming one reads as a
@@ -8205,48 +8212,41 @@ test("index.html renders every settings section the rail lists", () => {
   // masked until asked for.
   assert.match(html, /id="web-token" :type="settingsShowToken \? 'text' : 'password'"/);
 
-  // agent and autonomy are choice cards writing straight into the model, in a
-  // labelled radiogroup. No select, so no x-model applied before its x-for has
-  // added an option.
-  assert.equal(html.includes("<select id=\"as-"), false);
-  for (const [field, group] of [["agent", "assistant agent"], ["autonomy", "assistant autonomy"]]) {
-    const start = html.indexOf(`role="radiogroup" aria-label="${group}"`);
-    assert.ok(start > 0, group);
-    const cards = html.slice(start, html.indexOf("</div>", start));
-    assert.match(cards, new RegExp(`@click="settingsConfig\\.assistant\\.${field} = `), field);
-    assert.match(cards, new RegExp(`:aria-checked="[^"]*settingsConfig\\.assistant\\.${field}`), field);
-  }
+  const assistant = settingsSectionMarkup(html, "assistant");
+  assert.match(assistant, /pickerHost: 'settings-assistant'/);
+  assert.match(assistant, /<label for="as-autonomy"/);
+  assert.match(assistant, /<select id="as-autonomy" x-model="settingsConfig\.assistant\.autonomy"/);
 });
 
-test("every choice-card group can be put back to unset", async () => {
+test("replacement picker and permission controls retain unset and repair stale values", async () => {
   const html = fs.readFileSync(htmlPath, "utf8");
+  const autonomy = html.match(/<select id="as-autonomy"[\s\S]*?<\/select>/)?.[0];
+  assert.ok(autonomy);
+  assert.match(autonomy, /<option value=""/);
 
-  // A card group replaced a text input and a <select>, both of which could be
-  // emptied. Without a card for the empty value the first click writes the key
-  // into config.yaml for good.
-  for (const path of ["general.default_agent", "assistant.autonomy"]) {
-    assert.match(html, new RegExp(`@click="settingsConfig\\.${path} = ''"`), path);
-  }
-
-  // A default_agent that names an agent the file no longer declares keeps a
-  // card of its own. settingsClientErrors blocks every save while it is set,
-  // so the value has to be on screen to be fixable.
+  // A missing default agent remains visible and repairable. Choosing the
+  // blank picker option removes the key rather than materializing inference.
   const state = await settingsState();
-  assert.deepEqual([...state.settingsDefaultAgentChoices()], ["claude", "pi"]);
+  state.currentView = "settings";
+  assert.deepEqual([...state.agentPickerOptions("settings-default")].map(row => row.value), ["", "claude", "pi"]);
+  assert.ok(state.agentPickerOptions("settings-default").some(row => row.value === "" && !row.disabled));
 
   state.settingsConfig.general.default_agent = "gone";
-  assert.deepEqual([...state.settingsDefaultAgentChoices()], ["claude", "pi", "gone"]);
+  assert.deepEqual([...state.agentPickerOptions("settings-default")].map(row => row.value), ["", "claude", "pi", "gone"]);
+  assert.ok(state.agentPickerOptions("settings-default").some(row => row.value === "gone" && row.selected && row.disabled));
   assert.deepEqual(
     [...state.settingsClientErrors()],
     ['default_agent "gone": not found in agents'],
   );
 
-  state.settingsConfig.general.default_agent = "";
+  assert.equal(state.agentPickerChoose("settings-default", "", false), true);
+  assert.equal(state.settingsConfig.general.default_agent, "");
   assert.deepEqual([...state.settingsClientErrors()], []);
+  assert.doesNotMatch(await state._settingsWrite(), /^default_agent:/m);
 });
 
-// Board tickets for the live counts the redesigned rail, tiles and status
-// pills read. Only kontora tickets count towards a status column.
+// Board tickets for the live counts the rail and status pills read.
+// Only kontora tickets count towards a status column.
 const SETTINGS_TICKETS = [
   { id: "kon-1", status: "in_progress", kontora: true, project: "kontora" },
   { id: "kon-2", status: "in_progress", kontora: true, project: "kontora" },
@@ -8282,9 +8282,8 @@ test("the rail summarizes each section from the loaded config", async () => {
   assert.equal(state.settingsSectionSummary("assistant"), "claude · ask first");
 });
 
-test("the rail and the tiles render against a config that is not loaded yet", () => {
-  // The rail, the header and the tiles are outside the settingsState === 'ok'
-  // template, so they render while the file is still being read and after a
+test("the rail and catalogue render against a config that is not loaded yet", () => {
+  // The rail and search render while the file is still being read and after a
   // parse error, when settingsConfig is null.
   const state = loadKontoraState();
   assert.equal(state.settingsConfig, null);
@@ -8293,15 +8292,15 @@ test("the rail and the tiles render against a config that is not loaded yet", ()
     assert.equal(state.settingsSectionSummary(s.key), "", s.key);
     assert.equal(state.settingsSectionCount(s.key), "", s.key);
   }
-  assert.deepEqual([...state.settingsOverviewTiles()], []);
+  assert.ok(state.settingsFieldCatalogue().some(field => field.local && field.section === "display"));
+  assert.deepEqual([...state.settingsSearchResults()], []);
   assert.equal(state.settingsRestartPending(), 0);
   assert.equal(state.settingsSectionMatches("web"), true);
   assert.deepEqual([...state.settingsAgentStages("claude")], []);
   assert.deepEqual([...state.settingsPipelineSteps("full")], []);
-  assert.equal(state.settingsConcurrency(), "");
 });
 
-test("the rail and the tiles read a config whose collections are all empty", async () => {
+test("the rail and catalogue read a config whose collections are all empty", async () => {
   // Every collection key present with a null value, which is how one parses
   // when all of its entries are commented out.
   const state = await settingsState(SETTINGS_BARE_FIXTURE);
@@ -8310,20 +8309,18 @@ test("the rail and the tiles read a config whose collections are all empty", asy
   assert.equal(state.settingsSectionSummary("pipelines"), "0 · 0 steps");
   assert.equal(state.settingsSectionSummary("statuses"), "7 built-in · 0 custom");
   assert.equal(state.settingsSectionSummary("web"), "127.0.0.1:8080 · no token");
-  assert.equal(state.settingsOverviewTiles()[2].unit, "0 steps");
+  assert.equal(state.settingsFieldCatalogue().filter(field => field.section === "pipelines").length, 0);
   assert.deepEqual([...state.settingsAgentStages("claude")], []);
   assert.equal(state.settingsSectionMatches("agents"), true);
 });
 
-test("the overview tiles count what the config is made of", async () => {
-  const state = await settingsState();
-
-  assert.deepEqual(vmValue(state.settingsOverviewTiles()), [
-    { label: "agents", hue: "indigo", value: 2, unit: "configured", foot: "claude · pi" },
-    { label: "stages", hue: "cyan", value: 3, unit: "templates", foot: "1 built-in (rework)" },
-    { label: "pipelines", hue: "amber", value: 1, unit: "2 steps", foot: "full" },
-    { label: "projects", hue: "green", value: 1, unit: "repos", foot: "kontora" },
-  ]);
+test("settings does not render repeated overview tiles, choice cards or the slot wall", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const settings = html.slice(html.indexOf('id="settings-view"'));
+  assert.doesNotMatch(settings, /settingsOverviewTiles\(|settingsSlots\(|settingsSlotsLabel\(|settingsSetConcurrency\(/);
+  for (const key of ["general", "assistant"]) {
+    assert.doesNotMatch(settingsSectionMarkup(html, key), /role="radiogroup"/);
+  }
 });
 
 test("the header counts only the unsaved edits a reload would not pick up", async () => {
@@ -8341,170 +8338,100 @@ test("the header counts only the unsaved edits a reload would not pick up", asyn
   assert.equal(state.settingsRestartPending(), 0);
 });
 
-test("the search filters the rail on keys, help and the live names in the file", async () => {
+test("settings search returns field instances by key, help, label and draft entity", async () => {
   const state = await settingsState();
-
-  const matches = () => [...state.settingsSections].filter((s) => state.settingsSectionMatches(s.key)).map((s) => s.key);
-
-  // An empty query shows everything, rail rows and field rows alike.
-  assert.equal(state.settingsSectionMatches("display"), true);
-  assert.equal(state.settingsRowVisible("anything", "", "display"), true);
-
-  // A key only the markup carries.
-  state.settingsQuery = "token";
-  assert.equal(state.settingsSectionMatches("web"), true);
-  assert.equal(state.settingsSectionMatches("display"), false);
-
-  // A word that appears only in a field table's help string.
-  state.settingsQuery = "tmux";
-  assert.deepEqual(matches(), ["general"]);
-
-  // A name that exists only because this config declares it.
-  state.settingsQuery = "implement";
-  assert.deepEqual(matches(), ["stages", "pipelines"]);
-
-  // Per-row: the key or its help, nothing else.
-  state.settingsQuery = "worktree";
-  assert.equal(state.settingsRowVisible("worktrees_dir", "One git worktree per ticket lives here.", "general"), true);
-  assert.equal(state.settingsRowVisible("logs_dir", "Per-stage agent output.", "general"), false);
-});
-
-test("a section matched on its own words keeps its rows instead of emptying", async () => {
-  const state = await settingsState();
-
-  // Each of these matches a section through its key, its blurb or its rail
-  // summary — words no row of that section carries. Hiding every row would
-  // leave the card headers standing over nothing.
-  for (const [query, section, row] of [
-    ["general", "general", ["logs_dir", "Per-stage agent output."]],
-    ["paths", "general", ["branch_prefix", "Fallback when the ticket's project sets none."]],
-    ["concurrency", "general", ["instance_name", "Identifies this daemon."]],
-    ["web", "web", ["host", "Bind to a tailnet IP."]],
+  assert.deepEqual([...state.settingsSearchResults()], []);
+  for (const [query, key] of [
+    ["token", ["web", "token"]],
+    ["tmux", ["max_concurrent_agents"]],
+    ["Working directory", ["assistant", "workdir"]],
+    ["implement", ["stages", "implement", "timeout"]],
+    ["worktree", ["worktrees_dir"]],
   ]) {
     state.settingsQuery = query;
-    assert.equal(state.settingsSectionMatches(section), true, query);
-    assert.equal(state.settingsRowVisible(row[0], row[1], section), true, query);
+    const results = [...state.settingsSearchResults()];
+    assert.ok(results.some(field => JSON.stringify(field.key) === JSON.stringify(key)), query);
+    assert.equal(new Set(results.map(field => field.id)).size, results.length, query);
+    assert.ok(results.every(field => field.section && field.label), query);
   }
-
-  // A section the query does not reach at all keeps its rows too: filtering
-  // them says nothing the dimmed rail row has not already said.
-  state.settingsQuery = "nothing matches this";
-  assert.equal(state.settingsSectionMatches("web"), false);
-  assert.equal(state.settingsRowVisible("host", "Bind to a tailnet IP.", "web"), true);
-
-  // A query that does reach a row still narrows the section to it.
-  state.settingsQuery = "port";
-  assert.equal(state.settingsRowVisible("port", "Port for the dashboard.", "web"), true);
-  assert.equal(state.settingsRowVisible("host", "Bind to a tailnet IP.", "web"), false);
 });
 
-test("every row filter names the section it is written in", () => {
+test("searching does not change the draft and never indexes secret values or prompt bodies", async () => {
+  const state = await settingsState();
+  state.settingsConfig.web.token = "credential-only-needle";
+  state.settingsConfig.environment.TEST_SECRET = "environment-only-needle";
+  state.settingsConfig.stages.plan.prompt = "prompt-only-needle";
+  const before = vmValue(state.settingsConfig);
+  const changed = [...state.settingsChangedPaths()];
+  for (const query of ["credential-only-needle", "environment-only-needle", "prompt-only-needle", "nothing matches this"]) {
+    state.settingsQuery = query;
+    assert.deepEqual([...state.settingsSearchResults()], [], query);
+  }
+  state.settingsQuery = "timeout";
+  assert.ok(state.settingsSearchResults().length > 1);
+  state.settingsQuery = "";
+  assert.deepEqual(vmValue(state.settingsConfig), before);
+  assert.deepEqual([...state.settingsChangedPaths()], changed);
+});
+
+test("settings search renders a results view with context, target activation and an explicit empty state", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
-
-  // settingsRowVisible reads the row terms of the section it is given, so a
-  // call naming the wrong one — or none — filters against another section's
-  // rows. Each call is attributed to the last section boundary above it.
-  const bounds = [...html.matchAll(/x-show="settingsSection === '([a-z]+)'"/g)];
-  const calls = [...html.matchAll(/settingsRowVisible\(/g)].map((m) => {
-    let i = m.index + m[0].length;
-    for (let depth = 1; depth; i++) {
-      if (html[i] === "(") depth++;
-      else if (html[i] === ")") depth--;
-    }
-    return { at: m.index, text: html.slice(m.index, i) };
-  });
-  assert.ok(calls.length >= 20);
-
-  for (const call of calls) {
-    const section = bounds.filter((b) => b.index < call.at).pop();
-    assert.ok(section, call.text);
-    assert.match(call.text, new RegExp(`, '${section[1]}'\\)$`), call.text);
-  }
+  const results = html.match(/<section x-show="settingsQuery\.trim\(\)"[\s\S]*?<\/section>/)?.[0];
+  assert.ok(results);
+  assert.match(results, /aria-label="Settings search results"/);
+  assert.match(results, /x-for="result in settingsSearchResults\(\)" :key="result.id"/);
+  assert.match(results, /@click="settingsRevealField\(result.id\)"/);
+  assert.match(results, /sectionTitle\(result.section\)/);
+  assert.match(results, /result.entity/);
+  assert.match(results, /x-show="!settingsSearchResults\(\).length"/);
+  assert.match(results, /No settings match this search/);
+  assert.match(results, /@click="settingsQuery = ''; settingsQueryChanged\(\)"/);
+  // Search replaces the form rather than narrowing rows under empty headers.
+  assert.match(html, /<fieldset[^>]*x-show="!settingsQuery.trim\(\)"/);
 });
 
-test("every general field is drawn by exactly one card of the section", () => {
+test("every general field is drawn exactly once in the recomposed form", () => {
   const state = loadKontoraState();
-  const html = fs.readFileSync(htmlPath, "utf8");
-
-  const groups = ["locations", "execution"];
-  const placed = groups.flatMap((g) => [...state.settingsGeneralGroup(g)].map((f) => f.key));
-  assert.deepEqual(placed.slice().sort(), [...state.settingsGeneralFields].map((f) => f.key).sort());
-  assert.equal(new Set(placed).size, placed.length);
-
-  // A field is drawn either by its group's text-input template or by a control
-  // written out in the markup. Nothing may fall between the two.
-  const text = new Set(groups.flatMap((g) => [...state.settingsGeneralTextRows(g)].map((f) => f.key)));
-  for (const f of state.settingsGeneralFields) {
-    if (text.has(f.key)) continue;
-    assert.match(html, new RegExp(`settingsGeneralFields\\.find\\(x => x\\.key === '${f.key}'\\)`), f.key);
+  const general = settingsSectionMarkup(fs.readFileSync(htmlPath, "utf8"), "general");
+  const placed = [];
+  for (const match of general.matchAll(/settingsGeneralFields\.filter\(f => (\[[^\]]+\])\.includes\(f\.key\)\)/g)) {
+    placed.push(...[...match[1].matchAll(/'([^']+)'/g)].map(key => key[1]));
   }
+  placed.push(...[...general.matchAll(/settingsGeneralFields\.find\(x => x\.key === '([^']+)'\)/g)].map(match => match[1]));
+  placed.push(...[...general.matchAll(/x-model="settingsConfig\.general\.([a-z_]+)"/g)].map(match => match[1]));
+  assert.deepEqual(placed.sort(), [...state.settingsGeneralFields].map(field => field.key).sort());
+  assert.equal(new Set(placed).size, placed.length);
 });
 
-test("the concurrency stepper edits and saves the same path the text input does", async () => {
+test("compact concurrency inputs preserve raw text and save arbitrary supported limits", async () => {
   const state = await settingsState();
-  state.runningAgents = 2;
-  assert.equal(state.settingsConcurrency(), "");
-  // Unset, so no option is selected and the free-text input stays on screen.
-  assert.equal(state.settingsConcurrencyOther(), true);
-  // An unset cap is the daemon's own default of 3.
-  assert.deepEqual(vmValue(state.settingsSlots()), { busy: 2, total: 3, pills: 3 });
-
-  state.settingsSetConcurrency(6);
-  assert.deepEqual([...state.settingsChangedPaths()], ["max_concurrent_agents"]);
-  assert.equal(state.settingsConcurrencyOther(), false);
-  assert.deepEqual(vmValue(state.settingsSlots()), { busy: 2, total: 6, pills: 6 });
-  assert.equal(state.settingsSlotsLabel(), "2 of 6 slots busy right now");
-  assert.match(await state._settingsWrite(), /^max_concurrent_agents: 6$/m);
-
-  // A value the stepper does not offer keeps the free-text input, and is still
-  // written through unchanged for the daemon to reject.
+  const general = settingsSectionMarkup(fs.readFileSync(htmlPath, "utf8"), "general");
+  assert.match(general, /<input[^>]*type="text" inputmode="numeric" x-model="settingsConfig.general\[f.key\]"/);
+  assert.equal(state.settingsConfig.general.max_concurrent_agents, "");
+  for (const value of ["6", "12", "4", "5000", "1", "9007199254740993"]) {
+    state.settingsConfig.general.max_concurrent_agents = value;
+    assert.deepEqual([...state.settingsChangedPaths()], ["max_concurrent_agents"]);
+    assert.match(await state._settingsWrite(), new RegExp(`^max_concurrent_agents: ${value}$`, "m"));
+    assert.equal(state.settingsConfig.general.max_concurrent_agents, value);
+  }
+  // Invalid nonnumeric text still reaches daemon validation unchanged.
   state.settingsConfig.general.max_concurrent_agents = "lots";
-  assert.equal(state.settingsConcurrencyOther(), true);
-  assert.equal(state.settingsSlots().total, 0);
   assert.match(await state._settingsWrite(), /^max_concurrent_agents: lots$/m);
+  state.settingsConfig.general.max_concurrent_agents = "";
+  assert.deepEqual([...state.settingsChangedPaths()], []);
 });
 
-test("the concurrency stepper can be left again for a value it does not offer", async () => {
-  const state = await settingsState();
-
-  // Every option the stepper offers is a value it can also leave: the "other"
-  // option puts the free-text input back, and typing into it stays there.
-  state.settingsSetConcurrency(6);
-  assert.equal(state.settingsConcurrencyOther(), false);
-  state.settingsConcurrencyCustom = true;
-  assert.equal(state.settingsConcurrencyOther(), true);
-  state.settingsConfig.general.max_concurrent_agents = "12";
-  assert.equal(state.settingsConcurrencyOther(), true);
-  assert.match(await state._settingsWrite(), /^max_concurrent_agents: 12$/m);
-
-  // Picking an option again closes it.
-  state.settingsSetConcurrency(4);
-  assert.equal(state.settingsConcurrencyOther(), false);
-  assert.equal(state.settingsConcurrencyIs(4), true);
-
-  // "03" is text the user typed, not the option 3: the stepper shows nothing
-  // selected and the input keeps what was typed, until the save writes the
-  // number the daemon reads.
-  state.settingsConfig.general.max_concurrent_agents = "03";
-  assert.equal(state.settingsConcurrencyIs(3), false);
-  assert.equal(state.settingsConcurrencyOther(), true);
-  assert.match(await state._settingsWrite(), /^max_concurrent_agents: 3$/m);
-});
-
-test("the capacity meter survives a cap no board could fill", async () => {
-  const state = await settingsState();
-  state.runningAgents = 3;
-
-  // The cap is free text. Without the clamp the template draws one span per
-  // slot, and 5000 of them stall the tab on every keystroke.
-  state.settingsConfig.general.max_concurrent_agents = "5000";
-  assert.deepEqual(vmValue(state.settingsSlots()), { busy: 3, total: 5000, pills: 24 });
-  assert.equal(state.settingsSlotsLabel(), "3 of 5000 slots busy right now");
-
-  // A cap edited below what is already running reads as an overrun rather than
-  // as "3 of 1 slots busy right now".
-  state.settingsSetConcurrency(1);
-  assert.equal(state.settingsSlotsLabel(), "3 running, over the cap of 1");
+test("legacy numeric input is retained with file-edit guidance and never PUT", async () => {
+  const daemon = settingsFetch();
+  const state = await settingsState(SETTINGS_FIXTURE, { fetch: daemon.fetch });
+  for (const raw of ["03", "010"]) {
+    state.settingsConfig.general.max_concurrent_agents = raw;
+    assert.equal(await state.saveSettings(), false);
+    assert.equal(state.settingsConfig.general.max_concurrent_agents, raw);
+    assert.equal(state.settingsDirty(), true);
+    assert.match(state.settingsErrors.join(" "), /file.*directly/i);
+    assert.equal(daemon.puts().length, 0);
+  }
 });
 
 test("the live counts come from the board the page already holds", async () => {
@@ -8532,12 +8459,12 @@ test("a pipeline step node resolves the stage's model for the agent that runs it
   assert.deepEqual(vmValue(state.settingsPipelineSteps("full")), [
     {
       index: 0, stage: "plan", agent: "claude", kind: "claude", model: "",
-      timeout: "45m", running_status: "in_progress", on_success: "next", on_failure: "retry", max_retries: 2, running: false,
+      timeout: "45m", running_status: "in_progress", on_success: "next", on_failure: "retry", max_retries: '2', running: false,
     },
     {
       // stages.implement.model is a map; claude's entry wins over the kind.
       index: 1, stage: "implement", agent: "claude", kind: "claude", model: "opus",
-      timeout: "2h", running_status: "in_progress", on_success: "human_review", on_failure: "pause", max_retries: 0, running: false,
+      timeout: "2h", running_status: "in_progress", on_success: "human_review", on_failure: "pause", max_retries: '0', running: false,
     },
   ]);
 });
@@ -8867,15 +8794,14 @@ test("the notifications search reaches a channel by name and by type", async () 
   const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
 
   state.settingsQuery = "mattermost";
-  assert.equal(state.settingsSectionMatches("notifications"), true);
+  assert.ok(state.settingsSearchResults().some(field => field.section === "notifications" && field.entity === "ops"));
   state.settingsQuery = "tg-me";
-  assert.equal(state.settingsSectionMatches("notifications"), true);
-  assert.equal(state.settingsRowVisible("ops", "webhook", "notifications"), false);
-  assert.equal(state.settingsRowVisible("tg-me", "telegram", "notifications"), true);
+  const results = [...state.settingsSearchResults()];
+  assert.ok(results.length > 0);
+  assert.ok(results.every(field => field.section === "notifications" && field.entity === "tg-me"));
 });
 
-test("read-only project defaults are searchable and preserve YAML on unrelated saves", async () => {
-  const text = `${SETTINGS_NOTIFY_FIXTURE}
+const SETTINGS_PROJECT_DEFAULTS_FIXTURE = `${SETTINGS_NOTIFY_FIXTURE}
 projects:
   kontora:
     path: ~/projects/kontora
@@ -8883,17 +8809,21 @@ projects:
     notify_channels:
       - ops
 `;
-  const daemon = settingsFetch({ raw: text });
-  const state = await settingsState(text, { fetch: daemon.fetch });
 
-  assert.deepEqual([...state.settingsConfig.projects.kontora.notify_channels], ["ops"]);
-  assert.equal(state.settingsConfig.projects.kontora.epic_child_pipeline, "child-workflow");
+test("read-only project defaults are searchable by key and referenced pipeline name", async () => {
+  const state = await settingsState(SETTINGS_PROJECT_DEFAULTS_FIXTURE);
   for (const query of ['epic_child_pipeline', 'child-workflow']) {
     state.settingsQuery = query;
-    assert.equal(state.settingsSectionMatches('projects'), true, query);
-    assert.equal(state.settingsRowVisible('kontora', '~/projects/kontora epic_child_pipeline child-workflow', 'projects'), true, query);
+    assert.ok(state.settingsSearchResults().some(field =>
+      field.section === 'projects' && field.entity === 'kontora' && field.key.at(-1) === 'epic_child_pipeline' && field.readonly), query);
   }
-  state.settingsQuery = '';
+});
+
+test("read-only project defaults preserve YAML on unrelated saves", async () => {
+  const daemon = settingsFetch({ raw: SETTINGS_PROJECT_DEFAULTS_FIXTURE });
+  const state = await settingsState(SETTINGS_PROJECT_DEFAULTS_FIXTURE, { fetch: daemon.fetch });
+  assert.deepEqual([...state.settingsConfig.projects.kontora.notify_channels], ["ops"]);
+  assert.equal(state.settingsConfig.projects.kontora.epic_child_pipeline, "child-workflow");
   state.settingsConfig.general.branch_prefix = 'agent';
   assert.deepEqual([...state.settingsChangedPaths()], ['branch_prefix']);
   assert.equal(await state.saveSettings(), true);
@@ -8905,13 +8835,14 @@ projects:
 
 test("escape clears the settings search without unwinding the global escape chain", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
-  const input = html.slice(html.indexOf('id="settings-search"'), html.indexOf('id="settings-search"') + 400);
-
-  assert.match(input, /x-model="settingsQuery"/);
-  // A query to clear consumes the keystroke, so it never reaches
-  // @keydown.escape.window, which would close a detail panel or the assistant
-  // pane at the same time. An empty box still falls through to that chain.
-  assert.match(input, /@keydown\.escape="if \(settingsQuery\) \{ \$event\.stopPropagation\(\); settingsQuery = '' \}"/);
+  // Clearing a query consumes Escape before the global overlay chain and
+  // updates the route in both the desktop and compact search controls.
+  for (const id of ["settings-search", "settings-search-compact"]) {
+    const input = html.match(new RegExp(`<input id="${id}"[^>]*>`))?.[0];
+    assert.ok(input, id);
+    assert.match(input, /x-model="settingsQuery"/);
+    assert.match(input, /@keydown\.escape="if \(settingsQuery\) \{ \$event\.stopPropagation\(\); settingsQuery = ''; settingsQueryChanged\(\) \}"/);
+  }
 });
 
 test("slash focuses the settings search, and only there", () => {
@@ -9861,7 +9792,7 @@ test("the shared picker markup wires all hosts, ARIA, Popover, and fallback beha
   const html = fs.readFileSync(htmlPath, "utf8");
 
   const hosts = [...html.matchAll(/x-data="\{ pickerHost: '([^']+)' \}" x-html="agentPickerControl"/g)].map((match) => match[1]);
-  assert.deepEqual(hosts.sort(), ["automations", "create", "edit", "init", "mobile-create"]);
+  assert.deepEqual(hosts.sort(), ["automations", "create", "edit", "init", "mobile-create", "settings-assistant", "settings-default"]);
   assert.match(uiSource, /popover="manual" role="presentation"/);
   assert.match(uiSource, /role="listbox" tabindex="-1"/);
   assert.match(uiSource, /role="option" :aria-selected="row\.selected"/);
@@ -10674,7 +10605,10 @@ test("the hash router maps each route to a view", async () => {
     { hash: "#/automations", view: "automations", ticket: null },
     { hash: "#/automations?state=paused&q=notes", view: "automations", ticket: null },
     { hash: "#/stats", view: "stats", ticket: null },
-    { hash: "#/settings", view: "settings", ticket: null },
+    { hash: "#/settings", canonical: "#/settings/general", view: "settings", ticket: null },
+    { hash: "#/settings/general", view: "settings", ticket: null },
+    { hash: "#/settings/stages", view: "settings", ticket: null },
+    { hash: "#/settings/web?q=timeout", view: "settings", ticket: null },
     { hash: "#/t/kon-vd0j", view: "board", ticket: "kon-vd0j" },
     { hash: "#/nonsense", view: "board", ticket: null },
   ];
@@ -10686,7 +10620,7 @@ test("the hash router maps each route to a view", async () => {
     assert.equal(state.currentView, tc.view, tc.hash);
     assert.equal(state.selectedTicket ? state.selectedTicket.id : null, tc.ticket, tc.hash);
     // Serializing the resulting view restores the same hash.
-    assert.equal(state.routeHash(), tc.hash === "" || tc.hash === "#/nonsense" ? "#/" : tc.hash, tc.hash);
+    assert.equal(state.routeHash(), tc.canonical || (tc.hash === "" || tc.hash === "#/nonsense" ? "#/" : tc.hash), tc.hash);
     assert.equal(location.hash, state.routeHash(), tc.hash);
   }
 });
@@ -19337,7 +19271,6 @@ test('supervisor capacity reloads live and defaults to four', async () => {
   assert.equal(field.placeholder, '4');
   assert.equal(state.settingsIsRestartOnly(field.key), false);
   assert.doesNotMatch(field.help, /restart/i);
-  assert.ok(state.settingsGeneralTextRows('execution').some(f => f.key === field.key));
   state.settingsConfig.general.max_concurrent_epic_supervisors = '6';
   assert.match(await state._settingsWrite(), /^max_concurrent_epic_supervisors: 6$/m);
   state.settingsConfig.general.max_concurrent_epic_supervisors = 'many';
@@ -20603,7 +20536,7 @@ for (const destination of [
 ]) {
   for (const continuation of ['stay', 'discard', 'save', 'failed save']) {
     test(`dirty Settings preserves complete ${JSON.stringify(destination)} after ${continuation}`, async () => {
-      const location = { hash: '#/settings' };
+      const location = { hash: '#/settings/general' };
       const primary = { id: 'route-a', status: 'in_progress', kind: 'ticket' };
       const secondary = { ...primary, source: 'other', status: 'open' };
       const epic = { id: 'epic-a', kind: 'epic', status: 'open' };
@@ -20628,7 +20561,7 @@ for (const destination of [
       assert.equal(state.selectedEpic, null);
       assert.equal(opened, 0);
       assert.deepEqual(vmValue(state.settingsGuardTarget), destination);
-      assert.equal(location.hash, '#/settings');
+      assert.equal(location.hash, '#/settings/general');
       if (continuation === 'stay') { state.settingsGuard = false; return; }
       if (continuation === 'discard') await state.settingsGuardDiscard();
       else await state.settingsGuardSave();

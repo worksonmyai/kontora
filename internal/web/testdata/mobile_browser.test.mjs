@@ -53,6 +53,97 @@ function ticket(id, title, extra = {}) {
     can_edit: true, can_control: true, ...extra };
 }
 
+// Settings use a separate raw document from /api/config: draft definitions must
+// not silently come from the operational cache. No fixture URL is contacted.
+const settingsRaw = `# Browser settings fixture: preserve comments and aliases.
+tickets_dir: /fixtures/primary
+worktrees_dir: /fixtures/worktrees
+logs_dir: /fixtures/logs
+branch_prefix: fixture
+auto_pick_up: false
+max_concurrent_agents: 3
+max_concurrent_epic_supervisors: 9007199254740993
+default_agent: fixture-agent
+environment: &shared_environment
+  FIXTURE_MODE: never-search-environment-value
+agents:
+  fixture-agent:
+    binary: pi
+    args: [--model, fixture-model]
+    environment: *shared_environment
+  draft-only:
+    binary: claude
+  unsupported:
+    binary: custom-runner
+  a/b:
+    binary: pi
+  a_2Fb:
+    binary: claude
+  ' spaced agent ':
+    binary: pi
+stages:
+  plan:
+    prompt: never-search-stage-prompt
+    timeout: 30m
+  code:
+    prompt: Implement the fixture.
+    timeout: 1h30m
+    model:
+      pi: fixture-model
+pipelines:
+  standard:
+    - stage: plan
+      agent: fixture-agent
+      on_success: next
+      on_failure: paused
+    - stage: code
+      agent: draft-only
+      on_success: done
+      on_failure: paused
+projects:
+  Fixture repository:
+    path: /fixtures/repository-with-a-long-name
+    pipeline: standard
+    agent: fixture-agent
+    branch_prefix: fixture
+    notify_channels: [hook]
+web:
+  host: 127.0.0.1
+  port: 8080
+  token: never-search-web-token
+assistant:
+  agent: fixture-agent
+  model: fixture-chat-model
+  timeout: 10m
+  autonomy: ask
+  prompt: never-search-assistant-prompt
+  companion:
+    enabled: true
+    name: Fixture companion
+plannotator:
+  binary: plannotator
+  timeout: 30m
+  reviews_dir: /fixtures/reviews
+notifications:
+  enabled: true
+  timeout: 10s
+  attempts: 3
+  backoff: 5s
+  default: [hook]
+  channels:
+    hook:
+      type: webhook
+      url: https://fixture.invalid/hook
+      method: POST
+      headers:
+        X-Fixture: never-search-header-value
+    telegram:
+      type: telegram
+      chat_id: '-1001234567890'
+      secret_env: FIXTURE_BOT_TOKEN
+statuses: [needs_review]
+`;
+
 // Keys include source and id so a primary PUT cannot save a secondary namesake.
 function fixtures(options = {}) {
   const records = new Map();
@@ -89,8 +180,10 @@ function fixtures(options = {}) {
   const descriptionWrites = [], pendingResizes = [];
   const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, activityEvents: null, bracketedPaste: false,
     descriptionWait: null, descriptionFailure: null, holdResizes: false,
-    automationFailure: null, automationWait: null, automationsAvailable: true, loseCreate: false, loseRun: false,
+    automationFailure: null, automationReadFailure: null, automationWait: null, automationsAvailable: true, loseCreate: false, loseRun: false,
     unavailableFolder: false, sourcesFailure: false, configFailure: options.configFailure || false,
+    rawConfigUnavailable: options.rawConfigUnavailable || false, rawReadWait: null, configRefreshWait: null,
+    saveWait: null, saveResponse: null, conflictOnSave: false,
     assistantConfig: options.assistantConfig || { enabled: true, hint: '', autonomy: 'ask' },
     companionSnapshot: structuredClone(options.companionSnapshot || { enabled: true, name: 'Kotik', health: 'ok', ai_available: false, items: [], revision: 1 }),
     companionWait: options.companionWait || null, companionFailure: null, assistantStopFailure: null };
@@ -110,7 +203,7 @@ function fixtures(options = {}) {
   const specFields = ['agent', 'enabled', 'model', 'name', 'overlap', 'path', 'prompt', 'schedule', 'timeout', 'timezone', 'workspace'];
   const spec = value => assert.deepEqual(Object.keys(value).sort(), specFields);
   const configWrites = [];
-  let rawConfig = options.rawConfig || 'tickets_dir: /fixtures/primary\nauto_pick_up: false\nmax_concurrent_agents: 3\nagents:\n  fixture-agent:\n    binary: pi\n';
+  let rawConfig = options.rawConfig ?? 'tickets_dir: /fixtures/primary\nauto_pick_up: false\nmax_concurrent_agents: 3\nagents:\n  fixture-agent:\n    binary: pi\n';
   const list = folder => [...records.values()].filter(t => t.source === folder && !t.archived_at);
   const active = record => record.execution_active ?? (record.status === 'in_progress');
   const json = (route, value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
@@ -175,7 +268,13 @@ function fixtures(options = {}) {
         const offset = Number(url.searchParams.get('offset')), limit = Number(url.searchParams.get('limit'));
         assert.ok(limit >= 20 && limit <= 100); return json(route, { runs: history.slice(offset, offset + limit), total: history.length });
       }
-      if (method === 'GET' && !action) return json(route, definition);
+      if (method === 'GET' && !action) {
+        if (behavior.automationReadFailure) {
+          expectedHTTPFailures.push(base + path);
+          return json(route, { error: behavior.automationReadFailure }, 500);
+        }
+        return json(route, definition);
+      }
       const body = request.postDataJSON();
       mutations.push({ method, path, body });
       if (method === 'POST' && action === 'run') {
@@ -217,6 +316,7 @@ function fixtures(options = {}) {
             return json(route, { error: 'Configuration temporarily unavailable' }, 503);
           }
           if (configWait) await configWait;
+          if (behavior.configRefreshWait) await behavior.configRefreshWait;
           return json(route, config);
         case '/api/ticket-sources':
           if (behavior.sourcesFailure) {
@@ -240,18 +340,41 @@ function fixtures(options = {}) {
           }
           return json(route, behavior.companionSnapshot);
         case '/api/events': return route.fulfill({ contentType: 'text/event-stream', body: 'retry: 3600000\n\n: offline fixture\n\n' });
-        case '/api/config/raw': return json(route, { content: rawConfig });
+        case '/api/config/raw':
+          if (behavior.rawReadWait) await behavior.rawReadWait;
+          if (behavior.rawConfigUnavailable) {
+            expectedHTTPFailures.push(base + path);
+            return json(route, { error: 'No config file' }, 501);
+          }
+          return json(route, { content: rawConfig });
         case '/api/stats': return json(route, { totals: { done: 1, runs: 2, first_pass_pct: 50 }, live: {}, days: [], buckets: [], stages: [], agents: [], projects: [] });
         case '/api/tickets/archived': return json(route, { tickets: [records.get('primary/kon-archived')] });
       }
     }
     if (method === 'PUT' && path === '/api/config/raw') {
+      const body = request.postDataJSON();
+      assert.deepEqual(Object.keys(body).sort(), ['content', 'expected_content']);
+      assert.equal(typeof body.content, 'string');
+      assert.equal(typeof body.expected_content, 'string');
+      mutations.push({ method, path, body });
+      if (behavior.saveWait) await behavior.saveWait;
+      if (behavior.conflictOnSave || body.expected_content !== rawConfig) {
+        expectedHTTPFailures.push(base + path);
+        return json(route, { error: 'Configuration changed before conditional write' }, 409);
+      }
       if (behavior.saveFailure) {
         expectedHTTPFailures.push(base + path);
         return json(route, { error: behavior.saveFailure }, 503);
       }
-      rawConfig = request.postDataJSON().content;
-      configWrites.push(rawConfig);
+      const response = behavior.saveResponse;
+      if (!response || response.status === 204 || response.body?.code === 'config_saved_reload_failed') {
+        rawConfig = body.content;
+        configWrites.push(rawConfig);
+      }
+      if (response && response.status !== 204) {
+        expectedHTTPFailures.push(base + path);
+        return json(route, response.body, response.status);
+      }
       return route.fulfill({ status: 204 });
     }
     if (method === 'POST' && path === '/api/tickets') {
@@ -449,7 +572,8 @@ function fixtures(options = {}) {
       };
     });
   }
-  return { install, config, configWrites, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig, descriptionWrites, pendingResizes };
+  return { install, config, configWrites, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig, descriptionWrites, pendingResizes,
+    get rawConfig() { return rawConfig; }, set rawConfig(content) { rawConfig = content; } };
 }
 
 async function withPage(t, width, theme, run, options = {}) {
@@ -457,8 +581,14 @@ async function withPage(t, width, theme, run, options = {}) {
     reducedMotion: options.reducedMotion || 'reduce', serviceWorkers: 'block', locale: 'en-US', timezoneId: 'UTC' });
   const fixture = fixtures(options), errors = [];
   await fixture.install(context);
+  if (options.noNavigation) await context.addInitScript(() => {
+    Object.defineProperty(window, 'navigation', { configurable: true, value: undefined });
+  });
+  if (options.nativeAgentPicker) await context.addInitScript(() => {
+    Object.defineProperty(HTMLElement.prototype, 'showPopover', { configurable: true, value: undefined });
+  });
   await context.addInitScript(({ theme, sidebar, savedThread, assistantOpen }) => {
-    localStorage.setItem('kontora-theme', theme);
+    if (localStorage.getItem('kontora-theme') === null) localStorage.setItem('kontora-theme', theme);
     localStorage.setItem('kontora-assistant-open', assistantOpen ? '1' : '0');
     if (savedThread) localStorage.setItem('kontora-assistant-thread', savedThread);
     localStorage.setItem('kontora-sidebar-hidden', sidebar ? '0' : '1');
@@ -535,6 +665,7 @@ async function ready(page) {
 async function routeTo(page, route) {
   await ready(page);
   await page.evaluate(route => { location.hash = route; }, route);
+  if (route === '#/settings') route = '#/settings/general';
   await page.waitForFunction(route => {
     const app = Alpine.$data(document.body);
     return location.hash === route && app.routeHash() === route && app._applyingRoute === null;
@@ -552,6 +683,871 @@ async function backToBoard(page) {
   await routeTo(page, '#/');
   await page.waitForFunction(() => !Alpine.$data(document.body).selectedTicket && !Alpine.$data(document.body).selectedEpic);
 }
+
+// Settings assertions use real DOM controls; component reads below only observe
+// state or resolve the catalogue's identity, never perform application actions.
+const settingsView = page => page.locator('#settings-view');
+const settingsButton = (page, name) => settingsView(page).getByRole('button', { name, exact: true }).filter({ visible: true });
+const settingsWrites = fixture => fixture.mutations.filter(m => m.method === 'PUT' && m.path === '/api/config/raw');
+const settingsSearch = page => page.locator('#settings-search:visible, #settings-search-compact:visible');
+async function settingsSection(page, key) {
+  const compact = page.locator('#settings-mobile-section');
+  if (await compact.isVisible()) await compact.selectOption(key);
+  else await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('button').filter({ has: page.locator(`[x-text="sectionTitle(key)"]`, { hasText: ({ web: 'Server & access', plannotator: 'Review', display: 'Appearance' })[key] || key.charAt(0).toUpperCase() + key.slice(1) }) }).click();
+  await page.waitForURL('**/#/settings/' + key);
+  await ready(page);
+}
+async function settingsField(page, key) {
+  const id = await page.evaluate(key => {
+    const app = Alpine.$data(document.body);
+    const field = app.settingsFieldCatalogue().find(f => JSON.stringify(f.key) === JSON.stringify(key));
+    const dynamicID = app.settingsFieldID(key);
+    return document.getElementById(dynamicID) ? dynamicID : field?.target || dynamicID;
+  }, key);
+  return page.locator(`[id=${JSON.stringify(id)}]`);
+}
+async function settingsReveal(page, query, context) {
+  await settingsSearch(page).fill(query);
+  const results = page.getByRole('region', { name: 'Settings search results' });
+  await visible(results);
+  const result = results.getByRole('button').filter({ hasText: context });
+  await expect(result, `Expected one result for ${query} / ${context}`).toHaveCount(1);
+  await result.click();
+  await ready(page);
+  assert.equal(await settingsSearch(page).inputValue(), '');
+  await inViewport(page.locator(':focus'));
+}
+async function openSettingsDetails(locator) {
+  const ancestors = await locator.evaluate(el => {
+    const paths = [];
+    for (let p = el.parentElement; p; p = p.parentElement) if (p.tagName === 'DETAILS' && !p.open) {
+      const all = [...document.querySelectorAll('details')]; paths.unshift(all.indexOf(p));
+    }
+    return paths;
+  });
+  for (const index of ancestors) await locator.page().locator('details').nth(index).locator(':scope > summary').click();
+  await visible(locator);
+}
+async function settingsReadable(page) {
+  const failures = await settingsView(page).evaluate(root => {
+    const rgb = text => {
+      const match = text.match(/[\d.]+/g).map(Number);
+      return [match[0], match[1], match[2], match[3] ?? 1];
+    };
+    const blend = (front, back) => front.slice(0, 3).map((c, i) => c * front[3] + back[i] * (1 - front[3])).concat(1);
+    const background = el => {
+      const chain = [];
+      for (let p = el; p; p = p.parentElement) chain.unshift(p);
+      return chain.reduce((color, node) => blend(rgb(getComputedStyle(node).backgroundColor), color), [255, 255, 255, 1]);
+    };
+    const lum = color => color.slice(0, 3).map(c => c / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4).reduce((n, v, i) => n + v * [.2126, .7152, .0722][i], 0);
+    const ratio = (a, b) => (Math.max(lum(a), lum(b)) + .05) / (Math.min(lum(a), lum(b)) + .05);
+    return [...root.querySelectorAll('.settings-content label, .settings-help, .settings-content .text-tx-4, .settings-content .text-tx-faint')]
+      .filter(el => el.checkVisibility() && el.textContent.trim() && !el.closest('button, summary'))
+      .map(el => ({ text: el.textContent.trim().slice(0, 100), ratio: ratio(blend(rgb(getComputedStyle(el).color), background(el)), background(el)) }))
+      .filter(item => item.ratio < 4.5);
+  });
+  assert.deepEqual(failures, [], 'Settings labels and help must have at least 4.5:1 computed contrast');
+}
+async function settingsKeyboardFocus(locator) {
+  await locator.scrollIntoViewIfNeeded();
+  await locator.page().keyboard.press('Tab');
+  await locator.focus();
+  await expect(locator).toBeFocused();
+  await inViewport(locator);
+  const focus = await locator.evaluate(el => {
+    const style = getComputedStyle(el);
+    const rgb = value => value.match(/[\d.]+/g).map(Number);
+    const lum = channels => channels.slice(0, 3).map(c => c / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4).reduce((n, v, i) => n + v * [.2126, .7152, .0722][i], 0);
+    let background = [255, 255, 255];
+    const ancestors = [];
+    for (let p = el.parentElement; p; p = p.parentElement) ancestors.unshift(p);
+    for (const p of ancestors) {
+      const color = rgb(getComputedStyle(p).backgroundColor), alpha = color[3] ?? 1;
+      background = background.map((v, i) => color[i] * alpha + v * (1 - alpha));
+    }
+    const outline = style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) > 0;
+    const indicator = outline ? rgb(style.outlineColor) : rgb(style.boxShadow.match(/rgba?\([^)]*\)/)?.[0] || 'rgb(0, 0, 0)');
+    const alpha = indicator[3] ?? 1;
+    const foreground = indicator.slice(0, 3).map((v, i) => v * alpha + background[i] * (1 - alpha));
+    const ratio = (Math.max(lum(foreground), lum(background)) + .05) / (Math.min(lum(foreground), lum(background)) + .05);
+    return { visible: el.matches(':focus-visible'), outline, shadow: style.boxShadow !== 'none', ratio };
+  });
+  assert.ok(focus.visible && (focus.outline || focus.shadow), `Immediate keyboard focus indicator required: ${JSON.stringify(focus)}`);
+  assert.ok(focus.ratio >= 3, `Settings focus indicator contrast must reach 3:1: ${JSON.stringify(focus)}`);
+}
+
+// Runs only against the embedded asset server and the deny-by-default fixture.
+describe('Settings configuration workflows', () => {
+  for (const width of [1440, 390]) for (const theme of themes) {
+    const options = { rawConfig: settingsRaw };
+    test(`Settings all sections, read-only workflows, contrast and IDs / ${width}px / ${theme}`, { timeout: 60000 }, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/settings');
+        await expect(settingsView(page).getByRole('heading', { name: 'General', exact: true })).toBeVisible();
+        assert.equal(new URL(page.url()).hash, '#/settings/general');
+        const worker = page.locator('#gen-max_concurrent_agents');
+        await worker.scrollIntoViewIfNeeded();
+        await inViewport(worker);
+        assert.equal(await worker.inputValue(), '3');
+        assert.ok((await worker.boundingBox()).height >= (width < 768 ? 44 : 40), 'Settings control target height');
+        if (width < 768) assert.ok(parseFloat(await worker.evaluate(el => getComputedStyle(el).fontSize)) >= 16, 'Phone fields do not trigger text zoom');
+        const supervisor = page.locator('#gen-max_concurrent_epic_supervisors');
+        assert.equal(await supervisor.inputValue(), '9007199254740993');
+        await settingsKeyboardFocus(worker);
+        await settingsReadable(page);
+        const sections = [
+          ['environment', 'Environment', () => page.getByRole('textbox', { name: 'FIXTURE_MODE value', exact: true })],
+          ['agents', 'Agents', () => settingsView(page).locator('.settings-agent summary').first()],
+          ['stages', 'Stages', () => settingsButton(page, 'add stage')],
+          ['pipelines', 'Pipelines', () => settingsView(page).locator('.settings-pipeline-flow')],
+          ['projects', 'Projects', () => settingsView(page).locator('.settings-project summary')],
+          ['web', 'Server & access', () => page.locator('#web-host')],
+          ['assistant', 'Assistant', () => page.locator('#settings-assistant-agent:visible, #settings-assistant-agent-fallback:visible')],
+          ['plannotator', 'Review', () => page.locator('#pl-binary')],
+          ['notifications', 'Notifications', () => settingsView(page).getByRole('switch').first()],
+          ['statuses', 'Statuses', () => settingsButton(page, 'add status')],
+          ['display', 'Appearance', () => settingsView(page).getByRole('switch', { name: 'Pipeline badges', exact: true })],
+        ];
+        for (const [key, title, control] of sections) {
+          await settingsSection(page, key);
+          await expect(settingsView(page).getByRole('heading', { name: title, exact: true, level: 1 })).toBeVisible();
+          await control().scrollIntoViewIfNeeded();
+          await inViewport(control());
+          await settingsReadable(page);
+          await noPageOverflow(page);
+          if (key === 'pipelines' || key === 'projects') {
+            const pane = settingsView(page).locator(`[x-show="settingsSection === '${key}'"]`);
+            await visible(pane.getByText(/Read-only\. Edit/));
+            assert.equal(await pane.locator('input, textarea, select').count(), 0, `${key} remains read-only`);
+            if (key === 'projects') {
+              await pane.locator('summary').click();
+              await visible(pane.getByText('/fixtures/repository-with-a-long-name', { exact: true }).last());
+            } else {
+              const ending = pane.locator('.settings-pipeline-ending');
+              await ending.scrollIntoViewIfNeeded();
+              await inViewport(ending);
+              assert.match(await ending.innerText(), /done/);
+              if (width === 390) {
+                const flow = pane.locator('.settings-pipeline-flow');
+                assert.ok(await flow.evaluate(el => el.scrollWidth <= el.clientWidth + 1), 'Phone pipeline ending must not require horizontal scrolling');
+                const cards = await pane.locator('.settings-pipeline-card').all();
+                assert.ok((await cards[1].boundingBox()).y > (await cards[0].boundingBox()).y, 'Phone pipeline steps are vertical');
+              }
+            }
+          }
+        }
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await ready(page);
+        await expect(settingsView(page).getByRole('heading', { name: 'Appearance', exact: true })).toBeVisible();
+        assert.equal(settingsWrites(fixture).length, 0, 'Browsing settings never writes YAML');
+      }, options);
+    });
+
+    test(`Settings loaded selects reflect autonomy, channel type and method without edits / ${width}px / ${theme}`, async t => {
+      const rawConfig = settingsRaw.replace('autonomy: ask', 'autonomy: auto')
+        .replace('method: POST', 'method: PATCH')
+        .replace("    telegram:\n      type: telegram\n      chat_id: '-1001234567890'\n      secret_env: FIXTURE_BOT_TOKEN", "    mattermost:\n      type: mattermost\n      secret_env: FIXTURE_MATTERMOST_TOKEN");
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/settings/assistant');
+        await expect(page.getByRole('combobox', { name: 'Default permission mode', exact: true })).toHaveValue('auto');
+        await settingsSection(page, 'notifications');
+        await expect(page.getByRole('combobox', { name: 'mattermost channel type', exact: true })).toHaveValue('mattermost');
+        const method = await settingsField(page, ['notifications', 'channels', 'hook', 'method']);
+        await expect(method).toHaveValue('PATCH');
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsDirty()), false);
+        assert.equal(settingsWrites(fixture).length, 0);
+        await settingsSection(page, 'general');
+        await page.locator('#gen-max_concurrent_agents').fill('4');
+        await settingsButton(page, 'save & reload').click();
+        await page.waitForFunction(() => !Alpine.$data(document.body).settingsSaving);
+        assert.equal(settingsWrites(fixture).length, 1);
+        assert.match(fixture.rawConfig, /autonomy: auto/);
+        assert.match(fixture.rawConfig, /type: mattermost/);
+        assert.match(fixture.rawConfig, /method: PATCH/);
+        await settingsSection(page, 'assistant');
+        await expect(page.locator('#as-autonomy')).toHaveValue('auto');
+        await page.locator('#as-autonomy').selectOption('read');
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsConfig.assistant.autonomy), 'read');
+        await settingsSection(page, 'notifications');
+        const channelType = page.getByRole('combobox', { name: 'mattermost channel type', exact: true });
+        await expect(channelType).toHaveValue('mattermost');
+        await channelType.selectOption('webhook');
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsConfig.notifications.channels.mattermost.type), 'webhook');
+        await expect(method).toHaveValue('PATCH');
+        await method.selectOption('PUT');
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsConfig.notifications.channels.hook.method), 'PUT');
+        await noPageOverflow(page);
+      }, { rawConfig });
+    });
+
+    test(`Settings lowercase webhook methods display canonically without dirtying YAML / ${width}px / ${theme}`, async t => {
+      for (const value of ['post', 'put', 'patch']) {
+        await withPage(t, width, theme, async (page, fixture) => {
+          await routeTo(page, '#/settings/notifications');
+          const method = await settingsField(page, ['notifications', 'channels', 'hook', 'method']);
+          await expect(method).toHaveValue(value.toUpperCase());
+          assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsConfig.notifications.channels.hook.method), value);
+          assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsDirty()), false);
+          assert.equal(settingsWrites(fixture).length, 0);
+          await settingsSection(page, 'general');
+          await page.locator('#gen-max_concurrent_agents').fill('4');
+          await settingsButton(page, 'save & reload').click();
+          await page.waitForFunction(() => !Alpine.$data(document.body).settingsSaving);
+          assert.equal(settingsWrites(fixture).length, 1);
+          assert.match(fixture.rawConfig, new RegExp(`method: ${value}\\b`));
+          await settingsSection(page, 'notifications');
+          await expect(method).toHaveValue(value.toUpperCase());
+          await method.selectOption('');
+          assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsConfig.notifications.channels.hook.method), '');
+          await expect(method).toHaveValue('');
+        }, { rawConfig: settingsRaw.replace('method: POST', `method: ${value}`) });
+      }
+    });
+
+    test(`Settings unfinished stage drafts hide clean-state reassurance / ${width}px / ${theme}`, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/settings/stages');
+        const clean = settingsView(page).getByText('No unsaved changes', { exact: true });
+        await expect(clean).not.toHaveCSS('display', 'none');
+        await settingsButton(page, 'add stage').click();
+        await page.getByRole('textbox', { name: 'New stage name', exact: true }).fill('qa');
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsDirty()), false);
+        await expect(clean).toHaveCSS('display', 'none');
+        await settingsButton(page, 'save & reload').click();
+        await visible(settingsView(page).getByRole('alert').filter({ hasText: 'Add or cancel unfinished rows before saving.' }));
+        assert.equal(settingsWrites(fixture).length, 0);
+        await page.evaluate(() => { location.hash = '#/archive'; });
+        const guard = page.getByRole('dialog', { name: 'Leave settings?' });
+        await expect(guard).toBeVisible();
+        await guard.getByRole('button', { name: 'keep editing', exact: true }).click();
+        await settingsButton(page, 'discard').click();
+        await expect(clean).not.toHaveCSS('display', 'none');
+        await expect(page.getByRole('textbox', { name: 'New stage name', exact: true })).toBeHidden();
+        assert.equal(settingsWrites(fixture).length, 0);
+      }, options);
+    });
+
+    test(`Settings pending native lock, duplicate save, discard and conditional snapshot / ${width}px / ${theme}`, { timeout: 45000 }, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/settings/general');
+        const worker = page.locator('#gen-max_concurrent_agents');
+        await worker.fill('5');
+        const save = settingsButton(page, 'save & reload'), discard = settingsButton(page, 'discard');
+        // Pause each network boundary independently; fieldset descendants,
+        // including shared x-html controls, must stay natively disabled.
+        for (const boundary of ['rawReadWait', 'saveWait', 'configRefreshWait']) {
+          if (boundary !== 'rawReadWait') await worker.fill(boundary === 'saveWait' ? '6' : '7');
+          let release;
+          fixture.behavior[boundary] = new Promise(resolve => { release = resolve; });
+          try {
+            const pending = page.waitForRequest(r => r.url() === base + (boundary === 'configRefreshWait' ? '/api/config' : '/api/config/raw') && r.method() === (boundary === 'saveWait' ? 'PUT' : 'GET'));
+            await save.click();
+            await pending;
+            await expect(worker).toBeDisabled();
+            await expect(save).toBeDisabled();
+            await expect(discard).toBeDisabled();
+            const enabled = await settingsView(page).locator('fieldset input, fieldset textarea, fieldset select, fieldset button').evaluateAll(nodes => nodes.filter(el => !el.matches(':disabled')).map(el => el.id || el.textContent));
+            assert.deepEqual(enabled, [], 'The complete daemon form is natively locked');
+            const writes = settingsWrites(fixture).length;
+            // Synthetic DOM clicks still exercise the disabled controls rather
+            // than bypassing them through component method calls.
+            await save.evaluate(el => el.click());
+            await discard.evaluate(el => el.click());
+            assert.equal(settingsWrites(fixture).length, writes);
+            await page.evaluate(() => { location.hash = '#/archive'; });
+            const guard = page.getByRole('dialog', { name: 'Leave settings?' });
+            await visible(guard);
+            for (const button of await guard.getByRole('button').all()) await expect(button).toBeDisabled();
+            await page.keyboard.press('Escape');
+            await expect(guard).toBeVisible();
+          } finally {
+            fixture.behavior[boundary] = null;
+            release();
+          }
+          await page.waitForFunction(() => !Alpine.$data(document.body).settingsSaving);
+          const guard = page.getByRole('dialog', { name: 'Leave settings?' });
+          await guard.getByRole('button', { name: 'keep editing', exact: true }).click();
+          await expect(worker).toBeEnabled();
+          assert.equal(settingsWrites(fixture).length, ['rawReadWait', 'saveWait', 'configRefreshWait'].indexOf(boundary) + 1);
+          const writes = settingsWrites(fixture), last = writes.at(-1);
+          assert.equal(last.body.expected_content, writes.length === 1 ? settingsRaw : writes.at(-2).body.content);
+          assert.equal(last.body.content, fixture.rawConfig);
+          assert.match(fixture.rawConfig, /# Browser settings fixture/);
+          assert.match(fixture.rawConfig, /&shared_environment/);
+          assert.match(fixture.rawConfig, /\*shared_environment/);
+          assert.match(fixture.rawConfig, /9007199254740993/);
+          assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsDirty()), false);
+        }
+        await noPageOverflow(page);
+      }, options);
+    });
+
+    test(`Settings partial save warning persists, Save and Leave stops, explicit retry / ${width}px / ${theme}`, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/settings/general');
+        const path = page.locator('#gen-tickets_dir');
+        await openSettingsDetails(path);
+        await path.fill('/fixtures/restarted-tickets');
+        await page.evaluate(() => { location.hash = '#/archive'; });
+        const guard = page.getByRole('dialog', { name: 'Leave settings?' });
+        await visible(guard);
+        fixture.behavior.saveResponse = { status: 500, body: { code: 'config_saved_reload_failed', error: 'Configuration saved but reload failed: fixture reload refused' } };
+        await guard.getByRole('button', { name: 'save & leave', exact: true }).click();
+        const warning = settingsView(page).getByRole('alert').filter({ hasText: 'fixture reload refused' });
+        await visible(warning);
+        await page.waitForFunction(() => !Alpine.$data(document.body).settingsSaving);
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsDirty()), false);
+        assert.ok(await page.evaluate(() => Alpine.$data(document.body).settingsReloadWarning));
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).currentView), 'settings');
+        assert.match(fixture.rawConfig, /\/fixtures\/restarted-tickets/);
+        assert.equal(settingsWrites(fixture).length, 1, 'Partial application is not automatically retried');
+        await expect(guard).toBeVisible();
+        await expect(guard.getByRole('alert')).toContainText('fixture reload refused');
+        await expect(guard).toContainText('Configuration was saved to disk');
+        await expect(guard.getByText(/Settings has unsaved changes/)).toBeHidden();
+        await expect(guard.getByRole('button', { name: 'save & leave', exact: true })).toBeHidden();
+        await expect(guard.getByRole('button', { name: 'discard changes', exact: true })).toBeHidden();
+        await expect(guard.getByRole('button', { name: 'leave settings', exact: true })).toBeVisible();
+        await guard.getByRole('button', { name: 'save & leave', exact: true, includeHidden: true }).evaluate(el => el.click());
+        await page.waitForFunction(() => !Alpine.$data(document.body).settingsSaving);
+        assert.equal(settingsWrites(fixture).length, 1, 'A stale Save & Leave action must not repeat a persisted write');
+        await guard.getByRole('button', { name: 'Retry apply', exact: true }).click();
+        await page.waitForFunction(() => !Alpine.$data(document.body).settingsSaving);
+        assert.equal(settingsWrites(fixture).length, 2, 'Only explicit Retry apply repeats the conditional write');
+        await expect(guard.getByRole('alert')).toContainText('fixture reload refused');
+        await guard.getByRole('button', { name: 'keep editing', exact: true }).click();
+        await settingsSection(page, 'display');
+        await visible(warning);
+        await settingsSection(page, 'general');
+        await visible(warning);
+        fixture.behavior.saveResponse = null;
+        await warning.getByRole('button', { name: 'Retry apply', exact: true }).click();
+        await warning.waitFor({ state: 'hidden' });
+        await page.waitForFunction(() => !Alpine.$data(document.body).settingsSaving);
+        assert.equal(settingsWrites(fixture).length, 3);
+        for (let i = 1; i < 3; i++) assert.equal(settingsWrites(fixture)[i].body.expected_content, settingsWrites(fixture)[i - 1].body.content);
+        await visible(settingsView(page).getByText(/daemon reloaded.*Restart to apply/));
+      }, options);
+    });
+
+    test(`Settings partial Save and Leave retry reports reload then leaves without another save / ${width}px / ${theme}`, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/settings/general');
+        await page.locator('#gen-max_concurrent_agents').fill('5');
+        await page.evaluate(() => { location.hash = '#/archive'; });
+        const guard = page.getByRole('dialog', { name: 'Leave settings?' });
+        await expect(guard).toBeVisible();
+        fixture.behavior.saveResponse = { status: 500, body: { code: 'config_saved_reload_failed', error: 'Fixture reload failed after persistence' } };
+        await guard.getByRole('button', { name: 'save & leave', exact: true }).click();
+        await expect(guard.getByRole('alert')).toContainText('Fixture reload failed after persistence');
+        await page.waitForFunction(() => !Alpine.$data(document.body).settingsSaving);
+        fixture.behavior.saveResponse = null;
+        let release;
+        fixture.behavior.saveWait = new Promise(resolve => { release = resolve; });
+        try {
+          const pending = page.waitForRequest(r => r.url() === base + '/api/config/raw' && r.method() === 'PUT');
+          await guard.getByRole('button', { name: 'Retry apply', exact: true }).click();
+          await pending;
+          for (const button of await guard.getByRole('button').all()) await expect(button).toBeDisabled();
+          await page.keyboard.press('Escape');
+          await expect(guard).toBeVisible();
+        } finally {
+          fixture.behavior.saveWait = null;
+          release();
+        }
+        await page.waitForFunction(() => !Alpine.$data(document.body).settingsSaving);
+        await expect(guard.getByRole('status')).toContainText('The daemon reloaded');
+        await expect(guard.getByRole('button', { name: 'Retry apply', exact: true })).toBeHidden();
+        await expect(guard.getByRole('button', { name: 'save & leave', exact: true })).toBeHidden();
+        await expect(guard.getByText(/Settings has unsaved changes/)).toBeHidden();
+        assert.equal(settingsWrites(fixture).length, 2);
+        assert.equal(settingsWrites(fixture)[1].body.expected_content, settingsWrites(fixture)[0].body.content);
+        await guard.getByRole('button', { name: 'leave settings', exact: true }).click();
+        await page.waitForURL('**/#/archive');
+        await ready(page);
+        await expect(guard).toBeHidden();
+        assert.equal(settingsWrites(fixture).length, 2, 'Leaving a saved configuration does not write again');
+      }, options);
+    });
+
+    test(`Settings Appearance remains local with raw configuration unavailable / ${width}px / ${theme}`, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/settings/display');
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsState), 'unavailable');
+        for (const name of ['Pipeline badges', 'Agent details']) {
+          const toggle = settingsView(page).getByRole('switch', { name, exact: true });
+          const previous = await toggle.getAttribute('aria-checked');
+          await toggle.click();
+          assert.notEqual(await toggle.getAttribute('aria-checked'), previous);
+        }
+        const nextTheme = theme === 'dark' ? 'light' : 'dark';
+        await settingsView(page).getByRole('combobox', { name: 'Theme', exact: true }).selectOption(nextTheme);
+        assert.equal(await page.evaluate(() => localStorage.getItem('kontora-theme')), nextTheme);
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsDirty()), false);
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await ready(page);
+        await expect(settingsView(page).getByRole('combobox', { name: 'Theme', exact: true })).toHaveValue(nextTheme);
+        assert.equal(settingsWrites(fixture).length, 0);
+        await noPageOverflow(page);
+      }, { rawConfigUnavailable: true });
+    });
+
+    test(`Settings search result disclosure, read-only focus, private values and no results / ${width}px / ${theme}`, { timeout: 45000 }, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/settings/general');
+        const entriesBeforeSearch = await page.evaluate(() => history.length);
+        await settingsSearch(page).fill('timeout');
+        const results = page.getByRole('region', { name: 'Settings search results' });
+        await expect.poll(() => results.getByRole('button').count(), { message: 'Search lists each timeout instance, not just matching sections' }).toBeGreaterThanOrEqual(5);
+        assert.equal(await page.evaluate(() => history.length), entriesBeforeSearch, 'Typing a query replaces history rather than pushing entries');
+        assert.equal(new URLSearchParams(new URL(page.url()).hash.split('?')[1]).get('q'), 'timeout');
+        await results.getByRole('button').filter({ hasText: /Stages.*plan/s }).click();
+        const timeout = await settingsField(page, ['stages', 'plan', 'timeout']);
+        await expect(timeout).toBeFocused();
+        await settingsKeyboardFocus(timeout);
+        assert.ok(new URLSearchParams(new URL(page.url()).hash.split('?')[1]).get('field'), 'The revealed field has a shareable URL identity');
+        await timeout.fill('not-a-duration');
+        await expect(timeout).toHaveAttribute('aria-invalid', 'true');
+        const issueID = await timeout.getAttribute('aria-describedby');
+        await visible(page.locator(`[id=${JSON.stringify(issueID)}]`));
+        await settingsView(page).getByRole('status', { name: 'Settings problems' }).getByRole('button').click();
+        await expect(timeout).toBeFocused();
+        await timeout.fill('30m');
+        await expect(timeout).not.toHaveAttribute('aria-invalid', 'true');
+        await settingsReveal(page, 'binary', /Agents.*draft-only/s);
+        await expect(await settingsField(page, ['agents', 'draft-only', 'binary'])).toBeFocused();
+        await settingsReveal(page, 'projects.Fixture repository.path', /Fixture repository/);
+        await expect(page.locator(':focus')).toHaveAttribute('aria-label', /read-only/);
+        await settingsReveal(page, 'pipelines.standard.0.agent', /standard/);
+        await expect(page.locator(':focus')).toHaveAttribute('aria-label', /read-only/);
+        await settingsReveal(page, 'notifications.channels.hook.chat_id', /hook/);
+        await expect(page.locator(':focus')).toHaveAttribute('id', await page.evaluate(() => Alpine.$data(document.body).settingsFieldID(['notifications', 'channels', 'hook', 'type'])));
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsConfig.notifications.channels.hook.type), 'webhook', 'Inactive result reveals its chooser without changing transport');
+        await visible(settingsView(page).getByText(/Choose the matching channel type/));
+        for (const query of ['never-search-environment-value', 'never-search-header-value', 'never-search-web-token', 'never-search-stage-prompt', 'never-search-assistant-prompt', 'nothing-matches-fixture-xyz']) {
+          await settingsSearch(page).fill(query);
+          await visible(results.getByText('No settings match this search.', { exact: true }));
+          await results.getByRole('button', { name: 'Clear search', exact: true }).click();
+          assert.equal(await settingsSearch(page).inputValue(), '');
+        }
+        await settingsSearch(page).fill('timeout');
+        await page.keyboard.press('Escape');
+        assert.equal(await settingsSearch(page).inputValue(), '');
+        await settingsView(page).getByRole('heading', { level: 1 }).click();
+        await page.keyboard.press('/');
+        await expect(settingsSearch(page)).toBeFocused();
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsDirty()), false);
+        assert.equal(settingsWrites(fixture).length, 0);
+        await noPageOverflow(page);
+      }, options);
+    });
+
+    test(`Settings picker uses draft definitions, unsupported choices, exact names and Escape focus / ${width}px / ${theme}`, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/settings/agents');
+        const draft = settingsView(page).locator('.settings-agent').filter({ has: page.getByRole('heading', { name: 'draft-only', exact: true }) });
+        await draft.locator('summary').first().click();
+        const binary = draft.locator('input').first();
+        await binary.fill('custom-runner');
+        await settingsSection(page, 'assistant');
+        const trigger = page.locator('#settings-assistant-agent');
+        await trigger.click();
+        const panel = page.locator('#agent-picker-settings-assistant');
+        await inViewport(panel);
+        const unavailable = panel.getByRole('option').filter({ hasText: 'draft-only' });
+        await expect(unavailable).toHaveAttribute('aria-disabled', 'true');
+        await expect(panel.getByRole('option').filter({ hasText: 'unsupported' })).toHaveAttribute('aria-disabled', 'true');
+        await unavailable.click({ force: true });
+        await expect(panel).toBeVisible();
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsConfig.assistant.agent), 'fixture-agent');
+        await noPageOverflow(page);
+        const filter = panel.getByRole('combobox', { name: 'Filter agents' });
+        await filter.fill('draft-only');
+        await filter.press('ArrowDown');
+        await filter.press('Enter');
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsConfig.assistant.agent), 'fixture-agent');
+        await page.keyboard.press('Escape');
+        await expect(trigger).toBeFocused();
+        await trigger.click();
+        await filter.fill('spaced agent');
+        await panel.getByRole('option').filter({ hasText: 'spaced agent' }).click();
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsConfig.assistant.agent), ' spaced agent ');
+        await settingsSection(page, 'general');
+        await page.locator('#settings-default-agent').click();
+        const defaults = page.locator('#agent-picker-settings-default');
+        await visible(defaults.getByRole('option').filter({ hasText: 'draft-only' }));
+        await expect(defaults.getByRole('option').filter({ hasText: 'draft-only' })).toBeEnabled();
+        await page.keyboard.press('Escape');
+        await expect(page.locator('#settings-default-agent')).toBeFocused();
+        assert.equal(settingsWrites(fixture).length, 0);
+        assert.equal(fixture.mutations.length, 0, 'Settings pickers must not save operational forms');
+        assert.equal(await page.evaluate(() => localStorage.getItem('kontora-recent-agents')), null);
+      }, options);
+    });
+
+    test(`Settings native picker preserves unsupported selection and exact draft names / ${width}px / ${theme}`, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/settings/assistant');
+        const select = page.locator('#settings-assistant-agent-fallback');
+        await inViewport(select);
+        assert.equal(await select.inputValue(), 'unsupported', 'An invalid existing selection remains visible');
+        await expect(select.locator('option[value="unsupported"]')).toBeDisabled();
+        await expect(select.locator('option[value="draft-only"]')).toBeEnabled();
+        assert.match(await settingsView(page).innerText(), /only supports|not supported|unsupported/i);
+        await select.selectOption(' spaced agent ');
+        assert.equal(await select.inputValue(), ' spaced agent ');
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsConfig.assistant.agent), ' spaced agent ');
+        await settingsSection(page, 'general');
+        const defaults = page.locator('#settings-default-agent-fallback');
+        assert.equal(await defaults.inputValue(), '', 'Displaying the inferred default must not materialize it');
+        await defaults.selectOption('a/b');
+        assert.equal(await defaults.inputValue(), 'a/b');
+        await defaults.selectOption('a_2Fb');
+        assert.equal(await defaults.inputValue(), 'a_2Fb');
+        await noPageOverflow(page);
+        assert.equal(settingsWrites(fixture).length, 0);
+        assert.equal(await page.evaluate(() => localStorage.getItem('kontora-recent-agents')), null);
+      }, { nativeAgentPicker: true, rawConfig: settingsRaw.replace('default_agent: fixture-agent', "default_agent: ''").replace('assistant:\n  agent: fixture-agent', 'assistant:\n  agent: unsupported') });
+    });
+
+    test(`Settings conditional conflict and uncertain response retain the draft without retry / ${width}px / ${theme}`, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/settings/general');
+        const worker = page.locator('#gen-max_concurrent_agents');
+        await worker.fill('8');
+        fixture.behavior.conflictOnSave = true;
+        await settingsButton(page, 'save & reload').click();
+        await visible(settingsView(page).getByRole('alert').filter({ hasText: 'Configuration changed before conditional write' }));
+        await expect(worker).toBeEnabled();
+        assert.equal(await worker.inputValue(), '8');
+        assert.equal(fixture.rawConfig, settingsRaw);
+        assert.equal(settingsWrites(fixture).length, 1);
+        fixture.behavior.conflictOnSave = false;
+        fixture.behavior.saveResponse = { status: 503, body: { error: 'Fixture response cannot confirm persistence' } };
+        await settingsButton(page, 'save & reload').click();
+        await visible(settingsView(page).getByRole('alert').filter({ hasText: 'Could not confirm whether configuration was saved' }));
+        await expect(worker).toBeEnabled();
+        assert.equal(await worker.inputValue(), '8');
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsDirty()), true);
+        assert.equal(settingsWrites(fixture).length, 2, 'Uncertain response must not automatically retry');
+        await settingsButton(page, 'discard').click();
+        assert.equal(await worker.inputValue(), '3');
+        assert.equal(settingsWrites(fixture).length, 2, 'Discard does not send another write');
+      }, options);
+    });
+
+    test(`Settings empty collections retain guidance and local appearance / ${width}px / ${theme}`, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/settings/agents');
+        await visible(settingsView(page).getByText('No agents configured. Add an agent definition in config.yaml.', { exact: true }));
+        for (const key of ['pipelines', 'projects']) {
+          await settingsSection(page, key);
+          await visible(settingsView(page).getByText('No ' + key + ' configured.', { exact: true }));
+          await noPageOverflow(page);
+        }
+        await settingsSection(page, 'display');
+        await expect(settingsView(page).getByRole('switch', { name: 'Pipeline badges', exact: true })).toBeEnabled();
+        assert.equal(settingsWrites(fixture).length, 0);
+      }, { rawConfig: 'agents: {}\nstages: {}\npipelines: {}\nprojects: {}\n' });
+    });
+
+    test(`Settings browser history Discard resumes the original archive entry / ${width}px / ${theme}`, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/archive');
+        await routeTo(page, '#/settings/general');
+        await settingsSection(page, 'environment');
+        const variable = page.getByRole('textbox', { name: 'FIXTURE_MODE value', exact: true });
+        await variable.fill('discard-history-draft');
+        await page.goBack();
+        await page.waitForURL('**/#/settings/general');
+        await ready(page);
+        await page.goBack();
+        const guard = page.getByRole('dialog', { name: 'Leave settings?' });
+        await visible(guard);
+        await guard.getByRole('button', { name: 'discard changes', exact: true }).click();
+        await expect.poll(() => new URL(page.url()).hash, { message: 'Discard must resume the original guarded Back traversal' }).toBe('#/archive');
+        await ready(page);
+        await page.goForward();
+        await page.waitForURL('**/#/settings/general');
+        await ready(page);
+        await page.goForward();
+        await page.waitForURL('**/#/settings/environment');
+        assert.equal(await variable.inputValue(), 'never-search-environment-value');
+        assert.equal(settingsWrites(fixture).length, 0);
+      }, options);
+    });
+
+    test(`Settings browser history Keep editing and Discard preserve Forward entries / ${width}px / ${theme}`, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/archive');
+        await routeTo(page, '#/settings/general');
+        await settingsSection(page, 'environment');
+        const variable = page.getByRole('textbox', { name: 'FIXTURE_MODE value', exact: true });
+        await variable.fill('unsaved-history-value');
+        await settingsButton(page, 'add variable').click();
+        const unfinished = page.getByRole('textbox', { name: 'New variable name', exact: true });
+        await unfinished.fill('UNFINISHED_HISTORY_DRAFT');
+        await page.goBack();
+        await page.waitForURL('**/#/settings/general');
+        await page.goBack();
+        const guard = page.getByRole('dialog', { name: 'Leave settings?' });
+        await visible(guard);
+        await guard.getByRole('button', { name: 'keep editing', exact: true }).click();
+        await page.waitForURL('**/#/settings/general');
+        await page.waitForFunction(() => {
+          const app = Alpine.$data(document.body);
+          return !app._settingsHistory?.motion && !app._settingsHistory?.routing && app._applyingRoute === null;
+        });
+        await page.goForward();
+        await expect.poll(() => new URL(page.url()).hash, { message: 'Forward must resume the existing Environment entry after Keep editing' }).toBe('#/settings/environment');
+        assert.equal(await variable.inputValue(), 'unsaved-history-value');
+        assert.equal(await unfinished.inputValue(), 'UNFINISHED_HISTORY_DRAFT');
+        await page.goBack();
+        await page.waitForURL('**/#/settings/general');
+        await page.goBack();
+        await visible(guard);
+        await guard.getByRole('button', { name: 'discard changes', exact: true }).click();
+        await page.waitForURL('**/#/archive');
+        await page.goForward();
+        await page.waitForURL('**/#/settings/general');
+        await page.goForward();
+        await page.waitForURL('**/#/settings/environment');
+        assert.equal(await variable.inputValue(), 'never-search-environment-value');
+        await expect(unfinished, 'Discard closes unfinished add-row drafts').toHaveCount(0);
+        await settingsButton(page, 'add variable').click();
+        assert.equal(await unfinished.inputValue(), '', 'Reopening the row starts with an empty draft');
+        assert.equal(settingsWrites(fixture).length, 0);
+        await noPageOverflow(page);
+      }, { ...options, sidebar: true });
+    });
+  }
+
+  for (const theme of themes) test(`Settings compact boundary search and keyboard focus / ${theme}`, { timeout: 45000 }, async t => {
+    await withPage(t, 1440, theme, async (page, fixture) => {
+      await routeTo(page, '#/settings/general');
+      await settingsSearch(page).fill('branch_prefix');
+      for (const width of [320, 767, 768, 1100, 1101, 1440]) {
+        await page.setViewportSize({ width, height: 900 });
+        await expect(settingsSearch(page)).toHaveCount(1);
+        await inViewport(settingsSearch(page));
+        assert.equal(await settingsSearch(page).inputValue(), 'branch_prefix');
+        await settingsKeyboardFocus(settingsSearch(page));
+        await noPageOverflow(page);
+      }
+      await page.keyboard.press('Escape');
+      assert.equal(await settingsSearch(page).inputValue(), '');
+      assert.equal(settingsWrites(fixture).length, 0);
+    }, { rawConfig: settingsRaw });
+  });
+});
+
+describe('Settings final review regressions', () => {
+  for (const width of [390, 1280]) test(`Settings review legacy human_review search has unique DOM identities / ${width}px`, async t => {
+    await withPage(t, width, 'dark', async (page, fixture) => {
+      await routeTo(page, '#/settings/statuses');
+      const status = await settingsField(page, ['statuses', 'human_review']);
+      await expect(status).toHaveCount(1);
+      await noPageOverflow(page);
+      await settingsReveal(page, 'human_review', /human review/i);
+      await expect(status).toBeFocused();
+      await expect(status).toHaveAttribute('aria-label', 'human_review, built-in status');
+      await settingsSearch(page).fill('needs_review');
+      const results = page.getByRole('region', { name: 'Settings search results' });
+      await expect(results.getByRole('button')).toHaveCount(1);
+      await results.getByRole('button').click();
+      await expect(await settingsField(page, ['statuses', 'needs_review'])).toBeFocused();
+      await noPageOverflow(page);
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsDirty()), false);
+      assert.equal(settingsWrites(fixture).length, 0);
+    }, { rawConfig: settingsRaw.replace('statuses: [needs_review]', 'statuses: [human_review, needs_review]') });
+  });
+
+  for (const nativeAgentPicker of [false, true]) test(`Settings review compound diagnostics reach controls / ${nativeAgentPicker ? 'native' : 'custom'} picker`, async t => {
+    await withPage(t, nativeAgentPicker ? 390 : 1280, nativeAgentPicker ? 'light' : 'dark', async (page, fixture) => {
+      const diagnostic = async (control, message) => {
+        await expect(control).toHaveAttribute('aria-invalid', 'true');
+        await expect(control).toHaveAccessibleDescription(message);
+        const descriptions = (await control.getAttribute('aria-describedby')).split(/\s+/);
+        for (const id of descriptions) await expect(page.locator(`[id=${JSON.stringify(id)}]`)).toBeVisible();
+        const border = await control.evaluate(el => {
+          const style = getComputedStyle(el);
+          const probe = document.createElement('span');
+          probe.style.color = 'rgb(var(--settings-error))';
+          el.parentElement.append(probe);
+          const error = getComputedStyle(probe).color;
+          probe.remove();
+          return { width: style.borderTopWidth, color: style.borderTopColor, error };
+        });
+        assert.equal(border.width, '2px');
+        assert.equal(border.color, border.error);
+      };
+      await routeTo(page, '#/settings/agents');
+      const binary = await settingsField(page, ['agents', 'fixture-agent', 'binary']);
+      await openSettingsDetails(binary);
+      await binary.fill('custom-runner');
+      await settingsSection(page, 'assistant');
+      const picker = page.locator(nativeAgentPicker ? '#settings-assistant-agent-fallback' : '#settings-assistant-agent');
+      await diagnostic(picker, /only supports claude and pi/);
+      const describedBy = (await picker.getAttribute('aria-describedby')).split(/\s+/);
+      assert.ok(describedBy.includes('settings-assistant-agent-hint'));
+      assert.equal(describedBy.length, 2, 'Both the chooser hint and field issue describe the invalid selection');
+      const companion = page.locator('#companion-name');
+      await companion.fill('x'.repeat(65));
+      await diagnostic(companion, /assistant\.companion\.name.*1-64/);
+      await settingsButton(page, 'save & reload').click();
+      assert.equal(settingsWrites(fixture).length, 0, 'Compound blocking errors never reach the write endpoint');
+      await companion.fill('Repaired companion');
+      await expect(companion).not.toHaveAttribute('aria-invalid', 'true');
+      await settingsSection(page, 'agents');
+      await openSettingsDetails(binary);
+      await binary.fill('pi');
+      await settingsSection(page, 'assistant');
+      await expect(picker).not.toHaveAttribute('aria-invalid', 'true');
+      await expect(picker).toHaveAttribute('aria-describedby', 'settings-assistant-agent-hint');
+      assert.notEqual(await picker.evaluate(el => getComputedStyle(el).borderTopWidth), '2px');
+      for (const [section, id] of [
+        ['general', 'gen-max_concurrent_agents'], ['general', 'gen-max_concurrent_epic_supervisors'],
+        ['web', 'web-port'], ['notifications', 'notif-attempts'],
+      ]) {
+        await settingsSection(page, section);
+        const input = page.locator('#' + id);
+        await openSettingsDetails(input);
+        await input.fill('not-an-integer');
+        await diagnostic(input, /Use an integer.*daemon checks/);
+      }
+      fixture.behavior.saveResponse = { status: 400, body: { error: 'Fixture daemon rejected integer values' } };
+      await settingsButton(page, 'save & reload').click();
+      await visible(settingsView(page).getByRole('alert').filter({ hasText: 'Fixture daemon rejected integer values' }));
+      assert.equal(settingsWrites(fixture).length, 1, 'Integer advisories leave validation to the daemon');
+      assert.equal(fixture.rawConfig, settingsRaw);
+      await settingsButton(page, 'discard').click();
+      await expect(page.locator('#notif-attempts')).toHaveValue('3');
+      await expect(page.locator('#notif-attempts')).not.toHaveAttribute('aria-invalid', 'true');
+      await noPageOverflow(page);
+    }, { rawConfig: settingsRaw, nativeAgentPicker });
+  });
+
+  test('Settings review history fallback retains replacement Forward entries without Navigation API', async t => {
+    await withPage(t, 1280, 'dark', async (page, fixture) => {
+      assert.equal(await page.evaluate(() => window.navigation), undefined);
+      const dialogs = [];
+      page.on('dialog', async dialog => { dialogs.push(dialog.type()); await dialog.dismiss(); });
+      await routeTo(page, '#/settings/general');
+      await settingsSection(page, 'environment');
+      await page.goBack();
+      await ready(page);
+      const length = await page.evaluate(() => history.length);
+      await routeTo(page, '#/settings/web');
+      assert.equal(await page.evaluate(() => history.length), length, 'A new hash replaces the existing Forward entry');
+      await page.locator('#web-host').fill('127.0.0.2');
+      await page.evaluate(() => history.go(-2));
+      const guard = page.getByRole('dialog', { name: 'Leave settings?' });
+      await visible(guard);
+      await expect.poll(() => new URL(page.url()).hash).toBe('#/settings/web');
+      await ready(page);
+      await expect(settingsView(page).getByRole('heading', { name: 'Server & access', exact: true, level: 1 })).toBeVisible();
+      await guard.getByRole('button', { name: 'keep editing', exact: true }).click();
+      await page.goBack();
+      await page.waitForURL('**/#/settings/general');
+      await ready(page);
+      await page.goForward();
+      await page.waitForURL('**/#/settings/web');
+      await ready(page);
+      await expect(page.locator('#web-host')).toHaveValue('127.0.0.2');
+      await page.evaluate(() => history.go(-2));
+      await visible(guard);
+      await guard.getByRole('button', { name: 'discard changes', exact: true }).click();
+      await page.waitForURL('**/#/');
+      await ready(page);
+      await page.goForward();
+      await page.waitForURL('**/#/settings/general');
+      await ready(page);
+      await page.goForward();
+      await page.waitForURL('**/#/settings/web');
+      await ready(page);
+      await expect(page.locator('#web-host')).toHaveValue('127.0.0.1');
+      assert.deepEqual(dialogs, [], 'A compensated Back must not reload and trigger beforeunload');
+      assert.equal(await page.evaluate(() => history.length), length);
+      assert.equal(settingsWrites(fixture).length, 0);
+    }, { rawConfig: settingsRaw, noNavigation: true });
+  });
+
+  test('Settings review failed automation history read restores the list presentation', async t => {
+    await withPage(t, 1280, 'dark', async (page, fixture) => {
+      await routeTo(page, '#/automations');
+      const open = page.getByRole('button', { name: 'Open Repository review', exact: true });
+      await open.click();
+      await ready(page);
+      await page.getByRole('button', { name: 'automations', exact: true }).filter({ visible: true }).click();
+      await ready(page);
+      const length = await page.evaluate(() => history.length);
+      fixture.behavior.automationReadFailure = 'Fixture detail read failed';
+      await page.goBack();
+      await visible(page.getByRole('alert').filter({ hasText: 'Fixture detail read failed' }).filter({ visible: true }));
+      await expect.poll(() => new URL(page.url()).hash).toBe('#/automations');
+      await ready(page);
+      await expect(open).toBeVisible();
+      await expect(page.locator('.automations-detail')).toHaveCount(0);
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).routeHash()), '#/automations');
+      fixture.behavior.automationReadFailure = null;
+      await page.goBack();
+      await page.waitForURL('**/#/automations/auto-review');
+      await ready(page);
+      await expect(page.locator('.automations-detail')).toBeVisible();
+      await page.goBack();
+      await page.waitForURL('**/#/automations');
+      await ready(page);
+      await expect(open).toBeVisible();
+      await page.goForward();
+      await page.waitForURL('**/#/automations/auto-review');
+      await ready(page);
+      await page.goForward();
+      await page.waitForURL('**/#/automations');
+      await ready(page);
+      await expect(open).toBeVisible();
+      assert.equal(await page.evaluate(() => history.length), length);
+      assert.equal(fixture.mutations.length, 0);
+    });
+  });
+
+  for (const traversal of ['queued pair', 'next popstate']) test(`Settings review rapid Back cancels routed field reveal / ${traversal}`, async t => {
+    await withPage(t, 1280, 'dark', async (page, fixture) => {
+      const fieldRoute = '#/settings/general?field=' + encodeURIComponent(JSON.stringify([['max_concurrent_agents'], 'value']));
+      await routeTo(page, fieldRoute);
+      const worker = page.locator('#gen-max_concurrent_agents');
+      await expect(worker).toBeFocused();
+      await worker.fill('4');
+      await settingsSection(page, 'stages');
+      const length = await page.evaluate(() => history.length);
+      await page.evaluate(traversal => {
+        window.__reviewFieldFocus = [];
+        document.addEventListener('focusin', event => {
+          if (event.target.id === 'gen-max_concurrent_agents') window.__reviewFieldFocus.push(event.target.id);
+        });
+        if (traversal === 'next popstate') window.addEventListener('popstate', () => history.back(), { once: true });
+        history.back();
+        if (traversal === 'queued pair') history.back();
+      }, traversal);
+      const guard = page.getByRole('dialog', { name: 'Leave settings?' });
+      await visible(guard);
+      await expect.poll(() => new URL(page.url()).hash).toBe('#/settings/stages');
+      await ready(page);
+      await expect(settingsView(page).getByRole('heading', { name: 'Stages', exact: true, level: 1 })).toBeVisible();
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).routeHash()), '#/settings/stages');
+      assert.deepEqual(await page.evaluate(() => window.__reviewFieldFocus), [], 'Obsolete reveals must not focus a field behind the guard');
+      await guard.getByRole('button', { name: 'keep editing', exact: true }).click();
+      await expect(settingsView(page).getByRole('heading', { name: 'Stages', exact: true, level: 1 })).toBeVisible();
+      await page.goBack();
+      await page.waitForURL('**/' + fieldRoute);
+      await ready(page);
+      await expect(worker).toBeFocused();
+      await expect(worker).toHaveValue('4');
+      assert.equal(await page.evaluate(() => history.length), length);
+      assert.equal(settingsWrites(fixture).length, 0);
+    }, { rawConfig: settingsRaw });
+  });
+});
 
 const automationButton = (page, name) => page.getByRole('button', { name, exact: true }).filter({ visible: true });
 async function emitAutomationEvent(page, type = 'automations_updated') {
@@ -1016,15 +2012,11 @@ describe('custom execution activity', () => {
     const yaml = `auto_pick_up: false\nagents:\n  fixture-agent:\n    binary: pi\nstatuses: [ awaiting_data ]\nstages:\n  code:\n    prompt: Wait for data.\npipelines:\n  research:\n    - stage: code\n      agent: fixture-agent\n      running_status: awaiting_data # keep this comment\n      on_success: awaiting_data\n      on_failure: pause\n`;
     await withPage(t, width, 'dark', async (page, fixture) => {
       await routeTo(page, '#/settings');
-      const section = async name => {
-        if (width < 768) await page.locator('#settings-mobile-section').selectOption(name);
-        else await page.getByRole('button', { name: new RegExp('^' + name) }).filter({ visible: true }).click();
-      };
-      await section('pipelines');
+      await settingsSection(page, 'pipelines');
       await visible(page.getByText('running_status: awaiting_data', { exact: true }));
-      await section('general');
-      await page.getByRole('switch', { name: 'auto_pick_up', exact: true }).click();
-      await page.getByRole('button', { name: 'save & reload', exact: true }).click();
+      await settingsSection(page, 'general');
+      await page.getByRole('switch', { name: 'Automatic pickup', exact: true }).click();
+      await settingsButton(page, 'save & reload').click();
       await expect.poll(() => fixture.configWrites.length).toBe(1);
       assert.equal(fixture.configWrites[0], yaml.replace('auto_pick_up: false', 'auto_pick_up: true'));
       await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).settingsDirty())).toBe(false);
@@ -1167,7 +2159,7 @@ describe('mobile desktop parity', () => {
         if (captureDirectory) await mobileCapture(page, width, theme, 'parity-independent-colors-progress');
         await routeTo(page, '#/settings');
         await page.locator('#settings-mobile-section').selectOption('display');
-        for (const name of ['pipeline_badges', 'agent_meta']) await page.getByRole('switch', { name, exact: true }).click();
+        for (const name of ['Pipeline badges', 'Agent details']) await page.getByRole('switch', { name, exact: true }).click();
         await backToBoard(page);
         await page.reload({ waitUntil: 'domcontentloaded' }); await ready(page);
         await runningColumn();
@@ -1318,7 +2310,7 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
         for (const enabled of [false, true]) {
           await routeTo(page, '#/settings');
           await page.locator('#settings-mobile-section').selectOption('display');
-          for (const name of ['pipeline_badges', 'agent_meta']) {
+          for (const name of ['Pipeline badges', 'Agent details']) {
             const toggle = page.getByRole('switch', { name, exact: true });
             assert.equal(await toggle.getAttribute('aria-checked'), String(!enabled));
             await toggle.click();
@@ -1808,9 +2800,9 @@ async function observationSettings(page, width) {
     await page.locator('#palette-row-nav-settings').click();
   }
   await ready(page);
-  assert.equal(new URL(page.url()).hash, '#/settings');
+  assert.equal(new URL(page.url()).hash, '#/settings/general');
   if (width < 768) await page.locator('#settings-mobile-section').selectOption('assistant');
-  else await page.getByRole('navigation', { name: 'Settings sections', exact: true }).getByText('assistant', { exact: true }).click();
+  else await page.getByRole('navigation', { name: 'Settings sections', exact: true }).getByText(/^assistant$/i).click();
   const toggle = page.getByRole('checkbox', { name: 'Enable observation', exact: true });
   await toggle.scrollIntoViewIfNeeded();
   await inViewport(toggle);
@@ -2585,13 +3577,14 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           ['#/settings', width <= 1100 ? '#settings-mobile-section' : '[aria-label="Search settings"]'],
         ]) {
           await t.test(`${route} renders and reloads`, async () => {
+            const canonicalRoute = route === '#/settings' ? '#/settings/general' : route;
             await routeTo(page, route);
             await visible(page.locator(`${selector}:visible`).first());
             await noPageOverflow(page);
             await page.reload({ waitUntil: 'domcontentloaded' });
             await ready(page);
             await visible(page.locator(`${selector}:visible`).first());
-            assert.equal(new URL(page.url()).hash, route);
+            assert.equal(new URL(page.url()).hash, canonicalRoute);
             await noPageOverflow(page);
             await page.goBack();
             await page.waitForFunction(() => Alpine.$data(document.body).currentView === 'board');
@@ -2601,7 +3594,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
             await page.goForward();
             await visible(page.locator(`${selector}:visible`).first());
             await ready(page);
-            assert.equal(new URL(page.url()).hash, route);
+            assert.equal(new URL(page.url()).hash, canonicalRoute);
             await noPageOverflow(page);
           });
         }
@@ -2887,11 +3880,11 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       await withPage(t, width, theme, async page => {
         await page.setViewportSize({ width: 1280, height: 900 });
         await routeTo(page, '#/settings');
-        await page.getByRole('navigation', { name: 'Settings sections', exact: true }).getByText('general', { exact: true }).click();
+        await page.getByRole('navigation', { name: 'Settings sections', exact: true }).getByText(/^general$/i).click();
         const desktopSearch = page.getByRole('textbox', { name: 'Search settings', exact: true });
         await desktopSearch.fill('branch_prefix');
-        await visible(page.locator('#gen-branch_prefix:visible'));
-        await page.locator('#gen-tickets_dir').waitFor({ state: 'hidden' });
+        await visible(page.getByRole('region', { name: 'Settings search results' }));
+        await page.locator('#gen-max_concurrent_agents').waitFor({ state: 'hidden' });
         for (const compactWidth of [...new Set([width <= 1100 ? width : 1100, 390])]) {
           await page.setViewportSize({ width: compactWidth, height: 900 });
           const search = page.getByRole('searchbox', { name: 'Search settings', exact: true });
@@ -2901,9 +3894,9 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await inViewport(clear);
           await clear.click();
           assert.equal(await search.inputValue(), '');
-          await visible(page.locator('#gen-tickets_dir:visible'));
+          await visible(page.locator('#gen-max_concurrent_agents:visible'));
           await search.fill('branch_prefix');
-          await page.locator('#gen-tickets_dir').waitFor({ state: 'hidden' });
+          await page.locator('#gen-max_concurrent_agents').waitFor({ state: 'hidden' });
           await noPageOverflow(page);
         }
         await page.setViewportSize({ width: 1280, height: 900 });
@@ -3100,6 +4093,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           const prefix = 'unsaved-prefix-' + attempt++;
           await routeTo(page, '#/settings');
           await page.locator('#settings-mobile-section').selectOption('general');
+          await openSettingsDetails(page.locator('#gen-branch_prefix'));
           await page.locator('#gen-branch_prefix').fill(prefix);
           await page.evaluate(route => { location.hash = route; }, destination);
           const guard = page.getByRole('dialog', { name: 'Leave settings?' });
@@ -3107,14 +4101,14 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           assert.equal(await page.evaluate(() => Alpine.$data(document.body).currentView), 'settings');
           await guard.getByRole('button', { name: 'keep editing', exact: true }).click();
           await guard.waitFor({ state: 'hidden' });
-          assert.equal(new URL(page.url()).hash, '#/settings');
+          assert.equal(new URL(page.url()).hash, '#/settings/general');
           assert.equal(await page.locator('#gen-branch_prefix').inputValue(), prefix);
           await page.evaluate(route => { location.hash = route; }, destination);
           await visible(guard);
           fixture.behavior.saveFailure = 'Fixture save refused';
           await guard.getByRole('button', { name: 'save & leave', exact: true }).click();
-          await visible(guard.getByText('Fixture save refused', { exact: true }));
-          assert.equal(new URL(page.url()).hash, '#/settings');
+          await visible(guard.getByText(/Fixture save refused/));
+          assert.equal(new URL(page.url()).hash, '#/settings/general');
           fixture.behavior.saveFailure = null;
           await guard.getByRole('button', { name: 'save & leave', exact: true }).click();
           await guard.waitFor({ state: 'hidden' });

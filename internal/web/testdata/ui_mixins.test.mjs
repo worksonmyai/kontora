@@ -107,6 +107,14 @@ test("every page-context hook the assistant names exists", async () => {
 // never exists, and the template silently renders nothing where it was used.
 // Checked against the component index.js actually builds, so a factory named
 // only in a comment does not pass for a merged one.
+test("settings markup methods belong to the merged component", async () => {
+  const html = fs.readFileSync(path.join(uiDir, '../static/index.html'), 'utf8');
+  const defined = new Set((await mixins()).flatMap(([, factory]) => Object.keys(factory())));
+  for (const match of html.matchAll(/\b(settings[A-Z]\w*)\s*\(/g)) {
+    assert.ok(defined.has(match[1]), 'Missing settings binding: ' + match[1]);
+  }
+});
+
 test("index.js merges every mixin the tree exports", async () => {
   await import(entry);
   const merged = globalThis.kontora();

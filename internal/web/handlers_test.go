@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/automation"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/stats"
 	"github.com/worksonmyai/kontora/internal/ticket"
@@ -2235,6 +2237,95 @@ func TestHandlePutRawConfig_Invalid(t *testing.T) {
 	res := put(t, srv, "/api/config/raw", `{"content":"nonsense"}`)
 	assert.Equal(t, http.StatusBadRequest, res.statusCode)
 	assert.Contains(t, res.body, "invalid config")
+}
+
+type conditionalRawConfigService struct {
+	*mockService
+	putRawConfigIfFn func(content, expected string) error
+}
+
+func (m *conditionalRawConfigService) PutRawConfigIf(content, expected string) error {
+	return m.putRawConfigIfFn(content, expected)
+}
+
+func TestHandlePutRawConfig_ReloadErrorWraps(t *testing.T) {
+	reason := fmt.Errorf("reconcile: %w", automation.ErrConflict)
+	err := &ConfigSavedReloadError{Err: reason}
+	assert.EqualError(t, err, "config saved but reload failed: "+reason.Error())
+	assert.ErrorIs(t, err, reason)
+	assert.ErrorIs(t, err, automation.ErrConflict)
+	var got *ConfigSavedReloadError
+	require.ErrorAs(t, fmt.Errorf("apply config: %w", err), &got)
+	assert.Same(t, err, got)
+}
+
+func TestHandlePutRawConfig_Outcomes(t *testing.T) {
+	reloadFailure := &ConfigSavedReloadError{Err: errors.New("reload unavailable")}
+	reloadConflict := &ConfigSavedReloadError{Err: fmt.Errorf("reconcile: %w", automation.ErrConflict)}
+	for _, conditional := range []bool{false, true} {
+		for _, tc := range []struct {
+			name string
+			err  error
+			want int
+			code string
+		}{
+			{name: "success", want: http.StatusNoContent},
+			{name: "invalid", err: fmt.Errorf("%w: bad agent", ErrInvalidConfig), want: http.StatusBadRequest},
+			{name: "pre-write conflict", err: fmt.Errorf("%w: config changed", automation.ErrConflict), want: http.StatusConflict},
+			{name: "write failure", err: errors.New("write unavailable"), want: http.StatusInternalServerError},
+			{name: "reload failure", err: reloadFailure, want: http.StatusInternalServerError, code: "config_saved_reload_failed"},
+			{name: "reload conflict", err: reloadConflict, want: http.StatusInternalServerError, code: "config_saved_reload_failed"},
+			{name: "wrapped reload conflict", err: fmt.Errorf("apply config: %w", reloadConflict), want: http.StatusInternalServerError, code: "config_saved_reload_failed"},
+		} {
+			t.Run(fmt.Sprintf("conditional=%t/%s", conditional, tc.name), func(t *testing.T) {
+				calls := 0
+				mock := &mockService{putRawConfigFn: func(content string) error {
+					assert.False(t, conditional, "conditional writes must not fall back to unconditional writes")
+					assert.Equal(t, "updated", content)
+					calls++
+					return tc.err
+				}}
+				var svc TicketService = mock
+				body := `{"content":"updated"}`
+				if conditional {
+					svc = &conditionalRawConfigService{mockService: mock, putRawConfigIfFn: func(content, expected string) error {
+						assert.Equal(t, "updated", content)
+						assert.Equal(t, "original", expected)
+						calls++
+						return tc.err
+					}}
+					body = `{"content":"updated","expected_content":"original"}`
+				}
+				srv := startHandlerTestServer(t, svc)
+				res := put(t, srv, "/api/config/raw", body)
+				assert.Equal(t, tc.want, res.statusCode)
+				assert.Equal(t, 1, calls)
+				if tc.err == nil {
+					assert.Empty(t, res.body)
+					return
+				}
+				want := map[string]string{"error": tc.err.Error()}
+				if tc.code != "" {
+					want["code"] = tc.code
+				}
+				var got map[string]string
+				require.NoError(t, json.Unmarshal([]byte(res.body), &got))
+				assert.Equal(t, want, got)
+				assert.Equal(t, "application/json", res.contentType)
+			})
+		}
+	}
+}
+
+func TestHandlePutRawConfig_ConditionalUnavailable(t *testing.T) {
+	svc := &mockService{putRawConfigFn: func(string) error {
+		t.Error("conditional write must not fall back to unconditional write")
+		return nil
+	}}
+	srv := startHandlerTestServer(t, svc)
+	res := put(t, srv, "/api/config/raw", `{"content":"updated","expected_content":"original"}`)
+	assert.Equal(t, http.StatusServiceUnavailable, res.statusCode)
+	assert.JSONEq(t, `{"error":"conditional config writes unavailable"}`, res.body)
 }
 
 func TestHandlePutRawConfig_BadJSON(t *testing.T) {

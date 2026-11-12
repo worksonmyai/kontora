@@ -57,14 +57,17 @@ const SETTINGS_PER_AGENT_CONTROL = `
     <label class="font-mono text-tx-3 mb-1 block" :class="labelClass" :for="inputId" x-text="label"></label>
     <input :id="inputId" type="text"
            x-model="settingsPerAgent(p).any" :disabled="settingsPerAgent(p).mode === 'per_agent'"
+           :aria-invalid="!!settingsFieldIssue(settingsFieldID(settingsPerAgentPathKeys(p)))"
+           :aria-describedby="settingsFieldID(settingsPerAgentPathKeys(p), 'issue')"
            class="w-56 bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40 disabled:opacity-40"
            :placeholder="settingsPerAgent(p).mode === 'per_agent' ? 'set per agent below' : hint">
+    <p :id="settingsFieldID(settingsPerAgentPathKeys(p), 'issue')" class="settings-field-issue" x-text="settingsFieldIssue(settingsFieldID(settingsPerAgentPathKeys(p)))"></p>
   </div>
   <div class="flex items-center gap-1 font-mono text-[11px]">
-    <button type="button" @click="settingsSetPerAgentMode(p, 'any')"
+    <button type="button" data-settings-mode="any" @click="settingsSetPerAgentMode(p, 'any')"
             class="h-8 px-2.5 rounded border transition-colors"
             :class="settingsPerAgent(p).mode === 'any' ? 'border-accent/45 bg-surface-850 text-tx-2' : 'border-surface-700/60 text-surface-600 hover:text-tx-3'">one value</button>
-    <button type="button" @click="settingsSetPerAgentMode(p, 'per_agent')"
+    <button type="button" data-settings-mode="per_agent" @click="settingsSetPerAgentMode(p, 'per_agent')"
             class="h-8 px-2.5 rounded border transition-colors"
             :class="settingsPerAgent(p).mode === 'per_agent' ? 'border-accent/45 bg-surface-850 text-tx-2' : 'border-surface-700/60 text-surface-600 hover:text-tx-3'">per agent</button>
   </div>
@@ -77,7 +80,9 @@ const SETTINGS_PER_AGENT_CONTROL = `
              class="w-40 flex-none bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none"
              :class="settingsAgentKeyValid(key) ? 'border-surface-700/50' : 'border-err'">
       <span class="text-surface-600 font-mono">=</span>
-      <input type="text" x-model="settingsPerAgent(p).by[key]" :aria-label="key + ' ' + label"
+      <input :id="settingsFieldID([...settingsPerAgentPathKeys(p), key])" type="text" x-model="settingsPerAgent(p).by[key]" :aria-label="key + ' ' + label"
+             :aria-invalid="!!settingsFieldIssue(settingsFieldID([...settingsPerAgentPathKeys(p), key]))"
+             :aria-describedby="settingsFieldID([...settingsPerAgentPathKeys(p), key], 'issue')"
              class="w-56 bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
       <button type="button" @click="settingsRemovePerAgent(p, key)" :aria-label="'Remove ' + key"
               class="w-7 h-7 shrink-0 flex items-center justify-center border border-surface-700/50 rounded text-surface-600 hover:text-err hover:border-err/30 transition-colors">
@@ -101,6 +106,9 @@ const SETTINGS_PER_AGENT_CONTROL = `
     <button type="button" @click="settingsNewPerAgentOpen[p] = false; settingsNewPerAgentKey[p] = ''"
             class="font-mono text-[12px] h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
   </div>
+  <template x-for="key in settingsPerAgentKeys(p)" :key="key">
+    <p :id="settingsFieldID([...settingsPerAgentPathKeys(p), key], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue(settingsFieldID([...settingsPerAgentPathKeys(p), key]))"></p>
+  </template>
   <p class="text-[11px] text-surface-600">An agent name wins over the kind it runs (claude, pi). A key naming neither blocks the save.</p>
 </div>`;
 
@@ -110,12 +118,12 @@ const SETTINGS_SECTIONS = [
   { key: 'agents', label: 'agents', blurb: 'Binaries kontora spawns. Anything with a CLI works.' },
   { key: 'stages', label: 'stages', blurb: 'Prompt templates. A pipeline runs them in order, sharing one git worktree.' },
   { key: 'pipelines', label: 'pipelines', blurb: 'Stages wired to agents, with a routing rule per step.' },
+  { key: 'statuses', label: 'statuses', blurb: 'Extra board columns a pipeline step can route to.' },
   { key: 'projects', label: 'projects', blurb: 'Defaults a new ticket picks up from the repo it points at.' },
   { key: 'web', label: 'web', blurb: 'This dashboard and the HTTP API the CLI talks to.' },
   { key: 'assistant', label: 'assistant', blurb: 'Board chat and the companion inbox. The inbox works without an agent.' },
   { key: 'plannotator', label: 'plannotator', blurb: 'Human review of the diff, and annotation of the ticket. Review notes feed the rework stage; ticket notes rewrite the ticket.' },
   { key: 'notifications', label: 'notifications', blurb: 'Where a ticket can tell you it changed. Which statuses it tells you about is per ticket.' },
-  { key: 'statuses', label: 'statuses', blurb: 'Extra board columns a pipeline step can route to.' },
   { key: 'display', label: 'display', blurb: 'Browser-local. Never written to config.yaml.' },
 ];
 
@@ -123,37 +131,10 @@ const SETTINGS_SECTIONS = [
 // of them, in the order the rail shows them.
 const SETTINGS_NAV_GROUPS = [
   { title: 'runtime', hue: 'indigo', keys: ['general', 'environment', 'web'] },
-  { title: 'orchestration', hue: 'cyan', keys: ['agents', 'stages', 'pipelines', 'projects'] },
-  { title: 'human in the loop', hue: 'mauve', keys: ['assistant', 'plannotator', 'notifications', 'statuses'] },
+  { title: 'orchestration', hue: 'cyan', keys: ['agents', 'stages', 'pipelines', 'statuses', 'projects'] },
+  { title: 'human in the loop', hue: 'mauve', keys: ['assistant', 'plannotator', 'notifications'] },
   { title: 'this browser', hue: 'green', keys: ['display'] },
 ];
-
-// What the concurrency stepper offers. A value outside the list keeps the
-// free-text input (settingsConcurrencyOther).
-const SETTINGS_CONCURRENCY_OPTIONS = [1, 2, 3, 4, 5, 6, 8];
-
-// Most pills the capacity meter draws. The cap is a free-text field, so the
-// meter has to survive a value nobody would run.
-const SETTINGS_SLOT_PILLS = 24;
-
-// Search terms for the keys no field table carries, because their control is
-// spelled out in the markup rather than driven by an x-for. The tables above
-// and the live names in settingsConfig supply the rest of the corpus.
-const SETTINGS_SEARCH_EXTRA = {
-  general: ['auto_pick_up start todo tickets automatically', 'summary_model final summary pass', 'summary_effort final summary pass'],
-  web: ['host bind address', 'port', 'token credential for /api and /ws'],
-  assistant: ['agent', 'model', 'effort', 'autonomy', 'prompt brief', 'companion enabled name Kotik inbox observation'],
-  agents: ['binary', 'effort', 'args', 'failure_patterns'],
-  stages: ['prompt', 'timeout', 'model', 'effort'],
-  pipelines: ['running_status', 'on_success', 'on_failure', 'max_retries'],
-  projects: ['pipeline', 'epic_child_pipeline', 'agent', 'branch_prefix', 'notify_channels'],
-  notifications: [
-    'enabled', 'timeout one delivery attempt', 'attempts', 'backoff between attempts',
-    'default channels a notification goes to', 'telegram chat_id', 'mattermost incoming webhook',
-    'webhook url method headers', 'secret_env', 'secret_file',
-  ],
-  display: ['pipeline_badges', 'agent_meta', 'theme dark light'],
-};
 
 // config.NotifyTelegram, NotifyMattermost, NotifyWebhook, with what each one
 // needs beside a credential. The form draws only the fields of the picked type,
@@ -177,6 +158,51 @@ const SETTINGS_NOTIFY_NONE = 'none';
 // no change. A save is blocked on the type itself.
 const SETTINGS_NOTIFY_FIELDS = ['chat_id', 'channel', 'url', 'method'];
 
+const SETTINGS_FIELD_LABELS = {
+  default_agent: 'Default agent', max_concurrent_agents: 'Worker limit',
+  max_concurrent_epic_supervisors: 'Supervisor limit', auto_pick_up: 'Automatic pickup',
+  tickets_dir: 'Tickets directory', secondary_tickets_dirs: 'Secondary ticket directories',
+  worktrees_dir: 'Worktrees directory', logs_dir: 'Logs directory', instance_name: 'Instance name',
+  branch_prefix: 'Branch prefix', summary_model: 'Final summary model', summary_effort: 'Final summary effort',
+  host: 'Listener address', port: 'Listener port', token: 'Access token',
+  agent: 'Agent', model: 'Model', effort: 'Effort', workdir: 'Working directory',
+  timeout: 'Timeout', autonomy: 'Default permission mode', prompt: 'Custom assistant prompt',
+  binary: 'Binary', args: 'Arguments', reviews_dir: 'Reviews directory', failure_patterns: 'Failure patterns',
+  secret_env: 'Credential environment variable', secret_file: 'Credential file',
+  chat_id: 'Telegram chat ID', channel: 'Mattermost channel', url: 'Webhook URL', method: 'HTTP method',
+  type: 'Channel type', enabled: 'Enabled', default: 'Fallback destinations',
+  attempts: 'Delivery attempts', backoff: 'Retry delay', pipeline_badges: 'Pipeline badges', agent_meta: 'Agent details',
+};
+
+const SETTINGS_FIELD_HELP = {
+  auto_pick_up: 'Start eligible todo tickets automatically when capacity is available.',
+  summary_model: "If empty, uses the agent's configured model or CLI default, not the stage's model override.",
+  summary_effort: "If empty, uses the agent's configured effort or CLI default, not the stage's effort override.",
+  'web.host': 'Listener address after the daemon restarts. Use loopback unless remote access is required.',
+  'web.port': 'Listener port after the daemon restarts.',
+  'web.token': 'Protects /api and /ws after the daemon restarts. Use TLS on untrusted networks.',
+  'assistant.agent': 'Used for new chats. Existing chats keep their original agent. Empty disables AI turns, independently of the companion inbox.',
+  'assistant.model': 'Default model for chats without an explicit model override. Existing explicit overrides remain unchanged.',
+  'assistant.effort': 'Default effort for chats without an explicit effort override. Existing explicit overrides remain unchanged.',
+  'assistant.autonomy': 'Default permission mode for new chats. Open chats keep their selected mode.',
+  'assistant.prompt': "Replaces Kontora's default board-chat instructions. Leave empty to use the default.",
+  'assistant.companion.enabled': 'The companion inbox is independent of the configured chat agent.',
+  'assistant.companion.name': 'Display name for the companion inbox. Does not select a chat agent.',
+  'notifications.enabled': 'Enable notification delivery. Ticket status choices still determine when notifications are requested.',
+  'notifications.default': 'Used when neither the ticket nor its project sets notification channels.',
+  'display.theme': 'Changes apply immediately in this browser. Never written to config.yaml.',
+  'display.pipeline_badges': 'Show pipeline labels on ticket cards in this browser.',
+  'display.agent_meta': 'Show agent details on ticket cards in this browser.',
+  'stages.timeout': 'Maximum duration of the stage. Empty or zero leaves the stage without a timer.',
+  'stages.prompt': 'Instructions for this stage. The worktree is shared with the other pipeline stages.',
+  'stages.model': "Overrides the agent's configured model for this stage. One value or exact per-agent overrides.",
+  'stages.effort': "Overrides the agent's configured effort for this stage. One value or exact per-agent overrides.",
+  'agents.binary': 'Executable to start. Wrapped claude and pi commands are recognized after the wrapper separator.',
+  'agents.args': 'One argument per line. Permissions depend on the executable and these arguments.',
+  'agents.effort': 'Default effort for this agent. Supported only for claude and pi.',
+  'agents.failure_patterns': 'Read-only. Absent uses built-in patterns; an empty list disables failure detection.',
+};
+
 // Root scalar keys the general section edits, with the value applyDefaults
 // would supply when the key is absent (internal/config/config.go).
 const SETTINGS_GENERAL_FIELDS = [
@@ -185,22 +211,11 @@ const SETTINGS_GENERAL_FIELDS = [
   { key: 'worktrees_dir', placeholder: '~/.kontora/worktrees', help: 'One git worktree per ticket lives here.' },
   { key: 'logs_dir', placeholder: '~/.kontora/logs', help: 'Per-stage agent output. The LOGS pane reads from here.' },
   { key: 'branch_prefix', placeholder: 'kontora', help: "Fallback when the ticket's project sets none." },
-  { key: 'default_agent', placeholder: 'claude', help: 'Used when a pipeline step or ticket names no agent.' },
+  { key: 'default_agent', placeholder: 'claude', help: 'When empty, uses the agent named claude, otherwise the sole configured agent. With multiple other agents, select one explicitly. Pipeline steps require their own agent.' },
   { key: 'max_concurrent_agents', placeholder: '3', help: 'Limit for starting new worker tmux sessions. Running workers keep their slots after a decrease. Epic supervisors use separate slots.' },
   { key: 'max_concurrent_epic_supervisors', placeholder: '4', help: 'Supervisor limit, separate from worker slots. Applies to the next admission; running supervisors keep their slots.' },
   { key: 'instance_name', placeholder: "this machine's hostname", help: 'Identifies this daemon when several share one tickets_dir.' },
 ];
-
-// Which card of the general section draws each field row, and the rows that
-// card draws with a control of their own rather than a text input. Keyed
-// rather than sliced off the table, so a field added above lands in a card or
-// fails the test that holds every key to exactly one of them.
-const SETTINGS_GENERAL_GROUPS = {
-  locations: ['tickets_dir', 'secondary_tickets_dirs', 'worktrees_dir', 'logs_dir'],
-  execution: ['max_concurrent_agents', 'max_concurrent_epic_supervisors', 'default_agent', 'branch_prefix', 'instance_name'],
-};
-
-const SETTINGS_GENERAL_CUSTOM = ['max_concurrent_agents', 'default_agent'];
 
 const SETTINGS_PLANNOTATOR_FIELDS = [
   { key: 'binary', placeholder: 'plannotator', help: 'Reviewer binary spawned for a human review pass.' },
@@ -212,11 +227,11 @@ const SETTINGS_PLANNOTATOR_FIELDS = [
 const SETTINGS_ASSISTANT_KEYS = ['agent', 'model', 'effort', 'workdir', 'timeout', 'autonomy', 'prompt'];
 
 // The assistant fields that are a plain text input with a daemon default
-// behind them. The other five carry their own markup: agent and autonomy are
-// choice cards, prompt is a textarea, and model and effort have no default to show.
+// behind them. The other five carry their own markup: agent uses a picker and
+// autonomy a select, prompt is a textarea, and model and effort have no default to show.
 const SETTINGS_ASSISTANT_FIELDS = [
-  { key: 'workdir', placeholder: 'tickets_dir', help: 'Every turn of every thread runs here. A thread cannot resume if its cwd moves.' },
-  { key: 'timeout', placeholder: '10m', help: 'Bounds one turn.' },
+  { key: 'workdir', placeholder: 'tickets_dir', help: 'Working directory for new chats. Existing chats keep their stored directory.' },
+  { key: 'timeout', placeholder: '10m', help: 'Maximum duration of one turn.' },
 ];
 
 // config.builtinStatuses minus archived, which never reaches the board.
@@ -234,10 +249,10 @@ const SETTINGS_TOKENS = [
 // config.validStatusNameRe (internal/config/config.go).
 const SETTINGS_STATUS_RE = /^[a-z][a-z0-9_]*$/;
 
-// The grammar time.ParseDuration accepts: one or more signed decimal numbers,
-// each with a unit. A narrower "digits + one unit" pattern would reject 1h30m
+// time.ParseDuration accepts a leading sign, followed by zero or decimal
+// numbers with units. A narrower "digits + one unit" pattern would reject 1h30m
 // and 1.5h, both of which the daemon takes.
-const SETTINGS_DURATION_RE = /^[-+]?(\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)([-+]?(\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h))*$/;
+const SETTINGS_DURATION_RE = /^[-+]?(?:0|(?:(?:\d+(?:\.\d*)?|\.\d+)(?:ns|us|µs|μs|ms|s|m|h))+)$/;
 
 export function kontoraSettings() {
   return {
@@ -250,7 +265,13 @@ export function kontoraSettings() {
       return lines;
     },
 
-    settingsSection: 'stages',
+    settingsSection: 'general',
+    settingsOpenAgent: null,
+    settingsReloadWarning: '',
+    settingsRevealMessage: '',
+    _settingsRevealSeq: 0,
+    _settingsBeforeUnload: null,
+    _settingsReadController: null,
     // The editable form model, and a deep clone of what was parsed from disk.
     // Dirty state and the diff compare the two.
     settingsConfig: null,
@@ -280,7 +301,7 @@ export function kontoraSettings() {
     // field path: a webhook's header rows are one control per channel.
     settingsNewHeaderOpen: {},
     settingsNewHeaderKey: {},
-    // Which secret source a channel's radio pair shows while both fields are
+    // Which secret source a channel's select shows while both fields are
     // empty. Never written to YAML.
     settingsNotifSecretPick: {},
     // The per-agent control appears once per stage and twice in general, so its
@@ -291,9 +312,7 @@ export function kontoraSettings() {
     settingsShowToken: false,
     // The rail's search box. Browser-local, never written to YAML.
     settingsQuery: '',
-    // Set by the stepper's "other" option, which is how a value the stepper
-    // does offer gets back to one it does not.
-    settingsConcurrencyCustom: false,
+    settingsField: '',
 
     // The parsed Document, the text it came from, and the yaml module. Never
     // rendered and never part of the form model, so no template reads them.
@@ -310,12 +329,55 @@ export function kontoraSettings() {
     settingsBuiltinStatuses: SETTINGS_BUILTIN_STATUSES,
     settingsTokens: SETTINGS_TOKENS,
     settingsNavGroups: SETTINGS_NAV_GROUPS,
-    settingsConcurrencyOptions: SETTINGS_CONCURRENCY_OPTIONS,
     settingsNotifTypes: SETTINGS_NOTIFY_TYPES,
     settingsNotifMethods: SETTINGS_NOTIFY_METHODS,
     settingsNotifNone: SETTINGS_NOTIFY_NONE,
+    settingsNotificationFields: [
+      { key: 'timeout', label: 'Attempt timeout', placeholder: '10s', help: 'Maximum duration of one delivery attempt.' },
+      { key: 'attempts', label: 'Delivery attempts', placeholder: '3', help: 'Between 1 and 10 attempts. One sends once without retrying.' },
+      { key: 'backoff', label: 'Retry delay', placeholder: '1s', help: 'Delay between delivery attempts.' },
+    ],
+
+    setupSettingsLifecycle() {
+      if (this._settingsBeforeUnload) return;
+      this._settingsBeforeUnload = event => {
+        if (!this.settingsNeedsProtection()) return;
+        event.preventDefault();
+        event.returnValue = '';
+      };
+      window.addEventListener('beforeunload', this._settingsBeforeUnload);
+    },
+
+    destroySettingsLifecycle() {
+      if (this._settingsBeforeUnload) window.removeEventListener('beforeunload', this._settingsBeforeUnload);
+      this._settingsBeforeUnload = null;
+      this._settingsCancelRead();
+      ++this._settingsRevealSeq;
+    },
+
+    settingsNeedsProtection() {
+      return this.settingsSaving || this.settingsDirty() || this._settingsHasDrafts();
+    },
+
+    settingsGuardCancel() {
+      return this.settingsGuardKeepEditing();
+    },
+
+    settingsGuardKeepEditing() {
+      if (this.settingsSaving) return false;
+      this.settingsGuard = false;
+      this.settingsGuardTarget = null;
+      this.cancelSettingsHistory?.();
+    },
 
     // ---- loading -----------------------------------------------------------
+
+    _settingsCancelRead() {
+      ++this._settingsRefreshSeq;
+      this._settingsReadController?.abort();
+      this._settingsReadController = null;
+      this.settingsLoading = false;
+    },
 
     async openSettings() {
       this.currentView = 'settings';
@@ -335,10 +397,13 @@ export function kontoraSettings() {
       // also start while fetch, json, or the YAML module is still loading.
       const canApply = () => seq === this._settingsRefreshSeq &&
         this.settingsConfig === config && !this.settingsDirty() && !this._settingsHasDrafts() && !this.settingsSaving;
+      this._settingsReadController?.abort();
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      this._settingsReadController = controller;
       this.settingsLoading = true;
       this.settingsLoadError = '';
       try {
-        const res = await fetch('/api/config/raw');
+        const res = await fetch('/api/config/raw', controller ? { signal: controller.signal } : undefined);
         if (!canApply()) return;
         if (res.status === 401) { this.needsAuth = true; this.settingsState = 'auth'; return; }
         if (res.status === 501) { this.settingsState = 'unavailable'; return; }
@@ -365,7 +430,7 @@ export function kontoraSettings() {
     async _settingsParse(text, canApply = () => true) {
       const yaml = await this._settingsLoadYAML();
       if (!canApply()) return;
-      const doc = yaml.parseDocument(text);
+      const doc = yaml.parseDocument(text, { intAsBigInt: true });
       if (doc.errors && doc.errors.length) throw new Error(doc.errors[0].message);
       this._settingsDoc = doc;
       this._settingsRawText = text;
@@ -375,7 +440,6 @@ export function kontoraSettings() {
       this.settingsErrors = [];
       this.settingsSavedAt = '';
       this.settingsOpenStage = null;
-      this.settingsConcurrencyCustom = false;
       this.settingsClearPerAgentDrafts('');
       this.settingsClearNotifDrafts();
     },
@@ -419,22 +483,27 @@ export function kontoraSettings() {
     // ---- validation --------------------------------------------------------
 
     // The checks whose wording can be guaranteed against config.Validate().
-    // Anything else (durations, max_concurrent_agents) gets a live border but
-    // no invented message: the daemon owns that text.
+    // Durations and integer syntax get advisory text and a live border.
+    // The daemon validates durations and numeric limits.
     settingsClientErrors() {
+      return this.settingsClientIssues().filter(issue => issue.blocking).map(issue => issue.message);
+    },
+
+    settingsClientIssues() {
       const cfg = this.settingsConfig;
       if (!cfg) return [];
       const errs = [];
+      const add = (key, message, blocking = true) => errs.push({ key, id: this.settingsFieldIdentity(key), field: this.settingsFieldIdentity(key), message, blocking });
       for (const name of Object.keys(cfg.agents)) {
-        if (!cfg.agents[name].binary.trim()) errs.push(`agent "${name}": binary is required`);
+        if (!cfg.agents[name].binary.trim()) add(['agents', name, 'binary'], `agent "${name}": binary is required`);
       }
-      const wanted = cfg.general.default_agent.trim();
-      if (wanted && !cfg.agents[wanted]) errs.push(`default_agent "${wanted}": not found in agents`);
+      const wanted = cfg.general.default_agent;
+      if (wanted && !Object.hasOwn(cfg.agents, wanted)) add(['default_agent'], `default_agent "${wanted}": not found in agents`);
       for (const name of Object.keys(cfg.projects)) {
-        if (!cfg.projects[name].path.trim()) errs.push(`project "${name}": path is required`);
+        if (!cfg.projects[name].path.trim()) add(['projects', name, 'path'], `project "${name}": path is required`);
       }
       for (const s of cfg.statuses) {
-        if (!SETTINGS_STATUS_RE.test(s)) errs.push(`custom status "${s}": must match [a-z][a-z0-9_]*`);
+        if (!SETTINGS_STATUS_RE.test(s)) add(['statuses', s], `custom status "${s}": must match [a-z][a-z0-9_]*`);
       }
       // config.Validate: an effort on an agent whose CLI takes no flag for it.
       // An agent with no binary at all is already reported above, and so is one
@@ -442,10 +511,10 @@ export function kontoraSettings() {
       for (const name of Object.keys(cfg.agents).sort()) {
         const agent = cfg.agents[name];
         if (agent.binary.trim() && agent.effort.trim() && !settingsAgentKind(agent)) {
-          errs.push(`agent "${name}": sets effort "${agent.effort.trim()}", which ${agent.binary.trim()} takes no flag for`);
+          add(['agents', name, 'effort'], `agent "${name}": sets effort "${agent.effort.trim()}", which ${agent.binary.trim()} takes no flag for`);
         }
       }
-      errs.push(...this._settingsAssistantErrors());
+      this._settingsAssistantErrors(add);
       // config.validateAgentKeyedFields: a map key naming neither a configured
       // agent nor a kind. Only the keys a save would write are checked; a row
       // left blank writes nothing.
@@ -453,13 +522,13 @@ export function kontoraSettings() {
       for (const name of Object.keys(cfg.stages).sort()) {
         for (const field of ['model', 'effort']) {
           for (const key of Object.keys(settingsPerAgentEntries(cfg.stages[name][field]))) {
-            if (!this.settingsAgentKeyValid(key)) errs.push(`stage "${name}": ${keyErr(field, key)}`);
+            if (!this.settingsAgentKeyValid(key)) add(['stages', name, field, key], `stage "${name}": ${keyErr(field, key)}`);
           }
         }
       }
       for (const path of ['summary_model', 'summary_effort']) {
         for (const key of Object.keys(settingsPerAgentEntries(cfg[path]))) {
-          if (!this.settingsAgentKeyValid(key)) errs.push(`${path}: ${keyErr(path.replace('summary_', ''), key)}`);
+          if (!this.settingsAgentKeyValid(key)) add([path, key], `${path}: ${keyErr(path.replace('summary_', ''), key)}`);
         }
       }
       // config.Validate: a step pairing a stage override with an agent whose CLI
@@ -473,13 +542,31 @@ export function kontoraSettings() {
           for (const field of ['model', 'effort']) {
             const v = settingsPerAgentFor(stage[field], step.agent, '');
             if (v) {
-              errs.push(`pipeline "${name}" stage ${i}: stage "${step.stage}" sets ${field} "${v}", ` +
+              add(['pipelines', name, String(i), 'agent'], `pipeline "${name}" stage ${i}: stage "${step.stage}" sets ${field} "${v}", ` +
                 `which agent "${step.agent}" (${agent.binary.trim()}) takes no flag for`);
             }
           }
         });
       }
-      errs.push(...this._settingsNotificationErrors());
+      this._settingsNotificationErrors(add);
+      const durations = [
+        [['assistant', 'timeout'], cfg.assistant.timeout],
+        [['plannotator', 'timeout'], cfg.plannotator.timeout],
+        [['notifications', 'timeout'], cfg.notifications.timeout],
+        [['notifications', 'backoff'], cfg.notifications.backoff],
+        ...Object.entries(cfg.stages).map(([name, stage]) => [['stages', name, 'timeout'], stage.timeout]),
+      ];
+      for (const [key, value] of durations) {
+        if (!this.settingsDurationValid(value)) add(key, 'Use a duration such as 30m or 1h30m. The daemon checks this value when saving.', false);
+      }
+      for (const [key, value] of [
+        [['max_concurrent_agents'], cfg.general.max_concurrent_agents],
+        [['max_concurrent_epic_supervisors'], cfg.general.max_concurrent_epic_supervisors],
+        [['web', 'port'], cfg.web.port],
+        [['notifications', 'attempts'], cfg.notifications.attempts],
+      ]) {
+        if (!this.settingsIntValid(value)) add(key, 'Use an integer. The daemon checks this value when saving.', false);
+      }
       return errs;
     },
 
@@ -487,18 +574,19 @@ export function kontoraSettings() {
     // block whether or not it is enabled — a channel is only ever reached
     // because a ticket names it, so a half-written one fails at the moment
     // somebody relies on it — and so does this.
-    _settingsNotificationErrors() {
+    _settingsNotificationErrors(collect) {
       const n = this.settingsConfig.notifications;
       const errs = [];
+      const add = (key, message) => { errs.push(message); collect?.(key, message); };
       const attempts = n.attempts.trim();
-      if (/^\d+$/.test(attempts) && (Number(attempts) < 1 || Number(attempts) > 10)) {
-        errs.push(`notifications.attempts ${Number(attempts)}: must be between 1 and 10 (1 sends once and does not retry)`);
+      if (/^\d+$/.test(attempts) && (BigInt(attempts) < 1n || BigInt(attempts) > 10n)) {
+        add(['notifications', 'attempts'], `notifications.attempts ${BigInt(attempts)}: must be between 1 and 10 (1 sends once and does not retry)`);
       }
       // Sorted, so two bad channels always report in the same order.
       for (const name of this.settingsNotifChannelNames()) {
-        errs.push(...settingsNotifChannelErrors(name, n.channels[name]));
+        settingsNotifChannelErrors(name, n.channels[name], (field, message) => add(['notifications', 'channels', name, ...field], message));
       }
-      errs.push(...this._settingsNotifListErrors('notifications.default', n.default));
+      for (const message of this._settingsNotifListErrors('notifications.default', n.default)) add(['notifications', 'default'], message);
       return errs;
     },
 
@@ -524,30 +612,30 @@ export function kontoraSettings() {
     // timeout are left alone: applyDefaults fills them.
     // Its effort check is not mirrored: effortFlag() is empty for exactly the
     // kinds the agent check rejects, so the daemon stops at that one first.
-    _settingsAssistantErrors() {
+    _settingsAssistantErrors(collect) {
       const a = this.settingsConfig.assistant;
       const errs = [];
+      const add = (key, message) => { errs.push(message); collect?.(key, message); };
       const companionName = a.companion.name.trim();
-      if ([...companionName].length > 64) errs.push('assistant.companion.name: must be 1-64 characters and not blank');
-      if (/\p{Cc}/u.test(companionName)) errs.push('assistant.companion.name: must not contain control characters');
-      const name = a.agent.trim();
+      if ([...companionName].length > 64) add(['assistant', 'companion', 'name'], 'assistant.companion.name: must be 1-64 characters and not blank');
+      if (/\p{Cc}/u.test(companionName)) add(['assistant', 'companion', 'name'], 'assistant.companion.name: must not contain control characters');
+      const name = a.agent;
       if (!name) return errs;
-      // hasOwn, not a truth test: agents is a plain object, so an agent named
-      // after an Object.prototype member would otherwise look configured and
-      // the read of its binary below would throw.
+      // Agent names may match Object.prototype members.
       if (!Object.hasOwn(this.settingsConfig.agents, name)) {
-        return errs.concat(`assistant.agent "${name}": not found in agents`);
+        add(['assistant', 'agent'], `assistant.agent "${name}": not found in agents`);
+        return errs;
       }
       const agent = this.settingsConfig.agents[name];
       const binary = agent.binary.trim();
       const kind = settingsAgentKind(agent);
       if (binary && !kind) {
-        errs.push(`assistant.agent "${name}": runs ${binary}, and the assistant only supports claude and pi ` +
+        add(['assistant', 'agent'], `assistant.agent "${name}": runs ${binary}, and the assistant only supports claude and pi ` +
           '(they are the CLIs that take a session id, which one chat needs)');
       }
       const autonomy = a.autonomy.trim();
       if (autonomy && !['read', 'ask', 'auto'].includes(autonomy)) {
-        errs.push(`assistant.autonomy "${autonomy}": must be one of read, ask, auto`);
+        add(['assistant', 'autonomy'], `assistant.autonomy "${autonomy}": must be one of read, ask, auto`);
       }
       return errs;
     },
@@ -560,13 +648,13 @@ export function kontoraSettings() {
 
     settingsIntValid(value) {
       const v = (value || '').trim();
-      return v === '' || /^\d+$/.test(v);
+      return v === '' || /^[-+]?\d+$/.test(v);
     },
 
     // A per-agent map key: a configured agent name, or an agent kind. Mirrors
     // config.validateAgentKeys.
     settingsAgentKeyValid(key) {
-      const k = (key || '').trim();
+      const k = key || '';
       if (k === '' || k === 'claude' || k === 'pi') return true;
       // hasOwn, not a lookup: an agent named after an Object.prototype member
       // would otherwise read as configured.
@@ -586,44 +674,66 @@ export function kontoraSettings() {
     // ---- saving ------------------------------------------------------------
 
     async saveSettings() {
+      if (this.settingsSaving || !this.settingsConfig) return false;
+      if (this._settingsHasDrafts()) {
+        this.settingsErrors = ['Add or cancel unfinished rows before saving.'];
+        this.settingsDiffOpen = true;
+        return false;
+      }
       const errs = this.settingsClientErrors();
       if (errs.length) {
         this.settingsErrors = errs;
         this.settingsDiffOpen = true;
         return false;
       }
+      this.closeAgentPicker?.(false);
+      ++this._settingsRevealSeq;
       this.settingsErrors = [];
       this.settingsSaving = true;
-      const changed = this.settingsChangedPaths();
+      this._settingsCancelRead();
+      const submission = {
+        config: settingsClone(this.settingsConfig),
+        baseline: settingsClone(this.settingsBaseline),
+        raw: this._settingsRawText,
+        changed: this.settingsChangedPaths(),
+      };
+      let writeStarted = false;
+      let persisted = false;
       try {
-        if (await this._settingsStale()) {
+        if (await this._settingsStale(submission.raw)) {
           this.settingsErrors = ['config.yaml changed on disk after this page read it. Saving now would overwrite that change. Reload the page, then redo your edits.'];
           this.settingsDiffOpen = true;
           return false;
         }
-        const content = await this._settingsWrite();
+        const content = await this._settingsWrite(submission);
+        writeStarted = true;
         const res = await fetch('/api/config/raw', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content, expected_content: this._settingsRawText }),
+          body: JSON.stringify({ content, expected_content: submission.raw }),
         });
         if (res.status === 401) { this.needsAuth = true; return false; }
-        if (res.status === 204) {
+        const data = res.status === 204 ? {} : await res.json().catch(() => ({}));
+        const partial = res.status === 500 && data.code === 'config_saved_reload_failed';
+        if (res.status === 204 || partial) {
+          persisted = true;
           await this._settingsRebase(content);
           this.settingsSavedAt = clockHM(new Date());
-          this.settingsSavedRestart = changed.some(p => this.settingsIsRestartOnly(p));
+          this.settingsSavedRestart = this.settingsSavedRestart || submission.changed.some(p => this.settingsIsRestartOnly(p));
+          this.settingsReloadWarning = partial ? (data.error || 'Configuration saved, but reload failed.') : '';
           this.settingsDiffOpen = false;
-          await this._settingsRefreshConfigCache();
-          return true;
+          if (!partial) await this._settingsRefreshConfigCache();
+          return !partial;
         }
-        const data = await res.json().catch(() => ({}));
-        this.settingsErrors = [data.error || 'HTTP ' + res.status];
+        const rejected = res.status === 400 || res.status === 409;
+        this.settingsErrors = [rejected ? (data.error || 'HTTP ' + res.status)
+          : 'Could not confirm whether configuration was saved. Check the file before retrying. ' + (data.error || 'HTTP ' + res.status)];
         this.settingsDiffOpen = true;
         return false;
       } catch (e) {
-        // settingsErrors only renders inside the diff panel, which is collapsed
-        // by default. Without this a stopped daemon looks like a dead button.
-        this.settingsErrors = [e.message || String(e)];
+        this.settingsErrors = [persisted
+          ? 'Configuration was saved, but the page could not update. Reload the page before editing. ' + (e.message || String(e))
+          : (writeStarted ? 'Could not confirm whether configuration was saved. Check the file before retrying. ' : '') + (e.message || String(e))];
         this.settingsDiffOpen = true;
         return false;
       } finally {
@@ -631,13 +741,20 @@ export function kontoraSettings() {
       }
     },
 
+    settingsRetryApply() {
+      if (!this.settingsReloadWarning || this.settingsSaving || this.settingsDirty() || this._settingsHasDrafts()) return false;
+      return this.saveSettings();
+    },
+
     // The early read gives a clearer conflict message. expected_content on the
     // write also catches changes made between this read and the PUT.
-    async _settingsStale() {
+    async _settingsStale(raw = this._settingsRawText) {
       const res = await fetch('/api/config/raw');
-      if (!res.ok) return false;
+      if (res.status === 401) this.needsAuth = true;
+      if (!res.ok) throw new Error('Could not check the current configuration (HTTP ' + res.status + ').');
       const data = await res.json();
-      return (data.content || '') !== this._settingsRawText;
+      if (typeof data.content !== 'string') throw new Error('Could not read the current configuration.');
+      return data.content !== raw;
     },
 
     // The daemon reloaded, so the resolved config the rest of the UI reads is
@@ -661,10 +778,11 @@ export function kontoraSettings() {
     // the component hands out Alpine's reactive Proxy, and a node stored
     // through one fails yaml's own isMap check — its type symbol is
     // non-configurable, so the Proxy may not answer with a wrapped value.
-    async _settingsWrite() {
+    async _settingsWrite(submission = { raw: this._settingsRawText, config: settingsClone(this.settingsConfig), baseline: settingsClone(this.settingsBaseline) }) {
       const yaml = await this._settingsLoadYAML();
-      const doc = yaml.parseDocument(this._settingsRawText);
-      settingsApply(yaml, doc, this.settingsConfig, this.settingsBaseline);
+      const doc = yaml.parseDocument(submission.raw, { intAsBigInt: true });
+      settingsAssertNumericCompatibility(yaml, doc);
+      settingsApply(yaml, doc, submission.config, submission.baseline);
       this._settingsDoc = doc;
       try {
         return String(doc);
@@ -682,7 +800,7 @@ export function kontoraSettings() {
     // otherwise go on showing a row config.yaml no longer has, and report clean.
     async _settingsRebase(content) {
       const yaml = await this._settingsLoadYAML();
-      const doc = yaml.parseDocument(content);
+      const doc = yaml.parseDocument(content, { intAsBigInt: true });
       this._settingsRawText = content;
       this._settingsDoc = doc;
       this.settingsConfig = settingsModel(doc.toJS({ maxAliasCount: -1 }) || {});
@@ -690,11 +808,18 @@ export function kontoraSettings() {
     },
 
     discardSettings() {
+      if (this.settingsSaving) return false;
+      this._settingsCancelRead();
+      this.settingsNewStage = '';
+      this.settingsNewStageOpen = false;
+      this.settingsNewEnvKey = '';
+      this.settingsNewEnvOpen = false;
+      this.settingsNewStatus = '';
+      this.settingsNewStatusOpen = false;
       this.settingsConfig = settingsClone(this.settingsBaseline);
       this.settingsErrors = [];
       this.settingsDiffOpen = false;
       this.settingsSavedAt = '';
-      this.settingsConcurrencyCustom = false;
       this.settingsClearPerAgentDrafts('');
       this.settingsClearNotifDrafts();
     },
@@ -703,6 +828,7 @@ export function kontoraSettings() {
     // (added here, or the built-in rework the file does not declare) is dropped
     // from the model instead, so reverting leaves no half-created key.
     revertSettingsStage(name) {
+      if (this.settingsSaving) return;
       const base = this.settingsBaseline.stages[name];
       if (base) this.settingsConfig.stages[name] = settingsClone(base);
       else {
@@ -747,6 +873,7 @@ export function kontoraSettings() {
     },
 
     settingsAddStage() {
+      if (this.settingsSaving) return;
       const name = (this.settingsNewStage || '').trim();
       if (!name || this.settingsConfig.stages[name]) return;
       this.settingsConfig.stages[name] = {
@@ -761,10 +888,11 @@ export function kontoraSettings() {
       this.settingsOpenStage = name;
       this.settingsNewStage = '';
       this.settingsNewStageOpen = false;
-      this.settingsSection = 'stages';
+      this.settingsNavigate('stages');
     },
 
     settingsAddEnv() {
+      if (this.settingsSaving) return;
       const key = (this.settingsNewEnvKey || '').trim();
       // hasOwn, not `in`: `'constructor' in {}` is true, and the row could then
       // never be added, with nothing on screen explaining why.
@@ -775,6 +903,7 @@ export function kontoraSettings() {
     },
 
     settingsRemoveEnv(key) {
+      if (this.settingsSaving) return;
       delete this.settingsConfig.environment[key];
     },
 
@@ -788,6 +917,12 @@ export function kontoraSettings() {
       const parts = path.split('.');
       if (parts.length === 1) return this.settingsConfig[path];
       return this.settingsConfig.stages[parts.slice(1, -1).join('.')][parts[parts.length - 1]];
+    },
+
+    settingsPerAgentPathKeys(path) {
+      if (!path.startsWith('stages.')) return [path];
+      const parts = path.split('.');
+      return ['stages', parts.slice(1, -1).join('.'), parts.at(-1)];
     },
 
     settingsPerAgentKeys(path) {
@@ -805,6 +940,7 @@ export function kontoraSettings() {
     },
 
     settingsSetPerAgentMode(path, mode) {
+      if (this.settingsSaving) return;
       this.settingsPerAgent(path).mode = mode;
     },
 
@@ -812,11 +948,12 @@ export function kontoraSettings() {
     // twice. hasOwn rather than `in`, which is true for every Object.prototype
     // member and would leave the add button disabled with no explanation.
     settingsPerAgentHasKey(path, key) {
-      return Object.hasOwn(this.settingsPerAgent(path).by, (key || '').trim());
+      return Object.hasOwn(this.settingsPerAgent(path).by, key || '');
     },
 
     settingsAddPerAgent(path) {
-      const key = (this.settingsNewPerAgentKey[path] || '').trim();
+      if (this.settingsSaving) return;
+      const key = this.settingsNewPerAgentKey[path] || '';
       const field = this.settingsPerAgent(path);
       if (!key || Object.hasOwn(field.by, key)) return;
       field.by[key] = '';
@@ -825,6 +962,7 @@ export function kontoraSettings() {
     },
 
     settingsRemovePerAgent(path, key) {
+      if (this.settingsSaving) return;
       delete this.settingsPerAgent(path).by[key];
     },
 
@@ -842,6 +980,7 @@ export function kontoraSettings() {
     },
 
     settingsAddStatus() {
+      if (this.settingsSaving) return;
       const name = (this.settingsNewStatus || '').trim();
       if (!name || this.settingsConfig.statuses.includes(name)) return;
       this.settingsConfig.statuses.push(name);
@@ -850,6 +989,7 @@ export function kontoraSettings() {
     },
 
     settingsRemoveStatus(name) {
+      if (this.settingsSaving) return;
       this.settingsConfig.statuses = this.settingsConfig.statuses.filter(s => s !== name);
     },
 
@@ -889,6 +1029,7 @@ export function kontoraSettings() {
     },
 
     settingsNotifAddChannel() {
+      if (this.settingsSaving) return;
       const name = (this.settingsNewChannelName || '').trim();
       // hasOwn, not `in`: a channel named after an Object.prototype member
       // would otherwise never be addable, with nothing on screen saying why.
@@ -902,6 +1043,7 @@ export function kontoraSettings() {
     // default list left pointing at a channel that no longer exists is what
     // config.checkNotifyChannelList rejects, and the save would fail on it.
     settingsNotifRemoveChannel(name) {
+      if (this.settingsSaving) return;
       delete this.settingsConfig.notifications.channels[name];
       this.settingsConfig.notifications.default = this.settingsConfig.notifications.default.filter(c => c !== name);
       delete this.settingsNewHeaderOpen[name];
@@ -921,6 +1063,7 @@ export function kontoraSettings() {
     },
 
     settingsNotifSetSecretMode(name, mode) {
+      if (this.settingsSaving) return;
       const ch = this.settingsNotifChannel(name);
       if (mode === 'env') ch.secret_file = '';
       if (mode === 'file') ch.secret_env = '';
@@ -933,6 +1076,7 @@ export function kontoraSettings() {
     },
 
     settingsNotifAddHeader(name) {
+      if (this.settingsSaving) return;
       const key = (this.settingsNewHeaderKey[name] || '').trim();
       const headers = this.settingsNotifChannel(name).headers;
       if (!key || Object.hasOwn(headers, key)) return;
@@ -942,6 +1086,7 @@ export function kontoraSettings() {
     },
 
     settingsNotifRemoveHeader(name, key) {
+      if (this.settingsSaving) return;
       delete this.settingsNotifChannel(name).headers[key];
     },
 
@@ -957,6 +1102,7 @@ export function kontoraSettings() {
     // "none" silences the list and means nothing beside a channel, so the two
     // sides of the picker clear each other rather than composing an error.
     settingsNotifToggleDefault(name) {
+      if (this.settingsSaving) return;
       const n = this.settingsConfig.notifications;
       if (n.default.includes(name)) {
         n.default = n.default.filter(c => c !== name);
@@ -1004,6 +1150,7 @@ export function kontoraSettings() {
     // back after it. Without the refocus the user loses their place on every
     // chip click.
     insertTemplateToken(id, stage, token) {
+      if (this.settingsSaving) return;
       const el = document.getElementById(id);
       const cur = this.settingsConfig.stages[stage].prompt || '';
       const start = el ? el.selectionStart : cur.length;
@@ -1054,12 +1201,12 @@ export function kontoraSettings() {
       const host = web.host.trim() || '127.0.0.1';
       const port = web.port.trim() || '8080';
       if (!web.token.trim()) {
-        return `No token. /api and /ws are open to anything that can reach ${host}:${port}. Set one before binding to anything but loopback.`;
+        return `After restart, /api and /ws will have no authentication at ${host}:${port}. Set a token before listening beyond loopback.`;
       }
       if (host === '127.0.0.1' || host === 'localhost') {
-        return `Token set. Open http://${host}:${port}/?token=… once to store the cookie. Plain HTTP sends it in clear — put the daemon behind TLS on any untrusted network.`;
+        return `After restart, token authentication will apply at ${host}:${port}. Open the page with ?token=… once to store the cookie. Use TLS on untrusted networks.`;
       }
-      return `Bound to ${host} with a token. The token is the only thing gating remote access, and agents run with --dangerously-skip-permissions. Fine on a tailnet; use TLS anywhere else.`;
+      return `After restart, the listener will use ${host}:${port} with token authentication. Use TLS on untrusted networks. Agent permissions depend on each agent definition.`;
     },
 
     // ---- the rail, the header and the overview ----------------------------
@@ -1091,7 +1238,7 @@ export function kontoraSettings() {
       }
       if (key === 'projects') return this.settingsProjectNames().join(', ');
       if (key === 'assistant') {
-        const agent = cfg.assistant.agent.trim();
+        const agent = cfg.assistant.agent;
         const inbox = cfg.assistant.companion.enabled ? (cfg.assistant.companion.name.trim() || 'Kotik') + ' inbox' : '';
         if (!agent) return inbox || 'disabled';
         const mode = cfg.assistant.autonomy.trim() || 'ask';
@@ -1113,160 +1260,191 @@ export function kontoraSettings() {
       return '';
     },
 
-    // The overview tiles, which sit above the content of every section rather
-    // than on a page of their own.
-    settingsOverviewTiles() {
-      const cfg = this.settingsConfig;
-      if (!cfg) return [];
-      const agents = this.settingsAgentNames();
-      const stages = this.settingsStageNames();
-      const pipelines = this.settingsPipelineNames();
-      const projects = this.settingsProjectNames();
-      const builtin = stages.filter(s => cfg.stages[s].builtin);
-      const steps = pipelines.reduce((n, p) => n + cfg.pipelines[p].length, 0);
-      const plural = this.settingsPlural;
-      return [
-        { label: 'agents', hue: 'indigo', value: agents.length, unit: 'configured', foot: agents.join(' · ') },
-        {
-          label: 'stages', hue: 'cyan', value: stages.length, unit: 'templates',
-          foot: builtin.length ? `${builtin.length} built-in (${builtin.join(', ')})` : stages.join(' · '),
-        },
-        { label: 'pipelines', hue: 'amber', value: pipelines.length, unit: plural(steps, 'step', 'steps'), foot: pipelines.join(' · ') },
-        { label: 'projects', hue: 'green', value: projects.length, unit: 'repos', foot: projects.join(' · ') },
-      ];
-    },
-
     // Unsaved edits the daemon's reload would not pick up. Drives the header's
     // "restart to apply · N" pill, which is hidden at zero.
     settingsRestartPending() {
       return this.settingsChangedPaths().filter(p => this.settingsIsRestartOnly(p)).length;
     },
 
-    // ---- search ------------------------------------------------------------
-
-    // What the search matches the section itself on, as against one of its
-    // rows. The split drives settingsRowVisible: a section reached through a
-    // word no row carries keeps every row.
-    _settingsSectionTerms(key) {
-      const section = SETTINGS_SECTIONS.find(s => s.key === key);
-      return [key, section ? section.blurb : '', this.settingsSectionSummary(key)];
+    settingsFieldIdentity(key, role = 'value') {
+      return JSON.stringify([key, role]);
     },
 
-    // What the rail's search matches a row of a section on: the field keys and
-    // help of the tables that drive it, the literal keys whose control is
-    // spelled out in markup, and the live names config.yaml gives it.
-    _settingsRowTerms(key) {
+    settingsFieldID(key, role = 'value') {
+      return 'settings-field-' + Array.from(this.settingsFieldIdentity(key, role), ch => ch.codePointAt(0).toString(16)).join('-');
+    },
+
+    settingsFieldLabel(key) {
+      return Object.hasOwn(SETTINGS_FIELD_LABELS, key) ? SETTINGS_FIELD_LABELS[key]
+        : key.replace(/_/g, ' ').replace(/^./, ch => ch.toUpperCase());
+    },
+
+    settingsFieldCatalogue() {
       const cfg = this.settingsConfig;
-      const out = [];
-      out.push(...(SETTINGS_SEARCH_EXTRA[key] || []));
-      const fields = table => { for (const f of table) out.push(f.key, f.help); };
-      if (key === 'general') fields(SETTINGS_GENERAL_FIELDS);
-      if (key === 'plannotator') fields(SETTINGS_PLANNOTATOR_FIELDS);
-      if (key === 'assistant') { fields(SETTINGS_ASSISTANT_FIELDS); out.push(...SETTINGS_ASSISTANT_KEYS); }
-      if (!cfg) return out;
-      if (key === 'environment') out.push(...Object.keys(cfg.environment));
-      if (key === 'agents') for (const n of this.settingsAgentNames()) out.push(n, cfg.agents[n].binary);
-      if (key === 'stages') out.push(...this.settingsStageNames());
-      if (key === 'pipelines') {
-        for (const p of this.settingsPipelineNames()) {
-          out.push(p);
-          for (const step of cfg.pipelines[p]) out.push(step.stage, step.agent, step.running_status, step.on_success, step.on_failure);
+      const fields = [];
+      const add = (section, key, options = {}) => {
+        const field = key.at(-1);
+        fields.push({ id: this.settingsFieldIdentity(key), key, section,
+          label: section === 'stages' && field === 'prompt' ? 'Prompt' : this.settingsFieldLabel(field),
+          help: SETTINGS_FIELD_HELP[key.join('.')] || SETTINGS_FIELD_HELP[section + '.' + field] || '', entity: '',
+          configKey: key.join('.'), readonly: false, local: false,
+          duration: ['timeout', 'backoff'].includes(field), ...options });
+      };
+      for (const f of SETTINGS_GENERAL_FIELDS) add('general', [f.key], { label: f.label || this.settingsFieldLabel(f.key), help: f.help, target: 'gen-' + f.key });
+      add('general', ['auto_pick_up'], { target: 'gen-auto_pick_up' });
+      for (const key of ['summary_model', 'summary_effort']) {
+        add('general', [key], { target: 'gen-' + key });
+        for (const name of Object.keys(cfg?.[key]?.by || {})) add('general', [key, name], { label: this.settingsFieldLabel(key), help: SETTINGS_FIELD_HELP[key], entity: name, target: 'gen-' + key, reveal: { perAgent: key } });
+      }
+      for (const f of SETTINGS_ASSISTANT_FIELDS) add('assistant', ['assistant', f.key], { help: f.help, target: 'as-' + f.key, reveal: { advanced: true } });
+      for (const key of ['agent', 'model', 'effort', 'autonomy', 'prompt']) add('assistant', ['assistant', key], { label: key === 'agent' ? 'Chat agent' : this.settingsFieldLabel(key), target: 'as-' + key, reveal: { advanced: key === 'prompt' } });
+      for (const key of ['enabled', 'name']) add('assistant', ['assistant', 'companion', key], { label: key === 'enabled' ? 'Companion inbox' : 'Companion name', target: 'companion-' + key });
+      for (const f of SETTINGS_PLANNOTATOR_FIELDS) add('plannotator', ['plannotator', f.key], { help: f.help, target: 'pl-' + f.key });
+      for (const key of ['host', 'port', 'token']) add('web', ['web', key], { target: 'web-' + key });
+      for (const key of ['enabled', 'default', 'timeout', 'attempts', 'backoff']) add('notifications', ['notifications', key], {
+        target: 'notif-' + key,
+        help: this.settingsNotificationFields.find(field => field.key === key)?.help || SETTINGS_FIELD_HELP['notifications.' + key] || '',
+      });
+      for (const key of ['theme', 'pipeline_badges', 'agent_meta']) add('display', ['display', key], { local: true, configKey: '', label: this.settingsFieldLabel(key) });
+      if (!cfg) return fields;
+      for (const name of Object.keys(cfg.environment)) add('environment', ['environment', name], { label: 'Environment variable', entity: name });
+      for (const name of this.settingsAgentNames()) {
+        for (const key of ['binary', 'args', 'effort', 'failure_patterns']) add('agents', ['agents', name, key], { entity: name, readonly: key === 'failure_patterns', reveal: { agent: name }, target: this.settingsFieldID(['agents', name, key]) });
+      }
+      for (const name of this.settingsStageNames()) {
+        for (const key of ['prompt', 'timeout', 'model', 'effort']) {
+          add('stages', ['stages', name, key], { entity: name, reveal: { stage: name }, target: this.settingsFieldID(['stages', name, key]) });
+          if (key === 'model' || key === 'effort') for (const agent of Object.keys(cfg.stages[name][key].by)) add('stages', ['stages', name, key, agent], { entity: name + ' / ' + agent, label: this.settingsFieldLabel(key), reveal: { stage: name, perAgent: 'stages.' + name + '.' + key }, target: this.settingsFieldID(['stages', name, key]) });
         }
       }
-      if (key === 'projects') for (const n of this.settingsProjectNames()) {
-        out.push(n, cfg.projects[n].path, cfg.projects[n].pipeline, cfg.projects[n].epic_child_pipeline);
+      for (const name of this.settingsProjectNames()) for (const key of Object.keys(cfg.projects[name])) add('projects', ['projects', name, key], {
+        entity: name, readonly: true,
+        aliases: ['pipeline', 'epic_child_pipeline', 'agent'].includes(key) ? [cfg.projects[name][key]] : [],
+      });
+      for (const name of this.settingsPipelineNames()) cfg.pipelines[name].forEach((step, index) => {
+        for (const key of Object.keys(step)) add('pipelines', ['pipelines', name, String(index), key], { entity: name + ' / step ' + (index + 1), readonly: true, aliases: ['stage', 'agent'].includes(key) ? [step[key]] : [] });
+      });
+      for (const name of this.settingsNotifChannelNames()) {
+        add('notifications', ['notifications', 'channels', name], { label: 'Notification channel', entity: name });
+        for (const key of Object.keys(cfg.notifications.channels[name])) {
+          if (key === 'headers') {
+            for (const header of this.settingsNotifHeaderKeys(name)) add('notifications', ['notifications', 'channels', name, 'headers', header], { label: 'HTTP header', entity: name + ' / ' + header, reveal: { channel: name } });
+          } else add('notifications', ['notifications', 'channels', name, key], { entity: name, reveal: { channel: name } });
+        }
       }
-      if (key === 'notifications') {
-        for (const n of this.settingsNotifChannelNames()) out.push(n, cfg.notifications.channels[n].type);
-      }
-      if (key === 'statuses') out.push(...SETTINGS_BUILTIN_STATUSES, ...cfg.statuses);
-      return out;
+      for (const name of new Set([...SETTINGS_BUILTIN_STATUSES, ...cfg.statuses])) add('statuses', ['statuses', name], { entity: name, label: name.replace(/_/g, ' '), readonly: SETTINGS_BUILTIN_STATUSES.includes(name) });
+      return fields;
     },
+
+    settingsSearchResults() {
+      const query = this.settingsQuery.trim().toLocaleLowerCase();
+      if (!query) return [];
+      return this.settingsFieldCatalogue().filter(field =>
+        [field.label, field.help, field.configKey, field.entity, field.section, ...(field.aliases || [])]
+          .join('\n').toLocaleLowerCase().includes(query));
+    },
+
+    settingsFieldIssue(target) {
+      return this.settingsClientIssues().filter(issue => {
+        const [group, name, field] = issue.key;
+        const fixed = issue.key.length === 1 ? 'gen-' + group
+          : group === 'assistant' && name === 'companion' ? 'companion-' + field
+          : ({ assistant: 'as-', plannotator: 'pl-', notifications: 'notif-', web: 'web-' })[group] + name;
+        const stage = group === 'stages' && issue.key.length === 3 ? 'stage-' + field + '-' + name : '';
+        return issue.id === target || this.settingsFieldID(issue.key) === target || fixed === target || stage === target;
+      }).map(issue => issue.message).join(' ');
+    },
+
+    settingsNavigate(section, options = {}) {
+      this.closeAgentPicker?.(false);
+      ++this._settingsRevealSeq;
+      this.settingsRevealMessage = '';
+      this.settingsSection = SETTINGS_SECTIONS.some(s => s.key === section) ? section : 'general';
+      if (Object.hasOwn(options, 'query')) this.settingsQuery = options.query;
+      else this.settingsQuery = '';
+      this.settingsField = options.field || '';
+      const destination = { view: 'settings', ticketId: null, settingsSection: this.settingsSection,
+        settingsQuery: this.settingsQuery, settingsField: this.settingsField, replace: !!options.replace };
+      return this.navigateDestination ? this.navigateDestination(destination) : undefined;
+    },
+
+    async settingsApplyRoute(route, navigation) {
+      this.closeAgentPicker?.(false);
+      ++this._settingsRevealSeq;
+      this.settingsRevealMessage = '';
+      if (route.settingsField && navigation === this._navigationSeq) await this.settingsRevealField(route.settingsField, false, navigation);
+    },
+
+    settingsQueryChanged() {
+      ++this._settingsRevealSeq;
+      this.settingsNavigate(this.settingsSection, { query: this.settingsQuery, replace: true });
+    },
+
+    async settingsRevealField(id, navigate = true, navigation = this._navigationSeq) {
+      if (this.settingsGuard || navigation !== this._navigationSeq) return;
+      const field = this.settingsFieldCatalogue().find(f => f.id === id);
+      if (!field) {
+        this.settingsQuery = '';
+        this.settingsRevealMessage = 'This setting is no longer available. Choose a setting in this section.';
+        return;
+      }
+      if (navigate && this.navigateDestination) return this.settingsNavigate(field.section, { field: id });
+      if (navigate) await this.settingsNavigate(field.section, { field: id });
+      this.settingsQuery = '';
+      this.settingsSection = field.section;
+      const sequence = ++this._settingsRevealSeq;
+      if (field.reveal?.stage) this.settingsOpenStage = field.reveal.stage;
+      if (field.reveal?.agent) this.settingsOpenAgent = field.reveal.agent;
+      await new Promise(resolve => this.$nextTick(resolve));
+      if (sequence !== this._settingsRevealSeq || navigation !== this._navigationSeq || this.settingsGuard || this._appDestroyed ||
+          this.currentView !== 'settings' || this.settingsSection !== field.section) return;
+      let targetID = this.settingsFieldID(field.key);
+      if (!document.getElementById(targetID)) targetID = field.target || targetID;
+      if (field.readonly && !document.getElementById(targetID)) {
+        targetID = this.settingsFieldID(field.key.slice(0, field.section === 'pipelines' ? 3 : 2));
+      }
+      if (field.key[0] === 'default_agent' || field.id === this.settingsFieldIdentity(['assistant', 'agent'])) {
+        const host = field.section === 'general' ? 'settings-default' : 'settings-assistant';
+        targetID = this._agentPickerPopoverSupported ? this.agentPickerTriggerID(host) : this.agentPickerFallbackID(host);
+      }
+      const channel = field.reveal?.channel;
+      if (channel) {
+        const key = field.key[3];
+        if (['chat_id', 'channel', 'url', 'method', 'headers'].includes(key) && !this.settingsNotifHasField(channel, key)) {
+          targetID = this.settingsFieldID(['notifications', 'channels', channel, 'type']);
+          this.settingsRevealMessage = 'Choose the matching channel type to use this setting. The current type has not changed.';
+        } else if (['secret_env', 'secret_file'].includes(key) && this.settingsNotifSecretMode(channel) !== (key === 'secret_env' ? 'env' : 'file')) {
+          targetID = this.settingsFieldID(['notifications', 'channels', channel, 'secret_source']);
+          this.settingsRevealMessage = 'Choose the matching credential source to use this setting. The current source has not changed.';
+        }
+      }
+      let target = document.getElementById(targetID);
+      if (field.reveal?.perAgent && this.settingsPerAgent(field.reveal.perAgent).mode !== 'per_agent') {
+        const base = document.getElementById(field.target);
+        target = base?.parentElement?.parentElement?.querySelector('[data-settings-mode="per_agent"]') || target;
+        this.settingsRevealMessage = 'Per-agent overrides are inactive. Use the mode chooser to enable them. No values have changed.';
+      }
+      if (target?.disabled && !this.settingsSaving) {
+        target = target.parentElement?.parentElement?.querySelector('button:not(:disabled)') || target;
+        this.settingsRevealMessage = 'This value is inactive in the selected mode. Use the mode chooser to change it.';
+      }
+      if (!target) {
+        target = document.getElementById('settings-section-' + field.section);
+        this.settingsRevealMessage ||= field.readonly ? 'Read-only setting. Edit config.yaml to change it.' : 'This control is not active. Choose its mode or source in this section.';
+      }
+      if (!target) return;
+      for (let parent = target.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true;
+      await new Promise(resolve => this.$nextTick(resolve));
+      if (sequence !== this._settingsRevealSeq || navigation !== this._navigationSeq || this.settingsGuard || this._appDestroyed ||
+          this.currentView !== 'settings' || this.settingsSection !== field.section) return;
+      target.scrollIntoView?.({ block: 'center' });
+      target.focus?.({ preventScroll: true });
+    },
+
+    // ---- search ------------------------------------------------------------
 
     settingsSectionMatches(key) {
-      const q = this.settingsQuery.trim().toLowerCase();
-      if (!q) return true;
-      const corpus = [...this._settingsSectionTerms(key), ...this._settingsRowTerms(key)];
-      return corpus.join('\n').toLowerCase().includes(q);
-    },
-
-    // Per-row filter. Takes the row's key and help rather than a path, so a row
-    // written out in markup can call it too, and the section it belongs to.
-    settingsRowVisible(key, help, section) {
-      const q = this.settingsQuery.trim().toLowerCase();
-      if (!q) return true;
-      if (`${key}\n${help || ''}`.toLowerCase().includes(q)) return true;
-      // Narrowing a section is only useful when the query reached it through
-      // one of its rows. A section matched on its own label, blurb or summary
-      // — or not matched at all — keeps every row, rather than showing card
-      // shells with nothing in them.
-      return !this._settingsRowTerms(section).join('\n').toLowerCase().includes(q);
-    },
-
-    // ---- concurrency -------------------------------------------------------
-
-    settingsConcurrency() {
-      return this.settingsConfig ? this.settingsConfig.general.max_concurrent_agents : '';
-    },
-
-    settingsSetConcurrency(n) {
-      if (!this.settingsConfig) return;
-      this.settingsConfig.general.max_concurrent_agents = String(n);
-      this.settingsConcurrencyCustom = false;
-    },
-
-    // Compared as text, not as a number: "03" is not the option 3, and showing
-    // it as one hides a value the file still holds.
-    settingsConcurrencyIs(n) {
-      return this.settingsConcurrency().trim() === String(n);
-    },
-
-    // True when the free-text input has to stay: an empty value, one the list
-    // does not offer, or the "other" option, which is the only way back off a
-    // value the stepper does offer.
-    settingsConcurrencyOther() {
-      if (this.settingsConcurrencyCustom) return true;
-      return !SETTINGS_CONCURRENCY_OPTIONS.some(n => this.settingsConcurrencyIs(n));
-    },
-
-    // The capacity meter: one pill per slot, filled up to the running count.
-    // An unset cap resolves to the daemon's default of 3; text the daemon would
-    // reject has no slot count, and the meter is then not drawn. pills is what
-    // the meter draws — the cap is free text, and a template drawing 5000 spans
-    // stalls the tab on every keystroke.
-    settingsSlots() {
-      const raw = this.settingsConcurrency().trim();
-      const total = raw === '' ? 3 : (/^\d+$/.test(raw) ? Number(raw) : 0);
-      return { busy: this.runningAgents || 0, total, pills: Math.min(total, SETTINGS_SLOT_PILLS) };
-    },
-
-    // The line under the meter. A cap edited below what is already running
-    // reads as an overrun rather than as "3 of 1 slots busy right now".
-    settingsSlotsLabel() {
-      const { busy, total } = this.settingsSlots();
-      if (busy > total) return `${busy} running, over the cap of ${total}`;
-      return `${busy} of ${total} slots busy right now`;
-    },
-
-    // Cards for default_agent: an unset one, every configured agent, and the
-    // value on disk when agents: no longer declares it, so a stale name is
-    // visible and replaceable — settingsClientErrors blocks every save until
-    // it is.
-    settingsDefaultAgentChoices() {
-      const names = this.settingsAgentNames();
-      const current = this.settingsConfig ? this.settingsConfig.general.default_agent.trim() : '';
-      return current && !names.includes(current) ? [...names, current] : names;
-    },
-
-    settingsGeneralGroup(name) {
-      const keys = SETTINGS_GENERAL_GROUPS[name] || [];
-      return SETTINGS_GENERAL_FIELDS.filter(f => keys.includes(f.key));
-    },
-
-    // The rows of a card a plain text input can draw. The rest of the group has
-    // a control of its own, written out in the markup.
-    settingsGeneralTextRows(name) {
-      return this.settingsGeneralGroup(name).filter(f => !SETTINGS_GENERAL_CUSTOM.includes(f.key));
+      return !this.settingsQuery.trim() || this.settingsSearchResults().some(field => field.section === key);
     },
 
     // ---- live facts from data the page already holds -----------------------
@@ -1334,11 +1512,17 @@ export function kontoraSettings() {
     // The one place currentView changes. Opening Settings loads it; leaving a
     // dirty Settings opens the guard instead of navigating.
     async gotoView(view, navigation = ++this._navigationSeq, destination = view) {
-      if (this.currentView === 'settings' && view !== 'settings' && this.settingsDirty()) {
+      if (this.currentView === 'settings' && view !== 'settings' && this.settingsNeedsProtection()) {
+        ++this._settingsRevealSeq;
+        this.closeAgentPicker?.(false);
         this.settingsGuardTarget = destination;
         if (this.isMobile && this.sheet) this.closeSheet();
         this.settingsGuard = true;
         return false;
+      }
+      if (this.currentView === 'settings' && view !== 'settings') {
+        ++this._settingsRevealSeq;
+        this.closeAgentPicker?.(false);
       }
       if (this.currentView === 'automations' && view !== 'automations') {
         if (!this.automationsConfirmReplace()) return false;
@@ -1405,6 +1589,7 @@ export function kontoraSettings() {
     },
 
     settingsGuardDiscard() {
+      if (this.settingsSaving) return false;
       this.discardSettings();
       const target = this.settingsGuardTarget;
       this.settingsGuard = false;
@@ -1413,13 +1598,31 @@ export function kontoraSettings() {
     },
 
     async settingsGuardSave() {
-      if (!(await this.saveSettings())) return;
+      if (this.settingsReloadWarning && !this.settingsDirty() && !this._settingsHasDrafts()) return;
+      if (this.settingsSaving || !(await this.saveSettings())) return;
       const target = this.settingsGuardTarget;
       this.settingsGuard = false;
       this.settingsGuardTarget = null;
       await this._resumeSettingsDestination(target);
     },
   };
+}
+
+function settingsIntegerValue(raw) {
+  if (raw === '') return null;
+  if (/^[-+]?0\d+$/.test(raw)) throw new Error('Edit legacy numeric spellings in the file directly, then reload Settings.');
+  return /^[-+]?\d+$/.test(raw) ? BigInt(raw) : raw;
+}
+
+function settingsAssertNumericCompatibility(yaml, doc) {
+  yaml.visit(doc, { Scalar(_key, node) {
+    if (node.type !== 'PLAIN' && node.tag !== 'tag:yaml.org,2002:int') return;
+    const source = node.source || '';
+    if (/^[-+]?0\d+$/.test(source) ||
+        (typeof node.value === 'number' && Number.isInteger(node.value) && !Number.isSafeInteger(node.value))) {
+      throw new Error('This numeric spelling cannot be safely saved in the browser. Edit the file directly, then reload Settings.');
+    }
+  } });
 }
 
 // Deep copy of the form model. Not structuredClone: settingsConfig and
@@ -1521,12 +1724,12 @@ function settingsModel(raw) {
   const str = v => (v === undefined || v === null ? '' : String(v));
   const model = {
     general: {},
-    environment: {},
-    agents: {},
-    stages: {},
-    pipelines: {},
-    projects: {},
-    statuses: (raw.statuses || []).map(String),
+    environment: Object.create(null),
+    agents: Object.create(null),
+    stages: Object.create(null),
+    pipelines: Object.create(null),
+    projects: Object.create(null),
+    statuses: (raw.statuses || []).map(String).filter(status => status !== 'human_review'),
     web: { host: str(raw.web?.host), port: str(raw.web?.port), token: str(raw.web?.token) },
     plannotator: {
       binary: str(raw.plannotator?.binary),
@@ -1589,7 +1792,7 @@ function settingsModel(raw) {
   }
   // applyDefaults injects rework when the file declares no stages.rework, and
   // the daemon runs it. Show it, marked, rather than hiding a live stage.
-  if (!model.stages.rework) {
+  if (!Object.hasOwn(model.stages, 'rework')) {
     model.stages.rework = {
       prompt: SETTINGS_REWORK_PROMPT,
       timeout: SETTINGS_REWORK_TIMEOUT,
@@ -1605,7 +1808,7 @@ function settingsModel(raw) {
       running_status: str(s?.running_status),
       on_success: str(s?.on_success),
       on_failure: str(s?.on_failure),
-      max_retries: Number(s?.max_retries) || 0,
+      max_retries: str(s?.max_retries) || '0',
     }));
   }
   for (const [name, project] of Object.entries(raw.projects || {})) {
@@ -1847,10 +2050,10 @@ function settingsOpenPath(yaml, doc, keys) {
 // The document path and the value to write for one flattened path. Values are
 // typed here rather than at the input, so a port stays a number in YAML.
 //
-// Paths, names, and durations are trimmed. A pasted trailing space survives
-// yaml quoting, so an untrimmed `tickets_dir: "~/org/tickets "` reaches the
-// daemon as a directory that does not exist. Prompts and environment values are
-// left alone: their whitespace can be deliberate.
+// Paths, names (except exact agent references), and durations are trimmed.
+// A pasted trailing space survives yaml quoting, so an untrimmed
+// `tickets_dir: "~/org/tickets "` reaches the daemon as a directory that does not
+// exist. Prompts and environment values are left alone: their whitespace can be deliberate.
 function settingsNodeFor(path, cfg) {
   const parts = path.split('.');
   if (path === 'statuses') return { keys: ['statuses'], value: cfg.statuses.slice() };
@@ -1860,7 +2063,7 @@ function settingsNodeFor(path, cfg) {
     const raw = cfg.general[path].trim();
     // Non-numeric text is written through unchanged so the daemon reports it
     // rather than the client silently dropping the edit.
-    return { keys: [path], value: raw === '' ? null : (/^\d+$/.test(raw) ? Number(raw) : raw) };
+    return { keys: [path], value: settingsIntegerValue(raw) };
   }
   // Before the general fallthrough below, which reads cfg.general[path]: these
   // two live on the model's top level, not in general.
@@ -1868,7 +2071,7 @@ function settingsNodeFor(path, cfg) {
     return { keys: [path], value: settingsPerAgentValue(cfg[path]) };
   }
   if (parts.length === 1) {
-    const v = cfg.general[path].trim();
+    const v = path === 'default_agent' ? cfg.general[path] : cfg.general[path].trim();
     return { keys: [path], value: v === '' ? null : v };
   }
   // Before the name/field split below: a channel name can carry dots, and
@@ -1883,7 +2086,7 @@ function settingsNodeFor(path, cfg) {
     const field = rest[0];
     const v = cfg.web[field].trim();
     if (v === '') return { keys: ['web', field], value: null };
-    return { keys: ['web', field], value: field === 'port' && /^\d+$/.test(v) ? Number(v) : v };
+    return { keys: ['web', field], value: field === 'port' ? settingsIntegerValue(v) : v };
   }
   if (group === 'plannotator') {
     const v = cfg.plannotator[rest[0]].trim();
@@ -1896,9 +2099,8 @@ function settingsNodeFor(path, cfg) {
       return { keys: ['assistant', 'companion', field], value: field === 'enabled' ? !!v : (v.trim() || null) };
     }
     const field = rest[0];
-    // The prompt is the one field whose whitespace can be deliberate, the same
-    // rule stage prompts follow.
-    const v = field === 'prompt' ? cfg.assistant.prompt : cfg.assistant[field].trim();
+    // Prompts and exact agent references preserve whitespace.
+    const v = field === 'prompt' || field === 'agent' ? cfg.assistant[field] : cfg.assistant[field].trim();
     return { keys: ['assistant', field], value: v === '' ? null : v };
   }
   const name = rest.slice(0, rest.length - 1).join('.');
@@ -1939,7 +2141,7 @@ function settingsNotifNodeFor(path, cfg) {
     const raw = n.attempts.trim();
     // Non-numeric text goes through unchanged, the max_concurrent_agents rule:
     // the daemon reports it rather than the client dropping the edit.
-    return { keys: ['notifications', 'attempts'], value: raw === '' ? null : (/^\d+$/.test(raw) ? Number(raw) : raw) };
+    return { keys: ['notifications', 'attempts'], value: settingsIntegerValue(raw) };
   }
   if (field === 'timeout' || field === 'backoff') {
     const v = n[field].trim();
@@ -1952,11 +2154,12 @@ function settingsNotifNodeFor(path, cfg) {
 
 // config.validateNotifyChannel, message for message. Only the channel's own
 // shape: the channel list that names it is checked by _settingsNotifListErrors.
-function settingsNotifChannelErrors(name, ch) {
+function settingsNotifChannelErrors(name, ch, collect) {
   const at = `notifications.channels "${name}"`;
-  if (name === SETTINGS_NOTIFY_NONE) return [`${at}: name is reserved for the opt-out`];
+  const report = (field, message) => { collect?.(field, message); return [message]; };
+  if (name === SETTINGS_NOTIFY_NONE) return report([], `${at}: name is reserved for the opt-out`);
   if (ch.secret_env.trim() && ch.secret_file.trim()) {
-    return [`${at}: set secret_env or secret_file, not both`];
+    return report(['secret_env'], `${at}: set secret_env or secret_file, not both`);
   }
   const hasSecret = !!(ch.secret_env.trim() || ch.secret_file.trim());
   const type = ch.type.trim();
@@ -1964,35 +2167,35 @@ function settingsNotifChannelErrors(name, ch) {
   const list = `${types.slice(0, -1).join(', ')} or ${types[types.length - 1]}`;
   switch (type) {
     case 'telegram':
-      if (!hasSecret) return [`${at}: telegram needs the bot token in secret_env or secret_file`];
-      if (!ch.chat_id.trim()) return [`${at}: telegram needs chat_id`];
+      if (!hasSecret) return report(['secret_env'], `${at}: telegram needs the bot token in secret_env or secret_file`);
+      if (!ch.chat_id.trim()) return report(['chat_id'], `${at}: telegram needs chat_id`);
       return [];
     case 'mattermost':
-      if (!hasSecret) return [`${at}: mattermost needs the incoming-webhook URL in secret_env or secret_file`];
+      if (!hasSecret) return report(['secret_env'], `${at}: mattermost needs the incoming-webhook URL in secret_env or secret_file`);
       return [];
     case 'webhook':
-      return settingsNotifWebhookErrors(at, ch);
+      return settingsNotifWebhookErrors(at, ch, report);
     case '':
-      return [`${at}: type is required (${list})`];
+      return report(['type'], `${at}: type is required (${list})`);
     default:
-      return [`${at}: unknown type "${type}" (use ${list})`];
+      return report(['type'], `${at}: unknown type "${type}" (use ${list})`);
   }
 }
 
-function settingsNotifWebhookErrors(at, ch) {
+function settingsNotifWebhookErrors(at, ch, report = (_field, message) => [message]) {
   const url = ch.url.trim();
-  if (!url) return [`${at}: webhook needs url`];
+  if (!url) return report(['url'], `${at}: webhook needs url`);
   // net/url's own scheme grammar, not the URL constructor: url.Parse takes a
   // string with no scheme at all, and the scheme check below is what rejects
   // it, so the two have to agree on what "no scheme" means.
   const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url);
   const scheme = m ? m[1].toLowerCase() : '';
   if (scheme !== 'http' && scheme !== 'https') {
-    return [`${at}: url "${url}": scheme "${scheme}" is not supported (use http or https)`];
+    return report(['url'], `${at}: url "${url}": scheme "${scheme}" is not supported (use http or https)`);
   }
   const method = ch.method.trim();
   if (method && !SETTINGS_NOTIFY_METHODS.includes(method.toUpperCase())) {
-    return [`${at}: method "${method}" is not supported (use ${SETTINGS_NOTIFY_METHODS.join(', ')})`];
+    return report(['method'], `${at}: method "${method}" is not supported (use ${SETTINGS_NOTIFY_METHODS.join(', ')})`);
   }
   // net/http canonicalizes a header name when it sets it, so two names that
   // differ only in case land on one header and one value is dropped.
@@ -2000,7 +2203,7 @@ function settingsNotifWebhookErrors(at, ch) {
   for (const key of Object.keys(ch.headers).sort()) {
     const canon = key.trim().toLowerCase();
     if (!canon) continue;
-    if (seen.has(canon)) return [`${at}: headers "${seen.get(canon)}" and "${key}" are the same header`];
+    if (seen.has(canon)) return report(['headers', key], `${at}: headers "${seen.get(canon)}" and "${key}" are the same header`);
     seen.set(canon, key);
   }
   return [];

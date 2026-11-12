@@ -54,6 +54,17 @@ var (
 	ErrAssistantGateDenied = errors.New("assistant gate: not this turn's agent")
 )
 
+// ConfigSavedReloadError means the configuration was saved but the daemon could not reload it.
+type ConfigSavedReloadError struct {
+	Err error
+}
+
+func (e *ConfigSavedReloadError) Error() string {
+	return "config saved but reload failed: " + e.Err.Error()
+}
+
+func (e *ConfigSavedReloadError) Unwrap() error { return e.Err }
+
 // TicketService defines the contract between the web layer and the daemon.
 // The daemon implements this interface; the web package tests use mocks.
 type TicketService interface {

@@ -70,8 +70,12 @@ export function kontoraTickets() {
 
     async init() {
       this.initMobile();
-      this._routeListener = () => { this.applyRoute(); };
-      window.addEventListener('hashchange', this._routeListener);
+      this.setupSettingsLifecycle?.();
+      this.setupSettingsHistory?.();
+      if (!this._settingsHistory) {
+        this._routeListener = () => { this.applyRoute(); };
+        window.addEventListener('hashchange', this._routeListener);
+      }
       // Advance the reactive clock (detail panel duration, mobile cards) and
       // patch the imperatively rendered card timers in place every 30s.
       this._nowTimer = setInterval(() => { this.now = Date.now(); this._updateCardTimers(); }, 30000);

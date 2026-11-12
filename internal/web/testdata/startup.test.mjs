@@ -11,6 +11,12 @@ function harness({ status = 200 } = {}) {
   const requests = [];
   const streams = [];
   const timers = [];
+  const listeners = new Map();
+  const location = { protocol: 'http:', host: 'localhost', search: '', hash: '#/' };
+  const history = {
+    state: { unrelated: 'preserved' },
+    replaceState(state, _title, hash) { this.state = state; location.hash = hash; },
+  };
   const bodies = {
     '/api/config': {},
     '/api/tickets': { tickets: [{ id: 'kon-1', title: 'Primary', status: 'open' }] },
@@ -25,9 +31,16 @@ function harness({ status = 200 } = {}) {
     requestAnimationFrame() {}, cancelAnimationFrame() {},
     localStorage: { getItem() { return null; }, setItem() {} },
     getStoredTheme() { return null; }, setStoredTheme() {}, applyTheme() {},
-    window: { innerWidth: 1200, addEventListener() {}, removeEventListener() {} },
+    window: {
+      innerWidth: 1200,
+      addEventListener(type, listener) {
+        if (!listeners.has(type)) listeners.set(type, new Set());
+        listeners.get(type).add(listener);
+      },
+      removeEventListener(type, listener) { listeners.get(type)?.delete(listener); },
+    },
     document: { documentElement: { style: {} }, getElementById() { return null; } },
-    navigator: {}, location: { protocol: 'http:', host: 'localhost', search: '' },
+    navigator: {}, location, history,
     URLSearchParams,
     async fetch(url) {
       requests.push(url);
@@ -54,7 +67,7 @@ function harness({ status = 200 } = {}) {
   const waitTimer = () => timers.find(t => t.ms === 1500 && !t.fired && !t.cleared);
   const fireWait = () => { const t = waitTimer(); t.fired = true; t.fn(); };
   const count = url => requests.filter(r => r === url).length;
-  return { state, requests, streams, timers, fireWait, count };
+  return { state, requests, streams, timers, listeners, location, history, fireWait, count };
 }
 
 test('startup snapshots wait for the stream and the first open does not take them again', async () => {
@@ -98,6 +111,59 @@ for (const [name, release] of [
     assert.equal(h.count('/api/tickets'), 2, 'snapshots taken before the subscription were not refreshed');
   });
 }
+
+test('root startup owns settings history and unload listeners and root destruction releases them', async () => {
+  const h = harness();
+  const init = h.state.init();
+  await settle();
+  h.streams[0].emit('open');
+  await init;
+
+  assert.equal(h.history.state.unrelated, 'preserved');
+  assert.equal(h.location.hash, '#/');
+  for (const type of ['beforeunload', 'popstate', 'hashchange']) {
+    assert.equal(h.listeners.get(type)?.size, 1, `${type} must have one owner`);
+  }
+  h.state.setupSettingsLifecycle();
+  h.state.setupSettingsHistory();
+  for (const type of ['beforeunload', 'popstate', 'hashchange']) {
+    assert.equal(h.listeners.get(type)?.size, 1, `${type} setup must be idempotent`);
+  }
+
+  const unload = () => {
+    const event = { prevented: false, preventDefault() { this.prevented = true; } };
+    for (const listener of h.listeners.get('beforeunload')) listener(event);
+    return event;
+  };
+  assert.equal(unload().prevented, false, 'a clean board must not warn');
+  h.state.settingsNewStage = 'unfinished-stage';
+  assert.equal(unload().prevented, true, 'an unfinished add-row draft must warn');
+  h.state.settingsNewStage = '';
+  h.state.settingsSaving = true;
+  assert.equal(unload().returnValue, '', 'a pending save must request a native warning');
+  h.state.settingsSaving = false;
+  h.state.settingsDirty = () => true;
+  assert.equal(unload().prevented, true, 'dirty settings must warn');
+
+  // Only unrelated subsystem teardowns are doubled; run the real root and
+  // settings lifecycle/history disposal, including cancellation of stale work.
+  for (const name of ['destroyMobile', 'destroyAgentPicker', 'closeStats', 'automationsDispose',
+    'closeTerminal', '_destroyTerminal', '_resetActivity', 'companionDestroy',
+    '_stopAssistantPoll', '_stopAssistantTick', '_assistantCloseStream']) h.state[name] = () => {};
+  let aborted = false;
+  h.state._settingsReadController = { abort() { aborted = true; } };
+  const readSeq = h.state._settingsRefreshSeq;
+  const revealSeq = h.state._settingsRevealSeq;
+  h.state.destroy();
+  assert.equal(aborted, true);
+  assert.ok(h.state._settingsRefreshSeq > readSeq);
+  assert.ok(h.state._settingsRevealSeq > revealSeq);
+  assert.equal(h.state._settingsHistory, null);
+  for (const type of ['beforeunload', 'popstate', 'hashchange']) {
+    assert.equal(h.listeners.get(type)?.size, 0, `${type} leaked after destroy`);
+  }
+  assert.equal(h.streams[0].closed, true);
+});
 
 test('an unauthorized daemon stops the stream instead of retrying it', async () => {
   const h = harness({ status: 401 });

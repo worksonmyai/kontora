@@ -808,6 +808,13 @@ func (s *Server) handlePutRawConfig(w http.ResponseWriter, r *http.Request) {
 		err = s.svc.PutRawConfig(body.Content)
 	}
 	if err != nil {
+		if _, ok := errors.AsType[*ConfigSavedReloadError](err); ok {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+				"code":  "config_saved_reload_failed",
+			})
+			return
+		}
 		writeAutomationError(w, err)
 		return
 	}

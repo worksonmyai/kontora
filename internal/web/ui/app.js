@@ -338,6 +338,8 @@ export function kontoraApp() {
       this._searchRaf = null;
       this.destroyMobile();
       this.destroyAgentPicker();
+      this.destroySettingsLifecycle?.();
+      this.destroySettingsHistory?.();
       if (this._routeListener) window.removeEventListener('hashchange', this._routeListener);
       this.closeStats();
       this.automationsDispose();

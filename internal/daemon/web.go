@@ -1621,7 +1621,7 @@ func (d *Daemon) PutRawConfig(content string) error {
 			return err
 		}
 		if err := d.reloadConfig(); err != nil {
-			return fmt.Errorf("config saved but reload failed: %w", err)
+			return &web.ConfigSavedReloadError{Err: err}
 		}
 		return nil
 	} else if err != nil {

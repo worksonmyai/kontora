@@ -36,7 +36,7 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 
 		if pipeline, ok := cfg.Pipelines[t.Pipeline]; ok {
 			var stages []string
-			for _, step := range pipeline {
+			for _, step := range pipeline.Legacy {
 				if step.Stage == t.Stage {
 					stages = append(stages, "["+step.Stage+"]")
 				} else {

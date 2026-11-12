@@ -734,8 +734,8 @@ func assistantBoard(cfg *config.Config) []string {
 		names := slices.Sorted(maps.Keys(cfg.Pipelines))
 		parts := make([]string, 0, len(names))
 		for _, name := range names {
-			stages := make([]string, 0, len(cfg.Pipelines[name]))
-			for _, step := range cfg.Pipelines[name] {
+			stages := make([]string, 0, len(cfg.Pipelines[name].Legacy))
+			for _, step := range cfg.Pipelines[name].Legacy {
 				stages = append(stages, step.Stage)
 			}
 			parts = append(parts, fmt.Sprintf("%s (%s)", name, strings.Join(stages, " -> ")))

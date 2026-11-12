@@ -28,8 +28,8 @@ func TestLocalStageActions(t *testing.T) {
 				path := filepath.Join(dir, "abc123.md")
 				before := []byte(fmt.Sprintf("---\nid: abc123\nkontora: true\nstatus: %s\npipeline: test\nstage: code\nattempt: 3\ncustom_field: preserved\n---\n# Body\n", status))
 				require.NoError(t, os.WriteFile(path, before, 0o644))
-				cfg := &config.Config{TicketsDir: dir, Pipelines: map[string]config.Pipeline{
-					"test": {{Stage: "code"}, {Stage: "review"}},
+				cfg := &config.Config{TicketsDir: dir, Pipelines: map[string]config.PipelineDefinition{
+					"test": {Legacy: config.Pipeline{{Stage: "code"}, {Stage: "review"}}},
 				}}
 				var err error
 				if operation == "skip" {

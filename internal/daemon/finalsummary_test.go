@@ -882,7 +882,7 @@ func TestFinalSummaryTerminalStates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.cfg.Agents["agent1"] = config.Agent{Binary: "claude"}
-			h.cfg.Pipelines["under-test"] = tc.pipeline
+			h.cfg.Pipelines["under-test"] = config.PipelineDefinition{Legacy: tc.pipeline}
 			ticketPath := filepath.Join(h.tasksDir, "tst-fin.md")
 
 			var spawns summarySpawns
@@ -1054,10 +1054,10 @@ func TestFinalSummaryRetriedStageInput(t *testing.T) {
 func TestFinalSummaryUsesStageSnapshot(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.Agents["agent1"] = config.Agent{Binary: "claude", Args: []string{"--model", "opus"}}
-	h.cfg.Pipelines["under-test"] = config.Pipeline{
+	h.cfg.Pipelines["under-test"] = config.PipelineDefinition{Legacy: config.Pipeline{
 		{Stage: "step1", Agent: "agent1", OnSuccess: "next", OnFailure: "pause"},
 		{Stage: "step2", Agent: "agent1", OnSuccess: "done", OnFailure: "pause"},
-	}
+	}}
 	ticketPath := filepath.Join(h.tasksDir, "tst-fsn.md")
 
 	var d *Daemon
@@ -1104,10 +1104,10 @@ func TestFinalSummaryModel(t *testing.T) {
 	h.cfg.Agents["agent1"] = config.Agent{Binary: "claude", Args: []string{"--model", "opus"}, Effort: "high"}
 	h.cfg.SummaryModel = config.PerAgent{ByAgent: map[string]string{"claude": "haiku"}}
 	h.cfg.SummaryEffort = config.PerAgent{Any: "low"}
-	h.cfg.Pipelines["under-test"] = config.Pipeline{
+	h.cfg.Pipelines["under-test"] = config.PipelineDefinition{Legacy: config.Pipeline{
 		{Stage: "step1", Agent: "agent1", OnSuccess: "next", OnFailure: "pause"},
 		{Stage: "step2", Agent: "agent1", OnSuccess: "done", OnFailure: "pause"},
-	}
+	}}
 	ticketPath := filepath.Join(h.tasksDir, "tst-fsm.md")
 
 	var d *Daemon

@@ -12,11 +12,11 @@ func TestResolveViewAgentScalarParity(t *testing.T) {
 	cfg := &config.Config{
 		DefaultAgent:    "fallback",
 		ReworkIsBuiltin: true,
-		Pipelines: map[string]config.Pipeline{
-			"work":         {{Stage: "code", Agent: "coder"}, {Stage: "review", Agent: "reviewer"}},
+		Pipelines: map[string]config.PipelineDefinition{
+			"work":         {Legacy: config.Pipeline{{Stage: "code", Agent: "coder"}, {Stage: "review", Agent: "reviewer"}}},
 			"empty":        {},
-			"with-rework":  {{Stage: config.ReworkStageName, Agent: "reworker"}},
-			"blank-rework": {{Stage: config.ReworkStageName}},
+			"with-rework":  {Legacy: config.Pipeline{{Stage: config.ReworkStageName, Agent: "reworker"}}},
+			"blank-rework": {Legacy: config.Pipeline{{Stage: config.ReworkStageName}}},
 		},
 	}
 	cases := []struct {
@@ -68,7 +68,7 @@ func TestResolveViewAgentScalarParity(t *testing.T) {
 			assert.Empty(t, BuildView(&customCfg, tkt, detail).Agent)
 		}
 	})
-	cfg.Pipelines[""] = config.Pipeline{{Stage: "code", Agent: "empty-name"}}
+	cfg.Pipelines[""] = config.PipelineDefinition{Legacy: config.Pipeline{{Stage: "code", Agent: "empty-name"}}}
 	tkt := &ticket.Ticket{Kontora: true, Stage: "code"}
 	assert.Equal(t, "empty-name", ResolveViewAgent(cfg, tkt))
 	assert.Equal(t, BuildView(cfg, tkt, false).Agent, ResolveViewAgent(cfg, tkt))

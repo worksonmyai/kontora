@@ -355,7 +355,7 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 	pipelines := slices.Sorted(maps.Keys(cfg.Pipelines))
 	infos := make([]web.PipelineInfo, len(pipelines))
 	for i, name := range pipelines {
-		steps := cfg.Pipelines[name]
+		steps := cfg.Pipelines[name].Legacy
 		stageNames := make([]string, len(steps))
 		maxRetries := make([]int, len(steps))
 		for j, s := range steps {
@@ -1875,8 +1875,8 @@ func childInfo(cfg *config.Config, t *ticket.Ticket) web.TicketChild {
 		ExecutionActive: t.IsRunning() && !t.IsPassiveEpic(),
 	}
 	if steps, ok := cfg.Pipelines[t.Pipeline]; ok {
-		c.StageCount = len(steps)
-		for i, step := range steps {
+		c.StageCount = len(steps.Legacy)
+		for i, step := range steps.Legacy {
 			if step.Stage == t.Stage {
 				c.StageIndex = i + 1
 				break

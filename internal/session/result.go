@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -15,16 +16,21 @@ import (
 )
 
 const (
-	ResultVersion  = 1
-	MaxResultBytes = 32 * 1024
+	ResultVersion      = 1
+	GraphResultVersion = 2
+	MaxResultBytes     = 32 * 1024
 
-	ResultVersionEnvVar    = "KONTORA_RESULT_VERSION"
-	InvocationIDEnvVar     = "KONTORA_INVOCATION_ID"
-	ResultTicketEnvVar     = "KONTORA_RESULT_TICKET"
-	ResultStageEnvVar      = "KONTORA_RESULT_STAGE"
-	ResultFileEnvVar       = "KONTORA_RESULT_FILE"
-	ResultAutomationEnvVar = "KONTORA_RESULT_AUTOMATION"
-	ResultRunNumberEnvVar  = "KONTORA_RESULT_RUN_NUMBER"
+	ResultVersionEnvVar         = "KONTORA_RESULT_VERSION"
+	InvocationIDEnvVar          = "KONTORA_INVOCATION_ID"
+	ResultTicketEnvVar          = "KONTORA_RESULT_TICKET"
+	ResultStageEnvVar           = "KONTORA_RESULT_STAGE"
+	ResultFileEnvVar            = "KONTORA_RESULT_FILE"
+	ResultAutomationEnvVar      = "KONTORA_RESULT_AUTOMATION"
+	ResultRunNumberEnvVar       = "KONTORA_RESULT_RUN_NUMBER"
+	ResultVerdictsEnvVar        = "KONTORA_RESULT_VERDICTS"
+	WorkflowExecutionIDEnvVar   = "KONTORA_WORKFLOW_EXECUTION_ID"
+	NodeVisitIDEnvVar           = "KONTORA_NODE_VISIT_ID"
+	DefinitionFingerprintEnvVar = "KONTORA_DEFINITION_FINGERPRINT"
 )
 
 // Result describes only the assigned stage, not whole-ticket acceptance.
@@ -33,19 +39,24 @@ type Result struct {
 	Outcome  string `json:"outcome"`
 	Summary  string `json:"summary"`
 	NextStep string `json:"next_step,omitempty"`
+	Verdict  string `json:"verdict,omitempty"`
 }
 
 // Invocation is daemon-owned context for one physical launch. ResultPath must
 // be a fresh, absolute artifact path for that invocation, including on retries.
 // The result payload cannot override any of this context.
 type Invocation struct {
-	Version      int    `json:"version"`
-	ID           string `json:"id"`
-	TicketID     string `json:"ticket_id,omitempty"`
-	Stage        string `json:"stage,omitempty"`
-	AutomationID string `json:"automation_id,omitempty"`
-	RunNumber    uint64 `json:"run_number,omitempty"`
-	ResultPath   string `json:"result_path"`
+	Version               int      `json:"version"`
+	ID                    string   `json:"id"`
+	TicketID              string   `json:"ticket_id,omitempty"`
+	Stage                 string   `json:"stage,omitempty"`
+	AutomationID          string   `json:"automation_id,omitempty"`
+	RunNumber             uint64   `json:"run_number,omitempty"`
+	ResultPath            string   `json:"result_path"`
+	Verdicts              []string `json:"verdicts,omitempty"`
+	WorkflowExecutionID   string   `json:"workflow_execution_id,omitempty"`
+	NodeVisitID           string   `json:"node_visit_id,omitempty"`
+	DefinitionFingerprint string   `json:"definition_fingerprint,omitempty"`
 }
 
 // SubjectID is the daemon-bound ticket or automation, never model input.
@@ -63,14 +74,28 @@ func (inv Invocation) Env() map[string]string {
 	if inv.RunNumber != 0 {
 		runNumber = strconv.FormatUint(inv.RunNumber, 10)
 	}
+	verdicts, executionID, visitID, fingerprint := "", "", "", ""
+	if inv.Version == GraphResultVersion {
+		declared := inv.Verdicts
+		if declared == nil {
+			declared = []string{}
+		}
+		data, _ := json.Marshal(declared)
+		verdicts = string(data)
+		executionID, visitID, fingerprint = inv.WorkflowExecutionID, inv.NodeVisitID, inv.DefinitionFingerprint
+	}
 	return map[string]string{
-		ResultAutomationEnvVar: inv.AutomationID,
-		ResultRunNumberEnvVar:  runNumber,
-		ResultVersionEnvVar:    strconv.Itoa(inv.Version),
-		InvocationIDEnvVar:     inv.ID,
-		ResultTicketEnvVar:     inv.TicketID,
-		ResultStageEnvVar:      inv.Stage,
-		ResultFileEnvVar:       inv.ResultPath,
+		ResultVerdictsEnvVar:        verdicts,
+		WorkflowExecutionIDEnvVar:   executionID,
+		NodeVisitIDEnvVar:           visitID,
+		DefinitionFingerprintEnvVar: fingerprint,
+		ResultAutomationEnvVar:      inv.AutomationID,
+		ResultRunNumberEnvVar:       runNumber,
+		ResultVersionEnvVar:         strconv.Itoa(inv.Version),
+		InvocationIDEnvVar:          inv.ID,
+		ResultTicketEnvVar:          inv.TicketID,
+		ResultStageEnvVar:           inv.Stage,
+		ResultFileEnvVar:            inv.ResultPath,
 	}
 }
 
@@ -80,10 +105,29 @@ func InvocationFromEnv(getenv func(string) string) (Invocation, error) {
 	if getenv == nil {
 		return Invocation{}, fmt.Errorf("result invocation environment is unavailable")
 	}
-	if version := getenv(ResultVersionEnvVar); version != strconv.Itoa(ResultVersion) {
-		return Invocation{}, fmt.Errorf("%s must be %d, got %q", ResultVersionEnvVar, ResultVersion, version)
+	version := getenv(ResultVersionEnvVar)
+	if version != "1" && version != "2" {
+		return Invocation{}, fmt.Errorf("%s must be 1 or 2, got %q", ResultVersionEnvVar, version)
 	}
-	inv := Invocation{Version: ResultVersion, ID: getenv(InvocationIDEnvVar), TicketID: getenv(ResultTicketEnvVar), Stage: getenv(ResultStageEnvVar), AutomationID: getenv(ResultAutomationEnvVar), ResultPath: getenv(ResultFileEnvVar)}
+	n, _ := strconv.Atoi(version)
+	inv := Invocation{Version: n, ID: getenv(InvocationIDEnvVar), TicketID: getenv(ResultTicketEnvVar), Stage: getenv(ResultStageEnvVar), AutomationID: getenv(ResultAutomationEnvVar), ResultPath: getenv(ResultFileEnvVar)}
+	if inv.Version == GraphResultVersion {
+		raw := getenv(ResultVerdictsEnvVar)
+		if !utf8.ValidString(raw) || json.Unmarshal([]byte(raw), &inv.Verdicts) != nil || inv.Verdicts == nil || !validJSONUnicode([]byte(raw)) {
+			return Invocation{}, fmt.Errorf("%s must be a JSON array of verdict strings", ResultVerdictsEnvVar)
+		}
+		if err := validateVerdicts(inv.Verdicts); err != nil {
+			return Invocation{}, fmt.Errorf("%s: %w", ResultVerdictsEnvVar, err)
+		}
+		inv.WorkflowExecutionID = getenv(WorkflowExecutionIDEnvVar)
+		inv.NodeVisitID = getenv(NodeVisitIDEnvVar)
+		inv.DefinitionFingerprint = getenv(DefinitionFingerprintEnvVar)
+		for _, id := range []string{inv.WorkflowExecutionID, inv.NodeVisitID, inv.DefinitionFingerprint} {
+			if id != "" && !safeInvocationComponent(id) {
+				return Invocation{}, fmt.Errorf("graph execution identity must contain safe identifiers")
+			}
+		}
+	}
 	if !safeInvocationComponent(inv.ID) {
 		return Invocation{}, fmt.Errorf("%s must be a nonempty safe identifier", InvocationIDEnvVar)
 	}
@@ -140,11 +184,62 @@ func validateResult(result Result) error {
 	if result.Outcome == "blocked" && strings.TrimSpace(result.NextStep) == "" {
 		return fmt.Errorf("blocked result requires next_step")
 	}
+	if result.Verdict != "" && (!validResultText(result.Verdict) || strings.TrimSpace(result.Verdict) == "") {
+		return fmt.Errorf("verdict must be nonblank UTF-8 without NUL")
+	}
 	return nil
 }
 
+func validateVerdicts(verdicts []string) error {
+	seen := make(map[string]bool, len(verdicts))
+	for _, verdict := range verdicts {
+		if !validResultText(verdict) || strings.TrimSpace(verdict) == "" {
+			return fmt.Errorf("declared verdicts must be nonblank UTF-8 without NUL")
+		}
+		if seen[verdict] {
+			return fmt.Errorf("duplicate declared verdict %q", verdict)
+		}
+		seen[verdict] = true
+	}
+	return nil
+}
+
+func ValidateGraphResult(result Result, verdicts []string) error {
+	if err := validateResult(result); err != nil {
+		return err
+	}
+	if err := validateVerdicts(verdicts); err != nil {
+		return err
+	}
+	if result.Verdict == "" {
+		if result.Outcome == "complete" && len(verdicts) != 0 {
+			return fmt.Errorf("complete graph result requires a declared verdict")
+		}
+		return nil
+	}
+	if slices.Contains(verdicts, result.Verdict) {
+		return nil
+	}
+	return fmt.Errorf("undeclared verdict %q", result.Verdict)
+}
+
+func resultVersion(versions []int) (int, error) {
+	if len(versions) == 0 {
+		return ResultVersion, nil
+	}
+	if len(versions) != 1 || (versions[0] != ResultVersion && versions[0] != GraphResultVersion) {
+		return 0, fmt.Errorf("result version must be 1 or 2")
+	}
+	return versions[0], nil
+}
+
 // DecodeResult rejects fields that encoding/json would otherwise ignore or normalize.
-func DecodeResult(data []byte) (Result, error) {
+// The optional version defaults to version 1, which rejects verdict fields.
+func DecodeResult(data []byte, versions ...int) (Result, error) {
+	version, err := resultVersion(versions)
+	if err != nil {
+		return Result{}, err
+	}
 	if len(data) > MaxResultBytes {
 		return Result{}, fmt.Errorf("result exceeds %d bytes", MaxResultBytes)
 	}
@@ -166,7 +261,7 @@ func DecodeResult(data []byte) (Result, error) {
 			return Result{}, fmt.Errorf("decoding result key: %w", err)
 		}
 		key, ok := token.(string)
-		if !ok || (key != "outcome" && key != "summary" && key != "next_step") {
+		if !ok || (key != "outcome" && key != "summary" && key != "next_step" && (version != GraphResultVersion || key != "verdict")) {
 			return Result{}, fmt.Errorf("unknown result field %q", token)
 		}
 		if _, exists := fields[key]; exists {
@@ -194,7 +289,10 @@ func DecodeResult(data []byte) (Result, error) {
 	if _, err := dec.Token(); err != io.EOF {
 		return Result{}, fmt.Errorf("unexpected data after result object")
 	}
-	result := Result{Outcome: fields["outcome"], Summary: fields["summary"], NextStep: fields["next_step"]}
+	if verdict, present := fields["verdict"]; present && strings.TrimSpace(verdict) == "" {
+		return Result{}, fmt.Errorf("verdict must be nonblank when present")
+	}
+	result := Result{Outcome: fields["outcome"], Summary: fields["summary"], NextStep: fields["next_step"], Verdict: fields["verdict"]}
 	if err := validateResult(result); err != nil {
 		return Result{}, err
 	}
@@ -232,7 +330,7 @@ func validJSONUnicode(raw []byte) bool {
 	return true
 }
 
-func ReadResult(path string) (Result, error) {
+func ReadResult(path string, versions ...int) (Result, error) {
 	if err := validateResultPath(path); err != nil {
 		return Result{}, err
 	}
@@ -252,14 +350,21 @@ func ReadResult(path string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	return DecodeResult(data)
+	return DecodeResult(data, versions...)
 }
 
 // PublishResult atomically links a fully written private temporary file into
 // place, never replacing an existing artifact. duplicate is true only when a
 // valid existing artifact has identical decoded fields. A conflicting or invalid
 // artifact is an error. This is invocation isolation, not an OS security boundary.
-func PublishResult(path string, result Result) (duplicate bool, err error) {
+func PublishResult(path string, result Result, versions ...int) (duplicate bool, err error) {
+	version, err := resultVersion(versions)
+	if err != nil {
+		return false, err
+	}
+	if version == ResultVersion && result.Verdict != "" {
+		return false, fmt.Errorf("version 1 result cannot contain a verdict")
+	}
 	if err := validateResultPath(path); err != nil {
 		return false, err
 	}
@@ -301,7 +406,7 @@ func PublishResult(path string, result Result) (duplicate bool, err error) {
 		if !errors.Is(err, os.ErrExist) {
 			return false, fmt.Errorf("publishing result: %w", err)
 		}
-		existing, err := ReadResult(path)
+		existing, err := ReadResult(path, version)
 		if err != nil {
 			return false, fmt.Errorf("reading existing result: %w", err)
 		}

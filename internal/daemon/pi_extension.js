@@ -16,8 +16,14 @@ export default function (pi) {
     KONTORA_RESULT_FILE: process.env.KONTORA_RESULT_FILE,
     KONTORA_RESULT_AUTOMATION: process.env.KONTORA_RESULT_AUTOMATION,
     KONTORA_RESULT_RUN_NUMBER: process.env.KONTORA_RESULT_RUN_NUMBER,
+    KONTORA_RESULT_VERDICTS: process.env.KONTORA_RESULT_VERDICTS,
+    KONTORA_WORKFLOW_EXECUTION_ID: process.env.KONTORA_WORKFLOW_EXECUTION_ID,
+    KONTORA_NODE_VISIT_ID: process.env.KONTORA_NODE_VISIT_ID,
+    KONTORA_DEFINITION_FINGERPRINT: process.env.KONTORA_DEFINITION_FINGERPRINT,
   };
   const RESULT_ENABLED = Object.values(RESULT_CONTEXT).some((v) => v !== undefined && v !== "");
+  const GRAPH_RESULT = RESULT_CONTEXT.KONTORA_RESULT_VERSION === "2";
+  let declaredVerdicts = [];
   if (RESULT_ENABLED) {
     var automationContext = !!(RESULT_CONTEXT.KONTORA_RESULT_AUTOMATION || RESULT_CONTEXT.KONTORA_RESULT_RUN_NUMBER);
     var required = ["KONTORA_RESULT_VERSION", "KONTORA_INVOCATION_ID", "KONTORA_RESULT_FILE"];
@@ -34,8 +40,20 @@ export default function (pi) {
         throw new Error("Missing result execution context: " + key);
       }
     }
-    if (RESULT_CONTEXT.KONTORA_RESULT_VERSION !== "1") {
+    if (RESULT_CONTEXT.KONTORA_RESULT_VERSION !== "1" && !GRAPH_RESULT) {
       throw new Error("Unsupported KONTORA_RESULT_VERSION.");
+    }
+    if (GRAPH_RESULT) {
+      try {
+        declaredVerdicts = JSON.parse(RESULT_CONTEXT.KONTORA_RESULT_VERDICTS);
+      } catch (_error) {
+        throw new Error("KONTORA_RESULT_VERDICTS must be a JSON array of verdict strings.");
+      }
+      if (!Array.isArray(declaredVerdicts) || declaredVerdicts.some((verdict) =>
+          typeof verdict !== "string" || !verdict.trim() || verdict.includes("\0") || !verdict.isWellFormed()) ||
+          new Set(declaredVerdicts).size !== declaredVerdicts.length) {
+        throw new Error("KONTORA_RESULT_VERDICTS must contain distinct nonblank verdict strings without NUL.");
+      }
     }
     if (automationContext) {
       var runNumber = RESULT_CONTEXT.KONTORA_RESULT_RUN_NUMBER;
@@ -354,6 +372,34 @@ export default function (pi) {
   }
 
   if (RESULT_ENABLED) {
+    const resultProperties = {
+      outcome: { type: "string", enum: ["complete", "blocked"] },
+      summary: { type: "string", minLength: 1 },
+      next_step: { type: "string" },
+    };
+    if (GRAPH_RESULT && declaredVerdicts.length) {
+      resultProperties.verdict = { type: "string", enum: declaredVerdicts };
+    }
+    if (GRAPH_RESULT) {
+      pi.on("before_agent_start", function (event) {
+        var contract = "Report this graph node with kontora_result. " +
+          "Graph reporting grants no additional Git permissions. " +
+          "Node: " + JSON.stringify(RESULT_CONTEXT.KONTORA_RESULT_STAGE) + ". ";
+        if (RESULT_CONTEXT.KONTORA_WORKFLOW_EXECUTION_ID) {
+          contract += "Workflow execution: " + JSON.stringify(RESULT_CONTEXT.KONTORA_WORKFLOW_EXECUTION_ID) + ". ";
+        }
+        if (RESULT_CONTEXT.KONTORA_NODE_VISIT_ID) {
+          contract += "Node visit: " + JSON.stringify(RESULT_CONTEXT.KONTORA_NODE_VISIT_ID) + ". ";
+        }
+        if (declaredVerdicts.length) {
+          contract += "For a complete result, supply exactly one declared verdict: " + JSON.stringify(declaredVerdicts) + ". ";
+        } else {
+          contract += "This node declares no verdicts; omit verdict. ";
+        }
+        contract += "A blocked result requires next_step and may omit verdict.";
+        return { systemPrompt: event.systemPrompt + "\n\n" + contract };
+      });
+    }
     pi.registerTool({
       name: "kontora_result",
       label: RESULT_CONTEXT.KONTORA_RESULT_AUTOMATION ? "Automation Result" : "Stage Result",
@@ -361,14 +407,13 @@ export default function (pi) {
         "Report the current Kontora " + RESULT_KIND + " as complete or blocked. Summary must be nonblank; " +
         "blocked also requires a nonblank next_step. Submits literal JSON without a shell. " +
         "The payload must fit 32,768 UTF-8 bytes and contain no NUL. " +
-        "Reporting does not kill the agent. Do not retry automatically on uncertain submission.",
+        "Reporting does not kill the agent. Do not retry automatically on uncertain submission." +
+        (GRAPH_RESULT && declaredVerdicts.length
+          ? " Complete results require one declared verdict: " + JSON.stringify(declaredVerdicts) + ". Blocked results may omit verdict."
+          : ""),
       parameters: {
         type: "object",
-        properties: {
-          outcome: { type: "string", enum: ["complete", "blocked"] },
-          summary: { type: "string", minLength: 1 },
-          next_step: { type: "string" },
-        },
+        properties: resultProperties,
         required: ["outcome", "summary"],
         additionalProperties: false,
       },
@@ -379,6 +424,16 @@ export default function (pi) {
           throw new Error("Outcome must be complete or blocked.");
         }
         var payload = { outcome: outcome, summary: params.summary };
+        if (params.verdict !== undefined) {
+          if (!GRAPH_RESULT) throw new Error("Version 1 results cannot contain a verdict.");
+          if (typeof params.verdict !== "string" || !declaredVerdicts.includes(params.verdict)) {
+            throw new Error("Verdict must match a declared verdict.");
+          }
+          payload.verdict = params.verdict;
+        }
+        if (GRAPH_RESULT && outcome === "complete" && declaredVerdicts.length && payload.verdict === undefined) {
+          throw new Error("Complete graph results require a declared verdict.");
+        }
         if (typeof payload.summary !== "string" || !payload.summary.trim()) {
           throw new Error("Summary must be a nonblank string.");
         }
@@ -433,7 +488,8 @@ export default function (pi) {
           }
           if (!ack || ack.accepted !== true ||
               ack.invocation_id !== RESULT_CONTEXT.KONTORA_INVOCATION_ID ||
-              ack.outcome !== outcome) {
+              ack.outcome !== outcome ||
+              (GRAPH_RESULT && ack.verdict !== payload.verdict)) {
             throw new Error("Kontora result acknowledgement does not match. " + execution + "\n" + uncertain);
           }
           terminalReported = true;

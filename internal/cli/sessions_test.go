@@ -249,10 +249,10 @@ func TestSessionsRecoversPreSchemaRuns(t *testing.T) {
     exit_code: 0
     run: 0
 `)
-	f.cfg.Pipelines["default"] = config.Pipeline{
+	f.cfg.Pipelines["default"] = config.PipelineDefinition{Legacy: config.Pipeline{
 		{Stage: "code", Agent: "claude-sonnet", OnSuccess: "next", OnFailure: "retry"},
 		{Stage: "review", Agent: "pi-agent", OnSuccess: "done", OnFailure: "pause"},
-	}
+	}}
 	wantSession := f.claude(sessionsUUID)
 	f.record("code", sessionsUUID)
 	wantPi := f.pi("review", "01JC9.jsonl")
@@ -323,10 +323,10 @@ func TestHistoryRunsAgentFallback(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testConfig(t.TempDir())
 			cfg.Agents["pi-agent"] = config.Agent{Binary: "pi"}
-			cfg.Pipelines["default"] = config.Pipeline{
+			cfg.Pipelines["default"] = config.PipelineDefinition{Legacy: config.Pipeline{
 				{Stage: "code", Agent: "claude-sonnet"},
 				{Stage: "review", Agent: "pi-agent"},
-			}
+			}}
 			tkt := &ticket.Ticket{
 				Pipeline: "default",
 				Stage:    "review",
@@ -348,9 +348,9 @@ func TestSessionsUsesTheRecordedAgent(t *testing.T) {
     exit_code: 0
     run: 0
 `)
-	f.cfg.Pipelines["default"] = config.Pipeline{
+	f.cfg.Pipelines["default"] = config.PipelineDefinition{Legacy: config.Pipeline{
 		{Stage: "code", Agent: "pi-agent", OnSuccess: "done", OnFailure: "pause"},
-	}
+	}}
 	wantSession := f.claude(sessionsUUID)
 	f.record("code", sessionsUUID)
 

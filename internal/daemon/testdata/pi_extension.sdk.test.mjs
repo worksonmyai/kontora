@@ -30,12 +30,15 @@ const usage = { input: 200, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const checkpointArgs = { completed_phase: "one", next_phase: "two" };
 
-function fixture(t, automation = false) {
+function fixture(t, automation = false, graph = false) {
   const cwd = mkdtempSync(path.join(tmpdir(), "kontora-pi-sdk-"));
   const resultFile = path.join(cwd, "result artifact 雪.json");
-  const env = { KONTORA_RESULT_VERSION: "1", KONTORA_INVOCATION_ID: "sdk-invocation",
+  const env = { KONTORA_RESULT_VERSION: graph ? "2" : "1", KONTORA_INVOCATION_ID: "sdk-invocation",
     KONTORA_RESULT_TICKET: automation ? "" : "sdk-ticket", KONTORA_RESULT_STAGE: automation ? "" : "review", KONTORA_RESULT_FILE: resultFile,
-    KONTORA_RESULT_AUTOMATION: automation ? "sdk-automation" : "", KONTORA_RESULT_RUN_NUMBER: automation ? "7" : "" };
+    KONTORA_RESULT_AUTOMATION: automation ? "sdk-automation" : "", KONTORA_RESULT_RUN_NUMBER: automation ? "7" : "",
+    KONTORA_RESULT_VERDICTS: graph ? '["approve","changes"]' : "",
+    KONTORA_WORKFLOW_EXECUTION_ID: graph ? "workflow-1" : "", KONTORA_NODE_VISIT_ID: graph ? "visit-2" : "",
+    KONTORA_DEFINITION_FINGERPRINT: graph ? "abc123" : "" };
   const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   Object.assign(process.env, env);
   const originalFetch = globalThis.fetch;
@@ -280,11 +283,12 @@ for (const callback of ["onComplete", "onError"]) {
 }
 
 for (const callback of ["onComplete", "onError"]) {
-  for (const transport of ["tool", "automation tool", "file", "none", "tool malicious", "file malicious"]) {
+  for (const transport of ["tool", "automation tool", "graph tool", "file", "none", "tool malicious", "file malicious"]) {
     test(`installed Agent ${sdkVersion}: busy ${callback}, terminal=${transport}`, { timeout: 5000 }, async (t) => {
       const automation = transport === "automation tool";
-      const { cwd, resultFile, env } = fixture(t, automation);
-      const mode = automation ? "tool" : transport.split(" ")[0];
+      const graph = transport === "graph tool";
+      const { cwd, resultFile, env } = fixture(t, automation, graph);
+      const mode = automation || graph ? "tool" : transport.split(" ")[0];
       const malicious = transport.endsWith("malicious");
       const handlers = {}, tools = {}, sent = [];
       let compaction, agent, requests = 0, sentinelExecutions = 0, finalResponses = 0, shutdowns = 0;
@@ -303,13 +307,16 @@ for (const callback of ["onComplete", "onError"]) {
         exec: async (_command, args) => {
           assert.equal(args[3], automation ? "sdk-automation" : "sdk-ticket");
           const payload = JSON.parse(readFileSync(args[2], "utf8"));
+          if (graph) assert.equal(payload.verdict, "changes");
           writeFileSync(resultFile, JSON.stringify(payload), { flag: "wx" });
           trace.push("terminal publication");
           return { code: 0, killed: false, truncated: false, stderr: "",
-            stdout: JSON.stringify({ accepted: true, invocation_id: env.KONTORA_INVOCATION_ID, outcome: payload.outcome }) };
+            stdout: JSON.stringify({ accepted: true, invocation_id: env.KONTORA_INVOCATION_ID, outcome: payload.outcome,
+              ...(graph ? { verdict: payload.verdict } : {}) }) };
         },
       };
       factory(api);
+      if (graph) assert.deepEqual(tools.kontora_result.parameters.properties.verdict.enum, ["approve", "changes"]);
       const fire = async (event) => {
         for (const handler of handlers[event.type] ?? []) await handler(event, ctx);
       };
@@ -332,7 +339,8 @@ for (const callback of ["onComplete", "onError"]) {
         if (requests === 1) {
           compaction[callback](new Error("Offline compaction failure"));
           if (mode === "tool") return streamMessage(assistant(model,
-            [{ type: "toolCall", id: "result", name: "kontora_result", arguments: { outcome: "complete", summary: "Done" } }], "toolUse"));
+            [{ type: "toolCall", id: "result", name: "kontora_result", arguments: { outcome: "complete", summary: "Done",
+              ...(graph ? { verdict: "changes" } : {}) } }], "toolUse"));
           if (mode === "file") {
             writeFileSync(resultFile, "{}");
             trace.push("terminal publication");

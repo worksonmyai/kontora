@@ -2846,6 +2846,7 @@ func TestLoadNotificationsValid(t *testing.T) {
 	n := cfg.Notifications
 	require.NotNil(t, n.Enabled)
 	assert.True(t, *n.Enabled, "notifications are on unless switched off")
+	assert.True(t, n.AllChanges)
 	assert.Equal(t, []string{"tg"}, n.Default)
 	require.NotNil(t, n.Attempts)
 	assert.Equal(t, 2, *n.Attempts, "an explicit attempts survives the default")
@@ -2861,6 +2862,7 @@ func TestLoadNotificationsValid(t *testing.T) {
 	assert.Equal(t, http.MethodPost, n.Channels["hook"].Method, "a webhook without a method defaults to POST")
 	assert.Equal(t, http.MethodPut, n.Channels["put"].Method, "a method is uppercased, because http sends it as written")
 	assert.Equal(t, []string{"mm"}, cfg.Projects["work-repo"].NotifyChannels)
+	assert.Equal(t, []string{"human_review", "done", "waiting"}, cfg.Projects["work-repo"].Notify)
 }
 
 func TestLoadRejectsNotifications(t *testing.T) {
@@ -2945,6 +2947,16 @@ func TestLoadRejectsNotifications(t *testing.T) {
 			wantErr: []string{`project "work-repo" notify_channels`, `unknown channel "nope"`},
 		},
 		{
+			name:    "project names an unknown notify status",
+			fixture: "notifications_project_notify_unknown.yaml",
+			wantErr: []string{`project "work-repo" notify`, `no ticket ever reaches status "unknown_status"`},
+		},
+		{
+			name:    "project cannot use none as a notify status",
+			fixture: "notifications_project_notify_none.yaml",
+			wantErr: []string{`project "work-repo" notify`, `"none"`, "notify_channels: [none]"},
+		},
+		{
 			// It reads as "send to tg and to nowhere", which is neither.
 			name:    "the default combines none with a channel",
 			fixture: "notifications_none_in_a_list.yaml",
@@ -2992,7 +3004,7 @@ func TestNotifyChannelsFor(t *testing.T) {
 			Default:  []string{"tg"},
 		},
 		Projects: map[string]Project{
-			"work":   {Path: "/repos/work", NotifyChannels: []string{"mm"}},
+			"work":   {Path: "/repos/work", Notify: []string{"human_review", "done"}, NotifyChannels: []string{"mm"}},
 			"quiet":  {Path: "/repos/quiet", NotifyChannels: []string{NoneSentinel}},
 			"plain":  {Path: "/repos/plain"},
 			"nodefs": {Path: "/repos/nodefs", NotifyChannels: []string{"mm", "tg"}},
@@ -3004,22 +3016,27 @@ func TestNotifyChannelsFor(t *testing.T) {
 		repoPath       string
 		ticketChannels []string
 		want           []string
+		wantNotify     []string
 	}{
 		{name: "the global default", repoPath: "/repos/plain", want: []string{"tg"}},
 		{name: "an unmatched repo falls to the default", repoPath: "/repos/elsewhere", want: []string{"tg"}},
 		{name: "no repo path at all", want: []string{"tg"}},
-		{name: "a project overrides the default", repoPath: "/repos/work", want: []string{"mm"}},
+		{name: "a project overrides the default", repoPath: "/repos/work", want: []string{"mm"}, wantNotify: []string{"human_review", "done"}},
+		{name: "a normalized repo matches", repoPath: "/repos/work/", want: []string{"mm"}, wantNotify: []string{"human_review", "done"}},
+		{name: "a subdirectory does not inherit", repoPath: "/repos/work/subdir", want: []string{"tg"}},
 		{name: "a project may name several", repoPath: "/repos/nodefs", want: []string{"mm", "tg"}},
 		{
 			name:           "a ticket overrides its project",
 			repoPath:       "/repos/work",
 			ticketChannels: []string{"tg"},
 			want:           []string{"tg"},
+			wantNotify:     []string{"human_review", "done"},
 		},
 		{
 			name:           "none on the ticket silences it",
 			repoPath:       "/repos/work",
 			ticketChannels: []string{NoneSentinel},
+			wantNotify:     []string{"human_review", "done"},
 		},
 		{name: "none on the project silences it", repoPath: "/repos/quiet"},
 		{
@@ -3028,6 +3045,7 @@ func TestNotifyChannelsFor(t *testing.T) {
 			name:           "none beside a channel on a ticket still silences it",
 			repoPath:       "/repos/work",
 			ticketChannels: []string{"tg", NoneSentinel},
+			wantNotify:     []string{"human_review", "done"},
 		},
 		{
 			name:           "a ticket overrides a silenced project",
@@ -3040,6 +3058,12 @@ func TestNotifyChannelsFor(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, cfg.NotifyChannelsFor(tt.repoPath, tt.ticketChannels))
+			got := cfg.NotifyDefaultFor(tt.repoPath)
+			assert.Equal(t, tt.wantNotify, got)
+			if len(got) > 0 {
+				got[0] = "changed"
+				assert.Equal(t, tt.wantNotify, cfg.NotifyDefaultFor(tt.repoPath), "the default must be cloned")
+			}
 		})
 	}
 }
@@ -3047,4 +3071,64 @@ func TestNotifyChannelsFor(t *testing.T) {
 func TestNotifyChannelsForWithoutADefault(t *testing.T) {
 	cfg := &Config{}
 	assert.Empty(t, cfg.NotifyChannelsFor("/repos/plain", nil))
+	assert.Nil(t, cfg.NotifyDefaultFor("/repos/plain"))
+	assert.False(t, cfg.Notifications.AllChanges, "requested and observed changes are opt-in")
+}
+
+func TestValidateNotifyFields(t *testing.T) {
+	cfg := &Config{
+		Statuses:      []string{"deployed"},
+		Notifications: Notifications{Channels: map[string]NotifyChannel{"tg": {}}},
+	}
+	tests := []struct {
+		name     string
+		statuses []string
+		channels []string
+		wantErr  string
+	}{
+		{name: "absent lists"},
+		{name: "empty lists", statuses: []string{}, channels: []string{}},
+		{name: "known statuses", statuses: []string{"done", "human_review", "deployed", "waiting"}},
+		{name: "configured channel", channels: []string{"tg"}},
+		{name: "channel opt-out", channels: []string{NoneSentinel}},
+		{name: "unknown status", statuses: []string{"unknown_status"}, wantErr: `no ticket ever reaches status "unknown_status"`},
+		{name: "none is not a status", statuses: []string{NoneSentinel}, wantErr: `no ticket ever reaches status "none"`},
+		{name: "unknown channel", channels: []string{"ghost"}, wantErr: `no channel named "ghost" is configured`},
+		{name: "mixed opt-out", channels: []string{"tg", NoneSentinel}, wantErr: `"none" silences the list and cannot be combined with a channel`},
+		{name: "mixed opt-out first", channels: []string{NoneSentinel, "tg"}, wantErr: `"none" silences the list and cannot be combined with a channel`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := cfg.ValidateNotifyFields(tt.statuses, tt.channels)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.EqualError(t, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestProjectNotifyStatuses(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		notify   []string
+		statuses []string
+		wantErr  string
+	}{
+		{name: "built-in custom and waiting", notify: []string{"done", "deployed", "waiting"}, statuses: []string{"deployed"}},
+		{name: "none is refused even as a custom status", notify: []string{NoneSentinel}, statuses: []string{NoneSentinel}, wantErr: `project "work" notify: "none" is not a status`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{Statuses: tt.statuses, Projects: map[string]Project{
+				"work": {Path: "/repos/work", Notify: tt.notify},
+			}}
+			err := cfg.validateProjects()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tt.wantErr)
+			}
+		})
+	}
 }

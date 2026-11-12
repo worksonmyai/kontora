@@ -24,37 +24,58 @@ func updateTestConfig(dir string) *config.Config {
 			"two-stage": {{Stage: "s1", Agent: "a1", OnSuccess: "next", OnFailure: "pause"}, {Stage: "s2", Agent: "a1", OnSuccess: "done", OnFailure: "pause"}},
 		},
 		Agents: map[string]config.Agent{"a1": {Binary: "true"}},
+		Notifications: config.Notifications{Channels: map[string]config.NotifyChannel{
+			"tg": {}, "hook": {},
+		}},
 	}
 }
 
 func TestUpdate_UpdatesSelectedFields(t *testing.T) {
-	dir := t.TempDir()
-	writeTicket(t, dir, "tst-001.md", `---
+	for _, tc := range []struct {
+		name         string
+		req          web.UpdateTicketRequest
+		wantNotify   []string
+		wantChannels []string
+	}{
+		{name: "body and pipeline", req: web.UpdateTicketRequest{Pipeline: new("two-stage"), Body: new("# Updated body\n\nNew content.\n")}, wantNotify: []string{"paused"}, wantChannels: []string{"tg"}},
+		{name: "notify only", req: web.UpdateTicketRequest{Notify: []string{"done", "waiting", "blocked"}}, wantNotify: []string{"done", "waiting", "blocked"}, wantChannels: []string{"tg"}},
+		{name: "channels only", req: web.UpdateTicketRequest{NotifyChannels: []string{"hook"}}, wantNotify: []string{"paused"}, wantChannels: []string{"hook"}},
+		{name: "both notify fields", req: web.UpdateTicketRequest{Notify: []string{"human_review"}, NotifyChannels: []string{"hook"}}, wantNotify: []string{"human_review"}, wantChannels: []string{"hook"}},
+		{name: "channels opt out", req: web.UpdateTicketRequest{NotifyChannels: []string{"none"}}, wantNotify: []string{"paused"}, wantChannels: []string{"none"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTicket(t, dir, "tst-001.md", `---
 id: tst-001
 status: open
 pipeline: one-stage
 path: ~/old/path
 agent: a1
+notify: [paused]
+notify_channels: [tg]
 ---
 # Original body
 `)
-
-	cfg := updateTestConfig(dir)
-	newBody := "# Updated body\n\nNew content.\n"
-	require.NoError(t, Update(cfg, "tst-001", web.UpdateTicketRequest{
-		Pipeline: new("two-stage"),
-		Body:     &newBody,
-	}))
-
-	data, err := os.ReadFile(filepath.Join(dir, "tst-001.md"))
-	require.NoError(t, err)
-	content := string(data)
-
-	assert.Contains(t, content, "pipeline: two-stage")
-	assert.Contains(t, content, "# Updated body")
-	// Untouched fields stay intact.
-	assert.Contains(t, content, "path: ~/old/path")
-	assert.Contains(t, content, "agent: a1")
+			require.NoError(t, Update(updateTestConfig(dir), "tst-001", tc.req))
+			stored, err := ticket.ParseFile(filepath.Join(dir, "tst-001.md"))
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantNotify, stored.Notify.Statuses)
+			assert.Equal(t, tc.wantChannels, stored.NotifyChannels)
+			if tc.req.Pipeline != nil {
+				assert.Equal(t, *tc.req.Pipeline, stored.Pipeline)
+			} else {
+				assert.Equal(t, "one-stage", stored.Pipeline)
+			}
+			if tc.req.Body != nil {
+				assert.Equal(t, *tc.req.Body, stored.Body)
+			} else {
+				assert.Equal(t, "# Original body\n", stored.Body)
+			}
+			// Untouched fields stay intact.
+			assert.Equal(t, "~/old/path", stored.Path)
+			assert.Equal(t, "a1", stored.Agent)
+		})
+	}
 }
 
 func TestUpdate_DescriptionCompatibility(t *testing.T) {
@@ -132,12 +153,16 @@ agent: a1
 // user who learned "none" from kontora new does not get "unknown pipeline" here.
 func TestUpdate_NoneClearsFields(t *testing.T) {
 	cases := []struct {
-		name string
-		req  web.UpdateTicketRequest
-		want string
+		name    string
+		req     web.UpdateTicketRequest
+		want    string
+		removed string
 	}{
 		{name: "pipeline", req: web.UpdateTicketRequest{Pipeline: new(config.NoneSentinel)}, want: `pipeline: ""`},
 		{name: "agent", req: web.UpdateTicketRequest{Agent: new(config.NoneSentinel)}, want: `agent: ""`},
+		{name: "notify", req: web.UpdateTicketRequest{Notify: []string{}}, want: "notify_channels: [tg]", removed: "notify:"},
+		{name: "notify channels", req: web.UpdateTicketRequest{NotifyChannels: []string{}}, want: "notify: [done]", removed: "notify_channels:"},
+		{name: "both notify fields", req: web.UpdateTicketRequest{Notify: []string{}, NotifyChannels: []string{}}, want: "# Body", removed: "notify"},
 	}
 
 	for _, tc := range cases {
@@ -149,6 +174,8 @@ status: open
 pipeline: one-stage
 path: ~/repo
 agent: a1
+notify: [done]
+notify_channels: [tg]
 ---
 # Body
 `)
@@ -159,6 +186,35 @@ agent: a1
 			data, err := os.ReadFile(filepath.Join(dir, "tst-none.md"))
 			require.NoError(t, err)
 			assert.Contains(t, string(data), tc.want)
+			if tc.removed != "" {
+				assert.NotContains(t, string(data), tc.removed)
+			}
+		})
+	}
+}
+
+func TestUpdate_RejectsInvalidNotify(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  web.UpdateTicketRequest
+		want string
+	}{
+		{name: "unknown status", req: web.UpdateTicketRequest{Notify: []string{"unknown_status"}}, want: "unknown_status"},
+		{name: "none status", req: web.UpdateTicketRequest{Notify: []string{"none"}}, want: "none"},
+		{name: "unknown channel", req: web.UpdateTicketRequest{NotifyChannels: []string{"ghost"}}, want: "ghost"},
+		{name: "mixed none", req: web.UpdateTicketRequest{NotifyChannels: []string{"none", "tg"}}, want: "cannot be combined"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			const original = "---\nid: tst-invalid\nstatus: open\nnotify: [done]\nnotify_channels: [tg]\n---\n# Body\n"
+			writeTicket(t, dir, "tst-invalid.md", original)
+			tc.req.Pipeline = new("two-stage")
+			err := Update(updateTestConfig(dir), "tst-invalid", tc.req)
+			require.ErrorIs(t, err, web.ErrInvalidNotify)
+			assert.ErrorContains(t, err, tc.want)
+			data, err := os.ReadFile(filepath.Join(dir, "tst-invalid.md"))
+			require.NoError(t, err)
+			assert.Equal(t, original, string(data), "invalid input must not write any fields")
 		})
 	}
 }

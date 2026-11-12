@@ -425,12 +425,27 @@ func cmdNew() {
 	parent := fs.String("parent", "", "id of the epic to file this ticket under")
 	at := fs.String("at", "", "schedule pickup for an instant, e.g. 2099-09-01T09:00:00+02:00 or \"2099-09-01 09:00\"")
 	after := fs.String("after", "", "schedule pickup this long from now, e.g. 90m, 24h, 3d, 2w")
+	notify := fs.String("notify", "", "comma-separated notification statuses (pass \"\" or \"none\" to skip the project default)")
+	notifyChannels := fs.String("notify-channels", "", "comma-separated notification channels, or \"none\" to disable delivery")
 	descriptionFile := fs.String("description-file", "", "read the ticket description from a file ('-' for stdin)")
 	quiet := fs.Bool("quiet", false, "print only the new ticket ID")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
+
+	var notifyList, notifyChannelList []string
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "notify":
+			notifyList = cli.ParseNotifyList(*notify)
+			if len(notifyList) == 1 && notifyList[0] == "none" {
+				notifyList = []string{}
+			}
+		case "notify-channels":
+			notifyChannelList = cli.ParseNotifyList(*notifyChannels)
+		}
+	})
 
 	title := strings.Join(fs.Args(), " ")
 	if title == "" {
@@ -460,17 +475,19 @@ func cmdNew() {
 			log.Fatal("remote new requires --path (a path on the daemon host)")
 		}
 		info, err := rc.CreateTicket(web.CreateTicketRequest{
-			Title:       title,
-			Path:        *repoPath,
-			Pipeline:    *pipeline,
-			Agent:       *agent,
-			Status:      *status,
-			Body:        body,
-			Branch:      *branch,
-			BaseBranch:  *baseBranch,
-			ScheduledAt: scheduledAt,
-			Kind:        *kind,
-			Parent:      *parent,
+			Title:          title,
+			Path:           *repoPath,
+			Pipeline:       *pipeline,
+			Agent:          *agent,
+			Status:         *status,
+			Body:           body,
+			Branch:         *branch,
+			BaseBranch:     *baseBranch,
+			ScheduledAt:    scheduledAt,
+			Kind:           *kind,
+			Parent:         *parent,
+			Notify:         notifyList,
+			NotifyChannels: notifyChannelList,
 		})
 		if err != nil {
 			log.Fatal(err)
@@ -494,18 +511,20 @@ func cmdNew() {
 	// with --status open is never visible as todo for a watching daemon to
 	// claim.
 	id, err := cli.New(cfg, cli.NewOpts{
-		Path:        path,
-		Pipeline:    *pipeline,
-		Agent:       *agent,
-		Status:      *status,
-		Title:       title,
-		Body:        body,
-		Branch:      *branch,
-		BaseBranch:  *baseBranch,
-		ScheduledAt: scheduledAt,
-		Kind:        *kind,
-		Parent:      *parent,
-		NoEdit:      true,
+		Path:           path,
+		Pipeline:       *pipeline,
+		Agent:          *agent,
+		Status:         *status,
+		Title:          title,
+		Body:           body,
+		Branch:         *branch,
+		BaseBranch:     *baseBranch,
+		ScheduledAt:    scheduledAt,
+		Kind:           *kind,
+		Parent:         *parent,
+		Notify:         notifyList,
+		NotifyChannels: notifyChannelList,
+		NoEdit:         true,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -615,6 +634,8 @@ func cmdUpdate() {
 	agent := fs.String("agent", "", "set agent override (pass \"\" or \"none\" to clear)")
 	branch := fs.String("branch", "", "set branch (pass \"\" to clear)")
 	baseBranch := fs.String("base-branch", "", "set base branch (pass \"\" to clear)")
+	notify := fs.String("notify", "", "set comma-separated notification statuses (pass \"\" or \"none\" to clear)")
+	notifyChannels := fs.String("notify-channels", "", "set comma-separated notification channels (pass \"\" to clear, or \"none\" to disable delivery)")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
 
@@ -651,8 +672,18 @@ func cmdUpdate() {
 		req.BaseBranch = baseBranch
 	}
 
-	if req.Body == nil && req.Pipeline == nil && req.Path == nil && req.Agent == nil && req.Branch == nil && req.BaseBranch == nil {
-		log.Fatal("nothing to update: pass at least one of --body-file, --pipeline, --path, --agent, --branch, --base-branch")
+	if set["notify"] {
+		req.Notify = cli.ParseNotifyList(*notify)
+		if len(req.Notify) == 1 && req.Notify[0] == "none" {
+			req.Notify = []string{}
+		}
+	}
+	if set["notify-channels"] {
+		req.NotifyChannels = cli.ParseNotifyList(*notifyChannels)
+	}
+
+	if req.Body == nil && req.Pipeline == nil && req.Path == nil && req.Agent == nil && req.Branch == nil && req.BaseBranch == nil && req.Notify == nil && req.NotifyChannels == nil {
+		log.Fatal("nothing to update: pass at least one of --body-file, --pipeline, --path, --agent, --branch, --base-branch, --notify, --notify-channels")
 	}
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {

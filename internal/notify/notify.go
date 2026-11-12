@@ -21,9 +21,10 @@ import (
 type Origin int
 
 const (
-	// OriginDaemon is a decision the daemon made on its own. Only this may send.
+	// OriginDaemon is a decision the daemon made on its own. Without the
+	// all_changes switch, only this origin may send.
 	OriginDaemon Origin = iota + 1
-	// OriginRequest is a person asking, through the API or the remote CLI.
+	// OriginRequest is a caller asking, through the API or the remote CLI.
 	OriginRequest
 	// OriginObserved is a ticket read off disk: the startup scan or a watcher event.
 	OriginObserved
@@ -62,12 +63,13 @@ type Fields struct {
 
 // Observation is one look at a ticket after a write or a file event.
 type Observation struct {
-	Origin   Origin
-	ID       string
-	Status   string   // the status now on disk
-	Want     []string // the ticket's notify: list, nil for a silent ticket
-	Channels []string // resolved by the daemon; empty sends nothing
-	Fields   Fields
+	AllChanges bool
+	Origin     Origin
+	ID         string
+	Status     string   // the status now on disk
+	Want       []string // the ticket's notify: list, nil for a silent ticket
+	Channels   []string // resolved by the daemon; empty sends nothing
+	Fields     Fields
 }
 
 // Event is one notification worth sending.
@@ -255,12 +257,21 @@ func Wants(want []string, status string) bool {
 	return slices.Contains(want, status)
 }
 
-// ShouldSend is the whole send rule: the daemon decided the change, the ticket
-// was seen at a different status before, it asked about this one, and it
-// resolved to a channel. It is exported so a caller that records observations
+// ShouldSend is the whole send rule: the origin is eligible, the ticket was
+// seen at a different status before, it asked about this one, and it resolved
+// to a channel. Request and observed changes are eligible only with AllChanges;
+// derived changes never are. It is exported so a caller that records observations
 // can ask the dispatcher's question instead of restating it.
 func ShouldSend(obs Observation, prev string, seen bool) bool {
-	if obs.Origin != OriginDaemon {
+	switch obs.Origin {
+	case OriginDaemon:
+	case OriginRequest, OriginObserved:
+		if !obs.AllChanges {
+			return false
+		}
+	case OriginDerived:
+		return false
+	default:
 		return false
 	}
 	// A ticket seen for the first time seeds and sends nothing, so a missed

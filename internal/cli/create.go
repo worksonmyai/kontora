@@ -8,17 +8,20 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/ticket/store"
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 // yamlQuote wraps a string in double quotes if it contains characters
 // that are special in YAML (colons, hashes, brackets, etc.).
 // Simple alphanumeric values are left unquoted.
 func yamlQuote(s string) string {
-	if s == "" || strings.ContainsAny(s, ":#{}&*!|>'\"%@`,[]\\") {
+	if s == "" || strings.TrimSpace(s) != s || strings.ContainsAny(s, ":#{}&*!|>'\"%@`,[]\\") {
 		return fmt.Sprintf("%q", s)
 	}
 	switch strings.ToLower(s) {
@@ -52,6 +55,10 @@ type NewOpts struct {
 	EpicExecution string
 	// Parent files the new ticket under an epic.
 	Parent string
+	// Notify defaults to the project's list only when nil. An explicit empty
+	// slice opts out. Channels resolve at send time unless explicitly set.
+	Notify         []string
+	NotifyChannels []string
 }
 
 // New creates a ticket file and optionally opens it in $EDITOR.
@@ -91,12 +98,9 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 		return "", fmt.Errorf("status must be \"open\" or \"todo\", got %q", opts.Status)
 	}
 
-	// Every creation path reaches New, so this is the one place where the
-	// project and top-level defaults are stamped into the ticket. An epic skips
-	// them: it cannot have a pipeline, and supervisor defaults are resolved
-	// only when it is explicitly started.
-	if !isEpic {
-		opts.Pipeline, opts.Agent = cfg.ResolveTicketDefaults(opts.Path, opts.Pipeline, opts.Agent, opts.Parent != "")
+	opts.resolveDefaults(cfg)
+	if err := cfg.ValidateNotifyFields(opts.Notify, opts.NotifyChannels); err != nil {
+		return "", fmt.Errorf("%w: %v", web.ErrInvalidNotify, err)
 	}
 
 	// A name the config does not know would otherwise sit in the frontmatter
@@ -133,7 +137,10 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	if !ticket.IsSafeID(id) {
 		return "", fmt.Errorf("unsafe ticket id %q", id)
 	}
-	content := ticketFrontmatter(id, opts, time.Now().UTC().Format(time.RFC3339))
+	content, err := ticketFrontmatter(id, opts, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return "", err
+	}
 
 	dir := config.ExpandTilde(cfg.TicketsDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -153,16 +160,41 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	return id, nil
 }
 
+// Every creation path reaches New, so this is the one place where the
+// project and top-level defaults are stamped into the ticket. An epic skips
+// them: it cannot have a pipeline, and supervisor defaults are resolved
+// only when it is explicitly started.
+func (opts *NewOpts) resolveDefaults(cfg *config.Config) {
+	if opts.Kind == string(ticket.KindEpic) {
+		return
+	}
+	opts.Pipeline, opts.Agent = cfg.ResolveTicketDefaults(opts.Path, opts.Pipeline, opts.Agent, opts.Parent != "")
+	if opts.Notify == nil {
+		opts.Notify = cfg.NotifyDefaultFor(opts.Path)
+	}
+}
+
 // ticketFrontmatter renders the whole ticket file. Every optional field is a
 // line that is either written or absent: an empty value is not the same as no
 // value for the round-trip parser, and a stamped empty field would show up in
 // the dashboard as a field somebody set.
-func ticketFrontmatter(id string, opts NewOpts, created string) string {
+func ticketFrontmatter(id string, opts NewOpts, created string) (string, error) {
 	line := func(key, value string) string {
 		if value == "" {
 			return ""
 		}
 		return fmt.Sprintf("%s: %s\n", key, yamlQuote(value))
+	}
+	var notifications []byte
+	if len(opts.Notify) > 0 || len(opts.NotifyChannels) > 0 {
+		var err error
+		notifications, err = yaml.Marshal(struct {
+			Notify         []string `yaml:"notify,omitempty,flow"`
+			NotifyChannels []string `yaml:"notify_channels,omitempty,flow"`
+		}{opts.Notify, opts.NotifyChannels})
+		if err != nil {
+			return "", fmt.Errorf("encoding notification fields: %w", err)
+		}
 	}
 	// Quoted rather than passed through line(): the daemon stores the instant
 	// quoted, and a round-trip has to leave the line as it found it.
@@ -174,7 +206,7 @@ func ticketFrontmatter(id string, opts NewOpts, created string) string {
 	if opts.Body != "" {
 		body = "\n" + opts.Body + "\n"
 	}
-	return fmt.Sprintf("---\nid: %s\nkontora: true\n%s%sstatus: %s\n%s%s%s%s%s%spath: %s\ncreated: %s\n---\n# %s\n%s",
+	return fmt.Sprintf("---\nid: %s\nkontora: true\n%s%sstatus: %s\n%s%s%s%s%s%s%spath: %s\ncreated: %s\n---\n# %s\n%s",
 		id,
 		line("kind", opts.Kind),
 		line("epic_execution", opts.EpicExecution),
@@ -185,7 +217,8 @@ func ticketFrontmatter(id string, opts NewOpts, created string) string {
 		line("base_branch", opts.BaseBranch),
 		scheduled,
 		line("parent", opts.Parent),
-		yamlQuote(opts.Path), created, opts.Title, body)
+		notifications,
+		yamlQuote(opts.Path), created, opts.Title, body), nil
 }
 
 // checkEpicOpts validates the epic-only rules and settles the status an epic is

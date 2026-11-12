@@ -79,7 +79,7 @@ can defeat that protection.
 
 ### User-defined fields
 
-Set these fields when creating a ticket, manually or with `kontora new`. For `notify` and `notify_channels`, use the dashboard, [API](#notifications), or a hand edit. Neither `kontora new` nor `kontora update` has notification flags.
+Set these fields when creating a ticket, manually or with `kontora new`. Both `kontora new` and `kontora update` accept `--notify` and `--notify-channels`. The dashboard, [API](#notifications), and hand edits also support these fields.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -274,7 +274,7 @@ When `base_branch` is set through `kontora new` or `POST /api/tickets`, Kontora 
 
 #### Notifications
 
-`notify` lists the statuses this ticket asks to be told about. It is opt-in per ticket: without the field nothing is sent, however many channels the config names.
+`notify` lists the statuses that trigger notifications for this ticket. Without the field nothing is sent, however many channels the config names. For new ordinary tickets, Kontora writes the [project's `notify` default](configuration.md#projects) into the file. An explicit list overrides that default; `kontora new --notify none` or `--notify ""` skips it. Epics and initialization do not inherit this default.
 
 ```yaml
 notify: [human_review, done]
@@ -283,7 +283,9 @@ notify_channels: [tg]
 
 Both a single status (`notify: done`) and a list are read. Any status works, including a [custom one](configuration.md#top-level-fields), plus the pseudo-status `waiting`.
 
-Only a transition the daemon decided on its own sends. `kontora done <id>`, a drag in the dashboard, and any other change a person asked for update what the daemon remembers and send nothing: the point is to hear about work you were not watching, and you were watching when you made the change yourself. A ticket the daemon has not seen before is recorded without sending, so a restart over a ticket already in a listed status is silent.
+By default, only a transition the daemon decided on its own sends. Set `notifications.all_changes: true` to also send for commands, API calls, dashboard actions, and file edits. The switch reloads live and does not distinguish people from agents or scripts. Eligible changes enqueue one notification per channel; unchanged statuses and derived epic statuses stay silent. The watcher can combine rapid file edits into one observed change.
+
+A ticket's first sighting is always silent. With the switch on, a later crash-recovery change to `todo` or a recovery pause can send if the ticket lists that status.
 
 A `done` notification carries the ticket's per-run `summary`. It fires from the write that ends the run, and `final_summary` is written up to two minutes later by a separate pass, so it cannot be in the message.
 
@@ -301,7 +303,9 @@ Opening the modal preserves existing preferences. Choosing off with no configure
 
 The row states one inherited channel instead of asking for it. If no inherited route exists, the channel picker appears. The dashboard refuses to save or start until the ticket has a route, is silenced, or turns notifications off. The rail row opens only where the API accepts a frontmatter edit. A running ticket shows its setting but cannot change it because the agent owns the file.
 
-The API takes them too: `notify` and `notify_channels` on `POST /api/tickets/{id}/init` and `PUT /api/tickets/{id}`. An absent key leaves the ticket's own field alone and `[]` removes it. Unlike a hand edit, a request naming a status nothing reaches or a channel nothing answers to is refused with a 400 rather than warned about.
+The API accepts `notify` and `notify_channels` on `POST /api/tickets`, `POST /api/tickets/{id}/init`, and `PUT /api/tickets/{id}`. During creation, an absent `notify` inherits the project default and `[]` skips it. During initialization or update, an absent key preserves the stored field and `[]` removes it.
+
+The CLI flags take comma-separated lists. On update, `--notify ""` or `--notify none` removes the status list. `--notify-channels ""` removes the channel override; `--notify-channels none` writes `[none]` to silence delivery. The CLI and API reject unknown statuses and channels; `none` is allowed only alone in a channel list. API validation failures return 400. Hand edits instead produce daemon warnings.
 
 #### Scheduled pickup
 

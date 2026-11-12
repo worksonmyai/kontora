@@ -95,12 +95,13 @@ func (d *Daemon) observe(t *ticket.Ticket, origin notify.Origin) {
 	}
 	target := d.notifyTarget(t)
 	d.notifier.Observe(notify.Observation{
-		Origin:   origin,
-		ID:       t.ID,
-		Status:   string(t.Status),
-		Want:     target.want,
-		Channels: target.channels,
-		Fields:   target.fields,
+		AllChanges: d.config().Notifications.AllChanges,
+		Origin:     origin,
+		ID:         t.ID,
+		Status:     string(t.Status),
+		Want:       target.want,
+		Channels:   target.channels,
+		Fields:     target.fields,
 	})
 }
 
@@ -183,23 +184,8 @@ func unmatchedNotify(cfg *config.Config, t *ticket.Ticket) []notifyWarning {
 // unmatchedNotify warns about — statuses that resolve to no channel — stays a
 // warning: it depends on config the caller may be about to write.
 func validateNotifyFields(cfg *config.Config, statuses, channels []string) error {
-	for _, s := range statuses {
-		if s != notify.StatusWaiting && !cfg.IsKnownStatus(s) {
-			return fmt.Errorf("%w: no ticket ever reaches status %q", web.ErrInvalidNotify, s)
-		}
-	}
-	for _, name := range channels {
-		if name == config.NoneSentinel {
-			// "none" silences the ticket. Beside a channel name it is the
-			// contradiction the config validator refuses in its own lists.
-			if len(channels) > 1 {
-				return fmt.Errorf("%w: %q silences the list and cannot be combined with a channel", web.ErrInvalidNotify, config.NoneSentinel)
-			}
-			continue
-		}
-		if _, ok := cfg.Notifications.Channels[name]; !ok {
-			return fmt.Errorf("%w: no channel named %q is configured", web.ErrInvalidNotify, name)
-		}
+	if err := cfg.ValidateNotifyFields(statuses, channels); err != nil {
+		return fmt.Errorf("%w: %w", web.ErrInvalidNotify, err)
 	}
 	return nil
 }

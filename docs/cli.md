@@ -118,6 +118,8 @@ Creates a ticket and prints its ID. Locally, omitting `--path` with `--parent EP
 | `--path PATH` | Repository the ticket works in. |
 | `--pipeline NAME` | Explicit pipeline, or `none` to skip all pipeline defaults and run standalone. |
 | `--agent NAME` | Agent to use, or `none` to skip the project default. |
+| `--notify STATUSES` | Comma-separated statuses. Omit to inherit the project's list; `""` or `none` skips it. Epics do not inherit. |
+| `--notify-channels NAMES` | Comma-separated channel names; `none` silences delivery. |
 | `--branch NAME` | Work branch name. Defaults to `<branch_prefix>/<title-slug>-<ticket-id>`. With `branch_naming.mode: off` or a title that yields no slug, uses `<branch_prefix>/<ticket-id>`. |
 | `--base-branch NAME` | Branch the work branch starts from. Defaults to the repository's default branch. |
 | `--status STATUS` | `open` or `todo`. Defaults to `todo`. |
@@ -170,6 +172,8 @@ Changes frontmatter fields or the body of an existing ticket. At least one flag 
 | `--pipeline NAME` | Set the pipeline (`""` or `none` clears it). |
 | `--path PATH` | Set the repository path. |
 | `--agent NAME` | Set the agent override (`""` or `none` clears it). |
+| `--notify STATUSES` | Set comma-separated statuses (`""` or `none` removes the field). |
+| `--notify-channels NAMES` | Set comma-separated channels (`""` removes the override; `none` silences delivery). |
 | `--branch NAME` | Set the work branch (`""` clears it). |
 | `--base-branch NAME` | Set the base branch (`""` clears it). |
 

@@ -6,8 +6,8 @@ Enabled schedules and manual runs work with `auto_pick_up: false`.
 
 ## Creating and controlling an automation
 
-Open Automations in the dashboard, use `kontora automation new`, or edit `automations:` in the daemon's YAML configuration.
-The dashboard and [HTTP API](api.md#automations) write the same configuration file.
+Open Automations in the dashboard, use `kontora automation`, or edit `automations:` in the daemon's YAML configuration.
+The CLI, dashboard, and [HTTP API](api.md#automations) write the same configuration file through the daemon.
 Omitting `enabled` in YAML or API requests leaves scheduling disabled. The CLI also defaults to disabled.
 Review the dashboard's Enabled setting, schedule preview, and agent permissions before saving unattended runs.
 
@@ -23,6 +23,63 @@ Use `kontora attach <automation-id>` for the current terminal. Attachment is rea
 
 Prompts do not enforce permissions. For example, “do not edit files” does not make an agent read-only.
 Configure the agent's permissions for the task.
+
+## CLI workflows
+
+All `kontora automation` commands use the daemon API, including local reads and schedule preview. There is no offline storage fallback.
+Use `--url URL` to select a remote daemon without local configuration. `--path` names a repository on the daemon host.
+Each child accepts `--config`, `--url`, `--token`, and `--operator-token`.
+Credentials default to `KONTORA_TOKEN` and `KONTORA_OPERATOR_TOKEN`; HTTP and terminal connections send both independently.
+Parent and child help work without configuration or a daemon.
+
+References accept full automation IDs or exact configuration keys only. Display names and abbreviated IDs are not accepted.
+Keys resolve from active definitions. After deletion, use the original full ID to read retained history and logs.
+A new definition with the same key has a different ID.
+
+```bash
+kontora automation preview --schedule '0 9 * * 1-5' --timezone Europe/Berlin
+kontora automation new --name 'Morning report' --key morning-report \
+  --prompt-file ./report.md --path /srv/projects/app --agent claude \
+  --schedule '0 9 * * 1-5' --timezone Europe/Berlin
+kontora automation ls --state paused --query report
+kontora automation view morning-report
+kontora automation update morning-report --model '' --enabled=false
+kontora automation duplicate morning-report --name 'Report experiment'
+kontora automation resume morning-report
+kontora automation pause morning-report
+```
+
+Creation and duplication default to disabled scheduling. `--enabled` enables scheduling; `--enabled=false` sets false explicitly.
+`--prompt-file -` reads stdin. Updates preserve omitted fields and accept every specification field except the immutable key.
+Update, delete, pause, and resume use revision checks. `--revision N` supplies a positive expected revision; otherwise the CLI uses the fetched revision.
+A conflict fails without an automatic retry. Inspect the current definition before repeating a mutation.
+
+```bash
+kontora automation run morning-report
+kontora automation runs morning-report --offset 0 --limit 20
+kontora automation logs morning-report --run 1 --raw
+kontora automation terminal morning-report --run 1 --json
+kontora automation attach morning-report --run 1
+kontora automation stop morning-report --run 1
+kontora automation delete morning-report --yes
+```
+
+Stop, logs, and terminal inspection require an exact positive run number. Attach selects the current run unless `--run N` is supplied.
+Attachment is read-only unless `--rw` is supplied. The daemon verifies terminal identity and eligibility; the CLI does not build local tmux targets.
+Stop reports the returned phase and outcome. Acceptance does not prove that termination finished.
+Delete requires `--yes` or `-f` and retains history and logs.
+
+Creation, duplication, and manual runs accept `--request-id ID`. If omitted, the CLI generates one identity and prints it to stderr before sending.
+Manual runs also print the resolved full automation ID. Keep both values after an uncertain response; mutations do not retry automatically.
+To retry a manual run, use the original full ID and request ID together. An explicit request ID is rejected with a key.
+For duplicate retries, keep the source inputs unchanged. Changed inputs with the same request ID remain a conflict.
+
+Every noninteractive child accepts `--json`, with API objects on stdout and diagnostics on stderr.
+List and history output keep availability and pagination envelopes. Unavailable storage produces a nonzero exit, even when HTTP returns success.
+Unknown costs and statistics remain `null`, rather than zero; empty collections remain `[]`.
+History defaults to offset `0` and limit `20`, with limits from `1` through `200`. New runs can shift later pages.
+`logs --raw` prints unchanged composed text, not original terminal capture. It cannot be combined with `--json`.
+See the [CLI reference](cli.md#automations) for each command's flags and output.
 
 ## Configuration
 
@@ -138,7 +195,8 @@ Cost is nullable. Missing usage or pricing is unknown, not zero.
 Definition statistics report priced and tracked runs so partial spend coverage remains visible.
 
 Structured logs combine Kontora lifecycle events with agent text and tool activity.
-Download raw logs from run history. The server resolves the live terminal target; clients cannot select arbitrary sessions.
+Download raw logs from run history or use `kontora automation logs REF --run N --raw`.
+The server resolves the live terminal target; clients cannot select arbitrary sessions.
 
 At restart, Kontora inspects unfinished runs and their saved terminal identities.
 Interrupted execution is not automatically launched again. Uncertain termination remains `recovery_required` and blocks overlap.

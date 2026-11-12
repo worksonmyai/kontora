@@ -148,11 +148,22 @@ func runCLIInDir(t *testing.T, dir string, env []string, stdin io.Reader, args .
 	return string(out), err
 }
 
+func runCLISeparated(t *testing.T, env []string, stdin io.Reader, args ...string) (string, string, error) {
+	t.Helper()
+	cmd := exec.Command(buildKontora(t), args...)
+	cmd.Env = cliTestEnv(t, env)
+	cmd.Stdin = stdin
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
+}
+
 // Subprocesses must not reach a developer's store or daemon through inherited config.
 func cliTestEnv(t *testing.T, env []string) []string {
 	t.Helper()
 	isolated := []string{
-		"HOME", "XDG_CONFIG_HOME", "KONTORA_URL", "KONTORA_TOKEN",
+		"HOME", "XDG_CONFIG_HOME", "KONTORA_URL", "KONTORA_TOKEN", "KONTORA_OPERATOR_TOKEN",
 		config.PathEnvVar, config.TicketsDirEnvVar, config.LegacyTicketsDirEnvVar,
 		config.AgentEnvVar, config.TicketEnvVar, config.StageEnvVar,
 	}

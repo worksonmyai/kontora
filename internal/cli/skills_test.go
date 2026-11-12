@@ -33,6 +33,57 @@ func TestSkillTopicsMatchFiles(t *testing.T) {
 	assert.Empty(t, files, "embedded files no topic names")
 }
 
+func TestAutomationSkillReference(t *testing.T) {
+	var parent Command
+	for _, cmd := range Commands {
+		if cmd.Name == "automation" {
+			parent = cmd
+		}
+	}
+	require.NotEmpty(t, parent.Subcommands)
+	var headings bytes.Buffer
+	require.NoError(t, Skills(&headings, []string{"list", "cli"}))
+	for _, cmd := range append([]Command{{Name: ""}}, parent.Subcommands...) {
+		section := strings.TrimSpace("kontora automation " + cmd.Name)
+		t.Run(section, func(t *testing.T) {
+			assert.Contains(t, headings.String(), section+"\n")
+			var out bytes.Buffer
+			require.NoError(t, Skills(&out, []string{"show", "cli", section}))
+			assert.True(t, strings.HasPrefix(out.String(), "## "+section+"\n"))
+			assert.NotContains(t, out.String(), "\n## ")
+			for _, f := range cmd.Flags {
+				if f.Name != "operator-token" && f.Name != "json" {
+					assert.Contains(t, out.String(), dashed(f.Name), section)
+				}
+			}
+		})
+	}
+	checks := map[string][]string{
+		"kontora automation":           {"daemon API", "no offline fallback", "exact configuration keys only", "Display names and abbreviated IDs", "original full ID", "--operator-token", "KONTORA_OPERATOR_TOKEN", "independently", "--json", "pagination envelopes", "`[]`", "`null`", "exits nonzero", "`ls --json` prints the availability envelope when HTTP 200 reports unavailable storage", "HTTP errors produce diagnostics and a nonzero exit without JSON stdout"},
+		"kontora automation new":       {"disabled", "`-` reads stdin", "request ID to stderr", "do not retry automatically"},
+		"kontora automation update":    {"preserves omitted", "--enabled=false", "--model ''", "positive expected revision", "without an automatic retry"},
+		"kontora automation duplicate": {"disabled", "unchanged source inputs", "conflict"},
+		"kontora automation delete":    {"--yes", "-f", "Historical runs and logs remain", "`id`", "`deleted`"},
+		"kontora automation pause":     {"without\ncancelling accepted runs", "Manual runs remain available"},
+		"kontora automation run":       {"original identity pair", "original full automation ID, never a key", "not proof of completion"},
+		"kontora automation stop":      {"exact\npositive run number", "never switches", "does not prove termination"},
+		"kontora automation runs":      {"`0`", "`20`", "`1` through `200`", "does not promise a snapshot"},
+		"kontora automation logs":      {"--raw", "--json", "mutually exclusive", "not original terminal capture", "after deletion"},
+		"kontora automation preview":   {"four future occurrences", "daemon's\nclock", "no offline mode"},
+		"kontora automation terminal":  {"server-resolved", "does not attach", "local tmux target"},
+		"kontora automation attach":    {"read-only", "exact positive run number", "live definition", "no `--json`", "never run attachment from an agent"},
+	}
+	for section, want := range checks {
+		t.Run(section+" semantics", func(t *testing.T) {
+			var out bytes.Buffer
+			require.NoError(t, Skills(&out, []string{"show", "cli", section}))
+			for _, text := range want {
+				assert.Contains(t, out.String(), text)
+			}
+		})
+	}
+}
+
 func TestSkills(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -280,9 +331,14 @@ func TestSkills(t *testing.T) {
 		},
 		{
 			name:    "a section matches on a unique substring",
-			args:    []string{"show", "cli", "new"},
+			args:    []string{"show", "cli", "ontora new"},
 			want:    []string{"## kontora new"},
 			notWant: []string{"## kontora view"},
+		},
+		{
+			name:    "ticket and automation sections require a specific name",
+			args:    []string{"show", "cli", "new"},
+			wantErr: []string{"matches 2 sections", "kontora new", "kontora automation new"},
 		},
 		{
 			name: "a section matches case-insensitively",

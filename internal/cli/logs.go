@@ -35,10 +35,10 @@ func Logs(tasksDir, logsDir, taskID, stage string, w io.Writer) error {
 	if stage != "" {
 		if t, err := ticket.ParseFile(filepath.Join(tasksDir, resolvedID+".md")); err == nil {
 			if path, _, graph := GraphRunLog(t, logsDir, stage, -1); graph {
-				return printFile(path, w)
+				return printFile(logDir, path, w)
 			}
 		}
-		err := printFile(filepath.Join(logDir, stage+".log"), w)
+		err := printFile(logDir, filepath.Join(logDir, stage+".log"), w)
 		if err == nil || !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -70,7 +70,7 @@ func Logs(tasksDir, logsDir, taskID, stage string, w io.Writer) error {
 		return printTaskHistory(tasksDir, resolvedID, w)
 	}
 
-	return printFile(filepath.Join(logDir, newest), w)
+	return printFile(logDir, filepath.Join(logDir, newest), w)
 }
 
 // StageActivity returns the structured activity tape for one run of a stage.
@@ -106,8 +106,9 @@ func StageActivity(tasksDir, logsDir, taskID, stage string, run int) (tape *logf
 		return nil, "", fmt.Errorf("imported run has no local activity: %w", os.ErrNotExist)
 	}
 
+	logDir := session.TicketDir(expandedLogsDir, resolvedID)
 	sidecar := session.EventsPath(expandedLogsDir, resolvedID, stage, run)
-	switch data, readErr := os.ReadFile(sidecar); {
+	switch data, readErr := readLogFile(logDir, sidecar); {
 	case readErr == nil:
 		var t logfmt.Tape
 		if err := json.Unmarshal(data, &t); err != nil {
@@ -122,7 +123,7 @@ func StageActivity(tasksDir, logsDir, taskID, stage string, run int) (tape *logf
 	if graphPath, _, graph := GraphRunLog(t, expandedLogsDir, stage, run); graph {
 		path = graphPath
 	}
-	data, err := os.ReadFile(path)
+	data, err := readLogFile(logDir, path)
 	if err != nil {
 		return nil, "", err
 	}
@@ -140,8 +141,24 @@ func resolveTaskID(tasksDir, input string) (string, error) {
 	return ResolveTicketID(tasksDir, input)
 }
 
-func printFile(path string, w io.Writer) error {
-	data, err := os.ReadFile(path)
+func readLogFile(logDir, path string) ([]byte, error) {
+	name, err := filepath.Rel(logDir, path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve log path: %w", err)
+	}
+	if !filepath.IsLocal(name) {
+		return nil, fmt.Errorf("log path %q is outside ticket directory", path)
+	}
+	root, err := os.OpenRoot(logDir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return root.ReadFile(name)
+}
+
+func printFile(logDir, path string, w io.Writer) error {
+	data, err := readLogFile(logDir, path)
 	if err != nil {
 		return fmt.Errorf("reading log: %w", err)
 	}

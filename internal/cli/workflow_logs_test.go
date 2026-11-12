@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +11,78 @@ import (
 	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
+
+func TestLogPathIsolation(t *testing.T) {
+	for _, tc := range []struct {
+		name, stage             string
+		graph, sidecar, allowed bool
+	}{
+		{name: "legacy traversal", stage: "../outside"},
+		{name: "legacy external symlink", stage: "review"},
+		{name: "sidecar external symlink", stage: "review", sidecar: true},
+		{name: "graph external symlink", stage: "review", graph: true},
+		{name: "legacy internal symlink", stage: "review", allowed: true},
+		{name: "sidecar internal symlink", stage: "review", sidecar: true, allowed: true},
+		{name: "graph internal symlink", stage: "review", graph: true, allowed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ticketsDir, logsDir := t.TempDir(), t.TempDir()
+			tkt, err := ticket.ParseBytes([]byte("---\nid: tst-logs\nstatus: done\n---\n# Logs\n"))
+			require.NoError(t, err)
+			if tc.graph {
+				require.NoError(t, tkt.SetField("history", []ticket.HistoryEntry{{Stage: "review", NodeVisitID: "execution.1"}}))
+			}
+			data, err := tkt.Marshal()
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(ticketsDir, tkt.ID+".md"), data, 0o600))
+			logDir := session.TicketDir(logsDir, tkt.ID)
+			require.NoError(t, os.MkdirAll(logDir, 0o755))
+			path := session.LogPath(logsDir, tkt.ID, "review")
+			target := "../outside.log"
+			if tc.allowed {
+				target = "output.log"
+			}
+			content := []byte("log contents")
+			if tc.sidecar {
+				path = session.EventsPath(logsDir, tkt.ID, "review", 0)
+				content = []byte(`{"version":1,"events":[{"kind":"text","text":"log contents"}]}`)
+			}
+			if tc.graph {
+				path = session.GraphLogPath(logsDir, tkt.ID, "review", "execution.1")
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(logDir, target), content, 0o600))
+			if tc.stage == "review" {
+				require.NoError(t, os.Symlink(target, path))
+			}
+
+			tape, text, err := StageActivity(ticketsDir, logsDir, tkt.ID, tc.stage, 0)
+			if tc.allowed {
+				require.NoError(t, err)
+				if tc.sidecar {
+					require.NotNil(t, tape)
+					assert.Equal(t, "log contents", tape.Events[0].Text)
+				} else {
+					assert.Equal(t, "log contents", text)
+				}
+			} else {
+				require.Error(t, err)
+				assert.Nil(t, tape)
+				assert.Empty(t, text)
+			}
+			if !tc.sidecar {
+				var out bytes.Buffer
+				err := Logs(ticketsDir, logsDir, tkt.ID, tc.stage, &out)
+				if tc.allowed {
+					require.NoError(t, err)
+					assert.Equal(t, "log contents", out.String())
+				} else {
+					require.Error(t, err)
+					assert.Empty(t, out.String())
+				}
+			}
+		})
+	}
+}
 
 func TestGraphVisitLogs(t *testing.T) {
 	for _, tc := range []struct {

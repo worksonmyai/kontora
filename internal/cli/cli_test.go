@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/tmux"
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 func TestNewRefusesExistingClaimDestination(t *testing.T) {
@@ -48,11 +50,57 @@ func TestYamlQuote(t *testing.T) {
 		{"NULL", `"NULL"`},
 		{"~", `"~"`},
 		{"~/projects/foo", "~/projects/foo"}, // ~ inside a path is not special
+		{" team ", `" team "`},
+		{" leading", `" leading"`},
+		{"trailing\t", `"trailing\t"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.input, func(t *testing.T) {
 			assert.Equal(t, tc.want, yamlQuote(tc.input))
 		})
+	}
+}
+
+func TestTicketRequestNotifySerialization(t *testing.T) {
+	for _, request := range []struct {
+		name string
+		make func([]string, []string) any
+	}{
+		{name: "create", make: func(n, c []string) any { return web.CreateTicketRequest{Notify: n, NotifyChannels: c} }},
+		{name: "init", make: func(n, c []string) any { return web.InitTicketRequest{Notify: n, NotifyChannels: c} }},
+		{name: "update", make: func(n, c []string) any { return web.UpdateTicketRequest{Notify: n, NotifyChannels: c} }},
+	} {
+		for _, tc := range []struct {
+			name     string
+			notify   []string
+			channels []string
+		}{
+			{name: "omitted"},
+			{name: "notify empty", notify: []string{}},
+			{name: "channels empty", channels: []string{}},
+			{name: "both empty", notify: []string{}, channels: []string{}},
+			{name: "explicit lists", notify: []string{"human_review", "done"}, channels: []string{"tg"}},
+		} {
+			t.Run(request.name+"/"+tc.name, func(t *testing.T) {
+				data, err := json.Marshal(request.make(tc.notify, tc.channels))
+				require.NoError(t, err)
+				var fields map[string]json.RawMessage
+				require.NoError(t, json.Unmarshal(data, &fields))
+				for _, field := range []struct {
+					key  string
+					want []string
+				}{{"notify", tc.notify}, {"notify_channels", tc.channels}} {
+					if field.want == nil {
+						assert.NotContains(t, fields, field.key)
+						continue
+					}
+					require.Contains(t, fields, field.key)
+					var got []string
+					require.NoError(t, json.Unmarshal(fields[field.key], &got))
+					assert.Equal(t, field.want, got)
+				}
+			})
+		}
 	}
 }
 
@@ -263,24 +311,53 @@ func TestStatus_EmptyDir(t *testing.T) {
 }
 
 func TestStatus_AgentColumn(t *testing.T) {
-	dir := t.TempDir()
-	cfg := testConfig(dir)
+	cases := []struct {
+		name   string
+		fields string
+		want   string
+	}{
+		{"stage agent", "pipeline: default\nstage: code\n", "claude-sonnet"},
+		{"ticket override", "pipeline: default\nstage: code\nagent: pi-personal-sol\n", "pi-personal-sol"},
+		{"pipeline without stage", "pipeline: default\n", ""},
+		{"pipeline without stage with override", "pipeline: default\nagent: pi-personal-sol\n", "pi-personal-sol"},
+		{"standalone", "", "fallback"},
+		{"standalone override", "agent: pi-personal-sol\n", "pi-personal-sol"},
+		{"passive epic", "kind: epic\n", ""},
+		{"built-in rework history", "pipeline: default\nstage: rework\nhistory:\n  - stage: code\n    agent: previous\n", "previous"},
+		{"built-in rework default", "pipeline: default\nstage: rework\n", "fallback"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := testConfig(dir)
+			cfg.DefaultAgent = "fallback"
+			cfg.ReworkIsBuiltin = true
+			writeTicket(t, dir, "tst-001.md", "---\nid: tst-001\nkontora: true\nstatus: todo\n"+tc.fields+"---\n# Ticket\n")
 
-	writeTicket(t, dir, "tst-001.md", `---
-id: tst-001
-kontora: true
-status: todo
-pipeline: default
-path: /tmp/testrepo
-stage: code
----
-# Ticket
-`)
+			var buf bytes.Buffer
+			require.NoError(t, List(cfg, &buf, ListOpts{}))
+			var row []string
+			for line := range strings.SplitSeq(buf.String(), "\n") {
+				if strings.Contains(line, "tst-001") {
+					row = strings.Fields(line)
+					break
+				}
+			}
+			require.GreaterOrEqual(t, len(row), 6, buf.String())
+			assert.Equal(t, dashIfEmpty(tc.want), row[5])
 
-	var buf bytes.Buffer
-	require.NoError(t, List(cfg, &buf, ListOpts{}))
-
-	assert.Contains(t, buf.String(), "claude-sonnet")
+			buf.Reset()
+			require.NoError(t, List(cfg, &buf, ListOpts{JSON: true}))
+			var items []struct {
+				ID    string `json:"id"`
+				Agent string `json:"agent"`
+			}
+			require.NoError(t, json.Unmarshal(buf.Bytes(), &items))
+			require.Len(t, items, 1)
+			assert.Equal(t, "tst-001", items[0].ID)
+			assert.Equal(t, tc.want, items[0].Agent)
+		})
+	}
 }
 
 func TestStatus_ClosedFiltering(t *testing.T) {
@@ -556,13 +633,19 @@ func TestNew_OmitsAgentWhenEmpty(t *testing.T) {
 // would sit until the daemon picked the ticket up and paused the ticket.
 func TestNew_RejectsUnknownNames(t *testing.T) {
 	cases := []struct {
-		name     string
-		pipeline string
-		agent    string
-		wantErr  string
+		name           string
+		pipeline       string
+		agent          string
+		notify         []string
+		notifyChannels []string
+		wantErr        string
 	}{
 		{name: "unknown pipeline", pipeline: "ghost", wantErr: `unknown pipeline "ghost"`},
 		{name: "unknown agent", agent: "claud", wantErr: `unknown agent "claud"`},
+		{name: "unknown notify status", notify: []string{"unknown_status"}, wantErr: `no ticket ever reaches status "unknown_status"`},
+		{name: "none is not a notify status", notify: []string{"none"}, wantErr: `no ticket ever reaches status "none"`},
+		{name: "unknown notify channel", notifyChannels: []string{"ghost"}, wantErr: `no channel named "ghost" is configured`},
+		{name: "none mixed with a channel", notifyChannels: []string{"none", "ghost"}, wantErr: `"none" silences the list`},
 	}
 
 	for _, tc := range cases {
@@ -572,13 +655,18 @@ func TestNew_RejectsUnknownNames(t *testing.T) {
 			repoDir := initTestRepo(t)
 
 			_, err := New(cfg, NewOpts{
-				Path:     repoDir,
-				Pipeline: tc.pipeline,
-				Agent:    tc.agent,
-				Title:    "T",
-				NoEdit:   true,
+				Path:           repoDir,
+				Pipeline:       tc.pipeline,
+				Agent:          tc.agent,
+				Notify:         tc.notify,
+				NotifyChannels: tc.notifyChannels,
+				Title:          "T",
+				NoEdit:         true,
 			})
 			require.ErrorContains(t, err, tc.wantErr)
+			if tc.notify != nil || tc.notifyChannels != nil {
+				assert.ErrorIs(t, err, web.ErrInvalidNotify)
+			}
 
 			entries, err := os.ReadDir(dir)
 			require.NoError(t, err)
@@ -1598,12 +1686,20 @@ func TestNew_ProjectDefaults(t *testing.T) {
 		agent           string
 		projectPipeline string
 		projectAgent    string
+		kind            string
+		notify          []string
+		notifyChannels  []string
+		projectNotify   []string
+		wantNotify      []string
+		wantChannels    []string
 		wantPipeline    string
 		wantAgent       string
 	}{
 		{
 			name:            "blank fields inherit both defaults",
 			path:            repoDir,
+			projectNotify:   []string{"human_review", "done"},
+			wantNotify:      []string{"human_review", "done"},
 			projectPipeline: "default",
 			projectAgent:    "claude-sonnet",
 			wantPipeline:    "default",
@@ -1668,7 +1764,17 @@ func TestNew_ProjectDefaults(t *testing.T) {
 			path:            unlistedRepo,
 			projectPipeline: "default",
 			projectAgent:    "claude-sonnet",
+			projectNotify:   []string{"done"},
 		},
+		{name: "explicit notify wins", path: repoDir, projectNotify: []string{"done"}, notify: []string{"waiting", "reviewed"}, wantNotify: []string{"waiting", "reviewed"}},
+		{name: "empty notify skips default", path: repoDir, projectNotify: []string{"done"}, notify: []string{}},
+		{name: "epic skips defaults", path: repoDir, kind: "epic", projectPipeline: "default", projectAgent: "claude-sonnet", projectNotify: []string{"done"}},
+		{name: "epic accepts explicit notify", path: repoDir, kind: "epic", projectNotify: []string{"done"}, notify: []string{"human_review"}, wantNotify: []string{"human_review"}},
+		{name: "explicit channels quoted", path: repoDir, notify: []string{"done"}, wantNotify: []string{"done"}, notifyChannels: []string{" team ", "ops:hook", "null"}, wantChannels: []string{" team ", "ops:hook", "null"}},
+		{name: "channel YAML indicators preserved", path: repoDir, notifyChannels: []string{"?", "- team", "? team", ": team"}, wantChannels: []string{"?", "- team", "? team", ": team"}},
+		{name: "channel line breaks preserved", path: repoDir, notifyChannels: []string{"a\nb", "a\r\nb", "a\rb"}, wantChannels: []string{"a\nb", "a\r\nb", "a\rb"}},
+		{name: "channel control characters preserved", path: repoDir, notifyChannels: []string{"a\tb", "a\x00b", "a\x85b", "a\u2028b"}, wantChannels: []string{"a\tb", "a\x00b", "a\x85b", "a\u2028b"}},
+		{name: "channels opt out", path: repoDir, notifyChannels: []string{"none"}, wantChannels: []string{"none"}},
 	}
 
 	for _, tc := range cases {
@@ -1678,15 +1784,23 @@ func TestNew_ProjectDefaults(t *testing.T) {
 			cfg.Pipelines["release"] = cfg.Pipelines["default"]
 			cfg.Agents["codex"] = config.Agent{Binary: "codex"}
 			cfg.Projects = map[string]config.Project{
-				"repo": {Path: repoDir, Pipeline: tc.projectPipeline, Agent: tc.projectAgent},
+				"repo": {Path: repoDir, Pipeline: tc.projectPipeline, Agent: tc.projectAgent, Notify: tc.projectNotify},
+			}
+			cfg.Statuses = append(cfg.Statuses, "reviewed")
+			cfg.Notifications.Channels = map[string]config.NotifyChannel{}
+			for _, name := range tc.notifyChannels {
+				cfg.Notifications.Channels[name] = config.NotifyChannel{}
 			}
 
 			id, err := New(cfg, NewOpts{
-				Path:     tc.path,
-				Pipeline: tc.pipeline,
-				Agent:    tc.agent,
-				Title:    "T",
-				NoEdit:   true,
+				Path:           tc.path,
+				Pipeline:       tc.pipeline,
+				Agent:          tc.agent,
+				Kind:           tc.kind,
+				Notify:         tc.notify,
+				NotifyChannels: tc.notifyChannels,
+				Title:          "T",
+				NoEdit:         true,
 			})
 			require.NoError(t, err)
 
@@ -1703,6 +1817,18 @@ func TestNew_ProjectDefaults(t *testing.T) {
 				assert.NotContains(t, content, "agent:")
 			} else {
 				assert.Contains(t, content, "agent: "+tc.wantAgent)
+			}
+			stored, err := ticket.ParseFile(filepath.Join(dir, id+".md"))
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantNotify, stored.Notify.Statuses)
+			assert.Equal(t, tc.wantChannels, stored.NotifyChannels)
+			if len(tc.wantNotify) == 0 {
+				assert.NotContains(t, content, "notify:")
+			} else {
+				assert.Contains(t, content, "notify: ["+strings.Join(tc.wantNotify, ", ")+"]")
+			}
+			if len(tc.wantChannels) == 0 {
+				assert.NotContains(t, content, "notify_channels:")
 			}
 		})
 	}

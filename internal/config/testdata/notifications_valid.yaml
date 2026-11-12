@@ -5,6 +5,7 @@ agents:
     binary: claude
 
 notifications:
+  all_changes: true
   attempts: 2
   channels:
     tg:
@@ -29,4 +30,5 @@ notifications:
 projects:
   work-repo:
     path: ~/projects/work-repo
+    notify: [human_review, done, waiting]
     notify_channels: [mm]

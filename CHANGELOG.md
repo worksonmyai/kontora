@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.38.0](https://github.com/worksonmyai/kontora/compare/v0.37.0...v0.38.0) - 2026-11-11
+
+- Restore mobile colors and progress parity (#76)
+- web: keep the mobile supervisor run selector touch-sized
+- web: simplify mobile styling (#74)
+- Clarify first-run setup and document safe ticket workflows
+- Update Go to 1.27.4 to fix GO-2026-6859
+- Fix tmux compatibility checks and browser test deadlines
+- Fix older tmux snapshots and WebKit log export fixtures
+- Stream agent panes through tmux control mode
+- web: improve phone terminal controls
+- Add agent automations (#73)
+- Keep mobile ticket cards at their content height
+- websocket: enable compression
+- Apply config changes on reload
+- Hide Kotik when observation is disabled
+- Keep terminal grids inside their fitting hosts
+- Fix read-only web terminal sizing
+- Disable start-dialog notifications without channels
+- Speed up the web UI on phones and remote daemons
+- fix ci
+- Remove folder selector and secondary-ticket relationship forms
+- Remove large-board stalls and secondary-source refresh amplification
+
 ## [0.37.0](https://github.com/worksonmyai/kontora/compare/v0.36.0...v0.37.0) - 2026-11-10
 
 - Allow primary aliases in secondary ticket folders

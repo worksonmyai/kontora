@@ -118,6 +118,37 @@ func TestObserveDecidesWhatToSend(t *testing.T) {
 			obs:  Observation{Origin: OriginObserved, ID: "kon-a", Status: "done", Want: notifyDone, Channels: []string{"tg"}},
 		},
 		{
+			name: "a requested change sends with all changes",
+			seed: &Observation{Origin: OriginObserved, ID: "kon-a", Status: "in_progress"},
+			obs:  Observation{AllChanges: true, Origin: OriginRequest, ID: "kon-a", Status: "done", Want: notifyDone, Channels: []string{"tg"}},
+			want: true,
+		},
+		{
+			name: "an observed change sends with all changes",
+			seed: &Observation{Origin: OriginObserved, ID: "kon-a", Status: "in_progress"},
+			obs:  Observation{AllChanges: true, Origin: OriginObserved, ID: "kon-a", Status: "done", Want: notifyDone, Channels: []string{"tg"}},
+			want: true,
+		},
+		{
+			name: "a derived change stays silent",
+			seed: &Observation{Origin: OriginObserved, ID: "kon-a", Status: "in_progress"},
+			obs:  Observation{Origin: OriginDerived, ID: "kon-a", Status: "done", Want: notifyDone, Channels: []string{"tg"}},
+		},
+		{
+			name: "a derived change stays silent with all changes",
+			seed: &Observation{Origin: OriginObserved, ID: "kon-a", Status: "in_progress"},
+			obs:  Observation{AllChanges: true, Origin: OriginDerived, ID: "kon-a", Status: "done", Want: notifyDone, Channels: []string{"tg"}},
+		},
+		{
+			name: "first sight stays silent with all changes",
+			obs:  Observation{AllChanges: true, Origin: OriginObserved, ID: "kon-a", Status: "done", Want: notifyDone, Channels: []string{"tg"}},
+		},
+		{
+			name: "an unset origin stays silent with all changes",
+			seed: &Observation{Origin: OriginObserved, ID: "kon-a", Status: "in_progress"},
+			obs:  Observation{AllChanges: true, ID: "kon-a", Status: "done", Want: notifyDone, Channels: []string{"tg"}},
+		},
+		{
 			name: "an unset origin sends nothing",
 			seed: &Observation{Origin: OriginDaemon, ID: "kon-a", Status: "in_progress", Want: notifyDone, Channels: []string{"tg"}},
 			obs:  Observation{ID: "kon-a", Status: "done", Want: notifyDone, Channels: []string{"tg"}},

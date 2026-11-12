@@ -271,6 +271,11 @@ type CreateTicketRequest struct {
 	// Parent files the new ticket under one.
 	Kind   string `json:"kind,omitempty"`
 	Parent string `json:"parent,omitempty"`
+	// Nil Notify inherits the project default for ordinary tickets;
+	// an empty list opts out.
+	// NotifyChannels overrides channel defaults when non-empty.
+	Notify         []string `json:"notify,omitzero"`
+	NotifyChannels []string `json:"notify_channels,omitzero"`
 }
 
 // ScheduleTicketRequest sets or clears a ticket's pickup time. Clear is a
@@ -295,8 +300,8 @@ type InitTicketRequest struct {
 	// leaves out decodes to nil and leaves the ticket's own field alone; `[]`
 	// removes it. The string fields above cannot say the difference, which is
 	// why an empty one there means "inherit" rather than "clear".
-	Notify         []string `json:"notify,omitempty"`
-	NotifyChannels []string `json:"notify_channels,omitempty"`
+	Notify         []string `json:"notify,omitzero"`
+	NotifyChannels []string `json:"notify_channels,omitzero"`
 }
 
 // ListTicketsOptions narrows or widens a list response. IncludeHidden adds the
@@ -335,8 +340,8 @@ type UpdateTicketRequest struct {
 	// absent key leaves the ticket's own alone, `[]` removes it. They need no
 	// pointer to tell those apart, which is the only reason the fields above
 	// carry one.
-	Notify         []string `json:"notify,omitempty"`
-	NotifyChannels []string `json:"notify_channels,omitempty"`
+	Notify         []string `json:"notify,omitzero"`
+	NotifyChannels []string `json:"notify_channels,omitzero"`
 }
 
 func (r UpdateTicketRequest) ValidateDescription() error {
@@ -653,9 +658,9 @@ type TicketChild struct {
 }
 
 // NoteInfo is one entry from the ticket body's "## Notes" section. At is the
-// first field of the bold line that opened the note: a UTC RFC3339 timestamp
-// for notes written through AddNote, and whatever the author typed for
-// hand-written ones.
+// first byline field when the full grammar matches, or the whole inner text of
+// a date-led legacy byline otherwise. It may be empty for minted legacy notes.
+// AddNote writes UTC RFC3339 timestamps.
 //
 // ID is the note's minted 4-character id, or "#<index>" for a note written
 // before the format carried one. Both address the note on the mutating routes;

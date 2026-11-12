@@ -79,7 +79,7 @@ can defeat that protection.
 
 ### User-defined fields
 
-Set these fields when creating a ticket, manually or with `kontora new`. For `notify` and `notify_channels`, use the dashboard, [API](#notifications), or a hand edit. Neither `kontora new` nor `kontora update` has notification flags.
+Set these fields when creating a ticket, manually or with `kontora new`. Both `kontora new` and `kontora update` accept `--notify` and `--notify-channels`. The dashboard, [API](#notifications), and hand edits also support these fields.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -274,7 +274,7 @@ When `base_branch` is set through `kontora new` or `POST /api/tickets`, Kontora 
 
 #### Notifications
 
-`notify` lists the statuses this ticket asks to be told about. It is opt-in per ticket: without the field nothing is sent, however many channels the config names.
+`notify` lists the statuses that trigger notifications for this ticket. Without the field nothing is sent, however many channels the config names. For new ordinary tickets, Kontora writes the [project's `notify` default](configuration.md#projects) into the file. An explicit list overrides that default; `kontora new --notify none` or `--notify ""` skips it. Epics and initialization do not inherit this default.
 
 ```yaml
 notify: [human_review, done]
@@ -283,7 +283,9 @@ notify_channels: [tg]
 
 Both a single status (`notify: done`) and a list are read. Any status works, including a [custom one](configuration.md#top-level-fields), plus the pseudo-status `waiting`.
 
-Only a transition the daemon decided on its own sends. `kontora done <id>`, a drag in the dashboard, and any other change a person asked for update what the daemon remembers and send nothing: the point is to hear about work you were not watching, and you were watching when you made the change yourself. A ticket the daemon has not seen before is recorded without sending, so a restart over a ticket already in a listed status is silent.
+By default, only a transition the daemon decided on its own sends. Set `notifications.all_changes: true` to also send for commands, API calls, dashboard actions, and file edits. The switch reloads live and does not distinguish people from agents or scripts. Eligible changes enqueue one notification per channel; unchanged statuses and derived epic statuses stay silent. The watcher can combine rapid file edits into one observed change.
+
+A ticket's first sighting is always silent. With the switch on, a later crash-recovery change to `todo` or a recovery pause can send if the ticket lists that status.
 
 A `done` notification carries the ticket's per-run `summary`. It fires from the write that ends the run, and `final_summary` is written up to two minutes later by a separate pass, so it cannot be in the message.
 
@@ -301,7 +303,9 @@ Opening the modal preserves existing preferences. Choosing off with no configure
 
 The row states one inherited channel instead of asking for it. If no inherited route exists, the channel picker appears. The dashboard refuses to save or start until the ticket has a route, is silenced, or turns notifications off. The rail row opens only where the API accepts a frontmatter edit. A running ticket shows its setting but cannot change it because the agent owns the file.
 
-The API takes them too: `notify` and `notify_channels` on `POST /api/tickets/{id}/init` and `PUT /api/tickets/{id}`. An absent key leaves the ticket's own field alone and `[]` removes it. Unlike a hand edit, a request naming a status nothing reaches or a channel nothing answers to is refused with a 400 rather than warned about.
+The API accepts `notify` and `notify_channels` on `POST /api/tickets`, `POST /api/tickets/{id}/init`, and `PUT /api/tickets/{id}`. During creation, an absent `notify` inherits the project default and `[]` skips it. During initialization or update, an absent key preserves the stored field and `[]` removes it.
+
+The CLI flags take comma-separated lists. On update, `--notify ""` or `--notify none` removes the status list. `--notify-channels ""` removes the channel override; `--notify-channels none` writes `[none]` to silence delivery. The CLI and API reject unknown statuses and channels; `none` is allowed only alone in a channel list. API validation failures return 400. Hand edits instead produce daemon warnings.
 
 #### Scheduled pickup
 
@@ -436,6 +440,8 @@ running statuses. Existing parked tickets need no migration and are not activate
 
 The daemon starts an agent for a `kontora: true` ticket in `todo` only when every id in its `deps` names a ticket that no longer holds work: `human_review`, `done`, `cancelled`, `archived`, or the legacy `closed` that tickets from the external ticket CLI carry. `human_review` releases dependents because the agent has finished and only a person's verdict is left; the review can still send the ticket back, and a dependent that is already running then keeps going. Every other status blocks, including a custom one. So does an id with no ticket file, because nothing on disk says whether that work is finished.
 
+A dependency in `human_review` usually has commits that nobody merged yet, so the dependent's worktree does not contain them. When a `human_review` dependency has a local `branch` whose tip the dependent's worktree lacks, Kontora names that branch and its commit in the dependent's prompt under `## Unmerged dependencies`. It does not merge the branch.
+
 Primary dependencies first look for the exact ID in `tickets_dir`. If absent, they
 look in configured secondary folders. A unique match supplies its status, including
 completed work in another folder. A primary namesake always takes precedence, even
@@ -567,6 +573,10 @@ the row is read.
 
 Use `kontora note` to append a note under a `## Notes` section in the body. The next stage can read the note through `{{ .Ticket.Description }}`. The web UI also has a `notes` tab on the ticket page.
 
+Read notes with `kontora view --notes TICKET_ID`, or recent notes with `kontora view --last 5 TICKET_ID`. Both print stored markdown without a pager, locally or remotely, and retain later sections through the end of the body.
+
+`--last N` implies `--notes` and requires a positive integer. It starts at the beginning of the Nth-last note. Legacy notes without bylines also count. If N exceeds the note count, it prints the whole section, including `## Notes`. A ticket without that section prints nothing and exits 0. Neither flag can be combined with `--body`.
+
 Prefer Pi's `kontora_note({text: string})` tool when available; it targets the current ticket. Otherwise, use a file-writing tool to create a unique scratch file outside the repository. Submit the file through stdin:
 
 ```sh
@@ -575,7 +585,20 @@ kontora note TICKET_ID < /absolute/path/note.md
 
 Replace `TICKET_ID` and the example path with the actual ticket ID and scratch path. Do not put generated text in shell arguments or payload-bearing shell commands. Do not create the file with `echo` or `printf`. Put flags such as `--author` and `--reply-to` before the ticket ID.
 
-Positional text remains supported. Stdin removes trailing LF characters, and notes trim surrounding whitespace. For summaries, prefer `kontora_summary({text: string})` when available, or submit a scratch file through stdin:
+Positional text remains supported. Stdin removes trailing LF characters, and notes trim surrounding whitespace.
+
+Adding or editing a note normalizes its text so headings and byline-like text cannot split the note:
+
+- Outside fenced code, headings shift only when the shallowest heading is h1 or h2. That heading becomes h3.
+- Those headings shift by the same amount, preserving relative levels, except that levels above h6 become h6. Notes whose shallowest heading is h3 or deeper need no shift.
+- Backtick and tilde fenced code stays unchanged. If a fence remains open at the end, Kontora appends a closing fence.
+- A bold-only line outside fenced code that matches the byline rule below uses outer `__` instead of `**` when stored. Both render as bold.
+
+Outside fenced code, a line beginning with `# ` or `## ` at column zero ends the Notes section. Inside fences, those lines do not end Notes, and bold-only lines do not open notes.
+
+Existing tickets are not migrated. Old sections after Notes remain in the description editor's read-only area and in `kontora view --notes TICKET_ID`. Full-body writes, including `update --body-file` and API `body`, do not normalize note text.
+
+For summaries, prefer `kontora_summary({text: string})` when available, or submit a scratch file through stdin:
 
 ```sh
 kontora summary TICKET_ID < /absolute/path/summary.txt
@@ -583,7 +606,7 @@ kontora summary TICKET_ID < /absolute/path/summary.txt
 
 Summaries preserve spaces and internal newlines after stdin removes trailing LF characters. The CLI does not truncate summaries; later stage capture cuts text above 4,000 bytes and appends `\n[truncated]`. See the [CLI reference](cli.md#kontora-note-ticket_id-text-kontora-summary-ticket_id-text) for native input limits and process-list visibility.
 
-A note is a bold byline followed by its text. The byline is a `·`-separated field list: timestamp, author, note id, then optional flags.
+Kontora writes each note as a bold byline followed by its text. The byline is a `·`-separated field list: timestamp, author, note id, then optional flags.
 
 ```
 ## Notes
@@ -605,7 +628,12 @@ The id is 4 lowercase alphanumerics, unique within the ticket, and it is what th
 
 The author is a plain name and cannot contain `·`, a newline or `**`. Kontora signs its own notes `kontora`, an agent signs with its configured name from `$KONTORA_AGENT`, and a person signs with the [`author`](configuration.md#top-level-fields) config field. A ticket that pauses gets a `kontora` note carrying the reason, which is why a pause shows up in the conversation rather than as a lifecycle row.
 
-A byline that does not match this grammar is left alone: `**2026-03-06T12:00:00Z**` written before this format, or anything hand-typed, still parses, with no author and no id. Such a note is addressed by position (`#0`, `#1`) until something acts on it, at which point it is minted a real id in the same write.
+Outside fenced code, a bold-only line opens a note only when either condition holds:
+
+- Its first `·`-separated field starts with a `YYYY-MM-DD` date.
+- It matches the full `at · author · id` grammar, with only the optional `re:<id>` and `edited` flags after the id. Both `at` and author may be empty, as in `** ·  · cd34**`.
+
+Other bold-only lines, such as `**Verification:**`, remain note text. A date-led byline that does not match the full grammar still opens a legacy note. Its entire inner text becomes `at`, with no author or stored id. For example, `**2026-03-06T12:00:00Z**` still parses. Such a note is addressed by position (`#0`, `#1`) until an action mints a real id in the same write.
 
 Reactions are not in the body. They live in `<tickets_dir>/<ticket-id>.notes.json` beside the ticket file, so the body stays readable to the agent that receives it in a stage prompt. A ticket copied without that file keeps its conversation and loses its reactions.
 

@@ -10,10 +10,13 @@ import (
 
 func TestResolveViewAgentScalarParity(t *testing.T) {
 	cfg := &config.Config{
-		DefaultAgent: "fallback",
+		DefaultAgent:    "fallback",
+		ReworkIsBuiltin: true,
 		Pipelines: map[string]config.Pipeline{
-			"work":  {{Stage: "code", Agent: "coder"}, {Stage: "review", Agent: "reviewer"}},
-			"empty": {},
+			"work":         {{Stage: "code", Agent: "coder"}, {Stage: "review", Agent: "reviewer"}},
+			"empty":        {},
+			"with-rework":  {{Stage: config.ReworkStageName, Agent: "reworker"}},
+			"blank-rework": {{Stage: config.ReworkStageName}},
 		},
 	}
 	cases := []struct {
@@ -23,6 +26,16 @@ func TestResolveViewAgentScalarParity(t *testing.T) {
 	}{
 		{"override", ticket.Ticket{Agent: "explicit", Pipeline: "work", Stage: "code"}, "explicit"},
 		{"pipeline", ticket.Ticket{Pipeline: "work", Stage: "review"}, "reviewer"},
+		{"rework override", ticket.Ticket{Agent: "explicit", Pipeline: "work", Stage: config.ReworkStageName, History: []ticket.HistoryEntry{{Agent: "previous"}}}, "explicit"},
+		{"rework latest nonempty history agent", ticket.Ticket{Pipeline: "work", Stage: config.ReworkStageName, History: []ticket.HistoryEntry{{Agent: "older"}, {Agent: "latest"}, {}}}, "latest"},
+		{"rework no history", ticket.Ticket{Pipeline: "work", Stage: config.ReworkStageName}, "fallback"},
+		{"rework empty history agents", ticket.Ticket{Pipeline: "work", Stage: config.ReworkStageName, History: []ticket.HistoryEntry{{}, {}}}, "fallback"},
+		{"rework empty pipeline", ticket.Ticket{Pipeline: "empty", Stage: config.ReworkStageName}, "fallback"},
+		{"configured rework before history", ticket.Ticket{Pipeline: "with-rework", Stage: config.ReworkStageName, History: []ticket.HistoryEntry{{Agent: "previous"}}}, "reworker"},
+		{"configured rework override", ticket.Ticket{Agent: "explicit", Pipeline: "with-rework", Stage: config.ReworkStageName}, "explicit"},
+		{"configured rework empty agent", ticket.Ticket{Pipeline: "blank-rework", Stage: config.ReworkStageName, History: []ticket.HistoryEntry{{Agent: "previous"}}}, ""},
+		{"rework unknown pipeline", ticket.Ticket{Kontora: true, Pipeline: "gone", Stage: config.ReworkStageName, History: []ticket.HistoryEntry{{Agent: "previous"}}}, ""},
+		{"rework standalone", ticket.Ticket{Kontora: true, Stage: config.ReworkStageName, History: []ticket.HistoryEntry{{Agent: "previous"}}}, "fallback"},
 		{"missing stage", ticket.Ticket{Kontora: true, Pipeline: "work", Stage: "gone"}, ""},
 		{"empty stage", ticket.Ticket{Kontora: true, Pipeline: "work"}, ""},
 		{"missing pipeline", ticket.Ticket{Kontora: true, Pipeline: "gone"}, ""},
@@ -46,6 +59,15 @@ func TestResolveViewAgentScalarParity(t *testing.T) {
 			assert.Zero(t, testing.AllocsPerRun(100, func() { ResolveViewAgent(cfg, &tc.ticket) }))
 		})
 	}
+	t.Run("non-built-in rework has no history fallback", func(t *testing.T) {
+		customCfg := *cfg
+		customCfg.ReworkIsBuiltin = false
+		tkt := &ticket.Ticket{Pipeline: "work", Stage: config.ReworkStageName, History: []ticket.HistoryEntry{{Agent: "previous"}}}
+		assert.Empty(t, ResolveViewAgent(&customCfg, tkt))
+		for _, detail := range []bool{false, true} {
+			assert.Empty(t, BuildView(&customCfg, tkt, detail).Agent)
+		}
+	})
 	cfg.Pipelines[""] = config.Pipeline{{Stage: "code", Agent: "empty-name"}}
 	tkt := &ticket.Ticket{Kontora: true, Stage: "code"}
 	assert.Equal(t, "empty-name", ResolveViewAgent(cfg, tkt))

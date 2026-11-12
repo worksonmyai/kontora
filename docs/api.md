@@ -20,7 +20,7 @@ When the web server is enabled, the following endpoints are exposed:
 |----------|-------------|
 | `GET /` | Static dashboard UI. |
 | `GET /api/tickets` | List all board tickets (JSON). `?all=true` adds the ones whose status has no board column: archived, legacy `closed`, and any foreign status. |
-| `POST /api/tickets` | Create a new ticket (JSON body: `title`, `path`, optional `pipeline`, `agent`, `status`, `body`, `branch`, `base_branch`, `scheduled_at`, `kind`, `parent`). A `scheduled_at` creates the ticket `open` and cannot be combined with another status; one that is malformed or already past answers 400. |
+| `POST /api/tickets` | Create a new ticket (JSON body: `title`, `path`, optional `pipeline`, `agent`, `status`, `body`, `branch`, `base_branch`, `scheduled_at`, `kind`, `parent`, `notify`, `notify_channels`). The notify fields are arrays; an absent `notify` inherits the project's default for ordinary tickets, while `[]` skips it. Unknown statuses or channels return 400. A `scheduled_at` creates the ticket `open` and cannot be combined with another status; one that is malformed or already past answers 400. |
 | `GET /api/tickets/{id}` | Get ticket details (JSON). |
 | `GET /api/tickets/{id}/cost` | Estimate the cost of finished tracked runs from their activity sidecars and the bundled model-price catalog. |
 | `GET /api/tickets/{id}/activity` | Get a run's structured activity, with a plaintext log fallback. Accepts `stage`, `run`, and `after` (for live activity); supports `ETag`/`If-None-Match` revalidation. |
@@ -737,7 +737,7 @@ Send `{"description":"# Title\n\nNew description.\n\n"}` to replace the prefix b
 
 `body` remains an explicit replacement of the whole document, including notes. Existing CLI full-body updates keep that behavior. Stage prompts still receive the entire body.
 
-Detail responses include `description` and `description_tail`, even when empty. Board lists and ticket events omit both fields.
+Detail responses include `description` and `description_tail`, even when empty. Board lists and ticket events omit both fields. `description_tail` runs from the `## Notes` heading through the end of the body, including later sections. Remote `kontora view --notes TICKET_ID` prints that field without a pager. Remote `kontora view --last 5 TICKET_ID` prints from the start of the fifth-last note in `body` and retains later sections. Legacy notes without bylines also count. See [view flags](cli.md#kontora-view-ticket_id) for limits and conflicts.
 
 Browser editors change only `description` and show the protected tail read-only. Saves for one ticket remain ordered across closing and reopening its editor. Failed description drafts remain recoverable in the current page, but do not survive a page reload. Independent browser sessions still use last-write-wins for description edits.
 
@@ -747,7 +747,7 @@ Browser editors change only `description` and show the protected tail read-only.
 
 `POST /api/tickets/{id}/restore` writes `archived_from` back into `status` and removes all four fields. A ticket archived before those fields existed, or one whose `archived_from` names a status that is no longer a board column, restores to `done` rather than staying stranded in `archived`. It answers 409 for a ticket that is not archived.
 
-`GET /api/tickets/archived` answers `{"tickets": [...]}`. Each row carries `id`, `title`, `project`, `pipeline`, `agent`, `branch`, `path`, `archived_at`, `archived_by`, a `status` holding the ticket's `archived_from`, and `wall_seconds`: the interval from the first history entry's `started_at` to the last `completed_at`, so it spans every run rather than the newest one. A ticket with no `archived_at` reports its file mtime instead, which is the date the sweep's own cutoff uses. The row's `agent` uses the same resolution as ticket views: an explicit override, the matching pipeline stage's agent, or the configured default for managed tickets without a pipeline (except passive epics). An unknown pipeline or missing stage does not fall back to the default. The path is more specific than `GET /api/tickets/{id}`, so a ticket whose id is literally `archived` is unreachable by that one path; every other route still reaches it.
+`GET /api/tickets/archived` answers `{"tickets": [...]}`. Each row carries `id`, `title`, `project`, `pipeline`, `agent`, `branch`, `path`, `archived_at`, `archived_by`, a `status` holding the ticket's `archived_from`, and `wall_seconds`: the interval from the first history entry's `started_at` to the last `completed_at`, so it spans every run rather than the newest one. A ticket with no `archived_at` reports its file mtime instead, which is the date the sweep's own cutoff uses. The row's `agent` uses the same resolution as ticket views. An explicit override wins, followed by a matching pipeline stage's agent. If built-in `rework` is absent from an existing pipeline, resolution uses the latest nonempty history agent, then the configured default. Managed tickets without a pipeline use the configured default, except passive epics. Unknown pipelines and other unmatched stages have no default fallback. The path is more specific than `GET /api/tickets/{id}`, so a ticket whose id is literally `archived` is unreachable by that one path; every other route still reaches it.
 
 A ticket whose `branch` is empty carries `auto_branch` in `GET /api/tickets` and `GET /api/tickets/{id}`: the branch the daemon would assign at pickup, resolved for the path the ticket names and the current [branch naming](configuration.md#branch-naming) mode. It is a read-only projection, not a stored field, and it is absent once `branch` is set.
 
@@ -782,13 +782,24 @@ A ticket's notes live in the `## Notes` section of its markdown body, so a stage
 
 All five answer 200 with the whole ticket, so a caller replaces its copy rather than reconciling, and all five broadcast a `ticket_updated` event.
 
+Appending or replacing note text trims surrounding whitespace and normalizes headings outside fenced code. Headings shift only when the shallowest heading is h1 or h2, making it h3. Relative levels stay the same, capped at h6. Notes whose shallowest heading is h3 or deeper need no shift. Backtick and tilde fenced code stays unchanged; the server appends a closing fence if needed. Outside fences, a line beginning with `# ` or `## ` at column zero ends the Notes section. Inside fences, those lines do not end Notes, and bold-only lines do not open notes.
+
+Outside fences, a bold-only line opens a note under either rule:
+
+- Its first `·`-separated field starts with `YYYY-MM-DD`.
+- It matches the full `at · author · id` grammar, followed only by optional `re:<id>` and `edited` flags. Both `at` and author may be empty, as in `** ·  · cd34**`.
+
+Other bold-only lines remain note text. On append or replacement, byline-like lines in note text use outer `__` instead of `**` when stored. Both render as bold.
+
+Existing tickets are not migrated. Old sections after Notes remain in `description_tail`, outside the parsed `notes` array. Full-body writes through `body`, creation, upload or transfer do not normalize note text.
+
 Every note the daemon writes carries a 4-character `id`, unique within the ticket, which is what `{noteID}` names. A note written before the format carried one is addressed as `#<index>` — its position in `notes` — and acting on it mints a real id in the same write. An id no note carries answers 404.
 
 An empty `author` signs as the daemon's configured [`author`](configuration.md#top-level-fields), and so does an empty reaction `actor`. An author containing `·`, a newline or `**` is rejected with 400: the separator is what holds the byline together.
 
 A `parent` makes the note a reply. One level only: a `parent` naming a note that is itself a reply answers 409 and writes nothing. Deleting a note deletes its replies with it.
 
-Notes ride `GET /api/tickets/{id}` and the SSE `ticket_updated` event as `notes`, and are absent from `GET /api/tickets`, which carries no body. Each entry is `{id, at, author, author_kind, parent_id, edited, text, reactions}`. `at` is the byline's first field: an RFC3339 timestamp for a note Kontora wrote, and whatever the author typed for a hand-written one. `author_kind` is derived from the config, not stored — `system` for `kontora`, `agent` for an author a configured agent is named after, `human` for anything else, and absent for a note with no author.
+Notes ride `GET /api/tickets/{id}` and the SSE `ticket_updated` event as `notes`, and are absent from `GET /api/tickets`, which carries no body. Each entry is `{id, at, author, author_kind, parent_id, edited, text, reactions}`. `at` is the byline's first field when the full grammar matches; it may be empty. Kontora writes RFC3339 timestamps. For a date-led legacy byline that does not match the full grammar, `at` holds the entire inner text, without an author or stored id. `author_kind` is derived from the config, not stored — `system` for `kontora`, `agent` for an author a configured agent is named after, `human` for anything else, and absent for a note with no author.
 
 Reactions are stored in `<tickets_dir>/<ticket-id>.notes.json`, never in the ticket body, so the body stays readable to the agent that receives it in a stage prompt. The sidecar is invisible to ticket listing and to the file watcher, a missing one reads as no reactions, and `DELETE /api/tickets/{id}` removes it with the ticket file. A ticket copied without its sidecar keeps its conversation and loses its reactions.
 

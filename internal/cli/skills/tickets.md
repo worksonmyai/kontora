@@ -173,6 +173,11 @@ The daemon picks up ordinary tickets and agent epics with `kontora: true` and
 because the agent's work is done and only a person's verdict is left. Any other
 status blocks, and so does an id with no file behind it.
 
+A `human_review` dependency's commits are usually not merged yet. When the
+dependent's worktree lacks the tip of such a dependency's `branch`, the prompt
+names the branch and commit under `## Unmerged dependencies`. Kontora does not
+merge it.
+
 `links` is a symmetric "related" list and means nothing to the scheduler.
 `parent` names the epic that groups a ticket. Create a child with
 `kontora new --parent EPIC_ID`. To move an existing ticket into or out of an
@@ -381,12 +386,42 @@ body is `{{ .Ticket.Description }}`.
 stage leaves something for the next, because the next stage's prompt usually
 includes the whole body.
 
-Each note opens with a bold byline of timestamp, author and a 4-character id,
+Kontora writes each note with a bold byline of timestamp, author and a 4-character id,
 `**2026-03-06T12:00:00Z · claude · q88f**`, with `· re:<id>` on a reply and
-`· edited` on one whose text was replaced. A byline that is a bare timestamp is
-a note written before the format carried an author; it still reads fine.
-Reactions are not in the body — they live in `<ticket-id>.notes.json` beside the
-ticket file, so what you receive in a prompt stays readable.
+`· edited` on one whose text was replaced.
+
+Outside fenced code, a bold-only line opens a note only under either rule:
+
+- Its first `·`-separated field starts with a `YYYY-MM-DD` date.
+- It matches the full `at · author · id` grammar, with only optional
+  `re:<id>` and `edited` flags after the id. Both `at` and author may be empty,
+  as in `** ·  · cd34**`.
+
+A bare date-led timestamp still opens a legacy note without an author or stored
+id. Other bold-only lines, such as `**Verification:**`, remain note text.
+
+Adding or editing a note shifts headings outside fences only when the shallowest
+heading is h1 or h2. That heading becomes h3. Relative levels stay the same,
+capped at h6. Notes whose shallowest heading is h3 or deeper need no shift.
+Backtick and tilde fenced code stays unchanged; Kontora appends a closing fence
+if needed.
+Byline-like bold lines outside fences use outer `__` instead of `**` when stored.
+Both render as bold. Outside fenced code, a line beginning with `# ` or `## `
+at column zero ends the Notes section. Inside fences, those lines do not end
+Notes, and bold-only lines do not open notes.
+
+Existing tickets are not migrated. Full-body writes do not normalize note text.
+Old sections after Notes stay visible in the description editor's read-only area.
+`kontora view --notes TICKET_ID` prints from `## Notes` through the body's end.
+`kontora view --last 5 TICKET_ID` starts at the beginning of the fifth-last note
+and keeps later sections. Legacy notes without bylines also count.
+`--last N` implies `--notes` and requires a positive integer.
+If N exceeds the note count, output includes the whole section and `## Notes`.
+Without a Notes section, both commands print nothing and exit 0. Neither flag
+can be combined with `--body`. Both views are unpaged in local and remote mode.
+
+Reactions live in `<ticket-id>.notes.json` beside the ticket file, not in the
+body, so what you receive in a prompt stays readable.
 
 ## Ticket ID format
 

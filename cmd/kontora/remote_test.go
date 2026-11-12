@@ -162,11 +162,22 @@ func runCLIInDir(t *testing.T, dir string, env []string, stdin io.Reader, args .
 	return string(out), err
 }
 
+func runCLISeparated(t *testing.T, env []string, stdin io.Reader, args ...string) (string, string, error) {
+	t.Helper()
+	cmd := exec.Command(buildKontora(t), args...)
+	cmd.Env = cliTestEnv(t, env)
+	cmd.Stdin = stdin
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
+}
+
 // Subprocesses must not reach a developer's store or daemon through inherited config.
 func cliTestEnv(t *testing.T, env []string) []string {
 	t.Helper()
 	isolated := []string{
-		"HOME", "XDG_CONFIG_HOME", "KONTORA_URL", "KONTORA_TOKEN",
+		"HOME", "XDG_CONFIG_HOME", "KONTORA_URL", "KONTORA_TOKEN", "KONTORA_OPERATOR_TOKEN",
 		config.PathEnvVar, config.TicketsDirEnvVar, config.LegacyTicketsDirEnvVar,
 		config.AgentEnvVar, config.TicketEnvVar, config.StageEnvVar,
 	}
@@ -554,6 +565,72 @@ func TestRemoteDispatch_PauseSendsExactID(t *testing.T) {
 	assert.Equal(t, "/api/tickets/abc123def/pause", pausePath)
 }
 
+func TestRemoteDispatch_View(t *testing.T) {
+	const tail = "## Notes\n\n**2026-08-08**\n\none\n\n**2026-08-09**\n\ntwo\n\n**2026-08-10**\n\nthree\n\n## Code review\n\nfinding\n"
+	const body = "# Title\n\nDescription.\n\n" + tail
+	for _, tt := range []struct {
+		name    string
+		flags   []string
+		want    string
+		noNotes bool
+	}{
+		{name: "body", flags: []string{"--body"}, want: body},
+		{name: "notes", flags: []string{"--notes"}, want: tail},
+		{name: "last", flags: []string{"--last", "2"}, want: "**2026-08-09**\n\ntwo\n\n**2026-08-10**\n\nthree\n\n## Code review\n\nfinding\n"},
+		{name: "above count", flags: []string{"--last", "5"}, want: tail},
+		{name: "notes and last", flags: []string{"--notes", "--last", "1"}, want: "**2026-08-10**\n\nthree\n\n## Code review\n\nfinding\n"},
+		{name: "no notes", flags: []string{"--notes"}, noNotes: true},
+		{name: "no last notes", flags: []string{"--last", "2"}, noNotes: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/tickets":
+					_ = json.NewEncoder(w).Encode(map[string]any{"tickets": []map[string]string{{"id": "abc123"}}})
+				case "/api/tickets/abc123":
+					info := map[string]string{"id": "abc123", "body": body, "description_tail": tail}
+					if tt.noNotes {
+						info["body"], info["description_tail"] = "# Title\n", ""
+					}
+					_ = json.NewEncoder(w).Encode(info)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			args := append([]string{"view"}, tt.flags...)
+			args = append(args, "abc")
+			out, err := runCLI(t, []string{"KONTORA_URL=" + srv.URL, "PAGER=false"}, args...)
+			require.NoError(t, err, out)
+			assert.Equal(t, tt.want, out)
+		})
+	}
+}
+
+func TestViewFlagErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		flags []string
+		want  []string
+	}{
+		{name: "body and notes", flags: []string{"--body", "--notes"}, want: []string{"usage:", "--body", "--notes"}},
+		{name: "body and last", flags: []string{"--body", "--last", "2"}, want: []string{"usage:", "--body", "--last"}},
+		{name: "zero", flags: []string{"--last", "0"}, want: []string{"usage:", "--last", "positive"}},
+		{name: "negative", flags: []string{"--last", "-1"}, want: []string{"usage:", "--last", "positive"}},
+		{name: "not integer", flags: []string{"--last", "two"}, want: []string{"invalid value", "-last"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			args := append([]string{"view"}, tt.flags...)
+			args = append(args, "abc")
+			out, err := runCLI(t, nil, args...)
+			require.Error(t, err)
+			for _, want := range tt.want {
+				assert.Contains(t, out, want)
+			}
+		})
+	}
+}
+
 func TestRemoteDispatch_NoteAppends(t *testing.T) {
 	var notePath, noteText string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -661,39 +738,88 @@ func TestRemoteDispatch_ExtraPositionalRejected(t *testing.T) {
 }
 
 func TestRemoteDispatch_UpdateSelectedFields(t *testing.T) {
-	var gotBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/api/tickets" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"tickets":        []map[string]string{{"id": "abc123"}},
-				"running_agents": 0,
-			})
-		case r.URL.Path == "/api/tickets/abc123" && r.Method == http.MethodPut:
-			_ = json.NewDecoder(r.Body).Decode(&gotBody)
-			_ = json.NewEncoder(w).Encode(map[string]string{"id": "abc123"})
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "pipeline and empty agent omit notify fields",
+			args: []string{"--pipeline", "two-stage", "--agent", ""},
+			want: `{"pipeline":"two-stage","agent":""}`,
+		},
+		{
+			name: "notify lists",
+			args: []string{"--notify", " human_review, ,done,", "--notify-channels", " tg, hook "},
+			want: `{"notify":["human_review","done"],"notify_channels":["tg","hook"]}`,
+		},
+		{
+			name: "notify only",
+			args: []string{"--notify", "waiting,done"},
+			want: `{"notify":["waiting","done"]}`,
+		},
+		{
+			name: "channels only",
+			args: []string{"--notify-channels", "tg,hook"},
+			want: `{"notify_channels":["tg","hook"]}`,
+		},
+		{
+			name: "empty notify clears",
+			args: []string{"--notify", ""},
+			want: `{"notify":[]}`,
+		},
+		{
+			name: "none notify clears",
+			args: []string{"--notify", " , none, "},
+			want: `{"notify":[]}`,
+		},
+		{
+			name: "empty channels clears",
+			args: []string{"--notify-channels", ""},
+			want: `{"notify_channels":[]}`,
+		},
+		{
+			name: "none channel retained",
+			args: []string{"--notify-channels", " none "},
+			want: `{"notify_channels":["none"]}`,
+		},
+		{
+			name: "both empty",
+			args: []string{"--notify", "", "--notify-channels", ""},
+			want: `{"notify":[],"notify_channels":[]}`,
+		},
+		{
+			name: "only singleton none is converted",
+			args: []string{"--notify", "none,done", "--notify-channels", "none,tg"},
+			want: `{"notify":["none","done"],"notify_channels":["none","tg"]}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/api/tickets" && r.Method == http.MethodGet:
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"tickets":        []map[string]string{{"id": "abc123"}},
+						"running_agents": 0,
+					})
+				case r.URL.Path == "/api/tickets/abc123" && r.Method == http.MethodPut:
+					gotBody, _ = io.ReadAll(r.Body)
+					_ = json.NewEncoder(w).Encode(map[string]string{"id": "abc123"})
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
 
-	// Flags after the ID, and an explicit empty --agent that should clear.
-	out, err := runCLI(t, []string{"KONTORA_URL=" + srv.URL}, "update", "abc", "--pipeline", "two-stage", "--agent", "")
-	require.NoError(t, err, out)
-
-	// Only the supplied fields are present in the JSON body.
-	require.NotNil(t, gotBody)
-	assert.Equal(t, "two-stage", gotBody["pipeline"])
-	agent, ok := gotBody["agent"]
-	assert.True(t, ok, "agent must be present (cleared with empty string)")
-	assert.Equal(t, "", agent)
-	_, hasPath := gotBody["path"]
-	assert.False(t, hasPath, "path must be omitted when not passed")
-	_, hasBody := gotBody["body"]
-	assert.False(t, hasBody, "body must be omitted when not passed")
-	_, hasBranch := gotBody["branch"]
-	assert.False(t, hasBranch, "branch must be omitted when not passed")
+			// Flags after the ID must work, including explicit empty values.
+			args := append([]string{"update", "abc", "--url", srv.URL}, tc.args...)
+			out, err := runCLI(t, nil, args...)
+			require.NoError(t, err, out)
+			// Match the full wire body: omitted, null and [] are distinct.
+			assert.JSONEq(t, tc.want, string(gotBody))
+		})
+	}
 }
 
 func TestRemoteDispatch_InitWithFlags(t *testing.T) {
@@ -856,25 +982,81 @@ func TestRemoteDispatch_LocalOnlyVerbsRejected(t *testing.T) {
 }
 
 func TestNewSendsAgentToDaemon(t *testing.T) {
-	var gotBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/tickets" && r.Method == http.MethodPost {
-			_ = json.NewDecoder(r.Body).Decode(&gotBody)
-			_ = json.NewEncoder(w).Encode(map[string]string{"id": "abc123"})
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		fields string
+	}{
+		{name: "absent notify fields"},
+		{
+			name:   "notify lists",
+			args:   []string{"--notify", " human_review, ,done,", "--notify-channels", " tg, hook "},
+			fields: `,"notify":["human_review","done"],"notify_channels":["tg","hook"]`,
+		},
+		{
+			name:   "notify only",
+			args:   []string{"--notify", "waiting,done"},
+			fields: `,"notify":["waiting","done"]`,
+		},
+		{
+			name:   "channels only",
+			args:   []string{"--notify-channels", "tg,hook"},
+			fields: `,"notify_channels":["tg","hook"]`,
+		},
+		{
+			name:   "empty notify skips default",
+			args:   []string{"--notify", ""},
+			fields: `,"notify":[]`,
+		},
+		{
+			name:   "none notify skips default",
+			args:   []string{"--notify", " , none, "},
+			fields: `,"notify":[]`,
+		},
+		{
+			name:   "empty channels",
+			args:   []string{"--notify-channels", ""},
+			fields: `,"notify_channels":[]`,
+		},
+		{
+			name:   "none channel retained",
+			args:   []string{"--notify-channels", " none "},
+			fields: `,"notify_channels":["none"]`,
+		},
+		{
+			name:   "both empty",
+			args:   []string{"--notify", "", "--notify-channels", ""},
+			fields: `,"notify":[],"notify_channels":[]`,
+		},
+		{
+			name:   "only singleton none is converted",
+			args:   []string{"--notify", "none,done", "--notify-channels", "none,tg"},
+			fields: `,"notify":["none","done"],"notify_channels":["none","tg"]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/tickets" && r.Method == http.MethodPost {
+					gotBody, _ = io.ReadAll(r.Body)
+					_ = json.NewEncoder(w).Encode(map[string]string{"id": "abc123"})
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+			}))
+			defer srv.Close()
 
-	out, err := runCLI(t, []string{"KONTORA_URL=" + srv.URL},
-		"new", "--path", "/repo", "--agent", "codex", "--pipeline", "none", "Remote ticket")
-	require.NoError(t, err, out)
+			args := append([]string{"new", "--url", srv.URL, "--path", "/repo", "--agent", "codex", "--pipeline", "none"}, tc.args...)
+			args = append(args, "Remote ticket")
+			out, err := runCLI(t, nil, args...)
+			require.NoError(t, err, out)
 
-	require.NotNil(t, gotBody)
-	assert.Equal(t, "codex", gotBody["agent"])
-	assert.Equal(t, "none", gotBody["pipeline"], "the sentinel is resolved by the daemon, not the CLI")
-	assert.Equal(t, "/repo", gotBody["path"])
+			// Pipeline's sentinel is resolved by the daemon, but notify's
+			// singleton "none" must already be an explicit empty JSON array.
+			want := `{"title":"Remote ticket","path":"/repo","agent":"codex","pipeline":"none"` + tc.fields + `}`
+			assert.JSONEq(t, want, string(gotBody))
+		})
+	}
 }
 
 // A remote schedule sends an absolute instant: --after is resolved on the

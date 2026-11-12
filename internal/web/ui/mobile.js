@@ -11,6 +11,7 @@ export function kontoraMobile() {
   let sheetFocus = null;
   let descriptionSequence = 0;
   let columnScrollSequence = 0;
+  let terminalFocusSequence = 0;
 
   return {
     _mobileWindowKey: '',
@@ -55,7 +56,11 @@ export function kontoraMobile() {
       listen(viewport, 'resize', update);
       listen(viewport, 'scroll', update);
       listen(document, 'keydown', e => this._mobileSheetKeydown(e), true);
-      listen(document, 'focusin', e => this._mobileSheetFocusin(e), true);
+      listen(document, 'focusin', e => {
+        this._mobileSheetFocusin(e);
+        this._mobileTerminalFocusin(e);
+      }, true);
+      listen(document, 'focusout', e => this._mobileTerminalFocusout(e), true);
       if (this.$watch) {
         const unwatch = this.$watch('sheet', () => {
           if (lifecycle === owner && !this._appDestroyed) this._syncMobileSheet();
@@ -72,6 +77,7 @@ export function kontoraMobile() {
       lifecycle = null;
       ++columnScrollSequence;
       ++descriptionSequence;
+      this.mobileResetTerminalInput();
       this.closeAgentPicker(false);
       this.flushEditSave();
       this.editingBody = false;
@@ -92,7 +98,7 @@ export function kontoraMobile() {
     mobileTerminalCompact() {
       var session = this.selectedEpic ? this.epicTab === 'session' : this.detailTab === 'terminal';
       return this.isMobile && session &&
-        (this.terminalRW || (this.mobileViewportHeight > 0 && this.mobileViewportHeight < 500));
+        (this.mobileTerminalTyping() || (this.mobileViewportHeight > 0 && this.mobileViewportHeight < 500));
     },
 
     mobileViewportGeometry() {
@@ -110,8 +116,12 @@ export function kontoraMobile() {
 
     _updateMobileViewport() {
       if (!lifecycle) return;
+      const owner = lifecycle;
       const geometry = this.mobileViewportGeometry();
       this.mobileViewportHeight = geometry.height;
+      this.$nextTick(() => {
+        if (lifecycle === owner && !this._appDestroyed) this._mobileResizeComposers();
+      });
       const style = document.documentElement.style;
       Object.entries(geometry).forEach(([key, value]) => {
         const name = '--mobile-vv-' + key;
@@ -123,6 +133,7 @@ export function kontoraMobile() {
     },
 
     mobileBreakpointChanged() {
+      this.mobileResetTerminalInput();
       ++columnScrollSequence;
       ++descriptionSequence;
       this.flushEditSave();
@@ -133,6 +144,7 @@ export function kontoraMobile() {
     // Navigation guards must run before this cleanup.
     mobileBeforeNavigate(view) {
       if (view === this.currentView) return;
+      this.mobileResetTerminalInput();
       ++columnScrollSequence;
       ++descriptionSequence;
       if (this.isMobile) {
@@ -146,6 +158,10 @@ export function kontoraMobile() {
       return this.isMobile && this.currentView === 'board' && this.detailTab === 'ticket' && !this.detailLoading &&
         this.ticketDescriptionLoaded() && !!this.selectedTicket &&
         !this.isSecondary(this.selectedTicket) && this.editorCanEdit(this.selectedTicket) && !this.editorClaimLocked();
+    },
+
+    mobileDescriptionFocused() {
+      return this.editing && this.editingBody && this.mobileCanEditDescription();
     },
 
     async mobileBeginDescriptionEdit() {
@@ -500,19 +516,101 @@ export function kontoraMobile() {
       return map[t?.status] || { label: 'more', run: function() { self.openActionsSheet(t); } };
     },
 
-    mobileComposeDraft: '',
+    mobileTerminalInputTarget: null,
+    mobileComposeDrafts: {},
 
-    openComposeSheet() {
-      if (this._appDestroyed || !this.terminalRW || !this.terminalConnected) return;
-      this.closeAgentPicker(false);
-      this.sheet = { type: 'compose' };
-      this._syncMobileSheet();
+    mobileCanCompose() {
+      return !this._appDestroyed && this.isMobile && this.currentView === 'board' && this.terminalWanted();
+    },
+
+    mobileTerminalTyping() {
+      return this.mobileCanCompose() && this.mobileTerminalInputTarget !== null;
+    },
+
+    get mobileComposeDraft() {
+      const key = this.outputSubjectKey();
+      return key ? (this.mobileComposeDrafts[key] || '') : '';
+    },
+
+    set mobileComposeDraft(value) {
+      const key = this.outputSubjectKey();
+      if (key) this.mobileComposeDrafts[key] = value;
+    },
+
+    mobileBeginTerminalCompose(el) {
+      if (!this.mobileCanCompose()) return;
+      ++terminalFocusSequence;
+      this.mobileTerminalInputTarget = 'composer';
+      this.setTerminalRW(true);
+      this.mobileResizeCompose(el);
+    },
+
+    mobileBeginTerminalDirect() {
+      if (!this.mobileCanCompose()) return;
+      if (document.activeElement?.matches('.mobile-terminal-direct')) document.activeElement.blur();
+      ++terminalFocusSequence;
+      this.mobileTerminalInputTarget = 'terminal';
+      this.setTerminalRW(true);
+    },
+
+    mobileResetTerminalInput() {
+      ++terminalFocusSequence;
+      this.mobileTerminalInputTarget = null;
+      const active = document.activeElement;
+      if (active?.matches('[data-mobile-terminal-input], .mobile-terminal-host .xterm-helper-textarea')) active.blur();
+    },
+
+    mobileFinishTerminalInput() {
+      this.setTerminalRW(false);
+    },
+
+    mobileTerminalInputReady() {
+      // Enabling xterm blurs a connecting tap, but the requested input session stays open.
+      ++terminalFocusSequence;
+    },
+
+    _mobileTerminalFocusin(event) {
+      if (!this.mobileCanCompose() || !this.terminalRW) return;
+      if (event.target?.closest('.mobile-terminal-host')) {
+        ++terminalFocusSequence;
+        this.mobileTerminalInputTarget = 'terminal';
+      }
+    },
+
+    _mobileTerminalFocusout(event) {
+      if (!this.mobileTerminalTyping() || !event.target?.closest('.mobile-terminal-dock, .mobile-terminal-host, .mobile-terminal-bar')) return;
+      const owner = lifecycle;
+      const sequence = ++terminalFocusSequence;
+      const key = this.outputSubjectKey();
+      this.$nextTick(() => {
+        if (lifecycle !== owner || sequence !== terminalFocusSequence || this._appDestroyed ||
+            key !== this.outputSubjectKey() || !this.mobileTerminalTyping()) return;
+        if (!document.activeElement?.closest('.mobile-terminal-dock, .mobile-terminal-host, .mobile-terminal-bar')) {
+          this.mobileFinishTerminalInput();
+        }
+      });
+    },
+
+    mobileResizeCompose(el) {
+      if (!el || !this.mobileCanCompose()) return;
+      const style = getComputedStyle(el);
+      const cap = 4 * parseFloat(style.lineHeight) + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) +
+        parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+      el.style.height = 'auto';
+      el.style.height = Math.max(44, Math.min(el.scrollHeight + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth), cap)) + 'px';
+    },
+
+    _mobileResizeComposers() {
+      this.mobileResizeCompose(this.$refs?.mobileTerminalCompose);
+      this.mobileResizeCompose(this.$refs?.mobileEpicTerminalCompose);
     },
 
     submitComposeMobile() {
-      if (this.sheet?.type !== 'compose' || !this.sendTerminalCompose(this.mobileComposeDraft)) return;
+      if (!this.mobileCanCompose() || this.terminalSubjectKey !== this.outputSubjectKey() ||
+          !this.sendTerminalCompose(this.mobileComposeDraft)) return false;
       this.mobileComposeDraft = '';
-      this.closeSheet();
+      this.$nextTick(() => this._mobileResizeComposers());
+      return true;
     },
 
     openActionsSheet(t) {

@@ -119,8 +119,27 @@ restart. See [Claim](tickets.md#claim-from-a-secondary-folder) for transfer rule
 ## Automations
 
 [Automations](automations.md) are scheduled agent runs without tickets or pipelines.
-Manage them through YAML, the dashboard, `kontora automation new`, or the [HTTP API](api.md#automations).
-Dashboard and API mutations write entries under `automations:` in the daemon's configuration file.
+Manage them through YAML, the dashboard, `kontora automation`, or the [HTTP API](api.md#automations).
+CLI, dashboard, and API mutations write entries under `automations:` in the daemon's configuration file.
+
+The CLI supports listing, viewing, creation, partial updates, duplication, deletion, pause, resume, manual runs, stop, history, logs, preview, and terminals.
+All CLI operations use the daemon API, even local reads and schedule preview. There is no offline runtime-store fallback.
+An explicit `--url URL` does not require local configuration. Parent and child help work offline.
+Every child accepts `--config`, `--url`, `--token`, and `--operator-token`.
+The credentials default to `KONTORA_TOKEN` and `KONTORA_OPERATOR_TOKEN`; HTTP and terminal connections send both independently.
+
+Use a full automation ID or exact configuration key. Display names and abbreviated IDs are not accepted.
+For retained history after deletion, use the original full ID, not a recreated key.
+Creation and duplication leave scheduling disabled unless `--enabled` is supplied. `--prompt-file -` reads a prompt from stdin.
+Updates preserve omitted fields; `--model ''` and `--enabled=false` apply explicit empty and false values.
+Update, delete, pause, and resume accept a positive `--revision`; otherwise they use the fetched revision.
+Stale revisions fail without automatic retries. Delete requires `--yes` or `-f`.
+Pause leaves accepted runs untouched, and manual runs remain available while paused.
+
+Creation, duplication, and manual runs accept `--request-id` for safe retries after uncertain responses.
+Manual retries with an explicit request ID require the original full automation ID, not a key.
+All noninteractive children accept `--json`. Stop, logs, and terminal inspection require `--run N`; attach also accepts an optional exact run.
+See the [CLI reference](cli.md#automations) and [CLI workflows](automations.md#cli-workflows) for syntax, outputs, and retry rules.
 
 ```yaml
 automations:
@@ -628,7 +647,7 @@ The `file` function is how stages communicate — an earlier stage writes a file
 
 ### Stage handoffs
 
-Kontora appends handoff instructions to nonempty stage, standalone, resumed, annotation, and rework prompts. These instructions require a results note. In a pipeline, the next stage reads the note.
+Kontora appends handoff instructions to nonempty stage, standalone, resumed, annotation, and rework prompts. These instructions require a results note. In a pipeline, the next stage reads the note. The note covers the outcome, decisions and their reasons, open problems, and test status. It does not restate the ticket or list commands, timings, or temporary log paths. In a pipeline, limits in the stage instructions, such as not committing, apply to that stage only, so agents do not record them as user instructions.
 
 Before asking clarification questions, ticket agents must read the current ticket with `kontora view TICKET_ID`. They must reuse applicable recorded answers and ask only about missing, conflicting, or changed requirements.
 
@@ -794,6 +813,7 @@ projects:
     pipeline: implement-review-commit
     epic_child_pipeline: default
     agent: claude
+    notify: [human_review, done]
   widget-api:
     path: ~/projects/widget-api
     pipeline: default
@@ -809,6 +829,7 @@ projects:
 | `branch_prefix` | no | Overrides the top-level `branch_prefix` for this repository. |
 | `branch_naming` | no | Overrides the top-level [`branch_naming`](#branch-naming) mode for this repository. |
 | `hooks` | no | Commands run at this repository's lifecycle events, after the top-level ones (see [hooks](#hooks)). |
+| `notify` | no | Status list written into new ordinary tickets unless creation supplies an explicit list. Accepts known statuses and `waiting`, not `none`. Does not apply to epics or initialization. |
 | `notify_channels` | no | Overrides `notifications.default` for tickets in this repository. The sole entry `none` silences the project (see [notifications](#notifications)). |
 
 `pipeline`, `epic_child_pipeline` and `agent` supply creation and initialization
@@ -825,6 +846,10 @@ rule. Changing it renames nothing: existing IDs stay as they are.
 Kontora writes pipeline and agent defaults into frontmatter at creation or initialization.
 Creation includes `kontora new`, `POST /api/tickets`, and the TUI and web forms.
 Initialization includes `kontora init` and `POST /api/tickets/{id}/init`.
+Project `notify` is written only at creation, including `kontora new` and
+`POST /api/tickets`. An explicit empty list skips this default. Changing the
+project list does not change existing tickets. Uploads, transferred tickets,
+and files written by hand do not receive this default.
 
 For an ordinary ticket, pipeline selection uses the first applicable value:
 
@@ -1334,7 +1359,8 @@ Where a ticket's status notifications can go. Nothing is sent unless a ticket
 asks for it: this section only names the channels, and each ticket names the
 statuses it wants to hear about in its own
 [`notify:`](tickets.md#notifications) frontmatter. A ticket without that field
-is silent whatever is configured here.
+is silent whatever is configured here. A project's `notify` list can supply
+that field when an ordinary ticket is created.
 
 ```yaml
 notifications:
@@ -1357,6 +1383,7 @@ notifications:
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `enabled` | no | `true` | Set `false` to build no channels at all, whatever the tickets ask for. |
+| `all_changes` | no | `false` | Also notify for status changes made by commands, API calls, dashboard actions, and file edits. First sightings and derived epic statuses stay silent. Reloads live. |
 | `channels` | no | `{}` | Map of channel name to a delivery target. The name is what a ticket or a project refers to. |
 | `default` | no | `[]` | Channels a notification goes to when neither the ticket nor its project names one. |
 | `timeout` | no | `10s` | Bound on one delivery attempt. |
@@ -1413,7 +1440,7 @@ The first non-empty of three, in order:
 
 A list holding `none` resolves to no channels, so a ticket or a project can opt
 out of a default set above it. In the config `none` beside a channel name is
-refused at load; a ticket is not validated, so there the opt-out wins. A name no
+refused at load and by CLI/API writes; in a hand-edited ticket the opt-out wins. A name no
 channel answers to is skipped with one warning, and the same name twice is one
 message, not two.
 

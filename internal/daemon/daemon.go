@@ -134,6 +134,7 @@ func (d *Daemon) renderTicketPrompt(cfg *config.Config, tmpl string, t *ticket.T
 	rendered += fmt.Sprintf("\nTicket: %s", filePath)
 	rendered += fmt.Sprintf("\nWorkspace: %s", wtPath)
 	rendered += d.epicPromptContext(t.Parent)
+	rendered += d.dependencyPromptContext(t, wtPath)
 
 	return rendered, nil
 }
@@ -1167,8 +1168,8 @@ func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.
 	prev, known := d.tickets[t.ID]
 	d.tickets[t.ID] = newTicketState(t, path)
 	// An external edit, the local CLI writing a ticket file itself for example,
-	// is recorded and never sent. The watcher debounces, so a burst arrives as
-	// one settling point rather than as every status it passed through.
+	// sends only with notifications.all_changes. The watcher debounces, so a
+	// burst arrives as one settling point rather than as every status it passed through.
 	d.observe(t, notify.OriginObserved)
 	d.warnUnmatchedNotifyLocked(cfg, t)
 	d.broadcastTicketUpdate(t.ID)
@@ -2904,6 +2905,8 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool, 
 	fmt.Fprintf(&b, "- Ticket file: %s\n", filePath)
 	fmt.Fprintf(&b, "- Worktree: %s\n", wtPath)
 	fmt.Fprintf(&b, "- `kontora view %s` — prints ticket contents to stdout\n", taskID)
+	fmt.Fprintf(&b, "- `kontora view --last 5 %s` prints recent notes and any later sections\n", taskID)
+	fmt.Fprintf(&b, "- `kontora view --notes %s` prints only the notes, for a ticket too long to read at once\n", taskID)
 	b.WriteString("- Do not search $HOME for tickets or config; use the paths above.\n")
 	b.WriteString("\n## Handoff instructions\n")
 	b.WriteString("Prefer `kontora_note` and `kontora_summary` when available. These tools are bound to the current ticket; pass the text in their `text` field.\n")
@@ -2924,11 +2927,15 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool, 
 	b.WriteString("Submit the answer note using the shared handoff instructions above before continuing work or asking another question round.\n")
 	b.WriteString("Do not defer answer notes until a phase boundary or completion. Continue only after confirming the answer note was saved.\n")
 	b.WriteString("\nIMPORTANT: When you finish your work, write your results as a note on the ticket.\n")
-	b.WriteString("Use the method above. Include all relevant details so they are preserved.")
+	b.WriteString("Use the method above. Write what a reader needs to continue the work: the outcome, decisions and their reasons, open problems, and test status in one or two lines.")
 	if isPipeline {
 		b.WriteString(" The next stage of the pipeline will read this note to continue the work.")
 	}
-	b.WriteString("\nAlso record a few-line summary of what this run did using the same method.\n")
+	b.WriteString("\nDo not restate the ticket or earlier notes. Do not list commands, timings, or temporary log paths.\n")
+	if isPipeline {
+		b.WriteString("Limits in the stage instructions, such as not committing, apply to this stage only. Do not record them as user instructions.\n")
+	}
+	b.WriteString("Also record a few-line summary of what this run did using the same method.\n")
 	if checkpointKind != "" {
 		b.WriteString("\n\n## Phase checkpoints\n")
 		b.WriteString("At each boundary between top-level ticket phases:\n")

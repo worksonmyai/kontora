@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/worksonmyai/kontora/internal/automation"
+	"github.com/worksonmyai/kontora/internal/notify"
 
 	"gopkg.in/yaml.v3"
 )
@@ -271,9 +272,10 @@ func (m Metrics) ResolveInsecure() (insecure, conflict bool) {
 
 // Notifications configures outbound notification of ticket status changes.
 // Which statuses a notification is sent for is per ticket, in its notify:
-// frontmatter; this section only says where those notifications can go.
+// frontmatter; this section says where they go and which origins may send.
 type Notifications struct {
-	Enabled *bool `yaml:"enabled"`
+	Enabled    *bool `yaml:"enabled"`
+	AllChanges bool  `yaml:"all_changes"`
 	// Timeout bounds one delivery attempt, Attempts caps how many are made, and
 	// Backoff is the wait before the second one, doubled for each after it.
 	//
@@ -597,6 +599,8 @@ type Project struct {
 	BranchPrefix      string       `yaml:"branch_prefix"`
 	BranchNaming      BranchNaming `yaml:"branch_naming"`
 	Hooks             Hooks        `yaml:"hooks"`
+	// Notify is written into new non-epic tickets at creation only.
+	Notify []string `yaml:"notify"`
 	// NotifyChannels overrides notifications.default for tickets in this
 	// repository. The sole entry "none" silences the project even when a global
 	// default is set.
@@ -1506,6 +1510,12 @@ func (c *Config) validateProjects() error {
 				return fmt.Errorf("project %q: unknown agent %q", name, p.Agent)
 			}
 		}
+		if slices.Contains(p.Notify, NoneSentinel) {
+			return fmt.Errorf("project %q notify: %q is not a status; use notify_channels: [none] to silence the project", name, NoneSentinel)
+		}
+		if err := c.ValidateNotifyFields(p.Notify, nil); err != nil {
+			return fmt.Errorf("project %q notify: %w", name, err)
+		}
 		if err := validateTicketPrefix(p.Prefix); err != nil {
 			return fmt.Errorf("project %q: %w", name, err)
 		}
@@ -1611,6 +1621,37 @@ func (c *Config) BranchPrefixFor(repoPath string) string {
 		return project.BranchPrefix
 	}
 	return c.BranchPrefix
+}
+
+// ValidateNotifyFields accepts nil and empty lists. A resolved channel is
+// not required: callers may configure routing later.
+func (c *Config) ValidateNotifyFields(statuses, channels []string) error {
+	for _, s := range statuses {
+		if s != notify.StatusWaiting && !c.IsKnownStatus(s) {
+			return fmt.Errorf("no ticket ever reaches status %q", s)
+		}
+	}
+	for _, name := range channels {
+		if name == NoneSentinel {
+			if len(channels) > 1 {
+				return fmt.Errorf("%q silences the list and cannot be combined with a channel", NoneSentinel)
+			}
+			continue
+		}
+		if _, ok := c.Notifications.Channels[name]; !ok {
+			return fmt.Errorf("no channel named %q is configured", name)
+		}
+	}
+	return nil
+}
+
+// NotifyDefaultFor returns a copy of the owning project's status list for a
+// new ticket. Existing tickets do not inherit status defaults at send time.
+func (c *Config) NotifyDefaultFor(repoPath string) []string {
+	if _, project, ok := c.ProjectFor(repoPath); ok {
+		return slices.Clone(project.Notify)
+	}
+	return nil
 }
 
 // NotifyChannelsFor resolves which channels a ticket's notification goes to:

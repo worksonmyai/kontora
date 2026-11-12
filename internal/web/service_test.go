@@ -242,8 +242,8 @@ func TestParseNotes(t *testing.T) {
 		},
 		{
 			name: "a multiline note keeps its blank lines",
-			body: "## Notes\n\n**t1**\n\nfirst line\n\nsecond paragraph\n",
-			want: []NoteInfo{{ID: "#0", At: "t1", Text: "first line\n\nsecond paragraph"}},
+			body: "## Notes\n\n**2026-08-08**\n\nfirst line\n\nsecond paragraph\n",
+			want: []NoteInfo{{ID: "#0", At: "2026-08-08", Text: "first line\n\nsecond paragraph"}},
 		},
 		{
 			name: "hand-written text before any byline is one note",
@@ -252,8 +252,8 @@ func TestParseNotes(t *testing.T) {
 		},
 		{
 			name: "the section ends at the next heading",
-			body: "## Notes\n\n**t1**\n\nkept\n\n## Other\n\n**t2**\n\ndropped\n",
-			want: []NoteInfo{{ID: "#0", At: "t1", Text: "kept"}},
+			body: "## Notes\n\n**2026-08-08**\n\nkept\n\n## Other\n\n**2026-08-09**\n\ndropped\n",
+			want: []NoteInfo{{ID: "#0", At: "2026-08-08", Text: "kept"}},
 		},
 		{
 			name: "an empty section yields no notes",

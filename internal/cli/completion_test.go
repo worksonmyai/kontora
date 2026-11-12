@@ -3,6 +3,9 @@ package cli
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -23,39 +26,39 @@ func TestCompletion(t *testing.T) {
 			shell: "fish",
 			want: []string{
 				"-a setup -d 'Create the configuration file'",
-				"'__fish_seen_subcommand_from setup' -l agent",
-				"'__fish_seen_subcommand_from setup' -l config",
+				"'__kontora_command setup' -l agent",
+				"'__kontora_command setup' -l config",
 			},
 		},
 		{
 			name:  "fish flags that take a value are marked -r",
 			shell: "fish",
 			want: []string{
-				"'__fish_seen_subcommand_from logs' -l stage -d 'Stage name' -r",
-				"'__fish_seen_subcommand_from archive' -l status -d 'Only archive tickets with this status' -x -a 'done cancelled closed'",
-				"'__fish_seen_subcommand_from delete' -s f",
-				"'__fish_seen_subcommand_from schedule' -l at -d 'Pickup time as an RFC 3339 instant' -r",
-				"'__fish_seen_subcommand_from schedule' -l clear",
+				"'__kontora_command logs' -l stage -d 'Stage name' -r",
+				"'__kontora_command archive' -l status -d 'Only archive tickets with this status' -x -a 'done cancelled closed'",
+				"'__kontora_command delete' -s f",
+				"'__kontora_command schedule' -l at -d 'Pickup time as an RFC 3339 instant' -r",
+				"'__kontora_command schedule' -l clear",
 			},
 		},
 		{
 			name:  "fish remote flags reach every remote-capable command",
 			shell: "fish",
 			want: []string{
-				"'__fish_seen_subcommand_from move' -l url",
-				"'__fish_seen_subcommand_from move' -l token",
+				"'__kontora_command move' -l url",
+				"'__kontora_command move' -l token",
 			},
 		},
 		{
 			name:  "--tickets-dir reaches store commands and no others",
 			shell: "fish",
 			want: []string{
-				"'__fish_seen_subcommand_from move' -l tickets-dir",
-				"'__fish_seen_subcommand_from ls' -l tickets-dir",
+				"'__kontora_command move' -l tickets-dir",
+				"'__kontora_command ls' -l tickets-dir",
 			},
 			notWant: []string{
-				"'__fish_seen_subcommand_from stats' -l tickets-dir",
-				"'__fish_seen_subcommand_from changes' -l tickets-dir",
+				"'__kontora_command stats' -l tickets-dir",
+				"'__kontora_command changes' -l tickets-dir",
 			},
 		},
 		{
@@ -77,9 +80,9 @@ func TestCompletion(t *testing.T) {
 			name:  "fish offers every shell the completion subcommand generates",
 			shell: "fish",
 			want: []string{
-				"'__fish_seen_subcommand_from completion' -a bash",
-				"'__fish_seen_subcommand_from completion' -a fish",
-				"'__fish_seen_subcommand_from completion' -a zsh",
+				"-a bash -d 'Generate bash completions'",
+				"-a fish -d 'Generate fish completions'",
+				"-a zsh -d 'Generate zsh completions'",
 			},
 		},
 		{
@@ -310,7 +313,7 @@ func fishOfferedCommands(script string) []string {
 // fishScope keeps only the lines bound to one verb. Without the binding a flag
 // that any other verb happens to share would satisfy the assertion.
 func fishScope(script, cmd string) string {
-	marker := fmt.Sprintf("'__fish_seen_subcommand_from %s'", cmd)
+	marker := fmt.Sprintf("'__kontora_command %s'", strings.ReplaceAll(cmd, "/", " "))
 	var b strings.Builder
 	for line := range strings.SplitSeq(script, "\n") {
 		if strings.Contains(line, marker) {
@@ -399,6 +402,220 @@ func caseBranch(script, start, end string) string {
 	}
 	body, _, _ := strings.Cut(rest, end)
 	return body
+}
+
+func TestAutomationCommandMetadata(t *testing.T) {
+	var parent Command
+	for _, cmd := range Commands {
+		if cmd.Name == "automation" {
+			parent = cmd
+		}
+		if cmd.Name == "attach" {
+			assert.Contains(t, commandFlags(cmd), Flag{Name: "operator-token", Desc: "Operator credential (defaults to KONTORA_OPERATOR_TOKEN)", Value: "text"})
+		}
+	}
+	expected := map[string][]string{
+		"ls": {"state", "query", "project", "agent"}, "view": {},
+		"new":       {"name", "prompt-file", "path", "agent", "model", "schedule", "timezone", "workspace", "overlap", "timeout", "enabled", "key", "request-id"},
+		"update":    {"name", "prompt-file", "path", "agent", "model", "schedule", "timezone", "workspace", "overlap", "timeout", "enabled", "revision"},
+		"duplicate": {"name", "key", "enabled", "request-id"},
+		"delete":    {"yes", "f", "revision"}, "pause": {"revision"}, "resume": {"revision"},
+		"run": {"request-id"}, "stop": {"run"}, "runs": {"offset", "limit"},
+		"logs": {"run", "raw"}, "preview": {"schedule", "timezone"}, "terminal": {"run"}, "attach": {"run", "rw"},
+	}
+	require.Len(t, parent.Subcommands, len(expected))
+	for _, child := range parent.Subcommands {
+		t.Run(child.Name, func(t *testing.T) {
+			want, ok := expected[child.Name]
+			require.True(t, ok)
+			want = append(append([]string{}, want...), "operator-token", "config", "url", "token")
+			if child.Name != "attach" {
+				want = append(want, "json")
+			}
+			var names []string
+			for _, f := range commandFlags(child) {
+				names = append(names, f.Name)
+				if child.Name == "update" {
+					switch f.Name {
+					case "enabled", "timeout", "timezone", "workspace", "overlap":
+						assert.Contains(t, f.Desc, "omitted preserves the current value")
+						assert.NotContains(t, f.Desc, "default")
+					}
+				}
+			}
+			assert.ElementsMatch(t, want, names)
+			assert.False(t, child.TicketID)
+			assert.False(t, child.Store)
+			assert.NotEmpty(t, child.Desc)
+			if child.Name != "ls" && child.Name != "new" && child.Name != "preview" {
+				assert.Equal(t, "REF", child.Args)
+			}
+		})
+	}
+}
+
+func TestCompletionChildScopes(t *testing.T) {
+	for _, shell := range SupportedShells {
+		t.Run(shell, func(t *testing.T) {
+			var buf bytes.Buffer
+			require.NoError(t, Completion(shell, &buf))
+			for _, scope := range completionScopes() {
+				if !strings.Contains(scope.Name, "/") {
+					continue
+				}
+				var body string
+				switch shell {
+				case "fish":
+					body = fishScope(buf.String(), scope.Name)
+				case "bash":
+					body = caseBranch(buf.String(), "        "+scope.Name+")\n", "\n            ;;\n")
+				case "zsh":
+					body = caseBranch(buf.String(), "                "+scope.Name+")\n", "\n                    ;;\n")
+				}
+				for _, f := range commandFlags(scope) {
+					match := dashed(f.Name)
+					if shell == "fish" {
+						match = " -" + flagKind(f.Name) + " " + f.Name + " "
+					}
+					assert.Contains(t, body, match, scope.Name)
+				}
+				if scope.Name == "automation/update" && shell != "bash" {
+					assert.NotContains(t, body, "default false")
+					assert.NotContains(t, body, "default 30m")
+					assert.Contains(t, body, "omitted preserves the current value")
+				}
+				if strings.HasPrefix(scope.Name, "automation/") {
+					assert.NotContains(t, body, "tickets-dir", scope.Name)
+					assert.NotContains(t, body, "__kontora_ticket_ids", scope.Name)
+				}
+			}
+		})
+	}
+}
+
+func completionScript(t *testing.T, shell string) (string, string) {
+	t.Helper()
+	bin, err := exec.LookPath(shell)
+	if err != nil {
+		t.Skip(shell + " is not installed")
+	}
+	var buf bytes.Buffer
+	require.NoError(t, Completion(shell, &buf))
+	path := filepath.Join(t.TempDir(), "completion."+shell)
+	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
+	return bin, path
+}
+
+func TestCompletionShellSyntax(t *testing.T) {
+	for _, shell := range SupportedShells {
+		t.Run(shell, func(t *testing.T) {
+			bin, path := completionScript(t, shell)
+			out, err := exec.Command(bin, "-n", path).CombinedOutput()
+			require.NoError(t, err, string(out))
+		})
+	}
+}
+
+func TestAutomationCompletionZshRuntime(t *testing.T) {
+	bin, script := completionScript(t, "zsh")
+	for _, child := range automationCommands() {
+		t.Run(child.Name, func(t *testing.T) {
+			program := `compdef() { :; }
+source "$1"
+_arguments() {
+    if [[ $1 == -C ]]; then
+        state=args
+        words=("${words[@]:1}")
+        (( CURRENT-- ))
+        return 1
+    fi
+    printf '%s\n' "$@"
+}
+kontora() { print NETWORK_LOOKUP; }
+words=(kontora automation "$2" --)
+CURRENT=${#words}
+_kontora`
+			out, err := exec.Command(bin, "-c", program, "completion-test", script, child.Name).CombinedOutput()
+			require.NoError(t, err, string(out))
+			for _, flag := range commandFlags(child) {
+				assert.Contains(t, string(out), zshFlagSpec(flag, dashed(flag.Name)))
+			}
+			assert.NotContains(t, string(out), "tickets-dir")
+			assert.NotContains(t, string(out), "__kontora_ticket_ids")
+			assert.NotContains(t, string(out), "NETWORK_LOOKUP")
+			if child.Name == "new" || child.Name == "update" {
+				assert.Contains(t, string(out), "--prompt-file=[Prompt template file ('-' for stdin)]:path:_files")
+			}
+		})
+	}
+}
+
+func TestAutomationCompletionRuntime(t *testing.T) {
+	for _, shell := range []string{"bash", "fish"} {
+		t.Run(shell, func(t *testing.T) {
+			bin, script := completionScript(t, shell)
+			prompt := filepath.Join(t.TempDir(), "prompt with spaces.md")
+			require.NoError(t, os.WriteFile(prompt, nil, 0o600))
+			cases := []struct {
+				name         string
+				words        []string
+				want, absent []string
+			}{
+				{"children", []string{"automation", ""}, []string{"ls", "attach", "preview", "terminal"}, []string{"view-ticket"}},
+				{"list flags", []string{"automation", "ls", "--"}, []string{"--state", "--query", "--agent", "--json", "--config", "--url", "--token", "--operator-token"}, []string{"--tickets-dir", "--closed", "--run", "--revision"}},
+				{"update flags after reference", []string{"automation", "update", "report", "--"}, []string{"--revision", "--enabled", "--prompt-file"}, []string{"--key", "--request-id", "--tickets-dir"}},
+				{"attach flags", []string{"automation", "attach", "report", "--"}, []string{"--run", "--rw", "--operator-token"}, []string{"--json", "--revision", "--tickets-dir"}},
+				{"state values", []string{"automation", "ls", "--state", ""}, []string{"all", "enabled", "paused"}, nil},
+				{"workspace values", []string{"automation", "new", "--workspace", ""}, []string{"worktree", "repo"}, nil},
+				{"overlap values", []string{"automation", "update", "report", "--overlap", ""}, []string{"skip", "queue", "replace"}, nil},
+				{"prompt path", []string{"automation", "new", "--prompt-file", strings.TrimSuffix(prompt, ".md")}, []string{prompt}, nil},
+				{"reference", []string{"automation", "view", ""}, nil, []string{"NETWORK_LOOKUP", "kon-1234"}},
+				{"config edit", []string{"config", "edit", "--"}, []string{"--config", "--url", "--token"}, []string{"--tickets-dir"}},
+				{"skills children", []string{"skills", ""}, []string{"list", "show"}, nil},
+				{"completion children", []string{"completion", ""}, []string{"bash", "fish", "zsh"}, nil},
+			}
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					quoted := []string{zshQuote("kontora")}
+					for _, word := range tc.words {
+						quoted = append(quoted, zshQuote(word))
+					}
+					var program string
+					if shell == "bash" {
+						program = `source "$1"; kontora() { echo NETWORK_LOOKUP >&2; echo ' kon-1234'; }; COMP_WORDS=(` + strings.Join(quoted, " ") + `); COMP_CWORD=$((${#COMP_WORDS[@]}-1)); _kontora; printf '%s\n' "${COMPREPLY[@]}"`
+					} else {
+						line := "kontora"
+						for _, word := range tc.words {
+							if word == "" {
+								line += " "
+							} else {
+								line += " " + zshQuote(word)
+							}
+						}
+						program = `source $argv[1]; function kontora; echo NETWORK_LOOKUP >&2; echo ' kon-1234'; end; complete -C ` + zshQuote(line)
+					}
+					args := []string{"-c", program, "completion-test", script}
+					if shell == "fish" {
+						args = []string{"-c", program, script}
+					}
+					out, err := exec.Command(bin, args...).CombinedOutput()
+					require.NoError(t, err, string(out))
+					var candidates []string
+					for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+						candidate, _, _ := strings.Cut(line, "\t")
+						candidates = append(candidates, candidate)
+					}
+					for _, want := range tc.want {
+						assert.Contains(t, candidates, want)
+					}
+					for _, absent := range tc.absent {
+						assert.NotContains(t, candidates, absent)
+					}
+					assert.NotContains(t, string(out), "NETWORK_LOOKUP")
+				})
+			}
+		})
+	}
 }
 
 func flagKind(name string) string {

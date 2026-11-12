@@ -120,6 +120,15 @@ func ResolveViewAgent(cfg *config.Config, t *ticket.Ticket) string {
 				return step.Agent
 			}
 		}
+		// Keep the built-in stage's fallback in sync with the daemon's reworkAgent.
+		if cfg.ReworkIsBuiltin && t.Stage == config.ReworkStageName {
+			for _, h := range slices.Backward(t.History) {
+				if h.Agent != "" {
+					return h.Agent
+				}
+			}
+			return cfg.DefaultAgent
+		}
 	} else if t.Kontora && t.Pipeline == "" && !t.IsPassiveEpic() {
 		return cfg.DefaultAgent
 	}

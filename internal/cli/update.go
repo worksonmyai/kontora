@@ -11,7 +11,7 @@ import (
 )
 
 // Update applies body/frontmatter changes to a ticket. Only the fields set in
-// req (non-nil pointers) are changed. It mirrors the daemon's UpdateTicket rules
+// req (non-nil pointers or slices) are changed. It mirrors the daemon's UpdateTicket rules
 // so local and remote edits behave the same: editing is allowed only in
 // open/todo/paused/human_review (or a custom status), and pipeline/agent values
 // are validated against the config.
@@ -71,6 +71,10 @@ func applyUpdate(cfg *config.Config, t *ticket.Ticket, req web.UpdateTicketReque
 		return fmt.Errorf("%w: cannot update ticket in status %s", app.ErrInvalidState, t.Status)
 	}
 
+	if err := cfg.ValidateNotifyFields(req.Notify, req.NotifyChannels); err != nil {
+		return fmt.Errorf("%w: %v", web.ErrInvalidNotify, err)
+	}
+
 	if req.Pipeline != nil {
 		// There is no project default to skip here, but "none" still has to
 		// mean "no pipeline", or the word would work in new and init and error
@@ -113,6 +117,9 @@ func applyUpdate(cfg *config.Config, t *ticket.Ticket, req web.UpdateTicketReque
 		if err := t.SetField("base_branch", *req.BaseBranch); err != nil {
 			return err
 		}
+	}
+	if err := app.SetNotifyFields(t, req.Notify, req.NotifyChannels); err != nil {
+		return err
 	}
 	if req.Body != nil {
 		t.SetBody(*req.Body)

@@ -37,20 +37,35 @@ type termMsg struct {
 // and stdin is not forwarded, so Ctrl-C still interrupts the local process. It
 // returns when the connection closes.
 func Attach(ctx context.Context, c *Client, id string, rw bool) error {
-	attachID := id
 	if automation.IsID(id) {
+		return AttachAutomation(ctx, c, id, 0, rw)
+	}
+	if err := checkAttachable(c, id); err != nil {
+		return err
+	}
+	return attachTerminal(ctx, c, id, "/ws/terminal/"+url.PathEscape(id), rw)
+}
+
+func (c *Client) AttachAutomation(id string, n uint64, rw bool) error {
+	return AttachAutomation(context.Background(), c, id, n, rw)
+}
+
+func AttachAutomation(ctx context.Context, c *Client, id string, n uint64, rw bool) error {
+	if n == 0 {
 		row, err := c.Automation(id)
 		if err != nil {
 			return err
 		}
-		if !row.Running || row.CurrentRun == nil {
+		if !row.Running || row.CurrentRun == nil || row.CurrentRun.N == 0 {
 			return fmt.Errorf("automation %s has no live session", id)
 		}
-		attachID = id + "/" + strconv.FormatUint(row.CurrentRun.N, 10)
-	} else if err := checkAttachable(c, id); err != nil {
-		return err
+		n = row.CurrentRun.N
 	}
+	path := "/ws/automations/" + url.PathEscape(id) + "/" + strconv.FormatUint(n, 10)
+	return attachTerminal(ctx, c, id, path, rw)
+}
 
+func attachTerminal(ctx context.Context, c *Client, id, path string, rw bool) error {
 	fd := int(os.Stdin.Fd())
 	isTTY := term.IsTerminal(fd)
 
@@ -61,7 +76,7 @@ func Attach(ctx context.Context, c *Client, id string, rw bool) error {
 		}
 	}
 
-	endpoint, err := wsURL(c.base, attachID, rw, cols, rows)
+	endpoint, err := wsURL(c.base, path, rw, cols, rows)
 	if err != nil {
 		return err
 	}
@@ -70,10 +85,12 @@ func Attach(ctx context.Context, c *Client, id string, rw bool) error {
 		HTTPClient:      c.hc,
 		CompressionMode: websocket.CompressionContextTakeover,
 	}
+	opts.HTTPHeader = make(http.Header)
+	if c.token != "" {
+		opts.HTTPHeader.Set("Authorization", "Bearer "+c.token)
+	}
 	if c.operatorToken != "" {
-		opts.HTTPHeader = http.Header{web.OperatorTokenHeader: {c.operatorToken}}
-	} else if c.token != "" {
-		opts.HTTPHeader = http.Header{"Authorization": {"Bearer " + c.token}}
+		opts.HTTPHeader.Set(web.OperatorTokenHeader, c.operatorToken)
 	}
 
 	conn, resp, err := websocket.Dial(ctx, endpoint, opts)
@@ -197,8 +214,8 @@ func writeFrame(ctx context.Context, conn *websocket.Conn, mu *sync.Mutex, m ter
 }
 
 // wsURL builds the terminal WebSocket URL, converting http(s) to ws(s) and
-// appending the ticket path and rw/cols/rows query parameters.
-func wsURL(base, id string, rw bool, cols, rows int) (string, error) {
+// appending the requested path and rw/cols/rows query parameters.
+func wsURL(base, path string, rw bool, cols, rows int) (string, error) {
 	u, err := url.Parse(base)
 	if err != nil {
 		return "", fmt.Errorf("invalid daemon URL %q: %w", base, err)
@@ -213,10 +230,10 @@ func wsURL(base, id string, rw bool, cols, rows int) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported URL scheme %q", u.Scheme)
 	}
-	if strings.HasPrefix(id, "aut-") && strings.Contains(id, "/") {
-		u.Path = strings.TrimRight(u.Path, "/") + "/ws/automations/" + id
-	} else {
-		u.Path = strings.TrimRight(u.Path, "/") + "/ws/terminal/" + id
+	u.RawPath = strings.TrimRight(u.EscapedPath(), "/") + path
+	u.Path, err = url.PathUnescape(u.RawPath)
+	if err != nil {
+		return "", err
 	}
 
 	q := u.Query()

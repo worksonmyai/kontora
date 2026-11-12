@@ -62,10 +62,16 @@ For noninteractive inspection:
 
 ```sh
 kontora ls --json
-kontora view TICKET_ID
+kontora view --body TICKET_ID
+kontora view --notes TICKET_ID
+kontora view --last 5 TICKET_ID
 kontora logs TICKET_ID
 kontora changes TICKET_ID
 ```
+
+`view --body` prints the whole stored body. `view --notes` prints from `## Notes` through the body's end, including later sections. `view --last N` starts at the beginning of the Nth-last note; N must be a positive integer. Legacy notes without bylines also count. `--last` implies `--notes`. If N exceeds the note count, output includes the whole section and its `## Notes` heading.
+
+Without a Notes section, both note views print nothing and exit 0. Combining `--body` with `--notes` or `--last` is a usage error. All three flags bypass the pager in local and remote mode.
 
 `changes` excludes uncommitted and untracked files. Inspect the worktree before reporting that an agent made no changes.
 
@@ -75,7 +81,7 @@ Use the CLI for ticket changes. Read the complete body before replacing it with 
 
 Follow the current run's instructions and authority limits. The daemon controls lifecycle transitions; do not mark your own ticket done.
 
-- Read `kontora view TICKET_ID` before asking questions. Reuse recorded answers unless requirements changed or conflict.
+- Read `kontora view --body TICKET_ID` before asking questions. Use `kontora view --last 5 TICKET_ID` for recent notes. Reuse recorded answers unless requirements changed or conflict.
 - Save each new question with the user's answer immediately. Preserve selected options and free-text details, and distinguish answers from assumptions.
 - Read `kontora skills show cli "Handoff submission"` before saving notes or summaries. Prefer `kontora_note` and `kontora_summary` when available. Use the documented stdin method for large or sensitive text; do not interpolate generated text into shell commands.
 - Confirm saves before continuing dependent work. If a submission lacks acknowledgement, read the ticket before retrying. Report unresolved failures and stop dependent work.

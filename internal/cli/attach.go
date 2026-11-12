@@ -251,7 +251,7 @@ func buildAttachItems(cfg *config.Config) ([]attachItem, error) {
 			if t.Stage != "" {
 				item.stage = t.Stage
 			}
-			agent := app.AgentForStage(cfg, t.Pipeline, t.Stage)
+			agent := app.ResolveViewAgent(cfg, t)
 			if agent != "" {
 				item.agent = agent
 			}

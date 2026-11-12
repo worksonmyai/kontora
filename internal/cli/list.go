@@ -356,7 +356,7 @@ func listItem(cfg *config.Config, t *ticket.Ticket) ListItem {
 		Project:         project,
 		Pipeline:        t.Pipeline,
 		Stage:           displayStage(t),
-		Agent:           displayAgent(cfg, t),
+		Agent:           app.ResolveViewAgent(cfg, t),
 		CreatedAt:       t.Created,
 		StartedAt:       t.StartedAt,
 		CompletedAt:     t.CompletedAt,
@@ -379,21 +379,6 @@ func displayStage(t *ticket.Ticket) string {
 		return "standalone"
 	}
 	return t.Stage
-}
-
-// displayAgent names the agent that would run the ticket next: the stage's, or
-// the default for a standalone kontora ticket.
-func displayAgent(cfg *config.Config, t *ticket.Ticket) string {
-	if agent := app.AgentForStage(cfg, t.Pipeline, t.Stage); agent != "" {
-		return agent
-	}
-	if t.Agent != "" {
-		return t.Agent
-	}
-	if t.Kontora && !t.IsPassiveEpic() {
-		return cfg.DefaultAgent
-	}
-	return ""
 }
 
 // List prints the ticket listing for `kontora ls` in local mode.

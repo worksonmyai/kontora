@@ -55,11 +55,8 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 	if t.BaseBranch != "" {
 		fmt.Fprintf(w, "base:      %s\n", t.BaseBranch)
 	}
-	if t.Stage != "" {
-		agent := app.AgentForStage(cfg, t.Pipeline, t.Stage)
-		if agent != "" {
-			fmt.Fprintf(w, "agent:     %s\n", agent)
-		}
+	if agent := app.ResolveViewAgent(cfg, t); agent != "" {
+		fmt.Fprintf(w, "agent:     %s\n", agent)
 	}
 	if t.ScheduledAt != "" {
 		fmt.Fprintf(w, "starts:    %s\n", FormatSchedule(t.ScheduledAt))
@@ -115,6 +112,17 @@ func ViewBody(cfg *config.Config, taskID string, w io.Writer) error {
 		return err
 	}
 	_, err = io.WriteString(w, t.Body)
+	return err
+}
+
+// ViewNotes prints from the Notes heading, optionally starting at the Nth-last
+// note. It prints nothing for a ticket without notes.
+func ViewNotes(cfg *config.Config, taskID string, last int, w io.Writer) error {
+	t, err := readTicketByID(cfg, taskID)
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(w, ticket.NotesTail(t.Body, last))
 	return err
 }
 

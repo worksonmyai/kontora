@@ -278,9 +278,7 @@ func TestNotifyStaysSilentForRequestedChanges(t *testing.T) {
 			h := newHarness(t)
 			cfg := notifyConfig(h)
 			cfg.Notifications.AllChanges = tt.allChanges
-			cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
-			// Empty, or the rendered prompt is appended as a second argument
-			// and sleep exits 1 before the ticket can be paused.
+			cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "30"}}
 			cfg.Stages["step1"] = config.Stage{Prompt: ""}
 			rec := &notifyRecorder{}
 			d := h.newDaemon(cfg, WithNotifier(rec))

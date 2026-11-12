@@ -467,6 +467,7 @@ func TestUnmergedDependencyInPrompt(t *testing.T) {
 				mu.Lock()
 				prompts = append(prompts, renderedPrompt(p))
 				mu.Unlock()
+				publishCompleteResult(t, p)
 				now := time.Now()
 				return process.Result{StartedAt: now, ExitedAt: now}, nil
 			}

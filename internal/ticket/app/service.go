@@ -360,7 +360,7 @@ func (s *Service) stageChangePipeline(t *ticket.Ticket) (config.Pipeline, error)
 	if !ok {
 		return nil, fmt.Errorf("%w: unknown pipeline %q for ticket %s", ErrInvalidState, t.Pipeline, t.ID)
 	}
-	return steps, nil
+	return steps.Legacy, nil
 }
 
 // SetStage changes only the stage. It does not retry or enqueue the ticket.
@@ -422,7 +422,7 @@ func (s *Service) resolveInitFields(cfg *config.Config, t *ticket.Ticket, req In
 	pipeline, agent = cfg.ResolveTicketDefaults(repoPath, pipeline, agent, epicChild)
 
 	if pipeline != "" {
-		if steps, ok := cfg.Pipelines[pipeline]; !ok || len(steps) == 0 {
+		if steps, ok := cfg.Pipelines[pipeline]; !ok || len(steps.Legacy) == 0 {
 			return "", "", fmt.Errorf("%w: unknown pipeline %q", ErrInvalidState, pipeline)
 		}
 	}
@@ -589,7 +589,7 @@ func (s *Service) init(id string, req InitRequest) (Result, error) {
 	if pipeline != "" {
 		stageName := req.Stage
 		if stageName == "" {
-			stageName = cfg.Pipelines[pipeline][0].Stage
+			stageName = cfg.Pipelines[pipeline].Legacy[0].Stage
 			// A re-init keeps the stage the ticket reached. Only a pipeline
 			// change restarts it, because the old stage is not in the new one.
 			if reinit && prevStage != "" && pipeline == prevPipeline {
@@ -629,7 +629,7 @@ func AgentForStage(cfg *config.Config, pipelineName, stageName string) string {
 	if !ok || stageName == "" {
 		return ""
 	}
-	for _, step := range pipeline {
+	for _, step := range pipeline.Legacy {
 		if step.Stage == stageName {
 			return step.Agent
 		}

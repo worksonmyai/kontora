@@ -170,9 +170,11 @@ func TestResultCommandMetadata(t *testing.T) {
 		assert.False(t, command.Config)
 		assert.False(t, command.Store)
 		assert.False(t, command.Remote)
-		require.Len(t, command.Flags, 1)
+		require.Len(t, command.Flags, 2)
 		assert.Equal(t, "input-file", command.Flags[0].Name)
 		assert.Equal(t, "path", command.Flags[0].Value)
+		assert.Equal(t, "verdict", command.Flags[1].Name)
+		assert.Equal(t, "text", command.Flags[1].Value)
 		return
 	}
 	t.Fatal("result command missing from metadata")

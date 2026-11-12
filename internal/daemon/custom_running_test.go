@@ -24,7 +24,7 @@ const awaitingData ticket.Status = "awaiting_data"
 
 func customRunningPipeline(h *testHarness, name string) {
 	h.cfg.Statuses = []string{string(awaitingData)}
-	steps := h.cfg.Pipelines[name]
+	steps := h.cfg.Pipelines[name].Legacy
 	for i := range steps {
 		steps[i].RunningStatus = string(awaitingData)
 	}
@@ -58,11 +58,11 @@ func TestCustomRunningCollectWaitAnalyze(t *testing.T) {
 		"wait":    {Prompt: "wait until the data is there"},
 		"analyze": {Prompt: "analyze the collected data"},
 	}
-	h.cfg.Pipelines["research"] = config.Pipeline{
+	h.cfg.Pipelines["research"] = config.PipelineDefinition{Legacy: config.Pipeline{
 		{Stage: "collect", Agent: "agent1", OnSuccess: "next", OnFailure: "pause"},
 		{Stage: "wait", Agent: "agent1", RunningStatus: string(awaitingData), OnSuccess: "next", OnFailure: "pause"},
 		{Stage: "analyze", Agent: "agent1", OnSuccess: "done", OnFailure: "pause"},
-	}
+	}}
 	launches := make(chan RunnerParams, 8)
 	ready := make(chan struct{})
 	recorder := &notifyRecorder{}
@@ -207,7 +207,7 @@ func TestCustomRunningExitPolicies(t *testing.T) {
 			h := newHarness(t)
 			customRunningPipeline(h, "two-stage")
 			if outcome == "same-name park" {
-				h.cfg.Pipelines["two-stage"][0].OnSuccess = string(awaitingData)
+				h.cfg.Pipelines["two-stage"].Legacy[0].OnSuccess = string(awaitingData)
 			}
 			if outcome == "hook" {
 				h.cfg.Hooks = config.Hooks{config.HookStageEnd: {{Run: "exit 1", OnFailure: config.HookOnFailurePause}}}
@@ -600,7 +600,7 @@ func TestCustomRunningSupervisedFinalization(t *testing.T) {
 		t.Run(fmt.Sprintf("failedWrite=%t", failedWrite), func(t *testing.T) {
 			f := newResultFixture(t)
 			customRunningPipeline(f.h, "two-stage")
-			f.h.cfg.Pipelines["two-stage"][1].OnSuccess = string(awaitingData)
+			f.h.cfg.Pipelines["two-stage"].Legacy[1].OnSuccess = string(awaitingData)
 			require.NoError(t, f.tkt.SetField("status", "todo"))
 			f.write(t)
 			if failedWrite {
@@ -681,7 +681,7 @@ func TestCustomRunningDefaultsForSpecialClaims(t *testing.T) {
 				h.cfg.ReworkIsBuiltin = true
 				require.NoError(t, tk.SetField("stage", config.ReworkStageName))
 			case "pipeline default":
-				h.cfg.Pipelines["two-stage"][0].RunningStatus = ""
+				h.cfg.Pipelines["two-stage"].Legacy[0].RunningStatus = ""
 			}
 			saveCustomTestTicket(t, tk, path)
 			d := h.newDaemon(h.cfg)

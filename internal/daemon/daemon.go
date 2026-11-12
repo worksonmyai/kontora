@@ -399,6 +399,7 @@ type windowOps struct {
 var defaultWindowOps = windowOps{list: tmux.ListWindows, kill: tmux.KillWindow}
 
 type Daemon struct {
+	graphWorkflowsReady       bool
 	cfg                       atomic.Pointer[config.Config]
 	worktrees                 *worktree.Manager
 	runner                    RunnerFunc
@@ -1049,7 +1050,7 @@ func (d *Daemon) initialScan(dir string) error {
 	// Recovery needs the complete ticket set before deciding supervision scope.
 	d.mu.Lock()
 	for _, t := range scanned {
-		if t.HasOwnershipMetadata() || d.claimedElsewhere(t) {
+		if d.reconcileClaimedExecutionLocked(cfg, t) {
 			continue
 		}
 		_, journalErr := os.Stat(executionPath(cfg, t.ID))
@@ -1670,8 +1671,13 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		d.runSimpleTicket(ctx, taskCtx, cfg, log, ticketID, t, filePath)
 		return
 	}
+	if definition, exists := cfg.Pipelines[t.Pipeline]; exists && definition.IsGraph() {
+		d.runGraphTicket(ctx, taskCtx, cfg, log, t, filePath)
+		return
+	}
 
-	pipelineCfg, ok := cfg.Pipelines[t.Pipeline]
+	definition, ok := cfg.Pipelines[t.Pipeline]
+	pipelineCfg := definition.Legacy
 	if !ok {
 		// A config reload can drop a pipeline out from under a todo ticket.
 		// Pause it with a reason so it does not sit in todo unexplained.
@@ -2374,7 +2380,11 @@ func (d *Daemon) prepareWorktreeForAgent(taskCtx context.Context, p prepareWorkt
 		return "", "", false
 	}
 	saved, err := d.patchExecution(taskCtx, p.t, p.filePath, func(fresh *ticket.Ticket) error {
-		_ = fresh.SetField("last_log", d.stageLogPath(p.ticketID, p.stageName))
+		logPath := d.stageLogPath(p.ticketID, p.stageName)
+		if fresh.GraphState != nil {
+			logPath = graphLogPath(p.cfg, fresh)
+		}
+		_ = fresh.SetField("last_log", logPath)
 		clearExecutionSummaries(fresh, p.t, p.isPipeline)
 		return nil
 	})
@@ -2425,6 +2435,8 @@ type spawnAgentParams struct {
 	annotation          bool
 	supervisionID       string
 	supervisionResolved bool
+	graphState          *ticket.GraphState
+	boundExecution      *executionRecord
 }
 
 // sessionStage keys the agent session storage this run uses. An annotation run
@@ -2438,6 +2450,9 @@ type spawnAgentParams struct {
 // split exists to prevent, and a resumed run pointed at its own leaves the live
 // activity view empty.
 func (p spawnAgentParams) sessionStage(rec *resumeRecord) string {
+	if p.graphState != nil {
+		return fmt.Sprintf("%s-visit-%d", p.stageName, p.graphState.Visit)
+	}
 	if p.annotation && rec == nil {
 		return p.stageName + "-annotation"
 	}
@@ -2467,6 +2482,7 @@ type agentRun struct {
 	OutcomeReason string
 	Reported      bool
 	ForcePause    bool
+	Verdict       string
 }
 
 // agentAttempt is the outcome of one runAgentOnce call.
@@ -2702,9 +2718,9 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	}
 
 	params := d.buildRunnerParams(p.cfg, p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.agentName, p.stageName, p.sessionStage(rec), sessionID, ckpt)
-	execution, bindErr := d.bindExecution(t, p, &params, epicID)
+	execution, bindErr := d.bindAgentExecution(t, p, &params, epicID)
 	if bindErr != nil {
-		return agentAttempt{pauseReason: "persist invocation: " + bindErr.Error()}
+		return agentAttempt{run: agentRun{Execution: execution}, pauseReason: "persist invocation: " + bindErr.Error()}
 	}
 	// An annotation run continues the session the stage already finished, and
 	// Claude's --resume and pi's --session <path> both append to that same
@@ -2734,7 +2750,8 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	logStart := fileSize(params.LogFile)
 	eventsFile := stageEventsPath(p.cfg, p.ticketID, p.stageName, p.run)
 	result, runnerErr := d.runner(taskCtx, params)
-	if errors.Is(runnerErr, process.ErrTerminationUncertain) {
+	recordRunnerTermination(execution, result)
+	if workflowTerminationUncertain(p, result, runnerErr) {
 		d.retainUncertainExecution(taskCtx, t, execution)
 		p.log.Error("runner termination unconfirmed; execution state retained", "err", runnerErr)
 		return agentAttempt{run: agentRun{Result: result, Execution: execution}, started: true}
@@ -2796,6 +2813,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	}
 
 	classifyExecution(execution, &run, "")
+	classifyGraphLaunch(p, &run)
 	dur := result.ExitedAt.Sub(result.StartedAt).Truncate(time.Second)
 	attrs := []any{"stage", p.stageName, "exit_code", result.ExitCode, "duration", dur}
 	if result.ExitCode != 0 {

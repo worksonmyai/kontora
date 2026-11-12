@@ -139,7 +139,8 @@ function loadExtension(source, ticketID, resultEnv = {}) {
   // Use Function constructor to avoid strict-mode issues with eval.
   const factory = new Function(fullSource + "\nreturn __factory;")();
   const env = { ...resultEnv, KONTORA_TICKET_ID: ticketID };
-  const keys = [...RESULT_ENV_KEYS, "KONTORA_RESULT_AUTOMATION", "KONTORA_RESULT_RUN_NUMBER", "KONTORA_TICKET_ID"];
+  const keys = [...RESULT_ENV_KEYS, "KONTORA_RESULT_AUTOMATION", "KONTORA_RESULT_RUN_NUMBER", "KONTORA_TICKET_ID",
+    "KONTORA_RESULT_VERDICTS", "KONTORA_WORKFLOW_EXECUTION_ID", "KONTORA_NODE_VISIT_ID", "KONTORA_DEFINITION_FINGERPRINT"];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   try {
     for (const key of keys) {
@@ -334,7 +335,7 @@ for (const { verb, acknowledgement } of HANDOFFS) {
 
 // ─── Tests: invocation-bound terminal results ───────────────────────────────
 
-function resultFixture(t, source = ENABLED_SOURCE) {
+function resultFixture(t, source = ENABLED_SOURCE, overrides = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "kontora-result-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const env = {
@@ -343,6 +344,7 @@ function resultFixture(t, source = ENABLED_SOURCE) {
     KONTORA_RESULT_TICKET: "result-ticket",
     KONTORA_RESULT_STAGE: "implement",
     KONTORA_RESULT_FILE: path.join(dir, "result artifact 雪.json"),
+    ...overrides,
   };
   const api = loadExtension(source, "different-note-ticket", env);
   api.execResult = {
@@ -418,9 +420,78 @@ for (const [key, value] of [
   });
 }
 
+for (const verdicts of [[], ["approve", "changes"]]) {
+  for (const outcome of ["complete", "blocked"]) {
+    test(`graph result schema, context and literal submission: ${JSON.stringify(verdicts)} ${outcome}`, async (t) => {
+      const { api, ctx, env, submit } = resultFixture(t, DISABLED_SOURCE, {
+        KONTORA_RESULT_VERSION: "2", KONTORA_RESULT_VERDICTS: JSON.stringify(verdicts),
+        KONTORA_WORKFLOW_EXECUTION_ID: "workflow-1", KONTORA_NODE_VISIT_ID: "visit-2",
+      });
+      const properties = api.tools.kontora_result.parameters.properties;
+      if (verdicts.length) assert.deepEqual(properties.verdict.enum, verdicts);
+      else assert.equal(properties.verdict, undefined);
+      const prompt = await api.fire("before_agent_start", { systemPrompt: "Original prompt" }, ctx);
+      assert.match(prompt.systemPrompt, /^Original prompt/);
+      assert.match(prompt.systemPrompt, /no additional Git permissions/);
+      assert.match(prompt.systemPrompt, /workflow-1/);
+      assert.match(prompt.systemPrompt, /visit-2/);
+      if (verdicts.length) assert.match(prompt.systemPrompt, /supply exactly one declared verdict/);
+      else assert.match(prompt.systemPrompt, /omit verdict/);
+      const payload = { outcome, summary: "Review done", next_step: "Provide access" };
+      if (verdicts.length && outcome === "complete") payload.verdict = "changes";
+      api.execHandler = async (_command, args) => {
+        assert.deepEqual(JSON.parse(readFileSync(args[2], "utf8")), payload);
+        assert.equal(args[3], env.KONTORA_RESULT_TICKET);
+        return { code: 0, stdout: JSON.stringify({ accepted: true, invocation_id: env.KONTORA_INVOCATION_ID,
+          outcome, ...(payload.verdict ? { verdict: payload.verdict } : {}) }) };
+      };
+      await submit(payload);
+      assert.equal(api.execCalls.length, 1);
+    });
+  }
+}
+
+for (const [name, verdicts, payload] of [
+  ["missing verdict", ["approve"], { outcome: "complete", summary: "Done" }],
+  ["undeclared verdict", ["approve"], { outcome: "complete", summary: "Done", verdict: "changes" }],
+  ["empty verdict", ["approve"], { outcome: "complete", summary: "Done", verdict: "" }],
+  ["wrong type", ["approve"], { outcome: "complete", summary: "Done", verdict: 1 }],
+  ["no declarations", [], { outcome: "complete", summary: "Done", verdict: "approve" }],
+  ["blocked undeclared", ["approve"], { outcome: "blocked", summary: "No access", next_step: "Grant access", verdict: "changes" }],
+]) {
+  test(`graph result rejects ${name} before execution`, async (t) => {
+    const { api, submit } = resultFixture(t, DISABLED_SOURCE, {
+      KONTORA_RESULT_VERSION: "2", KONTORA_RESULT_VERDICTS: JSON.stringify(verdicts),
+    });
+    await assert.rejects(() => submit(payload), /verdict/i);
+    assert.equal(api.execCalls.length, 0);
+  });
+}
+
+for (const raw of [undefined, "", "null", "{}", '[null]', '[1]', '[""]', '[" "]', '["a","a"]', '["a\\u0000b"]', '["\\ud800"]']) {
+  test(`graph result rejects invalid declarations: ${raw}`, (t) => {
+    const { env } = resultFixture(t);
+    assert.throws(() => loadExtension(DISABLED_SOURCE, undefined, {
+      ...env, KONTORA_RESULT_VERSION: "2", KONTORA_RESULT_VERDICTS: raw,
+    }), /KONTORA_RESULT_VERDICTS/);
+  });
+}
+
+for (const ackVerdict of [undefined, "approve"]) {
+  test(`graph result acknowledgement must match verdict: ${ackVerdict}`, async (t) => {
+    const { api, env, submit } = resultFixture(t, DISABLED_SOURCE, {
+      KONTORA_RESULT_VERSION: "2", KONTORA_RESULT_VERDICTS: '["approve","changes"]',
+    });
+    api.execResult.stdout = JSON.stringify({ accepted: true, invocation_id: env.KONTORA_INVOCATION_ID,
+      outcome: "complete", verdict: ackVerdict });
+    await assert.rejects(() => submit({ outcome: "complete", summary: "Done", verdict: "changes" }), /acknowledgement does not match/);
+    assert.equal(api.execCalls.length, 1);
+  });
+}
+
 test("unsupported result context version errors", (t) => {
   const { env } = resultFixture(t);
-  assert.throws(() => loadExtension(DISABLED_SOURCE, undefined, { ...env, KONTORA_RESULT_VERSION: "2" }), /version/i);
+  assert.throws(() => loadExtension(DISABLED_SOURCE, undefined, { ...env, KONTORA_RESULT_VERSION: "3" }), /version/i);
 });
 
 for (const outcome of ["complete", "blocked"]) {
@@ -461,6 +532,7 @@ for (const outcome of ["complete", "blocked"]) {
 
 for (const [name, params] of [
   ["missing params", undefined],
+  ["v1 verdict", { outcome: "complete", summary: "Done", verdict: "approve" }],
   ["invalid outcome", { outcome: "done", summary: "Done" }],
   ["empty summary", { outcome: "complete", summary: "" }],
   ["blank summary", { outcome: "complete", summary: " \n\t" }],

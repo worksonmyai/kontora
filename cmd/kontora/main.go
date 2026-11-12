@@ -1196,11 +1196,18 @@ func cmdPhaseComplete() {
 func cmdResult() {
 	fs := flag.NewFlagSet("result", flag.ExitOnError)
 	inputFile := fs.String("input-file", "", "absolute path to result JSON (default: stdin)")
+	verdict := fs.String("verdict", "", "declared workflow verdict (result version 2)")
 	ticketID := parseTicketFlags(fs, os.Args[2:])
 	if ticketID == "" {
 		log.Fatal("ticket ID is required: kontora result [--input-file /absolute/path/result.json] TICKET_ID")
 	}
-	if err := cli.ReportResult(ticketID, *inputFile, os.Stdin, os.Stdout, os.Getenv); err != nil {
+	var verdictFlag []string
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "verdict" {
+			verdictFlag = []string{*verdict}
+		}
+	})
+	if err := cli.ReportResult(ticketID, *inputFile, os.Stdin, os.Stdout, os.Getenv, verdictFlag...); err != nil {
 		log.Fatal(err)
 	}
 }

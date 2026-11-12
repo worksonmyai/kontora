@@ -606,8 +606,8 @@ func TestReload_AppliesLiveFields(t *testing.T) {
       on_failure: pause
 `},
 			verify: func(t *testing.T, cfg *config.Config) {
-				require.Len(t, cfg.Pipelines["one-stage"], 1)
-				assert.Equal(t, "step2", cfg.Pipelines["one-stage"][0].Stage)
+				require.Len(t, cfg.Pipelines["one-stage"].Legacy, 1)
+				assert.Equal(t, "step2", cfg.Pipelines["one-stage"].Legacy[0].Stage)
 			},
 		},
 		{

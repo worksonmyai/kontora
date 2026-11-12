@@ -17,6 +17,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/metrics"
 	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/pipeline"
+	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
@@ -25,24 +26,29 @@ import (
 
 // executionRecord survives independently of optional conversation resume records.
 type executionRecord struct {
-	Invocation           session.Invocation   `json:"invocation"`
-	PreviousInvocationID *string              `json:"previous_invocation_id,omitempty"`
-	EpicID               string               `json:"epic_id"`
-	Instance             string               `json:"instance"`
-	Worktree             string               `json:"worktree"`
-	Pipeline             string               `json:"pipeline"`
-	TicketStage          string               `json:"ticket_stage"`
-	Status               ticket.Status        `json:"status,omitempty"`
-	RunningStatus        ticket.Status        `json:"running_status,omitempty"`
-	Attempt              int                  `json:"attempt"`
-	Branch               string               `json:"branch"`
-	RepoPath             string               `json:"repo_path"`
-	RepoCommonDir        string               `json:"repo_common_dir,omitempty"`
-	Phase                string               `json:"phase"`
-	Agent                string               `json:"agent"`
-	Run                  int                  `json:"run"`
-	PendingHistory       *ticket.HistoryEntry `json:"pending_history,omitempty"`
-	Transition           *executionTransition `json:"transition,omitempty"`
+	Invocation           session.Invocation          `json:"invocation"`
+	PreviousInvocationID *string                     `json:"previous_invocation_id,omitempty"`
+	EpicID               string                      `json:"epic_id"`
+	Instance             string                      `json:"instance"`
+	Worktree             string                      `json:"worktree"`
+	Pipeline             string                      `json:"pipeline"`
+	TicketStage          string                      `json:"ticket_stage"`
+	Status               ticket.Status               `json:"status,omitempty"`
+	RunningStatus        ticket.Status               `json:"running_status,omitempty"`
+	Attempt              int                         `json:"attempt"`
+	Branch               string                      `json:"branch"`
+	RepoPath             string                      `json:"repo_path"`
+	RepoCommonDir        string                      `json:"repo_common_dir,omitempty"`
+	Phase                string                      `json:"phase"`
+	Agent                string                      `json:"agent"`
+	Run                  int                         `json:"run"`
+	PendingHistory       *ticket.HistoryEntry        `json:"pending_history,omitempty"`
+	Transition           *executionTransition        `json:"transition,omitempty"`
+	GraphBefore          *ticket.GraphState          `json:"graph_before,omitempty"`
+	NodeKind             string                      `json:"node_kind,omitempty"`
+	Template             string                      `json:"template,omitempty"`
+	HookTermination      string                      `json:"hook_termination,omitempty"`
+	RunnerTermination    process.TerminationEvidence `json:"runner_termination,omitempty"`
 }
 
 type executionTransition struct {
@@ -53,6 +59,7 @@ type executionTransition struct {
 	LastError   string              `json:"last_error"`
 	Summary     string              `json:"summary"`
 	History     ticket.HistoryEntry `json:"history"`
+	GraphState  *ticket.GraphState  `json:"graph_state,omitempty"`
 }
 
 func executionPath(cfg *config.Config, id string) string {
@@ -80,11 +87,19 @@ func loadExecution(cfg *config.Config, id string) (*executionRecord, error) {
 	if err := json.Unmarshal(data, &rec); err != nil {
 		return nil, err
 	}
-	if rec.Invocation.TicketID != id || rec.Invocation.ID == "" || rec.EpicID == "" {
+	if rec.Invocation.TicketID != id || rec.Invocation.ID == "" || (rec.EpicID == "" && rec.GraphBefore == nil) {
 		return nil, fmt.Errorf("invalid active invocation")
 	}
 	if _, err := session.InvocationFromEnv(func(key string) string { return rec.Invocation.Env()[key] }); err != nil {
 		return nil, err
+	}
+	if rec.Invocation.Version == session.GraphResultVersion && rec.GraphBefore == nil {
+		return nil, fmt.Errorf("graph invocation has no graph state")
+	}
+	if rec.GraphBefore != nil && (rec.Invocation.Version != session.GraphResultVersion ||
+		rec.Invocation.WorkflowExecutionID != rec.GraphBefore.ExecutionID || rec.Invocation.NodeVisitID != rec.GraphBefore.VisitID ||
+		rec.Invocation.DefinitionFingerprint != rec.GraphBefore.DefinitionFingerprint) {
+		return nil, fmt.Errorf("invalid graph invocation identity")
 	}
 	expected, err := filepath.Abs(filepath.Join(expandTilde(cfg.LogsDir), id, "results", rec.Invocation.ID+".json"))
 	if err != nil {
@@ -142,14 +157,24 @@ func (d *Daemon) supervision(t *ticket.Ticket, annotation bool) (string, error) 
 }
 
 func (d *Daemon) bindExecution(t *ticket.Ticket, p spawnAgentParams, params *RunnerParams, epicID string) (*executionRecord, error) {
-	for _, key := range []string{"KONTORA_RESULT_VERSION", "KONTORA_INVOCATION_ID", "KONTORA_RESULT_TICKET", "KONTORA_RESULT_STAGE", "KONTORA_RESULT_FILE"} {
+	if params.Env == nil {
+		params.Env = make(map[string]string)
+	}
+	for key := range (session.Invocation{}).Env() {
 		params.Env[key] = ""
 	}
-	if epicID == "" {
+	params.TerminalReported = nil
+	node, graph, err := executionGraphNode(t, p)
+	if err != nil {
+		return nil, err
+	}
+	if epicID == "" && !graph {
 		return nil, nil
 	}
-	if err := validateSupervisedAgent(p.agentCfg); err != nil {
-		return nil, err
+	if !graph || node.Type == "agent" {
+		if err := validateSupervisedAgent(p.agentCfg); err != nil {
+			return nil, err
+		}
 	}
 	id := newSessionID()
 	resultPath, err := filepath.Abs(filepath.Join(expandTilde(p.cfg.LogsDir), p.ticketID, "results", id+".json"))
@@ -165,6 +190,10 @@ func (d *Daemon) bindExecution(t *ticket.Ticket, p spawnAgentParams, params *Run
 		Worktree: p.wtPath, Pipeline: t.Pipeline, TicketStage: t.Stage, Attempt: t.Attempt,
 		Branch: t.Branch, RepoPath: t.Path, RepoCommonDir: commonDir, Phase: "preparing", Agent: p.agentName, Run: p.run,
 		Status: t.Status, RunningStatus: t.RunningStatus}
+	if graph {
+		bindGraphInvocation(rec, t, p, node)
+	}
+	inv = rec.Invocation
 	expected := executionOf(t)
 	err = d.withTicketMutationOrigin(notify.OriginDaemon, func(repo app.MutationRepository) error {
 		st, err := repo.Get(t.ID)
@@ -174,7 +203,7 @@ func (d *Daemon) bindExecution(t *ticket.Ticket, p spawnAgentParams, params *Run
 		current := st.Ticket
 		claim := d.executions[t.ID]
 		if st.FilePath != p.filePath || !current.IsRunning() || d.claimedElsewhere(current) || current.HasOwnershipMetadata() ||
-			executionOf(current) != expected || (claim != nil && claim.expected != expected) {
+			executionOf(current) != expected || (claim != nil && claim.expected != expected) || !executionGraphMatches(current, rec) {
 			return errExecutionChanged
 		}
 		// The previous identity distinguishes an interrupted binding from a different invocation.
@@ -194,7 +223,9 @@ func (d *Daemon) bindExecution(t *ticket.Ticket, p spawnAgentParams, params *Run
 			claim.expected = executionOf(current)
 		}
 		// A runner may start only after the ticket binding and launch commit are written.
-		rec.Phase = "running"
+		if !graph {
+			rec.Phase = "running"
+		}
 		return saveExecution(p.cfg, rec)
 	})
 	if err != nil {
@@ -202,8 +233,35 @@ func (d *Daemon) bindExecution(t *ticket.Ticket, p spawnAgentParams, params *Run
 	}
 	maps.Copy(params.Env, inv.Env())
 	params.RequireTermination = true
-	params.TerminalReported = func() bool { return terminalReported(inv.ResultPath) }
+	if rec.NodeKind != "check" {
+		params.TerminalReported = func() bool { return terminalReported(inv.ResultPath) }
+	}
 	return rec, nil
+}
+
+func executionGraphNode(t *ticket.Ticket, p spawnAgentParams) (config.WorkflowNode, bool, error) {
+	definition := p.cfg.Pipelines[t.Pipeline]
+	if p.annotation || t.GraphState == nil || definition.Graph == nil {
+		return config.WorkflowNode{}, false, nil
+	}
+	node, ok := definition.Graph.Node(p.stageName)
+	if !ok || (node.Type != "agent" && node.Type != "check") {
+		return config.WorkflowNode{}, true, fmt.Errorf("workflow node %q is not executable", p.stageName)
+	}
+	return node, true, nil
+}
+
+func bindGraphInvocation(rec *executionRecord, t *ticket.Ticket, p spawnAgentParams, node config.WorkflowNode) {
+	rec.GraphBefore = t.GraphState.Clone()
+	if p.graphState != nil {
+		rec.GraphBefore = p.graphState.Clone()
+	}
+	rec.NodeKind, rec.Template, rec.Phase = node.Type, node.Stage, "bound"
+	rec.Invocation.Version = session.GraphResultVersion
+	rec.Invocation.Verdicts = slices.Clone(node.Verdicts)
+	rec.Invocation.WorkflowExecutionID = rec.GraphBefore.ExecutionID
+	rec.Invocation.NodeVisitID = rec.GraphBefore.VisitID
+	rec.Invocation.DefinitionFingerprint = rec.GraphBefore.DefinitionFingerprint
 }
 
 func (d *Daemon) invocationScope(t *ticket.Ticket, p spawnAgentParams) (string, error) {
@@ -232,6 +290,14 @@ func classifyExecution(rec *executionRecord, run *agentRun, failure string) {
 		return
 	}
 	run.Execution = rec
+	rec.RunnerTermination = run.Result.Termination
+	if rec.NodeKind == "check" {
+		return
+	}
+	if rec.Invocation.Version == session.GraphResultVersion {
+		classifyGraphExecution(rec, run, failure)
+		return
+	}
 	report, err := session.ReadResult(rec.Invocation.ResultPath)
 	run.Reported = !errors.Is(err, os.ErrNotExist)
 	switch {
@@ -253,8 +319,46 @@ func classifyExecution(rec *executionRecord, run *agentRun, failure string) {
 	}
 }
 
+func classifyGraphExecution(rec *executionRecord, run *agentRun, failure string) {
+	report, err := session.ReadResult(rec.Invocation.ResultPath, rec.Invocation.Version)
+	run.Reported = !errors.Is(err, os.ErrNotExist)
+	if err == nil {
+		err = session.ValidateGraphResult(report, rec.Invocation.Verdicts)
+	}
+	run.Verdict = ""
+	switch {
+	case err != nil:
+		run.Outcome = "protocol_error"
+		if errors.Is(err, os.ErrNotExist) {
+			run.OutcomeReason = "result protocol: missing current-invocation report"
+		} else {
+			run.OutcomeReason = "result protocol: " + err.Error()
+		}
+	case report.Outcome == "blocked":
+		run.Outcome, run.OutcomeReason = "blocked", report.Summary+" Next step: "+report.NextStep
+	case failure != "":
+		run.Outcome, run.OutcomeReason = "failed", failure
+	case run.Result.ExitCode != 0:
+		run.Outcome, run.OutcomeReason = "failed", fmt.Sprintf("agent exited with code %d", run.Result.ExitCode)
+	default:
+		run.Outcome, run.OutcomeReason, run.Verdict = "complete", report.Summary, report.Verdict
+	}
+}
+
+func executionGraphMatches(t *ticket.Ticket, rec *executionRecord) bool {
+	before, current := rec.GraphBefore, t.GraphState
+	if before == nil || current == nil {
+		return before == nil && current == nil
+	}
+	return current.Version == before.Version && current.ExecutionID == before.ExecutionID &&
+		current.Revision == before.Revision && current.DefinitionFingerprint == before.DefinitionFingerprint &&
+		current.VisitID == before.VisitID && current.Visit == before.Visit &&
+		rec.Invocation.WorkflowExecutionID == before.ExecutionID && rec.Invocation.NodeVisitID == before.VisitID &&
+		rec.Invocation.DefinitionFingerprint == before.DefinitionFingerprint
+}
+
 func executionLifecycleMatches(t *ticket.Ticket, rec *executionRecord) bool {
-	return t.Stage == rec.TicketStage && t.Pipeline == rec.Pipeline && t.Attempt == rec.Attempt &&
+	return executionGraphMatches(t, rec) && t.Stage == rec.TicketStage && t.Pipeline == rec.Pipeline && t.Attempt == rec.Attempt &&
 		t.Branch == rec.Branch && t.Path == rec.RepoPath && !t.HasOwnershipMetadata()
 }
 
@@ -274,7 +378,7 @@ func executionMatches(t *ticket.Ticket, rec *executionRecord) bool {
 }
 
 func preparingExecutionBindingMatches(t *ticket.Ticket, rec *executionRecord) bool {
-	return rec.Phase == "preparing" && rec.PreviousInvocationID != nil &&
+	return (rec.Phase == "preparing" || rec.Phase == "bound") && rec.PreviousInvocationID != nil &&
 		t.InvocationID == *rec.PreviousInvocationID && executionLifecycleMatches(t, rec)
 }
 
@@ -287,7 +391,8 @@ func committedExecutionMatches(t *ticket.Ticket, rec *executionRecord) bool {
 	if rec.Phase != "transition" || tr == nil || t.InvocationID != "" || t.ID != rec.Invocation.TicketID ||
 		t.Pipeline != rec.Pipeline || t.Branch != rec.Branch || t.Path != rec.RepoPath ||
 		t.Status != tr.Status || t.RunningStatus != "" || t.Stage != tr.Stage || t.Attempt != tr.Attempt ||
-		!reflect.DeepEqual(t.CompletedAt, tr.CompletedAt) || t.LastError != tr.LastError || t.Summary != tr.Summary {
+		!reflect.DeepEqual(t.CompletedAt, tr.CompletedAt) || t.LastError != tr.LastError || t.Summary != tr.Summary ||
+		!reflect.DeepEqual(t.GraphState, tr.GraphState) {
 		return false
 	}
 	matches := 0
@@ -309,11 +414,15 @@ func (d *Daemon) beginFinalization(cfg *config.Config, rec *executionRecord, run
 	rec.Phase = "finalizing"
 	if len(runs) != 0 {
 		run := runs[0]
+		if rec.GraphBefore != nil {
+			rec.RunnerTermination = run.Result.Termination
+		}
 		started, ended := run.Result.StartedAt, run.Result.ExitedAt
 		rec.PendingHistory = &ticket.HistoryEntry{Stage: rec.Invocation.Stage, Agent: rec.Agent, Run: rec.Run,
 			StartedAt: &started, CompletedAt: &ended, ExitCode: run.Result.ExitCode, Model: run.Model, Effort: run.Effort,
 			Summary: runSummary("", run.FinalMessage), SessionKind: run.SessionKind, SessionRef: run.SessionRef,
 			RunOutcome: ticket.RunOutcome(run.Outcome), OutcomeReason: run.OutcomeReason, InvocationID: rec.Invocation.ID}
+		setGraphHistoryProvenance(rec.PendingHistory, rec)
 	}
 	return saveExecution(cfg, rec)
 }
@@ -323,17 +432,26 @@ func persistTransition(cfg *config.Config, rec *executionRecord, t *ticket.Ticke
 		return nil
 	}
 	var row ticket.HistoryEntry
-	for _, h := range t.History {
+	for i, h := range t.History {
 		if h.InvocationID == rec.Invocation.ID {
+			setGraphHistoryProvenance(&h, rec)
 			row = h
+			history := slices.Clone(t.History)
+			history[i] = h
+			if err := t.SetField("history", history); err != nil {
+				return err
+			}
 			break
 		}
 	}
 	if row.InvocationID == "" {
 		return fmt.Errorf("finalization has no invocation history")
 	}
+	if rec.GraphBefore != nil && t.GraphState == nil {
+		return fmt.Errorf("graph finalization has no graph state")
+	}
 	rec.Transition = &executionTransition{Status: t.Status, Stage: t.Stage, Attempt: t.Attempt,
-		CompletedAt: t.CompletedAt, LastError: t.LastError, Summary: t.Summary, History: row}
+		CompletedAt: t.CompletedAt, LastError: t.LastError, Summary: t.Summary, History: row, GraphState: t.GraphState.Clone()}
 	rec.Phase = "transition"
 	return saveExecution(cfg, rec)
 }
@@ -365,7 +483,18 @@ func appendRunHistory(t *ticket.Ticket, run agentRun, agent, stage string, index
 		ExitCode: run.Result.ExitCode, StartedAt: &started, CompletedAt: &ended,
 		Summary: runSummary(t.Summary, run.FinalMessage), SessionKind: run.SessionKind, SessionRef: run.SessionRef,
 		RunOutcome: ticket.RunOutcome(run.Outcome), OutcomeReason: run.OutcomeReason, InvocationID: id}
+	setGraphHistoryProvenance(&h, run.Execution)
 	_ = t.SetField("history", append(t.History, h))
+}
+
+func setGraphHistoryProvenance(h *ticket.HistoryEntry, rec *executionRecord) {
+	if rec.GraphBefore == nil {
+		return
+	}
+	h.WorkflowExecutionID = rec.Invocation.WorkflowExecutionID
+	h.NodeVisitID = rec.Invocation.NodeVisitID
+	h.DefinitionFingerprint = rec.Invocation.DefinitionFingerprint
+	h.Template = rec.Template
 }
 
 func (d *Daemon) reconcileRetainedExecutionLocked(t *ticket.Ticket, path string) bool {
@@ -425,10 +554,16 @@ func (d *Daemon) reconcileExecutionLocked(t *ticket.Ticket, path string) bool {
 		return true
 	}
 	*t = *fresh
-	if d.recoveredReservations[t.ID].finishing || d.claimedElsewhere(t) || t.HasOwnershipMetadata() {
+	if d.recoveredReservations[t.ID].finishing {
+		return true
+	}
+	if d.reconcileClaimedExecutionLocked(cfg, t) {
 		return true
 	}
 	rec, err := loadExecution(cfg, t.ID)
+	if d.reconcileGraphExecutionLocked(cfg, t, path, rec, err) {
+		return true
+	}
 	if (!t.IsRunning() || !t.Kontora) && errors.Is(err, os.ErrNotExist) {
 		d.reconcileLegacyOverrideLocked(t)
 		return true
@@ -475,6 +610,74 @@ func (d *Daemon) reconcileExecutionLocked(t *ticket.Ticket, path string) bool {
 	return d.finishRecoveredExecutionLocked(t, path, rec)
 }
 
+// External claims prevent reconciliation, but do not prove our graph hooks stopped.
+func (d *Daemon) reconcileClaimedExecutionLocked(cfg *config.Config, t *ticket.Ticket) bool {
+	if !d.claimedElsewhere(t) && !t.HasOwnershipMetadata() {
+		return false
+	}
+	if rec, err := loadExecution(cfg, t.ID); err == nil && rec.Instance == d.instanceName &&
+		rec.GraphBefore != nil && rec.HookTermination == "pending" {
+		d.reserveRecoveredExecutionLocked(t)
+	}
+	return true
+}
+
+// Graph recovery keeps uncertain node effects journaled rather than replaying them.
+// A false result leaves ordinary and inactive journal-less recovery to the caller.
+func (d *Daemon) reconcileGraphExecutionLocked(cfg *config.Config, t *ticket.Ticket, path string, rec *executionRecord, err error) bool {
+	if err != nil {
+		if t.GraphState == nil {
+			return false
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			if !t.IsRunning() && t.InvocationID == "" {
+				return false
+			}
+			d.pauseMissingGraphExecutionLocked(cfg, t, path)
+		} else {
+			// An unreadable graph journal cannot prove that hook children stopped.
+			d.reserveRecoveredExecutionLocked(t)
+			d.pauseRecoveryLocked(t, path, "workflow recovery: "+err.Error()+"; inspect before Retry", true)
+		}
+		return true
+	}
+	if rec.GraphBefore == nil {
+		return false
+	}
+	if rec.Instance != d.instanceName || d.claimedElsewhere(t) {
+		d.reserveRecoveredExecutionLocked(t)
+		return true
+	}
+	if rec.HookTermination == "pending" {
+		d.pauseGraphRecoveryLocked(t, path, rec, "workflow recovery: hook termination is unconfirmed; inspect hook processes before Retry", true)
+		return true
+	}
+	if !d.confirmRecoveryTerminationLocked(t) {
+		d.pauseGraphRecoveryLocked(t, path, rec, "workflow recovery: runner termination is unconfirmed; inspect before Retry", true)
+		return true
+	}
+	return d.finishRecoveredExecutionLocked(t, path, rec)
+}
+
+func (d *Daemon) pauseMissingGraphExecutionLocked(cfg *config.Config, t *ticket.Ticket, path string) {
+	id := t.InvocationID
+	if id == "" {
+		id = newSessionID()
+	}
+	resultPath, err := filepath.Abs(filepath.Join(expandTilde(cfg.LogsDir), t.ID, "results", id+".json"))
+	if err != nil {
+		d.reserveRecoveredExecutionLocked(t)
+		return
+	}
+	rec := &executionRecord{Invocation: session.Invocation{Version: session.GraphResultVersion, ID: id, TicketID: t.ID,
+		Stage: t.Stage, ResultPath: resultPath, WorkflowExecutionID: t.GraphState.ExecutionID,
+		NodeVisitID: t.GraphState.VisitID, DefinitionFingerprint: t.GraphState.DefinitionFingerprint},
+		Instance: d.instanceName, Pipeline: t.Pipeline, TicketStage: t.Stage, Attempt: t.Attempt,
+		Branch: t.Branch, RepoPath: t.Path, GraphBefore: t.GraphState.Clone(), Status: t.Status, RunningStatus: t.RunningStatus,
+		HookTermination: "pending"}
+	d.pauseGraphRecoveryLocked(t, path, rec, "workflow recovery: missing journal; effects are unknown; inspect before Retry", true)
+}
+
 func (d *Daemon) reconcileLegacyOverrideLocked(t *ticket.Ticket) {
 	_, retained := d.recoveredReservations[t.ID]
 	epicID, scopeErr := d.supervision(t, t.AnnotationReturnStatus != "")
@@ -499,6 +702,11 @@ func (d *Daemon) finishRecoveredExecutionLocked(t *ticket.Ticket, path string, r
 	before := t.Clone()
 	if committedExecutionMatches(t, rec) {
 		d.completeRecoveredExecutionLocked(t, rec)
+		return true
+	}
+	if rec.GraphBefore != nil && (rec.Phase != "transition" || rec.Transition == nil || rec.Transition.GraphState == nil ||
+		(!executionMatches(t, rec) && !preparingExecutionMatches(t, rec))) {
+		d.pauseGraphRecoveryLocked(t, path, rec, "workflow recovery: interrupted node or changed execution; inspect before Retry", false)
 		return true
 	}
 	if !executionMatches(t, rec) && !preparingExecutionMatches(t, rec) {
@@ -590,6 +798,13 @@ func (d *Daemon) applyRecoveredExecutionLocked(t *ticket.Ticket, rec *executionR
 		}
 		_ = t.SetField("last_error", tr.LastError)
 		_ = t.SetField("summary", tr.Summary)
+		if rec.GraphBefore != nil {
+			if err := t.SetField("graph_state", tr.GraphState.Clone()); err != nil {
+				*t = *before
+				d.reserveRecoveredExecutionLocked(t)
+				return false
+			}
+		}
 		found := false
 		for _, h := range t.History {
 			if h.InvocationID == rec.Invocation.ID {
@@ -644,7 +859,55 @@ func (d *Daemon) applyRecoveredExecutionLocked(t *ticket.Ticket, rec *executionR
 	return true
 }
 
-func (d *Daemon) pauseRecoveryLocked(t *ticket.Ticket, path, reason string) {
+// Keep the binding and journal: Retry must not silently repeat an interrupted node.
+func (d *Daemon) pauseGraphRecoveryLocked(t *ticket.Ticket, path string, rec *executionRecord, reason string, retain bool) {
+	current, err := ticket.ParseFile(path)
+	if err != nil {
+		d.reserveRecoveredExecutionLocked(t)
+		return
+	}
+	if d.claimedElsewhere(current) || current.HasOwnershipMetadata() || executionOf(current) != executionOf(t) {
+		*t = *current
+		d.reserveRecoveredExecutionLocked(t)
+		return
+	}
+	if !executionLifecycleMatches(current, rec) ||
+		(current.InvocationID != "" && current.InvocationID != rec.Invocation.ID && !preparingExecutionBindingMatches(current, rec)) ||
+		(!current.IsRunning() && current.Status != ticket.StatusTodo && current.Status != ticket.StatusPaused) {
+		*t = *current
+		if retain {
+			d.reserveRecoveredExecutionLocked(t)
+		} else {
+			d.releaseRecoveredExecutionLocked(t.ID)
+		}
+		return
+	}
+	bind := current.InvocationID == "" || ((rec.Phase == "bound" || rec.Phase == "recovery_required") &&
+		rec.PreviousInvocationID != nil && current.InvocationID == *rec.PreviousInvocationID)
+	rec.Phase = "recovery_required"
+	if err := saveExecution(d.config(), rec); err != nil {
+		d.reserveRecoveredExecutionLocked(t)
+		return
+	}
+	*t = *current.Clone()
+	_ = t.SetField("status", string(ticket.StatusPaused))
+	_ = t.SetField("last_error", reason)
+	if bind && executionLifecycleMatches(t, rec) {
+		_ = t.SetField("invocation_id", rec.Invocation.ID)
+	}
+	if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
+		*t = *current
+		d.reserveRecoveredExecutionLocked(t)
+		return
+	}
+	if retain {
+		d.reserveRecoveredExecutionLocked(t)
+	} else {
+		d.releaseRecoveredExecutionLocked(t.ID)
+	}
+}
+
+func (d *Daemon) pauseRecoveryLocked(t *ticket.Ticket, path, reason string, retain ...bool) {
 	current, err := ticket.ParseFile(path)
 	if err != nil {
 		d.reserveRecoveredExecutionLocked(t)
@@ -662,7 +925,11 @@ func (d *Daemon) pauseRecoveryLocked(t *ticket.Ticket, path, reason string) {
 		d.reserveRecoveredExecutionLocked(t)
 		return
 	}
-	d.releaseRecoveredExecutionLocked(t.ID)
+	if len(retain) != 0 && retain[0] {
+		d.reserveRecoveredExecutionLocked(t)
+	} else {
+		d.releaseRecoveredExecutionLocked(t.ID)
+	}
 }
 
 func (d *Daemon) confirmRecoveryTerminationLocked(t *ticket.Ticket) bool {
@@ -893,6 +1160,12 @@ func (d *Daemon) recordStoppedInvocation(root, ctx context.Context, path, agent,
 	defer d.mu.Unlock()
 	t, err := ticket.ParseFile(path)
 	if err != nil || t.InvocationID != run.Execution.Invocation.ID || d.claimedElsewhere(t) || t.HasOwnershipMetadata() {
+		return
+	}
+	if run.Execution.GraphBefore != nil {
+		run.Execution.RunnerTermination = run.Result.Termination
+		d.pauseGraphRecoveryLocked(t, path, run.Execution, "workflow interrupted by operator; inspect before Retry", false)
+		d.setTicketState(t.ID, t, path)
 		return
 	}
 	run.Outcome, run.OutcomeReason = "failed", "execution cancelled by operator"

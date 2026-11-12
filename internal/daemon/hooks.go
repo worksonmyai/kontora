@@ -13,6 +13,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/hook"
+	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
@@ -26,6 +27,17 @@ func (d *Daemon) runHooks(ctx context.Context, cfg *config.Config, log *slog.Log
 	hooks := cfg.HooksFor(hc.RepoPath, hc.Event)
 	if len(hooks) == 0 {
 		return nil
+	}
+	rec := workflowExecutionFrom(ctx)
+	if rec != nil {
+		previous := rec.HookTermination
+		rec.Worktree = hc.Worktree
+		rec.HookTermination = "pending"
+		if err := saveExecution(cfg, rec); err != nil {
+			rec.HookTermination = previous
+			return fmt.Errorf("journal hook start: %w", err)
+		}
+		hc.RequireTermination = true
 	}
 	hc.Project, _, _ = cfg.ProjectFor(hc.RepoPath)
 
@@ -46,6 +58,18 @@ func (d *Daemon) runHooks(ctx context.Context, cfg *config.Config, log *slog.Log
 	err := hook.Run(ctx, specs, hc, out, func(_ hook.Spec, warn error) {
 		log.Warn("hook failed, continuing", "event", hc.Event, "err", warn)
 	})
+	if rec != nil {
+		if errors.Is(err, process.ErrTerminationUncertain) {
+			retainOrdinaryReservation(ctx)
+		} else {
+			rec.HookTermination = "confirmed"
+			if saveErr := saveExecution(cfg, rec); saveErr != nil {
+				rec.HookTermination = "pending"
+				retainOrdinaryReservation(ctx)
+				err = errors.Join(err, fmt.Errorf("journal hook termination: %w", saveErr))
+			}
+		}
+	}
 	if err != nil && ctx.Err() == nil {
 		log.Error("hook failed", "event", hc.Event, "err", err)
 	}
@@ -85,6 +109,13 @@ func (d *Daemon) runWorktreeCreatedHooks(taskCtx context.Context, cfg *config.Co
 	if hookErr == nil {
 		d.clearWorktreeUnprepared(cfg, log, hc.TicketID)
 		return true
+	}
+	if workflowExecutionFrom(taskCtx) != nil {
+		if errors.Is(hookErr, process.ErrTerminationUncertain) {
+			retainOrdinaryReservation(taskCtx)
+		}
+		d.pauseExecution(taskCtx, t, filePath, hookErr.Error())
+		return false
 	}
 	if taskCtx.Err() != nil {
 		return false

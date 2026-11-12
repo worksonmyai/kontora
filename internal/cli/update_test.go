@@ -19,9 +19,9 @@ func updateTestConfig(dir string) *config.Config {
 	return &config.Config{
 		TicketsDir: dir,
 		Statuses:   []string{"blocked"},
-		Pipelines: map[string]config.Pipeline{
-			"one-stage": {{Stage: "s1", Agent: "a1", OnSuccess: "done", OnFailure: "pause"}},
-			"two-stage": {{Stage: "s1", Agent: "a1", OnSuccess: "next", OnFailure: "pause"}, {Stage: "s2", Agent: "a1", OnSuccess: "done", OnFailure: "pause"}},
+		Pipelines: map[string]config.PipelineDefinition{
+			"one-stage": {Legacy: config.Pipeline{{Stage: "s1", Agent: "a1", OnSuccess: "done", OnFailure: "pause"}}},
+			"two-stage": {Legacy: config.Pipeline{{Stage: "s1", Agent: "a1", OnSuccess: "next", OnFailure: "pause"}, {Stage: "s2", Agent: "a1", OnSuccess: "done", OnFailure: "pause"}}},
 		},
 		Agents: map[string]config.Agent{"a1": {Binary: "true"}},
 		Notifications: config.Notifications{Channels: map[string]config.NotifyChannel{

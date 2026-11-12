@@ -129,6 +129,7 @@ var Commands = []Command{
 	}},
 	{Name: "result", Group: "Other", Desc: "Report a terminal stage result for the current invocation", TicketID: true, Flags: []Flag{
 		{Name: "input-file", Desc: "Absolute path to result JSON (default: stdin)", Value: "path"},
+		{Name: "verdict", Desc: "Declared workflow verdict (result version 2)", Value: "text"},
 	}},
 	{Name: "phase-complete", Group: "Other", Desc: "Signal a phase boundary from inside a checkpointing run", TicketID: true, Flags: []Flag{
 		{Name: "completed", Desc: "The phase that just finished", Value: "text"},

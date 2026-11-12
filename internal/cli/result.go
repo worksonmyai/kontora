@@ -16,7 +16,7 @@ import (
 // invocation. inputFile, when present, must be absolute; otherwise stdin is read.
 // It needs neither ticket-store access nor daemon connectivity. An acknowledgement
 // is emitted only after immutable publication (including identical resubmission).
-func ReportResult(subjectID, inputFile string, stdin io.Reader, out io.Writer, getenv func(string) string) error {
+func ReportResult(subjectID, inputFile string, stdin io.Reader, out io.Writer, getenv func(string) string, verdictFlag ...string) error {
 	inv, err := session.InvocationFromEnv(getenv)
 	if err != nil {
 		return err
@@ -56,16 +56,37 @@ func ReportResult(subjectID, inputFile string, stdin io.Reader, out io.Writer, g
 	if err != nil {
 		return fmt.Errorf("reading result input: %w", err)
 	}
-	result, err := session.DecodeResult(data)
+	result, err := session.DecodeResult(data, inv.Version)
 	if err != nil {
 		return err
 	}
-	if _, err := session.PublishResult(inv.ResultPath, result); err != nil {
+	if len(verdictFlag) > 1 {
+		return fmt.Errorf("only one --verdict value is allowed")
+	}
+	if len(verdictFlag) == 1 {
+		if inv.Version != session.GraphResultVersion {
+			return fmt.Errorf("--verdict requires result version 2")
+		}
+		if strings.TrimSpace(verdictFlag[0]) == "" {
+			return fmt.Errorf("--verdict must be nonblank")
+		}
+		if result.Verdict != "" && result.Verdict != verdictFlag[0] {
+			return fmt.Errorf("--verdict conflicts with the JSON verdict")
+		}
+		result.Verdict = verdictFlag[0]
+	}
+	if inv.Version == session.GraphResultVersion {
+		if err := session.ValidateGraphResult(result, inv.Verdicts); err != nil {
+			return err
+		}
+	}
+	if _, err := session.PublishResult(inv.ResultPath, result, inv.Version); err != nil {
 		return err
 	}
 	return json.NewEncoder(out).Encode(struct {
 		Accepted     bool   `json:"accepted"`
 		InvocationID string `json:"invocation_id"`
 		Outcome      string `json:"outcome"`
-	}{Accepted: true, InvocationID: inv.ID, Outcome: result.Outcome})
+		Verdict      string `json:"verdict,omitempty"`
+	}{Accepted: true, InvocationID: inv.ID, Outcome: result.Outcome, Verdict: result.Verdict})
 }

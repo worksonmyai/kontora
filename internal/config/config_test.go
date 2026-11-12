@@ -45,7 +45,7 @@ func TestLoadValid(t *testing.T) {
 	assert.Equal(t, 10*time.Minute, plan.Timeout.Duration)
 
 	// Pipelines
-	pipeline := cfg.Pipelines["default"]
+	pipeline := cfg.Pipelines["default"].Legacy
 	assert.Len(t, pipeline, 4)
 	assert.Equal(t, 2, pipeline[1].MaxRetries)
 }
@@ -1543,12 +1543,12 @@ func TestPipelineRunningStatus(t *testing.T) {
 			if want == "" {
 				want = "in_progress"
 			}
-			assert.Equal(t, want, cfg.Pipelines["p"][0].EffectiveRunningStatus())
+			assert.Equal(t, want, cfg.Pipelines["p"].Legacy[0].EffectiveRunningStatus())
 			data, err := yaml.Marshal(cfg)
 			require.NoError(t, err)
 			reloaded, err := LoadReader(bytes.NewReader(data))
 			require.NoError(t, err)
-			assert.Equal(t, want, reloaded.Pipelines["p"][0].EffectiveRunningStatus())
+			assert.Equal(t, want, reloaded.Pipelines["p"].Legacy[0].EffectiveRunningStatus())
 		})
 	}
 	assert.Equal(t, "in_progress", (PipelineStep{}).EffectiveRunningStatus())
@@ -1726,7 +1726,7 @@ pipelines:
 `
 	cfg, err := LoadReader(strings.NewReader(input))
 	require.NoError(t, err)
-	assert.Equal(t, "review", cfg.Pipelines["p"][0].OnSuccess)
+	assert.Equal(t, "review", cfg.Pipelines["p"].Legacy[0].OnSuccess)
 }
 
 func TestCustomStatusOnFailureReference(t *testing.T) {
@@ -1747,7 +1747,7 @@ pipelines:
 `
 	cfg, err := LoadReader(strings.NewReader(input))
 	require.NoError(t, err)
-	assert.Equal(t, "needs_fix", cfg.Pipelines["p"][0].OnFailure)
+	assert.Equal(t, "needs_fix", cfg.Pipelines["p"].Legacy[0].OnFailure)
 }
 
 func TestCustomStatusLastStageNotNext(t *testing.T) {

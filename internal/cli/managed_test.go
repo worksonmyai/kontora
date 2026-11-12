@@ -66,7 +66,7 @@ func TestLocalManagedRoutingRefusesAnotherDaemon(t *testing.T) {
 
 func TestManagedOfflineWritersRefusePersistedReservation(t *testing.T) {
 	dir := t.TempDir()
-	cfg := &config.Config{TicketsDir: dir, Pipelines: map[string]config.Pipeline{"default": {{Stage: "code"}, {Stage: "review"}}}}
+	cfg := &config.Config{TicketsDir: dir, Pipelines: map[string]config.PipelineDefinition{"default": {Legacy: config.Pipeline{{Stage: "code"}, {Stage: "review"}}}}}
 	for _, id := range []string{"tst-001", "tst-002"} {
 		data := []byte("---\nid: " + id + "\nstatus: open\nkontora: true\npipeline: default\nstage: code\n---\n# Ticket\n")
 		require.NoError(t, os.WriteFile(filepath.Join(dir, id+".md"), data, 0o644))

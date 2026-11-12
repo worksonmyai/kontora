@@ -115,17 +115,17 @@ func (h *testHarness) defaultConfig(agent1Binary, agent2Binary string) *config.C
 			"step1": {Prompt: "do step1 for {{ .Ticket.ID }}"},
 			"step2": {Prompt: "do step2 for {{ .Ticket.ID }}"},
 		},
-		Pipelines: map[string]config.Pipeline{
-			"two-stage": {
+		Pipelines: map[string]config.PipelineDefinition{
+			"two-stage": {Legacy: config.Pipeline{
 				{Stage: "step1", Agent: "agent1", OnSuccess: "next", OnFailure: "pause"},
 				{Stage: "step2", Agent: "agent2", OnSuccess: "done", OnFailure: "pause"},
-			},
-			"one-stage": {
+			}},
+			"one-stage": {Legacy: config.Pipeline{
 				{Stage: "step1", Agent: "agent1", OnSuccess: "done", OnFailure: "pause"},
-			},
-			"retry-stage": {
+			}},
+			"retry-stage": {Legacy: config.Pipeline{
 				{Stage: "step1", Agent: "agent1", OnSuccess: "done", OnFailure: "retry", MaxRetries: 1},
-			},
+			}},
 		},
 	}
 }
@@ -435,9 +435,9 @@ func TestConcurrencyLimit(t *testing.T) {
 	}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	cfg.Stages["step2"] = config.Stage{Prompt: ""}
-	cfg.Pipelines["one-stage"] = config.Pipeline{
+	cfg.Pipelines["one-stage"] = config.PipelineDefinition{Legacy: config.Pipeline{
 		{Stage: "step1", Agent: "agent1", OnSuccess: "done", OnFailure: "pause"},
-	}
+	}}
 	d := h.newDaemon(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -1846,7 +1846,7 @@ func TestHandleAgentExitForeignClaimGuard(t *testing.T) {
 				filePath:    path,
 				stageName:   "step1",
 				result:      process.Result{ExitCode: tc.exitCode, ExitedAt: time.Now()},
-				pipelineCfg: h.cfg.Pipelines["one-stage"],
+				pipelineCfg: h.cfg.Pipelines["one-stage"].Legacy,
 				repoPath:    h.repoDir,
 				wtPath:      filepath.Join(h.wtDir, h.repoName, "tst-eg"),
 			})
@@ -3589,9 +3589,9 @@ func TestStageOverrides(t *testing.T) {
 			agentName := cmp.Or(tc.agentName, "agent1")
 			h.cfg.Agents[agentName] = tc.agent
 			h.cfg.Stages["step1"] = config.Stage{Prompt: "do step1 for {{ .Ticket.ID }}", Model: tc.model, Effort: tc.effort}
-			h.cfg.Pipelines["one-stage"] = config.Pipeline{
+			h.cfg.Pipelines["one-stage"] = config.PipelineDefinition{Legacy: config.Pipeline{
 				{Stage: "step1", Agent: agentName, OnSuccess: "done", OnFailure: "pause"},
-			}
+			}}
 
 			var captured RunnerParams
 			d := New(h.cfg,
@@ -4019,7 +4019,7 @@ func TestHandleAgentExit_PipelinePause_SetsLastError(t *testing.T) {
 	cfg := h.defaultConfig("true", "true")
 	// Set on_failure=pause for step1.
 	p := cfg.Pipelines["one-stage"]
-	p[0].OnFailure = "pause"
+	p.Legacy[0].OnFailure = "pause"
 	cfg.Pipelines["one-stage"] = p
 
 	d := New(cfg,

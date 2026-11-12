@@ -115,7 +115,7 @@ func ResolveViewAgent(cfg *config.Config, t *ticket.Ticket) string {
 		return t.Agent
 	}
 	if pipelineCfg, ok := cfg.Pipelines[t.Pipeline]; ok {
-		for _, step := range pipelineCfg {
+		for _, step := range pipelineCfg.Legacy {
 			if step.Stage == t.Stage {
 				return step.Agent
 			}
@@ -181,8 +181,8 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 	v.AgentOverride = t.Agent != ""
 
 	if pipelineCfg, ok := cfg.Pipelines[t.Pipeline]; ok {
-		stages := make([]string, len(pipelineCfg))
-		for i, step := range pipelineCfg {
+		stages := make([]string, len(pipelineCfg.Legacy))
+		for i, step := range pipelineCfg.Legacy {
 			stages[i] = step.Stage
 		}
 		v.Stages = stages

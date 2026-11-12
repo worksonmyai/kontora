@@ -25,10 +25,19 @@ type executionIdentity struct {
 	attempt                                                                  int
 	started                                                                  string
 	kontora                                                                  bool
+	workflow, visit, definition                                              string
+	revision                                                                 uint64
 }
 
 func executionOf(t *ticket.Ticket) executionIdentity {
+	var workflow, visit, definition string
+	var revision uint64
+	if t.GraphState != nil {
+		workflow, visit, definition = t.GraphState.ExecutionID, t.GraphState.VisitID, t.GraphState.DefinitionFingerprint
+		revision = t.GraphState.Revision
+	}
 	return executionIdentity{
+		workflow: workflow, visit: visit, definition: definition, revision: revision,
 		id: t.ID, pipeline: t.Pipeline, stage: t.Stage, path: t.Path,
 		branch: t.Branch, base: t.BaseBranch, owner: t.ClaimedBy,
 		epic: t.EpicExecution, parent: t.Parent, kind: t.Kind,
@@ -145,7 +154,16 @@ func (d *Daemon) prepareExecution(ctx context.Context, snapshot *ticket.Ticket, 
 }
 
 func (d *Daemon) initializeExecution(cfg *config.Config, t *ticket.Ticket, now time.Time) error {
+	definition, exists := cfg.Pipelines[t.Pipeline]
+	if t.GraphState != nil && !definition.IsGraph() {
+		return errors.New("workflow definition changed; inspect the saved execution before restarting")
+	}
 	runningStatus := ticket.StatusInProgress
+	if exists && definition.IsGraph() {
+		if err := d.initializeWorkflow(cfg, t, definition.Graph); err != nil {
+			return err
+		}
+	}
 	if t.AnnotationReturnStatus == "" {
 		_ = t.SetField("branch", effectiveClaimBranch(cfg, t))
 		if t.IsAgentEpic() {
@@ -153,7 +171,15 @@ func (d *Daemon) initializeExecution(cfg *config.Config, t *ticket.Ticket, now t
 		}
 	}
 	if t.AnnotationReturnStatus == "" && !t.IsAgentEpic() && t.Pipeline != "" {
-		stages, exists := cfg.Pipelines[t.Pipeline]
+		definition, exists := cfg.Pipelines[t.Pipeline]
+		stages := definition.Legacy
+		if definition.IsGraph() {
+			if err := t.SetRunningStatus(runningStatus); err != nil {
+				return err
+			}
+			_ = t.SetField("started_at", now.Format(time.RFC3339Nano))
+			return t.SetField("claimed_by", d.instanceName)
+		}
 		if !exists || len(stages) == 0 {
 			return fmt.Errorf("unknown pipeline %q", t.Pipeline)
 		}
@@ -177,6 +203,25 @@ func (d *Daemon) initializeExecution(cfg *config.Config, t *ticket.Ticket, now t
 	}
 	_ = t.SetField("started_at", now.Format(time.RFC3339Nano))
 	return t.SetField("claimed_by", d.instanceName)
+}
+
+func (d *Daemon) initializeClaim(cfg *config.Config, stored *app.StoredTicket, repo app.MutationRepository) error {
+	err := d.initializeExecution(cfg, stored.Ticket, time.Now())
+	if !errors.Is(err, errWorkflowNoSpawn) {
+		return err
+	}
+	if saveErr := repo.Save(stored); saveErr != nil {
+		return saveErr
+	}
+	return err
+}
+
+func (d *Daemon) reportClaimFailure(t *ticket.Ticket, path string, err error) {
+	if errors.Is(err, errWorkflowNoSpawn) {
+		d.broadcastTicketUpdateLocking(t.ID)
+	} else if !errors.Is(err, errExecutionChanged) {
+		d.pauseTicket(t, path, err.Error())
+	}
 }
 
 func effectiveClaimBranch(cfg *config.Config, t *ticket.Ticket) string {
@@ -247,7 +292,7 @@ func (d *Daemon) claimExecution(ctx context.Context, cfg *config.Config, id stri
 				return errExecutionChanged
 			}
 		}
-		if err := d.initializeExecution(cfg, t, time.Now()); err != nil {
+		if err := d.initializeClaim(cfg, st, repo); err != nil {
 			return err
 		}
 		if t.AnnotationReturnStatus == "" {
@@ -277,9 +322,7 @@ func (d *Daemon) claimExecution(ctx context.Context, cfg *config.Config, id stri
 	})
 	if err != nil {
 		cancel()
-		if !errors.Is(err, errExecutionChanged) {
-			d.pauseTicket(before, ts.filePath, err.Error())
-		}
+		d.reportClaimFailure(before, ts.filePath, err)
 		return nil, nil, nil, "", "", err
 	}
 	taskCtx = context.WithValue(taskCtx, executionContextKey{}, claim)

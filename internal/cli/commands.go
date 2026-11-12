@@ -35,6 +35,8 @@ var Commands = []Command{
 		{Name: "path", Desc: "Repository path", Value: "path"},
 		{Name: "pipeline", Desc: "Pipeline name, or \"none\"", Value: "pipeline"},
 		{Name: "agent", Desc: "Agent name, or \"none\"", Value: "agent"},
+		{Name: "notify", Desc: "Comma-separated notification statuses (\"\" or \"none\" skips the project default)", Value: "text"},
+		{Name: "notify-channels", Desc: "Comma-separated notification channels, or \"none\" to disable delivery", Value: "text"},
 		{Name: "branch", Desc: "Work branch name", Value: "text"},
 		{Name: "base-branch", Desc: "Branch the work branch starts from", Value: "text"},
 		{Name: "status", Desc: "Initial status", Value: "text", Choices: []string{"open", "todo"}},
@@ -56,6 +58,8 @@ var Commands = []Command{
 		{Name: "agent", Desc: "Set agent override (\"\" or \"none\" clears it)", Value: "agent"},
 		{Name: "branch", Desc: "Set branch (\"\" clears it)", Value: "text"},
 		{Name: "base-branch", Desc: "Set base branch (\"\" clears it)", Value: "text"},
+		{Name: "notify", Desc: "Set comma-separated notification statuses (\"\" or \"none\" clears it)", Value: "text"},
+		{Name: "notify-channels", Desc: "Set comma-separated notification channels (\"\" clears it, \"none\" disables delivery)", Value: "text"},
 	}},
 	{Name: "delete", Group: "Tickets", Desc: "Delete a ticket file", Config: true, Store: true, Remote: true, TicketID: true, Flags: []Flag{
 		{Name: "f", Desc: "Confirm deletion (required)"},

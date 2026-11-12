@@ -1165,8 +1165,8 @@ func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.
 	prev, known := d.tickets[t.ID]
 	d.tickets[t.ID] = newTicketState(t, path)
 	// An external edit, the local CLI writing a ticket file itself for example,
-	// is recorded and never sent. The watcher debounces, so a burst arrives as
-	// one settling point rather than as every status it passed through.
+	// sends only with notifications.all_changes. The watcher debounces, so a
+	// burst arrives as one settling point rather than as every status it passed through.
 	d.observe(t, notify.OriginObserved)
 	d.warnUnmatchedNotifyLocked(cfg, t)
 	d.broadcastTicketUpdate(t.ID)

@@ -205,6 +205,9 @@ without changing independent agent resolution.
 - `--path PATH` — repository the ticket works in.
 - `--pipeline NAME` — pipeline to run, or `none` for a standalone ticket.
 - `--agent NAME` — agent to use, or `none` to skip the project default.
+- `--notify STATUSES`: comma-separated statuses. Omit to inherit the project's list;
+  `""` or `none` skips it. Epics do not inherit.
+- `--notify-channels NAMES`: comma-separated channel names; `none` silences delivery.
 - `--branch NAME` — work branch name.
 - `--base-branch NAME` — branch the work branch starts from.
 - `--status STATUS`: `open` or `todo`. Defaults to `todo` for ordinary tickets;
@@ -267,6 +270,9 @@ field.
 - `--pipeline NAME` — set the pipeline (`""` or `none` clears it).
 - `--path PATH` — set the repository path.
 - `--agent NAME` — set the agent override (`""` or `none` clears it).
+- `--notify STATUSES`: set comma-separated statuses (`""` or `none` removes the field).
+- `--notify-channels NAMES`: set comma-separated channels (`""` removes the override;
+  `none` silences delivery).
 - `--branch NAME` — set the work branch (`""` clears it).
 - `--base-branch NAME` — set the base branch (`""` clears it).
 

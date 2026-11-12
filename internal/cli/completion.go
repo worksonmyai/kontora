@@ -81,6 +81,26 @@ func completionCommands() []Command {
 	return append(slices.Clone(Commands), Command{Name: "help", Desc: "Show usage"})
 }
 
+func subcommandNames(cmd Command) []string {
+	names := make([]string, 0, len(cmd.Subcommands))
+	for _, child := range cmd.Subcommands {
+		names = append(names, child.Name)
+	}
+	return names
+}
+
+func completionScopes() []Command {
+	var scopes []Command
+	for _, cmd := range Commands {
+		scopes = append(scopes, cmd)
+		for _, child := range cmd.Subcommands {
+			child.Name = cmd.Name + "/" + child.Name
+			scopes = append(scopes, child)
+		}
+	}
+	return scopes
+}
+
 // fishCompletion renders the fish script from the Commands table, so a command
 // or flag added there is offered without a second edit here.
 func fishCompletion() string {
@@ -102,18 +122,27 @@ complete -c kontora -f
 	b.WriteString("\n# Subcommands\n")
 	for _, cmd := range Commands {
 		for _, sub := range cmd.Subcommands {
-			fmt.Fprintf(&b, "complete -c kontora -n '__fish_seen_subcommand_from %s' -a %s\n", cmd.Name, sub)
+			fmt.Fprintf(&b, "complete -c kontora -n '__kontora_command %s; and test (count (commandline -opc)) -eq 2' -a %s -d '%s'\n", cmd.Name, sub.Name, fishQuote(sub.Desc))
 		}
 	}
 
 	b.WriteString("\n# Per-command flags\n")
-	for _, cmd := range Commands {
+	for _, cmd := range completionScopes() {
 		for _, f := range commandFlags(cmd) {
-			b.WriteString(fishFlag(cmd.Name, f) + "\n")
+			b.WriteString(fishFlag(strings.ReplaceAll(cmd.Name, "/", " "), f) + "\n")
 		}
 	}
 
 	b.WriteString(`
+# Match the command path, not a child name that also names a ticket command.
+function __kontora_command
+    set -l tokens (commandline -opc)
+    test "$tokens[2]" = "$argv[1]"; or return 1
+    if test (count $argv) -gt 1
+        test "$tokens[3]" = "$argv[2]"
+    end
+end
+
 # __kontora_config_flag repeats the --config the user already typed, so the
 # ticket list comes from the same config file the command will use.
 function __kontora_config_flag
@@ -146,7 +175,7 @@ end
 `)
 	fmt.Fprintf(&b, "set -l __kontora_id_cmds %s\n", strings.Join(ticketIDCommands(), " "))
 	b.WriteString(`for cmd in $__kontora_id_cmds
-    complete -c kontora -n "__fish_seen_subcommand_from $cmd" -a '(__kontora_ticket_ids)'
+    complete -c kontora -n "__kontora_command $cmd" -a '(__kontora_ticket_ids)'
 end
 `)
 
@@ -157,7 +186,7 @@ end
 // -s, matching how fish distinguishes --flag from -f.
 func fishFlag(cmd string, f Flag) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "complete -c kontora -n '__fish_seen_subcommand_from %s'", cmd)
+	fmt.Fprintf(&b, "complete -c kontora -n '__kontora_command %s'", cmd)
 	if len(f.Name) == 1 {
 		fmt.Fprintf(&b, " -s %s", f.Name)
 	} else {
@@ -227,14 +256,29 @@ _kontora() {
 
     _arguments -C '1: :->command' '*:: :->args' && return
 
+    local command=$words[1]
+    case "$command/$words[2]" in
+`)
+	for _, cmd := range Commands {
+		if len(cmd.Subcommands) == 0 {
+			continue
+		}
+		var paths []string
+		for _, child := range cmd.Subcommands {
+			paths = append(paths, cmd.Name+"/"+child.Name)
+		}
+		fmt.Fprintf(&b, "        %s) command=\"$command/$words[2]\"; words=(\"${words[@]:1}\"); (( CURRENT-- )) ;;\n", strings.Join(paths, "|"))
+	}
+	b.WriteString(`    esac
+
     case $state in
         command)
             _describe -t commands 'kontora command' commands && return
             ;;
         args)
-            case $words[1] in
+            case $command in
 `)
-	for _, cmd := range Commands {
+	for _, cmd := range completionScopes() {
 		specs := zshSpecs(cmd)
 		if len(specs) == 0 {
 			continue
@@ -276,7 +320,7 @@ func zshSpecs(cmd Command) []string {
 	case cmd.TicketID:
 		specs = append(specs, "'1:ticket:__kontora_ticket_ids'")
 	case len(cmd.Subcommands) > 0:
-		specs = append(specs, fmt.Sprintf("'1:subcommand:(%s)'", strings.Join(cmd.Subcommands, " ")))
+		specs = append(specs, fmt.Sprintf("'1:subcommand:(%s)'", strings.Join(subcommandNames(cmd), " ")))
 	}
 	// Without a rest spec zsh has nothing left to offer past the first
 	// positional and completes the common prefix of the flags instead, which
@@ -284,6 +328,8 @@ func zshSpecs(cmd Command) []string {
 	switch {
 	case restTakesTicketIDs(cmd):
 		specs = append(specs, "'*:ticket:__kontora_ticket_ids'")
+	case cmd.Args == "REF":
+		specs = append(specs, "'1:automation reference:'")
 	case cmd.Args != "":
 		specs = append(specs, "'*:arg:_default'")
 	}
@@ -391,7 +437,7 @@ __kontora_files() {
 # among the verb's positionals, skipping flags and the values they take.
 __kontora_positional() {
     local value_flags=" $1 " i n=0 w
-    for (( i = 2; i < COMP_CWORD; i++ )); do
+    for (( i = start; i < COMP_CWORD; i++ )); do
         w="${COMP_WORDS[i]}"
         case "$w" in
             =) ;;
@@ -411,7 +457,7 @@ __kontora_positional() {
 }
 
 _kontora() {
-    local cur prev cmd flags value_flags pos
+    local cur prev cmd flags value_flags pos start=2
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
@@ -438,12 +484,25 @@ _kontora() {
     fi
 
     cmd="${COMP_WORDS[1]}"
+    case "$cmd/${COMP_WORDS[2]}" in
+`)
+	for _, cmd := range Commands {
+		if len(cmd.Subcommands) == 0 {
+			continue
+		}
+		var paths []string
+		for _, child := range cmd.Subcommands {
+			paths = append(paths, cmd.Name+"/"+child.Name)
+		}
+		fmt.Fprintf(&b, "        %s) cmd=\"$cmd/${COMP_WORDS[2]}\"; start=3 ;;\n", strings.Join(paths, "|"))
+	}
+	b.WriteString(`    esac
     flags=""
     value_flags=""
 
     case "$cmd" in
 `)
-	for _, cmd := range Commands {
+	for _, cmd := range completionScopes() {
 		flags := commandFlags(cmd)
 		if len(flags) == 0 {
 			continue
@@ -489,7 +548,7 @@ _kontora() {
 			continue
 		}
 		fmt.Fprintf(&b, "        %s)\n            if (( pos == 1 )); then\n                COMPREPLY=( $(compgen -W %q -- \"$cur\") )\n            fi\n            ;;\n",
-			cmd.Name, strings.Join(cmd.Subcommands, " "))
+			cmd.Name, strings.Join(subcommandNames(cmd), " "))
 	}
 	b.WriteString(`    esac
     return 0

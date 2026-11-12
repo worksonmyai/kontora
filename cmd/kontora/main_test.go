@@ -210,7 +210,98 @@ func TestCLIDocsCoverEveryCommand(t *testing.T) {
 		t.Run(cmd.Name, func(t *testing.T) {
 			assert.Contains(t, docs, "`kontora "+cmd.Name,
 				"%q has no heading in docs/cli.md", cmd.Name)
+			if cmd.Name == "automation" {
+				for _, child := range cmd.Subcommands {
+					assert.Contains(t, docs, "### `kontora automation "+child.Name+" ",
+						"automation child has no searchable heading")
+				}
+			}
 		})
+	}
+}
+
+func TestAutomationDocumentationContracts(t *testing.T) {
+	cases := []struct {
+		file string
+		want []string
+	}{
+		{"cli.md", []string{"Every operation needs a running daemon", "no offline fallback", "exact configuration key", "Display names and abbreviated IDs", "KONTORA_OPERATOR_TOKEN", "independently", "--revision", "without an automatic retry", "original full automation ID", "--request-id", "retained history", "--prompt-file -", "--enabled=false", "`null`", "`[]`", "--raw", "mutually exclusive", "`20`", "`200`", "`ls --json` prints the availability envelope when HTTP 200 reports unavailable storage", "HTTP errors produce diagnostics and a nonzero exit without JSON stdout"}},
+		{"automations.md", []string{"daemon API", "no offline storage fallback", "exact configuration keys only", "KONTORA_OPERATOR_TOKEN", "independently", "--revision", "original full ID", "request ID is rejected with a key", "--yes", "-f", "--run N", "--json", "--raw"}},
+		{"configuration.md", []string{"no offline runtime-store fallback", "exact configuration key", "KONTORA_OPERATOR_TOKEN", "--revision", "--enabled=false", "--prompt-file -", "original full automation ID, not a key", "--request-id", "--run N"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("..", "..", "docs", tc.file))
+			require.NoError(t, err)
+			for _, want := range tc.want {
+				assert.Contains(t, string(data), want)
+			}
+			assert.NotContains(t, string(data), "Use the dashboard or [HTTP API](api.md#automations) to edit")
+		})
+	}
+}
+
+func TestAutomationHelpOffline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("help contacted the daemon: %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	var automation cli.Command
+	for _, command := range cli.Commands {
+		if command.Name == "automation" {
+			automation = command
+		}
+	}
+	require.NotEmpty(t, automation.Subcommands)
+	for _, help := range []string{"-h", "--help"} {
+		t.Run("parent "+help, func(t *testing.T) {
+			out, err := runCLIInDir(t, t.TempDir(), []string{"KONTORA_URL=" + server.URL}, nil, "automation", help)
+			require.NoError(t, err, out)
+			assert.Contains(t, out, "Usage: kontora automation")
+			for _, child := range automation.Subcommands {
+				assert.Contains(t, out, child.Name)
+				assert.Contains(t, out, child.Desc)
+			}
+		})
+	}
+	for _, child := range automation.Subcommands {
+		for _, help := range []string{"-h", "--help"} {
+			t.Run(child.Name+" "+help, func(t *testing.T) {
+				missing := filepath.Join(t.TempDir(), "missing-config.yaml")
+				out, err := runCLIInDir(t, t.TempDir(), nil, nil, "automation", child.Name,
+					"--config", missing, "--url", server.URL, help)
+				require.NoError(t, err, out)
+				assert.Contains(t, out, "Usage: kontora automation "+child.Name)
+				assert.Contains(t, out, child.Desc)
+				for _, flag := range child.Flags {
+					assert.Contains(t, out, "\n  -"+flag.Name, "metadata flag missing from help")
+				}
+				for _, name := range []string{"config", "url", "token", "operator-token"} {
+					assert.Contains(t, out, "\n  -"+name)
+				}
+				assert.NotContains(t, out, "tickets-dir")
+				if child.Name == "update" {
+					for _, suffix := range []string{"(default \"skip\")", "(default \"30m\")", "(default \"UTC\")", "(default \"worktree\")"} {
+						assert.NotContains(t, out, suffix)
+					}
+					for _, flag := range []string{"enabled", "timeout", "timezone", "workspace", "overlap"} {
+						_, description, ok := strings.Cut(out, "\n  -"+flag)
+						require.True(t, ok)
+						description, _, _ = strings.Cut(description, "\n  -")
+						assert.Contains(t, description, "omitted preserves the current value")
+					}
+				}
+				if child.Name == "new" {
+					for _, value := range []string{"skip", "30m", "UTC", "worktree"} {
+						assert.Contains(t, out, "(default \""+value+"\")")
+					}
+				}
+				if child.Name == "attach" {
+					assert.NotContains(t, out, "-json")
+				}
+			})
+		}
 	}
 }
 

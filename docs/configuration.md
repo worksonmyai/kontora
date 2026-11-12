@@ -119,8 +119,27 @@ restart. See [Claim](tickets.md#claim-from-a-secondary-folder) for transfer rule
 ## Automations
 
 [Automations](automations.md) are scheduled agent runs without tickets or pipelines.
-Manage them through YAML, the dashboard, `kontora automation new`, or the [HTTP API](api.md#automations).
-Dashboard and API mutations write entries under `automations:` in the daemon's configuration file.
+Manage them through YAML, the dashboard, `kontora automation`, or the [HTTP API](api.md#automations).
+CLI, dashboard, and API mutations write entries under `automations:` in the daemon's configuration file.
+
+The CLI supports listing, viewing, creation, partial updates, duplication, deletion, pause, resume, manual runs, stop, history, logs, preview, and terminals.
+All CLI operations use the daemon API, even local reads and schedule preview. There is no offline runtime-store fallback.
+An explicit `--url URL` does not require local configuration. Parent and child help work offline.
+Every child accepts `--config`, `--url`, `--token`, and `--operator-token`.
+The credentials default to `KONTORA_TOKEN` and `KONTORA_OPERATOR_TOKEN`; HTTP and terminal connections send both independently.
+
+Use a full automation ID or exact configuration key. Display names and abbreviated IDs are not accepted.
+For retained history after deletion, use the original full ID, not a recreated key.
+Creation and duplication leave scheduling disabled unless `--enabled` is supplied. `--prompt-file -` reads a prompt from stdin.
+Updates preserve omitted fields; `--model ''` and `--enabled=false` apply explicit empty and false values.
+Update, delete, pause, and resume accept a positive `--revision`; otherwise they use the fetched revision.
+Stale revisions fail without automatic retries. Delete requires `--yes` or `-f`.
+Pause leaves accepted runs untouched, and manual runs remain available while paused.
+
+Creation, duplication, and manual runs accept `--request-id` for safe retries after uncertain responses.
+Manual retries with an explicit request ID require the original full automation ID, not a key.
+All noninteractive children accept `--json`. Stop, logs, and terminal inspection require `--run N`; attach also accepts an optional exact run.
+See the [CLI reference](cli.md#automations) and [CLI workflows](automations.md#cli-workflows) for syntax, outputs, and retry rules.
 
 ```yaml
 automations:

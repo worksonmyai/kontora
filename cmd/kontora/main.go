@@ -1497,55 +1497,23 @@ func cmdLogs() {
 	}
 }
 
-func cmdAutomation() {
-	if len(os.Args) < 3 || os.Args[2] != "new" {
-		log.Fatal("usage: kontora automation new --name NAME --prompt-file FILE --path PATH --agent AGENT --schedule SCHEDULE")
-	}
-	fs := flag.NewFlagSet("automation new", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
-	urlFlag, tokenFlag := addRemoteFlags(fs)
-	key := fs.String("key", "", "config key (derived from name when empty)")
-	name := fs.String("name", "", "automation name")
-	promptFile := fs.String("prompt-file", "", "file containing the prompt template")
-	path := fs.String("path", "", "repository path on the daemon host")
-	agent := fs.String("agent", "", "configured agent")
-	model := fs.String("model", "", "model override")
-	schedule := fs.String("schedule", "", "five-field cron or an interval, such as 30m")
-	zone := fs.String("timezone", "UTC", "IANA timezone")
-	workspace := fs.String("workspace", "worktree", "worktree or repo")
-	overlap := fs.String("overlap", "skip", "skip, queue or replace")
-	timeout := fs.String("timeout", "30m", "run timeout")
-	enabled := fs.Bool("enabled", false, "enable scheduled runs")
-	if err := fs.Parse(os.Args[3:]); err != nil {
-		log.Fatal(err)
-	}
-	if *promptFile == "" {
-		fs.Usage()
-		log.Fatal("--prompt-file is required")
-	}
-	body, err := os.ReadFile(*promptFile)
-	if err != nil {
-		log.Fatal(err)
-	}
-	rc := remoteClient(*urlFlag, *tokenFlag)
-	if rc == nil {
-		rc = cli.LocalClient(mustLoadConfig(*configPath))
-	}
-	row, err := cli.NewAutomation(rc, *key, automation.Spec{Name: *name, Prompt: string(body), Path: *path, Agent: *agent, Model: *model, Schedule: *schedule, Timezone: *zone, Workspace: *workspace, Overlap: *overlap, Timeout: *timeout, Enabled: *enabled})
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("created %s · automations.%s\n", row.ID, row.Key)
-}
-
 func cmdAttach() {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
 	configPath, ticketsDir := addStoreFlags(fs)
 	rw := fs.Bool("rw", false, "attach in read-write mode")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
+	operator := fs.String("operator-token", os.Getenv("KONTORA_OPERATOR_TOKEN"), "operator credential (or KONTORA_OPERATOR_TOKEN)")
 	taskID := parseTicketFlags(fs, os.Args[2:])
 
+	if automation.IsID(taskID) {
+		rc := daemonClient(*configPath, *urlFlag, *tokenFlag).WithOperatorToken(*operator)
+		if err := remote.Attach(context.Background(), rc, taskID, *rw); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		rc = rc.WithOperatorToken(*operator)
 		if taskID == "" {
 			log.Fatal("ticket ID is required: kontora attach TICKET_ID")
 		}

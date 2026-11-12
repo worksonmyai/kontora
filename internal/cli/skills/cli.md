@@ -246,11 +246,29 @@ checked at creation the way a `todo` one does.
 
 ## kontora view
 
-`kontora view [--body] TICKET_ID` — print the ticket's status, pipeline
-position and body.
+`kontora view [--body | --notes | --last N] TICKET_ID` prints the ticket's
+status, pipeline position, effective agent and body by default. A ticket's
+`agent` override takes precedence over the pipeline stage's agent.
 
-`--body` prints only the stored markdown after the frontmatter, unstyled and
-unpaged, which is exactly what `kontora update --body-file` writes back.
+| Flag | Description |
+|------|-------------|
+| `--body` | Print only the stored markdown after the frontmatter, exactly what `kontora update --body-file` writes back. |
+| `--notes` | Print from the `## Notes` heading through the end of the body, including later sections. |
+| `--last N` | Print from the start of the Nth-last note through the end of the body. N must be a positive integer; implies `--notes`. |
+
+```sh
+kontora view TICKET_ID
+kontora view --body TICKET_ID
+kontora view --notes TICKET_ID
+kontora view --last 5 TICKET_ID
+```
+
+Legacy notes without bylines also count.
+If N exceeds the note count, `--last N` prints the whole section, including
+`## Notes`. Both note views keep trailing sections, including old review text.
+Without a Notes section, both print nothing and exit 0. Combining `--body` with
+`--notes` or `--last` fails with a usage error. All three flags print unstyled
+markdown without a pager in local and remote mode.
 
 ## kontora edit
 
@@ -429,10 +447,28 @@ method: `kontora skills show cli "Handoff submission"`.
 This is how you leave something for the next stage to read: a stage prompt
 containing `{{ .Ticket.Description }}` gets the whole body, notes included.
 
-Each note is written with a byline carrying its timestamp, its author and a
-4-character id: `**2026-03-06T12:00:00Z · claude · q88f**`. Running under the
-daemon, the author defaults to `$KONTORA_AGENT`, the name of the agent this run
-is, so you do not have to pass it.
+Adding or editing note text shifts headings outside fenced code only when the
+shallowest heading is h1 or h2. That heading becomes h3. Relative levels stay
+the same, capped at h6. Notes whose shallowest heading is h3 or deeper need no
+shift. Backtick and tilde fenced code stays unchanged; Kontora appends a closing fence
+if needed. Outside fenced code, a line beginning with `# ` or `## ` at column
+zero ends the Notes section. Inside fences, those lines do not end Notes, and
+bold-only lines do not open notes.
+
+Kontora writes each note with a byline containing its timestamp, author and 4-character id:
+`**2026-03-06T12:00:00Z · claude · q88f**`. Outside fences, a bold-only line
+opens a note only if its first `·` field starts with `YYYY-MM-DD`, or if it
+matches the full `at · author · id` grammar. That grammar permits empty `at`
+and author fields, plus optional `re:<id>` and `edited` flags. For example,
+`** ·  · cd34**` is a byline. `**Verification:**` stays note text.
+On add or edit, byline-like bold lines in note text use outer `__` instead of
+`**` when stored. Both render as bold.
+
+Existing tickets are not migrated. Full-body writes do not normalize note text.
+Use `kontora view --notes TICKET_ID` to include old sections after Notes.
+
+Under the daemon, the author defaults to `$KONTORA_AGENT`, the name of the
+agent for the run, so you do not have to pass it.
 
 | Flag | Description |
 |------|-------------|

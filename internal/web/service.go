@@ -642,9 +642,9 @@ type TicketChild struct {
 }
 
 // NoteInfo is one entry from the ticket body's "## Notes" section. At is the
-// first field of the bold line that opened the note: a UTC RFC3339 timestamp
-// for notes written through AddNote, and whatever the author typed for
-// hand-written ones.
+// first byline field when the full grammar matches, or the whole inner text of
+// a date-led legacy byline otherwise. It may be empty for minted legacy notes.
+// AddNote writes UTC RFC3339 timestamps.
 //
 // ID is the note's minted 4-character id, or "#<index>" for a note written
 // before the format carried one. Both address the note on the mutating routes;

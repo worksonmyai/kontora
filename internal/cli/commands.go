@@ -47,6 +47,8 @@ var Commands = []Command{
 	}},
 	{Name: "view", Group: "Tickets", Desc: "Print ticket details", Config: true, Store: true, Remote: true, TicketID: true, Flags: []Flag{
 		{Name: "body", Desc: "Print only the ticket body"},
+		{Name: "notes", Desc: "Print the Notes section and all later sections"},
+		{Name: "last", Desc: "Print the last N notes and all later sections", Value: "text"},
 	}},
 	{Name: "edit", Group: "Tickets", Desc: "Open a ticket in $EDITOR", Config: true, Store: true, TicketID: true},
 	{Name: "update", Group: "Tickets", Desc: "Update ticket body/frontmatter fields", Config: true, Store: true, Remote: true, TicketID: true, Flags: []Flag{

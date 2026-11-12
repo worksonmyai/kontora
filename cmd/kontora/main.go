@@ -27,6 +27,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/cli/tui"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/daemon"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -526,8 +527,22 @@ func cmdView() {
 	fs := flag.NewFlagSet("view", flag.ExitOnError)
 	configPath, ticketsDir := addStoreFlags(fs)
 	bodyOnly := fs.Bool("body", false, "print only the ticket body")
+	notesOnly := fs.Bool("notes", false, "print the Notes section and all later sections")
+	last := fs.Int("last", 0, "print the last N notes and all later sections")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
+	lastSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "last" {
+			lastSet = true
+		}
+	})
+	if *bodyOnly && (*notesOnly || lastSet) {
+		log.Fatal("usage: --body cannot be combined with --notes or --last")
+	}
+	if lastSet && *last <= 0 {
+		log.Fatal("usage: --last must be a positive integer")
+	}
 	if taskID == "" {
 		log.Fatal("ticket ID is required: kontora view TICKET_ID")
 	}
@@ -541,6 +556,16 @@ func cmdView() {
 		// `update --body-file` writes back.
 		if *bodyOnly {
 			fmt.Print(info.Body)
+			return
+		}
+		if lastSet {
+			fmt.Print(ticket.NotesTail(info.Body, *last))
+			return
+		}
+		if *notesOnly {
+			if info.DescriptionTail != nil {
+				fmt.Print(*info.DescriptionTail)
+			}
 			return
 		}
 		err = cli.Page(cli.PagerCommand(""), func(w io.Writer) error {
@@ -557,6 +582,12 @@ func cmdView() {
 
 	if *bodyOnly {
 		if err := cli.ViewBody(cfg, taskID, os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if *notesOnly || lastSet {
+		if err := cli.ViewNotes(cfg, taskID, *last, os.Stdout); err != nil {
 			log.Fatal(err)
 		}
 		return

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -263,24 +264,53 @@ func TestStatus_EmptyDir(t *testing.T) {
 }
 
 func TestStatus_AgentColumn(t *testing.T) {
-	dir := t.TempDir()
-	cfg := testConfig(dir)
+	cases := []struct {
+		name   string
+		fields string
+		want   string
+	}{
+		{"stage agent", "pipeline: default\nstage: code\n", "claude-sonnet"},
+		{"ticket override", "pipeline: default\nstage: code\nagent: pi-personal-sol\n", "pi-personal-sol"},
+		{"pipeline without stage", "pipeline: default\n", ""},
+		{"pipeline without stage with override", "pipeline: default\nagent: pi-personal-sol\n", "pi-personal-sol"},
+		{"standalone", "", "fallback"},
+		{"standalone override", "agent: pi-personal-sol\n", "pi-personal-sol"},
+		{"passive epic", "kind: epic\n", ""},
+		{"built-in rework history", "pipeline: default\nstage: rework\nhistory:\n  - stage: code\n    agent: previous\n", "previous"},
+		{"built-in rework default", "pipeline: default\nstage: rework\n", "fallback"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := testConfig(dir)
+			cfg.DefaultAgent = "fallback"
+			cfg.ReworkIsBuiltin = true
+			writeTicket(t, dir, "tst-001.md", "---\nid: tst-001\nkontora: true\nstatus: todo\n"+tc.fields+"---\n# Ticket\n")
 
-	writeTicket(t, dir, "tst-001.md", `---
-id: tst-001
-kontora: true
-status: todo
-pipeline: default
-path: /tmp/testrepo
-stage: code
----
-# Ticket
-`)
+			var buf bytes.Buffer
+			require.NoError(t, List(cfg, &buf, ListOpts{}))
+			var row []string
+			for line := range strings.SplitSeq(buf.String(), "\n") {
+				if strings.Contains(line, "tst-001") {
+					row = strings.Fields(line)
+					break
+				}
+			}
+			require.GreaterOrEqual(t, len(row), 6, buf.String())
+			assert.Equal(t, dashIfEmpty(tc.want), row[5])
 
-	var buf bytes.Buffer
-	require.NoError(t, List(cfg, &buf, ListOpts{}))
-
-	assert.Contains(t, buf.String(), "claude-sonnet")
+			buf.Reset()
+			require.NoError(t, List(cfg, &buf, ListOpts{JSON: true}))
+			var items []struct {
+				ID    string `json:"id"`
+				Agent string `json:"agent"`
+			}
+			require.NoError(t, json.Unmarshal(buf.Bytes(), &items))
+			require.Len(t, items, 1)
+			assert.Equal(t, "tst-001", items[0].ID)
+			assert.Equal(t, tc.want, items[0].Agent)
+		})
+	}
 }
 
 func TestStatus_ClosedFiltering(t *testing.T) {

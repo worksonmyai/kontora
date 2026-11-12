@@ -425,12 +425,27 @@ func cmdNew() {
 	parent := fs.String("parent", "", "id of the epic to file this ticket under")
 	at := fs.String("at", "", "schedule pickup for an instant, e.g. 2099-09-01T09:00:00+02:00 or \"2099-09-01 09:00\"")
 	after := fs.String("after", "", "schedule pickup this long from now, e.g. 90m, 24h, 3d, 2w")
+	notify := fs.String("notify", "", "comma-separated notification statuses (pass \"\" or \"none\" to skip the project default)")
+	notifyChannels := fs.String("notify-channels", "", "comma-separated notification channels, or \"none\" to disable delivery")
 	descriptionFile := fs.String("description-file", "", "read the ticket description from a file ('-' for stdin)")
 	quiet := fs.Bool("quiet", false, "print only the new ticket ID")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
+
+	var notifyList, notifyChannelList []string
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "notify":
+			notifyList = cli.ParseNotifyList(*notify)
+			if len(notifyList) == 1 && notifyList[0] == "none" {
+				notifyList = []string{}
+			}
+		case "notify-channels":
+			notifyChannelList = cli.ParseNotifyList(*notifyChannels)
+		}
+	})
 
 	title := strings.Join(fs.Args(), " ")
 	if title == "" {
@@ -460,17 +475,19 @@ func cmdNew() {
 			log.Fatal("remote new requires --path (a path on the daemon host)")
 		}
 		info, err := rc.CreateTicket(web.CreateTicketRequest{
-			Title:       title,
-			Path:        *repoPath,
-			Pipeline:    *pipeline,
-			Agent:       *agent,
-			Status:      *status,
-			Body:        body,
-			Branch:      *branch,
-			BaseBranch:  *baseBranch,
-			ScheduledAt: scheduledAt,
-			Kind:        *kind,
-			Parent:      *parent,
+			Title:          title,
+			Path:           *repoPath,
+			Pipeline:       *pipeline,
+			Agent:          *agent,
+			Status:         *status,
+			Body:           body,
+			Branch:         *branch,
+			BaseBranch:     *baseBranch,
+			ScheduledAt:    scheduledAt,
+			Kind:           *kind,
+			Parent:         *parent,
+			Notify:         notifyList,
+			NotifyChannels: notifyChannelList,
 		})
 		if err != nil {
 			log.Fatal(err)
@@ -494,18 +511,20 @@ func cmdNew() {
 	// with --status open is never visible as todo for a watching daemon to
 	// claim.
 	id, err := cli.New(cfg, cli.NewOpts{
-		Path:        path,
-		Pipeline:    *pipeline,
-		Agent:       *agent,
-		Status:      *status,
-		Title:       title,
-		Body:        body,
-		Branch:      *branch,
-		BaseBranch:  *baseBranch,
-		ScheduledAt: scheduledAt,
-		Kind:        *kind,
-		Parent:      *parent,
-		NoEdit:      true,
+		Path:           path,
+		Pipeline:       *pipeline,
+		Agent:          *agent,
+		Status:         *status,
+		Title:          title,
+		Body:           body,
+		Branch:         *branch,
+		BaseBranch:     *baseBranch,
+		ScheduledAt:    scheduledAt,
+		Kind:           *kind,
+		Parent:         *parent,
+		Notify:         notifyList,
+		NotifyChannels: notifyChannelList,
+		NoEdit:         true,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -545,6 +564,9 @@ func cmdView() {
 	}
 	if taskID == "" {
 		log.Fatal("ticket ID is required: kontora view TICKET_ID")
+	}
+	if *bodyOnly && *notesOnly {
+		log.Fatal("--body and --notes cannot be combined")
 	}
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
@@ -630,6 +652,8 @@ func cmdUpdate() {
 	agent := fs.String("agent", "", "set agent override (pass \"\" or \"none\" to clear)")
 	branch := fs.String("branch", "", "set branch (pass \"\" to clear)")
 	baseBranch := fs.String("base-branch", "", "set base branch (pass \"\" to clear)")
+	notify := fs.String("notify", "", "set comma-separated notification statuses (pass \"\" or \"none\" to clear)")
+	notifyChannels := fs.String("notify-channels", "", "set comma-separated notification channels (pass \"\" to clear, or \"none\" to disable delivery)")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
 
@@ -666,8 +690,18 @@ func cmdUpdate() {
 		req.BaseBranch = baseBranch
 	}
 
-	if req.Body == nil && req.Pipeline == nil && req.Path == nil && req.Agent == nil && req.Branch == nil && req.BaseBranch == nil {
-		log.Fatal("nothing to update: pass at least one of --body-file, --pipeline, --path, --agent, --branch, --base-branch")
+	if set["notify"] {
+		req.Notify = cli.ParseNotifyList(*notify)
+		if len(req.Notify) == 1 && req.Notify[0] == "none" {
+			req.Notify = []string{}
+		}
+	}
+	if set["notify-channels"] {
+		req.NotifyChannels = cli.ParseNotifyList(*notifyChannels)
+	}
+
+	if req.Body == nil && req.Pipeline == nil && req.Path == nil && req.Agent == nil && req.Branch == nil && req.BaseBranch == nil && req.Notify == nil && req.NotifyChannels == nil {
+		log.Fatal("nothing to update: pass at least one of --body-file, --pipeline, --path, --agent, --branch, --base-branch, --notify, --notify-channels")
 	}
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
@@ -1512,55 +1546,23 @@ func cmdLogs() {
 	}
 }
 
-func cmdAutomation() {
-	if len(os.Args) < 3 || os.Args[2] != "new" {
-		log.Fatal("usage: kontora automation new --name NAME --prompt-file FILE --path PATH --agent AGENT --schedule SCHEDULE")
-	}
-	fs := flag.NewFlagSet("automation new", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
-	urlFlag, tokenFlag := addRemoteFlags(fs)
-	key := fs.String("key", "", "config key (derived from name when empty)")
-	name := fs.String("name", "", "automation name")
-	promptFile := fs.String("prompt-file", "", "file containing the prompt template")
-	path := fs.String("path", "", "repository path on the daemon host")
-	agent := fs.String("agent", "", "configured agent")
-	model := fs.String("model", "", "model override")
-	schedule := fs.String("schedule", "", "five-field cron or an interval, such as 30m")
-	zone := fs.String("timezone", "UTC", "IANA timezone")
-	workspace := fs.String("workspace", "worktree", "worktree or repo")
-	overlap := fs.String("overlap", "skip", "skip, queue or replace")
-	timeout := fs.String("timeout", "30m", "run timeout")
-	enabled := fs.Bool("enabled", false, "enable scheduled runs")
-	if err := fs.Parse(os.Args[3:]); err != nil {
-		log.Fatal(err)
-	}
-	if *promptFile == "" {
-		fs.Usage()
-		log.Fatal("--prompt-file is required")
-	}
-	body, err := os.ReadFile(*promptFile)
-	if err != nil {
-		log.Fatal(err)
-	}
-	rc := remoteClient(*urlFlag, *tokenFlag)
-	if rc == nil {
-		rc = cli.LocalClient(mustLoadConfig(*configPath))
-	}
-	row, err := cli.NewAutomation(rc, *key, automation.Spec{Name: *name, Prompt: string(body), Path: *path, Agent: *agent, Model: *model, Schedule: *schedule, Timezone: *zone, Workspace: *workspace, Overlap: *overlap, Timeout: *timeout, Enabled: *enabled})
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("created %s · automations.%s\n", row.ID, row.Key)
-}
-
 func cmdAttach() {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
 	configPath, ticketsDir := addStoreFlags(fs)
 	rw := fs.Bool("rw", false, "attach in read-write mode")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
+	operator := fs.String("operator-token", os.Getenv("KONTORA_OPERATOR_TOKEN"), "operator credential (or KONTORA_OPERATOR_TOKEN)")
 	taskID := parseTicketFlags(fs, os.Args[2:])
 
+	if automation.IsID(taskID) {
+		rc := daemonClient(*configPath, *urlFlag, *tokenFlag).WithOperatorToken(*operator)
+		if err := remote.Attach(context.Background(), rc, taskID, *rw); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		rc = rc.WithOperatorToken(*operator)
 		if taskID == "" {
 			log.Fatal("ticket ID is required: kontora attach TICKET_ID")
 		}

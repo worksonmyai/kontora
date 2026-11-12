@@ -115,6 +115,8 @@ func ViewBody(cfg *config.Config, taskID string, w io.Writer) error {
 	return err
 }
 
+// ViewNotes prints from the Notes heading, optionally starting at the Nth-last
+// note. It prints nothing for a ticket without notes.
 func ViewNotes(cfg *config.Config, taskID string, last int, w io.Writer) error {
 	t, err := readTicketByID(cfg, taskID)
 	if err != nil {

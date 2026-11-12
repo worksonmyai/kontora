@@ -118,6 +118,8 @@ Creates a ticket and prints its ID. Locally, omitting `--path` with `--parent EP
 | `--path PATH` | Repository the ticket works in. |
 | `--pipeline NAME` | Explicit pipeline, or `none` to skip all pipeline defaults and run standalone. |
 | `--agent NAME` | Agent to use, or `none` to skip the project default. |
+| `--notify STATUSES` | Comma-separated statuses. Omit to inherit the project's list; `""` or `none` skips it. Epics do not inherit. |
+| `--notify-channels NAMES` | Comma-separated channel names; `none` silences delivery. |
 | `--branch NAME` | Work branch name. Defaults to `<branch_prefix>/<title-slug>-<ticket-id>`. With `branch_naming.mode: off` or a title that yields no slug, uses `<branch_prefix>/<ticket-id>`. |
 | `--base-branch NAME` | Branch the work branch starts from. Defaults to the repository's default branch. |
 | `--status STATUS` | `open` or `todo`. Defaults to `todo`. |
@@ -162,6 +164,8 @@ Legacy notes without bylines also count. If N exceeds the note count, `--last N`
 
 `--body` prints exactly what the file holds after the closing frontmatter delimiter, which is what `kontora update --body-file` writes back. Reading a body out, editing it, and writing it back changes nothing else in the ticket.
 
+`--notes` is for a reader that needs the history, not the plan. A long ticket's full output can exceed an agent's tool-output limit; the notes alone are usually much shorter.
+
 The default output goes through the [pager](#environment-variables) when one is set and stdout is a terminal. `--body`, `--notes` and `--last` never use a pager, in local or remote mode.
 
 ### `kontora edit TICKET_ID`
@@ -178,6 +182,8 @@ Changes frontmatter fields or the body of an existing ticket. At least one flag 
 | `--pipeline NAME` | Set the pipeline (`""` or `none` clears it). |
 | `--path PATH` | Set the repository path. |
 | `--agent NAME` | Set the agent override (`""` or `none` clears it). |
+| `--notify STATUSES` | Set comma-separated statuses (`""` or `none` removes the field). |
+| `--notify-channels NAMES` | Set comma-separated channels (`""` removes the override; `none` silences delivery). |
 | `--branch NAME` | Set the work branch (`""` clears it). |
 | `--base-branch NAME` | Set the base branch (`""` clears it). |
 
@@ -450,11 +456,48 @@ Prints the figures the dashboard's Stats page shows: throughput, median cycle ti
 | `--project NAME` | Only count tickets for this configured project. |
 | `--pipeline NAME` | Only count tickets for this pipeline. |
 
+## Automations
+
+`kontora automation` manages scheduled agents through the daemon API. It does not create tickets.
+Every operation needs a running daemon, including local reads and schedule preview. There is no offline fallback to runtime storage.
+An explicit `--url` works without a local configuration file.
+Parent and child help work offline: `kontora automation -h` and `kontora automation update -h`.
+
+Every child accepts `--config PATH`, `--url URL`, `--token TOKEN`, and `--operator-token TOKEN`.
+The credentials default to `KONTORA_TOKEN` and `KONTORA_OPERATOR_TOKEN`, respectively.
+The client sends bearer and operator credentials independently for HTTP and terminal connections.
+Automation commands do not accept `--tickets-dir`.
+
+`REF` is a full automation ID (`aut-` followed by 32 lowercase hexadecimal characters) or an exact configuration key.
+Display names and abbreviated IDs are not accepted. Keys resolve through the active definition list, without ticket lookup.
+For retained history after deletion, use the original full ID. A recreated key identifies a different definition.
+
+Every child except interactive `attach` accepts `--json`. JSON stdout contains API objects, without status prose or request diagnostics.
+List and history output preserve availability and pagination envelopes. Empty collections remain `[]`; unknown cost and statistics remain `null`.
+`ls --json` prints the availability envelope when HTTP 200 reports unavailable storage.
+The CLI explains the error on stderr and exits nonzero.
+HTTP errors produce diagnostics and a nonzero exit without JSON stdout.
+Human output distinguishes disabled scheduling from a run's execution phase and unknown cost from zero.
+
+### `kontora automation ls [flags]`
+
+List definitions in key order, including their full IDs, scheduling state, run phase, schedule, timezone, agent, and last outcome.
+
+| Flag | Description |
+|------|-------------|
+| `--state STATE` | `all` (default), `enabled`, or `paused`. |
+| `--query TEXT` | Case-insensitive substring across searchable definition fields. |
+| `--project NAME` | Exact configured project filter. |
+| `--agent NAME` | Exact agent filter. |
+
+### `kontora automation view REF [flags]`
+
+Show the complete specification and prompt, revision, schedule, current and last runs, statistics, and cost coverage.
+
 ### `kontora automation new [flags]`
 
-Creates a scheduled agent definition in the running daemon's YAML configuration. It does not create a ticket.
-The command reads a prompt template from a local file and prints the automation ID and configuration key.
-Local mode needs a running daemon; remote mode uses `--url` and the configured authentication.
+Create a definition in the daemon's YAML configuration. Scheduling defaults to disabled.
+Read the prompt from a local file or stdin with `--prompt-file -`.
 
 ```bash
 kontora automation new \
@@ -469,7 +512,7 @@ kontora automation new \
 | Flag | Description |
 |------|-------------|
 | `--name NAME` | Required display name. |
-| `--prompt-file FILE` | Required local file containing the Go prompt template. |
+| `--prompt-file FILE` | Required local file containing the Go prompt template; `-` reads stdin. |
 | `--path PATH` | Required repository path on the daemon host. |
 | `--agent NAME` | Required configured agent name. |
 | `--schedule SCHEDULE` | Required numeric five-field cron or whole-minute interval, such as `30m`. Minimum: `1m`. |
@@ -479,10 +522,104 @@ kontora automation new \
 | `--workspace MODE` | `worktree` (default) or `repo`. |
 | `--overlap POLICY` | `skip` (default), `queue`, or `replace`. Queue keeps one pending run. |
 | `--timeout DURATION` | Positive run timeout; defaults to `30m`. |
-| `--enabled` | Enable scheduled runs immediately. Scheduling is disabled when this flag is omitted. |
+| `--enabled` | Enable scheduling; defaults to false. Use `--enabled=false` to set false explicitly. |
+| `--request-id ID` | Stable request identity for retries. Generated once when omitted. |
 
-Use the dashboard or [HTTP API](api.md#automations) to edit, delete, pause, resume, run, or stop an automation.
-Manual requests work while scheduling is paused. See [Automations](automations.md) for results, overlap, and recovery.
+### `kontora automation update REF [flags]`
+
+Change only explicitly supplied fields. The CLI fetches the definition, merges your changes, and submits the complete specification.
+Accepts all specification flags from `new` except `--key`: `--name`, `--prompt-file`, `--path`, `--agent`, `--model`,
+`--schedule`, `--timezone`, `--workspace`, `--overlap`, `--timeout`, and `--enabled`.
+At least one field is required. `--model ''` clears the override; `--enabled=false` disables scheduling.
+The key is immutable. Update does not accept `--request-id`.
+
+`--revision N` sets a positive expected revision. Without it, the CLI uses the fetched definition's revision.
+Delete, pause, and resume use the same revision policy.
+A stale revision fails without an automatic retry or overwrite. Inspect the current definition before deciding whether to repeat the change.
+
+```bash
+kontora automation update morning-report --model '' --enabled=false
+kontora automation update morning-report --prompt-file - < ./revised-prompt.md
+```
+
+### `kontora automation duplicate REF [flags]`
+
+Copy the specification into a new definition. Scheduling defaults to disabled, even if the source is enabled.
+Accepts `--name NAME`, `--key KEY`, `--enabled`, and `--request-id ID`.
+The default name is `<name> (copy)`; the server derives the key when omitted.
+Retry with unchanged source inputs and the same request ID. Changed inputs under that identity must remain a conflict.
+
+### `kontora automation delete REF --yes [flags]`
+
+Delete the definition and request termination of unfinished work. Historical runs and logs remain.
+`--yes` or `-f` is required before any deletion request. Accepts `--revision N`.
+JSON confirmation contains the resolved `id` and `deleted` status.
+
+### `kontora automation pause REF [flags]`
+
+Disable future scheduling without cancelling accepted runs. Manual runs remain available while paused.
+Accepts `--revision N`.
+
+### `kontora automation resume REF [flags]`
+
+Enable scheduling from a future slot, without replaying paused time. Accepts `--revision N`.
+
+### `kontora automation run REF [flags]`
+
+Request a manual run, including while paused. Accepts `--request-id ID`.
+The returned phase, outcome, and result describe the accepted request, not proof of completion.
+Overlap policy can queue or skip the request.
+
+Creation, duplication, and manual runs print a request ID to stderr before sending. Manual runs also print the resolved full automation ID.
+After an uncertain response, keep that identity pair and repeat with the same request ID. The CLI does not retry mutations automatically.
+An explicit `--request-id` on `run` requires the original full automation ID, never a key.
+This prevents a retry from launching a recreated definition with the same key.
+
+```bash
+kontora automation run aut-0123456789abcdef0123456789abcdef --request-id report-2026-11-11
+```
+
+### `kontora automation stop REF --run N [flags]`
+
+Request termination of the specified positive run number. The command never switches to another current run.
+A returned `stopping` or `recovery_required` phase does not prove termination. Inspect the returned phase and outcome.
+
+### `kontora automation runs REF [flags]`
+
+Read one page of history. `--offset N` defaults to `0`; `--limit N` defaults to `20` and accepts `1` through `200`.
+Rows include run number, trigger, phase, outcome, timestamps, result, exit codes, and nullable cost.
+New runs can shift offset pages; pagination does not promise a snapshot.
+Use the original full ID for a deleted definition.
+
+### `kontora automation logs REF --run N [flags]`
+
+Read composed logs for a positive run number. Human output includes timestamp, source, kind, and text.
+`--json` prints structured logs. `--raw` prints the endpoint's text unchanged, without styling, paging, or status prose.
+`--raw` and `--json` are mutually exclusive. Raw logs are composed text, not the original terminal capture.
+Use the original full ID to read retained logs after deletion.
+
+### `kontora automation preview --schedule VALUE [flags]`
+
+Show the server's schedule description and four future occurrences, using the daemon's clock.
+`--timezone ZONE` defaults to `UTC`. Preview does not change configuration and has no offline mode.
+
+```bash
+kontora automation preview --schedule '0 9 * * 1-5' --timezone Europe/Berlin
+```
+
+### `kontora automation terminal REF --run N [flags]`
+
+Inspect server-resolved terminal metadata for a positive run number. The server controls terminal eligibility and identity checks.
+This command does not attach or construct a local tmux target.
+
+### `kontora automation attach REF [flags]`
+
+Attach read-only to the current run. `--run N` selects an exact positive run number; `--rw` enables input.
+With `--run`, the client does not require a live definition, so retained IDs can reach eligible terminals after deletion.
+The daemon resolves and verifies the saved terminal target. Queued, completed, or unavailable runs have no attachable terminal.
+This command is interactive and has no `--json` flag.
+
+See [Automations](automations.md) for results, overlap, and recovery.
 
 ### `kontora attach [--rw] TICKET_ID`
 
@@ -491,6 +628,8 @@ Attaches to the running ticket's terminal: the tmux window locally, a WebSocket 
 `kontora attach [--rw] AUTOMATION_ID` attaches to the automation's current run using its full ID (`aut-` followed by 32 lowercase hexadecimal characters).
 The daemon resolves and verifies the saved terminal target. Arbitrary session names are not accepted.
 A queued, completed, or unavailable run has no attachable terminal.
+Top-level `attach` also accepts `--operator-token TOKEN`, defaulting to `KONTORA_OPERATOR_TOKEN`.
+Use `kontora automation attach REF --run N` to select an exact run or use a configuration key.
 
 ### `kontora review TICKET_ID` / `kontora annotate TICKET_ID`
 
@@ -641,7 +780,7 @@ Prints the version.
 
 Setting `--url` or `KONTORA_URL` points every client command at a daemon over HTTP instead of the local files. See [Remote access](remote.md) for daemon-side setup.
 
-Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `schedule`, `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`, `dep`, `undep`, `link`, `unlink`, `logs`, `activity`, `changes`, `stats`, `automation new`, `review`, `annotate`, `config`, `attach`.
+Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `schedule`, `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`, `dep`, `undep`, `link`, `unlink`, `logs`, `activity`, `changes`, `stats`, all `automation` children, `review`, `annotate`, `config`, `attach`.
 
 Rejected, because they act on local files: `edit`, `search`, `archive`, `estimate-compaction`, `sessions`, `doctor`, `start`, `setup`.
 

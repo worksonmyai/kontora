@@ -991,6 +991,7 @@ func assertSafeHandoff(t *testing.T, got, taskID string, isPipeline bool) {
 	for _, want := range []string{
 		"## Handoff instructions",
 		"Prefer `kontora_note` and `kontora_summary` when available",
+		"`kontora view --notes " + taskID + "` prints only the notes",
 		"bound to the current ticket",
 		"file-writing tool",
 		"unique scratch paths outside the repository",
@@ -999,6 +1000,8 @@ func assertSafeHandoff(t *testing.T, got, taskID string, isPipeline bool) {
 		"Do not put payload text in shell arguments",
 		"Do not create these files with `echo`, `printf`, or other payload-bearing shell commands",
 		"a few-line summary",
+		"the outcome, decisions and their reasons, open problems, and test status",
+		"Do not restate the ticket or earlier notes",
 		"If submission fails or lacks acknowledgement, read `kontora view " + taskID + "` to check the outcome",
 		"Do not retry blindly or switch transports automatically",
 		"If the save remains unresolved, report the failure and stop dependent work",
@@ -1017,9 +1020,12 @@ func assertSafeHandoff(t *testing.T, got, taskID string, isPipeline bool) {
 	assert.Equal(t, 1, strings.Count(got, "IMPORTANT: When you finish your work"), "require one results note instruction")
 	if isPipeline {
 		assert.Contains(t, got, "next stage of the pipeline")
+		assert.Contains(t, got, "apply to this stage only. Do not record them as user instructions")
 	} else {
 		assert.NotContains(t, got, "next stage of the pipeline")
+		assert.NotContains(t, got, "apply to this stage only")
 	}
+	assert.NotContains(t, got, "Include all relevant details")
 	for _, absent := range []string{
 		"kontora note " + taskID + " \"",
 		"kontora summary " + taskID + " \"",

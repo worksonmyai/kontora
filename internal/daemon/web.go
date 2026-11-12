@@ -112,19 +112,21 @@ func (d *Daemon) createTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 	d.recordSelfWriteBlind(filePath)
 
 	opts := cli.NewOpts{
-		ID:          id,
-		Path:        req.Path,
-		Pipeline:    req.Pipeline,
-		Agent:       req.Agent,
-		Status:      req.Status,
-		Title:       req.Title,
-		Body:        req.Body,
-		Branch:      req.Branch,
-		BaseBranch:  req.BaseBranch,
-		ScheduledAt: req.ScheduledAt,
-		Kind:        req.Kind,
-		Parent:      req.Parent,
-		NoEdit:      true,
+		ID:             id,
+		Path:           req.Path,
+		Pipeline:       req.Pipeline,
+		Agent:          req.Agent,
+		Status:         req.Status,
+		Title:          req.Title,
+		Body:           req.Body,
+		Branch:         req.Branch,
+		BaseBranch:     req.BaseBranch,
+		ScheduledAt:    req.ScheduledAt,
+		Kind:           req.Kind,
+		Parent:         req.Parent,
+		Notify:         req.Notify,
+		NotifyChannels: req.NotifyChannels,
+		NoEdit:         true,
 	}
 	_, err = cli.New(cfg, opts)
 	if err != nil {

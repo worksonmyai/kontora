@@ -301,9 +301,9 @@ type Ticket struct {
 
 	// Notify lists the statuses whose arrival this ticket asks to be told
 	// about, plus the pseudo-status "waiting". A ticket without the field is
-	// silent. Only a transition the daemon decided on its own sends: a person
-	// moving the ticket by hand, through the CLI or the dashboard, sends
-	// nothing.
+	// silent. Unless notifications.all_changes is enabled, only a transition
+	// the daemon decided on its own sends: a person moving the ticket by hand,
+	// through the CLI or the dashboard, sends nothing.
 	Notify NotifyList `yaml:"notify,omitempty"`
 	// NotifyChannels overrides the channels this ticket's notifications go to,
 	// above the project's and the global default. The sole entry "none"

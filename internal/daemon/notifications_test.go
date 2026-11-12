@@ -233,8 +233,10 @@ func TestNotifyDoneCarriesTheRunSummary(t *testing.T) {
 
 func TestNotifyStaysSilentForRequestedChanges(t *testing.T) {
 	tests := []struct {
-		name   string
-		change func(t *testing.T, d *Daemon, id string)
+		name       string
+		allChanges bool
+		wantSent   []string
+		change     func(t *testing.T, d *Daemon, id string)
 	}{
 		{
 			name: "the service bridge",
@@ -249,12 +251,30 @@ func TestNotifyStaysSilentForRequestedChanges(t *testing.T) {
 				require.NoError(t, d.PauseTicket(id))
 			},
 		},
+		{
+			name:       "the service bridge with all changes",
+			allChanges: true,
+			wantSent:   []string{"done"},
+			change: func(t *testing.T, d *Daemon, id string) {
+				_, err := d.svc.SetStatus(id, ticket.StatusDone)
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:       "a dashboard pause with all changes",
+			allChanges: true,
+			wantSent:   []string{"paused"},
+			change: func(t *testing.T, d *Daemon, id string) {
+				require.NoError(t, d.PauseTicket(id))
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
 			cfg := notifyConfig(h)
+			cfg.Notifications.AllChanges = tt.allChanges
 			cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
 			// Empty, or the rendered prompt is appended as a second argument
 			// and sleep exits 1 before the ticket can be paused.
@@ -273,71 +293,159 @@ func TestNotifyStaysSilentForRequestedChanges(t *testing.T) {
 					return obs.ID == "n-3" && obs.Origin == notify.OriginRequest
 				})
 			}, 5*time.Second, 20*time.Millisecond)
-			assert.Empty(t, rec.sends(t), "a change a person asked for must not send")
+			var got []string
+			for _, e := range rec.sends(t) {
+				got = append(got, e.To)
+			}
+			assert.Equal(t, tt.wantSent, got)
+			assert.Never(t, func() bool { return len(rec.sends(t)) > len(tt.wantSent) }, 200*time.Millisecond, 10*time.Millisecond,
+				"the watcher must not send again for the request's own write")
 		})
 	}
 }
 
-func TestNotifyRecordsAnExternalEditWithoutSending(t *testing.T) {
-	h := newHarness(t)
-	cfg := notifyConfig(h)
-	rec := &notifyRecorder{}
-	d := h.newDaemon(cfg, WithNotifier(rec))
-	runDaemon(t, d)
+func TestNotifyRecordsAnExternalEdit(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		allChanges bool
+		wantSent   int
+	}{
+		{name: "switch off"},
+		{name: "switch on", allChanges: true, wantSent: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			cfg := notifyConfig(h)
+			cfg.Notifications.AllChanges = tt.allChanges
+			rec := &notifyRecorder{}
+			d := h.newDaemon(cfg, WithNotifier(rec))
+			runDaemon(t, d)
 
-	// open: the daemon will not pick it up, so the only writes are the ones
-	// this test makes.
-	h.writeTicket("n-4.md", notifyTaskMD(h, "n-4", "open", "one-stage", []string{"done"}, nil))
-	require.Eventually(t, func() bool {
-		return len(rec.all()) > 0
-	}, 5*time.Second, 20*time.Millisecond)
+			// open: the daemon will not pick it up, so the only writes are the ones
+			// this test makes.
+			h.writeTicket("n-4.md", notifyTaskMD(h, "n-4", "open", "one-stage", []string{"done"}, nil))
+			require.Eventually(t, func() bool { return len(rec.all()) > 0 }, 5*time.Second, 20*time.Millisecond)
+			assert.Empty(t, rec.sends(t), "first sight must only seed")
 
-	// The local CLI writes ticket files itself, so `kontora human-review <id>`
-	// arrives here as an external edit.
-	h.writeTicket("n-4.md", notifyTaskMD(h, "n-4", "human_review", "one-stage", []string{"done"}, nil))
-	require.Eventually(t, func() bool {
-		return rec.lastFor(t, "n-4").Status == string(ticket.StatusHumanReview)
-	}, 5*time.Second, 20*time.Millisecond)
+			// Local verbs such as `kontora done` arrive as external file edits.
+			md := notifyTaskMD(h, "n-4", "done", "one-stage", []string{"done"}, nil)
+			h.writeTicket("n-4.md", md)
+			require.Eventually(t, func() bool {
+				return rec.lastFor(t, "n-4").Status == string(ticket.StatusDone)
+			}, 5*time.Second, 20*time.Millisecond)
 
-	assert.Equal(t, notify.OriginObserved, rec.lastFor(t, "n-4").Origin)
-	assert.Empty(t, rec.sends(t))
+			assert.Equal(t, notify.OriginObserved, rec.lastFor(t, "n-4").Origin)
+			sends := rec.sends(t)
+			require.Len(t, sends, tt.wantSent)
+			if tt.wantSent > 0 {
+				assert.Equal(t, "done", sends[0].To)
+			}
+			// Another watcher event at the same status must not send twice.
+			observed := len(rec.all())
+			h.writeTicket("n-4.md", md)
+			require.Eventually(t, func() bool { return len(rec.all()) > observed }, 5*time.Second, 20*time.Millisecond)
+			assert.Len(t, rec.sends(t), tt.wantSent)
+		})
+	}
 }
 
 func TestNotifySeedsOnStartupWithoutSending(t *testing.T) {
-	h := newHarness(t)
-	cfg := notifyConfig(h)
-	rec := &notifyRecorder{}
+	for _, allChanges := range []bool{false, true} {
+		t.Run(fmt.Sprintf("all_changes=%t", allChanges), func(t *testing.T) {
+			h := newHarness(t)
+			cfg := notifyConfig(h)
+			cfg.Notifications.AllChanges = allChanges
+			rec := &notifyRecorder{}
 
-	h.writeTicket("n-5.md", notifyTaskMD(h, "n-5", "human_review", "one-stage", []string{"human_review", "todo"}, nil))
-	d := h.newDaemon(cfg, WithNotifier(rec))
-	runDaemon(t, d)
+			h.writeTicket("n-5.md", notifyTaskMD(h, "n-5", "human_review", "one-stage", []string{"human_review", "todo"}, nil))
+			d := h.newDaemon(cfg, WithNotifier(rec))
+			runDaemon(t, d)
 
-	require.Eventually(t, func() bool { return len(rec.all()) > 0 }, 5*time.Second, 20*time.Millisecond)
-	obs := rec.lastFor(t, "n-5")
-	assert.Equal(t, notify.OriginObserved, obs.Origin)
-	assert.Equal(t, []string{"human_review", "todo"}, obs.Want)
-	assert.Empty(t, rec.sends(t), "a restart over a ticket already in a listed status must not send")
+			require.Eventually(t, func() bool { return len(rec.all()) > 0 }, 5*time.Second, 20*time.Millisecond)
+			obs := rec.lastFor(t, "n-5")
+			assert.Equal(t, notify.OriginObserved, obs.Origin)
+			assert.Equal(t, []string{"human_review", "todo"}, obs.Want)
+			assert.Empty(t, rec.sends(t), "a restart over a ticket already in a listed status must not send")
+		})
+	}
 }
 
 func TestNotifySeedsCrashRecoveryAsTodo(t *testing.T) {
-	h := newHarness(t)
-	cfg := notifyConfig(h)
-	cfg.AutoPickUp = new(false)
+	for _, tt := range []struct {
+		name       string
+		allChanges bool
+		wantSent   int
+	}{
+		{name: "switch off"},
+		{name: "switch on", allChanges: true, wantSent: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			cfg := notifyConfig(h)
+			cfg.AutoPickUp = new(false)
+			cfg.Notifications.AllChanges = tt.allChanges
+			rec := &notifyRecorder{}
+
+			md := notifyTaskMD(h, "n-6", "in_progress", "one-stage", []string{"todo"}, nil)
+			h.writeTicket("n-6.md", md)
+			d := h.newDaemon(cfg, WithNotifier(rec))
+			runDaemon(t, d)
+
+			require.Eventually(t, func() bool {
+				return slices.ContainsFunc(rec.all(), func(obs notify.Observation) bool {
+					return obs.ID == "n-6" && obs.Status == "todo"
+				})
+			}, 5*time.Second, 20*time.Millisecond)
+			obs := rec.lastFor(t, "n-6")
+			assert.Equal(t, notify.OriginObserved, obs.Origin)
+			assert.Equal(t, string(ticket.StatusTodo), obs.Status)
+			sends := rec.sends(t)
+			require.Len(t, sends, tt.wantSent)
+			if tt.wantSent > 0 {
+				assert.Equal(t, "in_progress", sends[0].From, "startup seeds before recovery writes todo")
+				assert.Equal(t, "todo", sends[0].To)
+			}
+			assert.Equal(t, ticket.StatusTodo, h.readTask("n-6.md").Status,
+				"crash recovery must still have written the file")
+		})
+	}
+}
+
+func TestNotifyAllChangesAppliesOnReload(t *testing.T) {
+	h := newReloadHarness(t)
 	rec := &notifyRecorder{}
-
-	md := notifyTaskMD(h, "n-6", "in_progress", "one-stage", []string{"todo"}, nil)
-	h.writeTicket("n-6.md", md)
-	d := h.newDaemon(cfg, WithNotifier(rec))
-	runDaemon(t, d)
-
-	require.Eventually(t, func() bool { return len(rec.all()) > 0 }, 5*time.Second, 20*time.Millisecond)
-	obs := rec.lastFor(t, "n-6")
-	assert.Equal(t, notify.OriginObserved, obs.Origin)
-	assert.Equal(t, string(ticket.StatusTodo), obs.Status,
-		"the seed must be the recovered status, not the stale in_progress")
-	assert.Empty(t, rec.sends(t))
-	assert.Equal(t, string(ticket.StatusTodo), string(h.readTask("n-6.md").Status),
-		"crash recovery must still have written the file")
+	content := func(allChanges bool) string {
+		return h.yaml(configOpts{extra: fmt.Sprintf(`notifications:
+  all_changes: %t
+  channels:
+    tg:
+      type: webhook
+      url: https://example.invalid/tg
+  default: [tg]
+`, allChanges)})
+	}
+	d := h.newDaemonWithConfig(t, content(false), WithNotifier(rec))
+	// Keep the same daemon and remembered statuses across reloads.
+	for _, origin := range []notify.Origin{notify.OriginRequest, notify.OriginObserved} {
+		tkt := &ticket.Ticket{ID: fmt.Sprintf("reload-notify-%d", origin), Status: ticket.StatusOpen,
+			Notify: ticket.NotifyList{Statuses: []string{"done"}}}
+		d.observe(tkt, notify.OriginObserved)
+		for _, allChanges := range []bool{false, true, false} {
+			h.writeConfig(t, content(allChanges))
+			require.NoError(t, d.reloadConfig())
+			assert.Equal(t, allChanges, d.config().Notifications.AllChanges)
+			tkt.Status = ticket.StatusOpen
+			d.observe(tkt, origin)
+			before := len(rec.sends(t))
+			tkt.Status = ticket.StatusDone
+			d.observe(tkt, origin)
+			want := before
+			if allChanges {
+				want++
+			}
+			assert.Len(t, rec.sends(t), want)
+		}
+	}
 }
 
 func TestNotifyForgetsARemovedTicket(t *testing.T) {
@@ -927,15 +1035,13 @@ func TestSpawnFieldsAreNotWrittenOverALateStatusChange(t *testing.T) {
 	assert.Empty(t, rec.sends(t), "no transition to report")
 }
 
-// The web API is the second way a notify: field is written, after a hand edit.
-// One table over both endpoints, because they share validateNotifyFields and
-// app.SetNotifyFields and only differ in which one the request reaches.
+// The API endpoints share notification validation and nil-versus-empty semantics.
 func TestDaemon_NotifyFieldsThroughTheAPI(t *testing.T) {
 	tests := []struct {
-		name string
-		// Exactly one of the two runs.
+		name     string
 		update   *web.UpdateTicketRequest
 		init     *web.InitTicketRequest
+		create   *web.CreateTicketRequest
 		wantErr  error
 		want     []string
 		wantChan []string
@@ -998,12 +1104,48 @@ func TestDaemon_NotifyFieldsThroughTheAPI(t *testing.T) {
 			init:    &web.InitTicketRequest{Pipeline: "one-stage", Status: "open", NotifyChannels: []string{"slack"}},
 			wantErr: web.ErrInvalidNotify,
 		},
+		{
+			name:     "init leaves stored statuses alone despite the project default",
+			init:     &web.InitTicketRequest{Pipeline: "one-stage", Status: "open"},
+			want:     []string{"done"},
+			wantChan: []string{"tg"},
+		},
+		{
+			name:   "create inherits project statuses",
+			create: &web.CreateTicketRequest{},
+			want:   []string{"paused"},
+		},
+		{
+			name:   "create skips the default for an explicit empty list",
+			create: &web.CreateTicketRequest{Notify: []string{}},
+		},
+		{
+			name:   "create skips the default for epics",
+			create: &web.CreateTicketRequest{Kind: "epic"},
+		},
+		{
+			name:     "create accepts explicit statuses and channels",
+			create:   &web.CreateTicketRequest{Notify: []string{"human_review", "done"}, NotifyChannels: []string{"tg"}},
+			want:     []string{"human_review", "done"},
+			wantChan: []string{"tg"},
+		},
+		{
+			name:    "create refuses an unknown status",
+			create:  &web.CreateTicketRequest{Notify: []string{"unknown_status"}},
+			wantErr: web.ErrInvalidNotify,
+		},
+		{
+			name:    "create refuses an unknown channel",
+			create:  &web.CreateTicketRequest{NotifyChannels: []string{"ghost"}},
+			wantErr: web.ErrInvalidNotify,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.cfg.Notifications.Channels = map[string]config.NotifyChannel{"tg": {Type: config.NotifyTelegram}}
+			h.cfg.Projects = map[string]config.Project{"repo": {Path: h.repoDir, Notify: []string{"paused"}}}
 			d := h.newDaemon(h.cfg)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1027,18 +1169,26 @@ notify_channels: [tg]
 			time.Sleep(200 * time.Millisecond)
 
 			var err error
-			if tc.update != nil {
-				err = d.UpdateTicket("n-api", *tc.update)
-			} else {
+			id := "n-api"
+			switch {
+			case tc.update != nil:
+				err = d.UpdateTicket(id, *tc.update)
+			case tc.init != nil:
 				req := *tc.init
 				req.Path = h.repoDir
-				err = d.InitTicket("n-api", req)
+				err = d.InitTicket(id, req)
+			default:
+				req := *tc.create
+				req.Path, req.Title, req.Status = h.repoDir, "Create with notify", "open"
+				var created web.TicketInfo
+				created, err = d.CreateTicket(req)
+				id = created.ID
 			}
 			if tc.wantErr != nil {
 				assert.ErrorIs(t, err, tc.wantErr)
 			} else {
 				require.NoError(t, err)
-				got := h.readTask("n-api.md")
+				got := h.readTask(id + ".md")
 				assert.Equal(t, tc.want, got.Notify.Statuses)
 				assert.Equal(t, tc.wantChan, got.NotifyChannels)
 			}

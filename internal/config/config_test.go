@@ -1506,6 +1506,54 @@ pipelines:
 	}, cfg.Agents["claude"].Environment)
 }
 
+func TestPipelineRunningStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name, value, declared string
+		wantErr               bool
+	}{
+		{"omitted", "", "awaiting_data", false},
+		{"explicit default", "in_progress", "awaiting_data", false},
+		{"custom", "awaiting_data", "awaiting_data", false},
+		{"undeclared", "awaiting_data", "review", true},
+		{"open", "open", "review", true},
+		{"todo", "todo", "review", true},
+		{"paused", "paused", "review", true},
+		{"human review", "human_review", "review", true},
+		{"done", "done", "review", true},
+		{"cancelled", "cancelled", "review", true},
+		{"archived", "archived", "review", true},
+		{"legacy closed", "closed", "closed", true},
+		{"reserved next", "next", "review", true},
+		{"reserved retry", "retry", "review", true},
+		{"reserved back", "back", "review", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := fmt.Sprintf("agents:\n  a:\n    binary: bin\nstatuses: [%s]\nstages:\n  s:\n    prompt: x\npipelines:\n  p:\n    - stage: s\n      agent: a\n      on_success: done\n      on_failure: pause\n", tc.declared)
+			if tc.value != "" {
+				input += "      running_status: " + tc.value + "\n"
+			}
+			cfg, err := LoadReader(strings.NewReader(input))
+			if tc.wantErr {
+				require.ErrorContains(t, err, "invalid running_status")
+				assert.ErrorContains(t, err, "(use in_progress or a declared custom status other than closed)")
+				return
+			}
+			require.NoError(t, err)
+			want := tc.value
+			if want == "" {
+				want = "in_progress"
+			}
+			assert.Equal(t, want, cfg.Pipelines["p"][0].EffectiveRunningStatus())
+			data, err := yaml.Marshal(cfg)
+			require.NoError(t, err)
+			reloaded, err := LoadReader(bytes.NewReader(data))
+			require.NoError(t, err)
+			assert.Equal(t, want, reloaded.Pipelines["p"][0].EffectiveRunningStatus())
+		})
+	}
+	assert.Equal(t, "in_progress", (PipelineStep{}).EffectiveRunningStatus())
+}
+
 func TestLoadCustomStatuses(t *testing.T) {
 	cfg, err := Load("testdata/custom_statuses.yaml")
 	require.NoError(t, err)

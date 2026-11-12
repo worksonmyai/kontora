@@ -193,7 +193,7 @@ func (s *fileSource) FetchTickets() ([]web.TicketInfo, int, error) {
 	for _, v := range views {
 		s.augmentStages(&v)
 		info := web.TicketInfoFromView(v)
-		if info.Kontora && info.Status == string(ticket.StatusInProgress) {
+		if info.Kontora && info.Source == "" && info.IsRunning() {
 			running++
 		}
 		tickets = append(tickets, info)

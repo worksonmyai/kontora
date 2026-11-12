@@ -17,6 +17,16 @@ export function kontoraTickets() {
       return this._columns || this._builtinColumns;
     },
 
+    executionActive(ticket) {
+      return !!ticket && (ticket.execution_active ?? (ticket.status === 'in_progress'));
+    },
+
+    ticketMoves(ticket) {
+      var active = this.executionActive(ticket);
+      var moves = this.validMoves[active ? 'in_progress' : ticket?.status] || [];
+      return active ? moves : moves.filter(m => m.endpoint !== 'pause');
+    },
+
     _deriveColumns() {
       var cols = [...this._builtinColumns];
       var custom = this.configCache?.custom_statuses || [];
@@ -41,11 +51,11 @@ export function kontoraTickets() {
       }
       var known = new Set(cols.flatMap(c => c.statuses));
       var extra = new Set();
-      for (var t of this.secondaryTickets) {
-        if (!known.has(t.status)) extra.add(t.status);
+      for (var t of this.allBoardTickets()) {
+        if (!known.has(t.status) && (this.isSecondary(t) || this.executionActive(t))) extra.add(t.status);
       }
       for (var status of [...extra].sort()) {
-        cols.push({ key: status, statuses: [status], label: status, color: 'bg-surface-600', emptyText: 'No tickets', tip: 'Secondary status' });
+        cols.push({ key: status, statuses: [status], label: status, color: 'bg-surface-600', emptyText: 'No tickets', tip: 'Undeclared status (display only)' });
       }
       var signature = JSON.stringify(cols);
       if (signature !== this._columnsSignature) {
@@ -325,7 +335,7 @@ export function kontoraTickets() {
           rank: rank,
           time: isReview
             ? this.reviewFinishedAt(t)
-            : (t.status === 'in_progress' && t.started_at ? t.started_at : (t.created_at || '')),
+            : (this.executionActive(t) && t.started_at ? t.started_at : (t.created_at || '')),
         });
       }
       return list.sort(function (a, b) {
@@ -355,18 +365,18 @@ export function kontoraTickets() {
     // reads the session tab; mobile has its own tab state and must not depend
     // on a desktop-only value.
     terminalWanted() {
-      return ['board', 'automations'].includes(this.currentView) && this.outputSubject()?.status === 'in_progress' && this.outputTab() === 'session';
+      return ['board', 'automations'].includes(this.currentView) && this.executionActive(this.outputSubject()) && this.outputTab() === 'session';
     },
 
     showTerminalTab() {
       if (!this.selectedTicket || this.isSecondary(this.selectedTicket)) return false;
-      if (this.selectedTicket.status === 'in_progress') return true;
+      if (this.executionActive(this.selectedTicket)) return true;
       if (this.selectedTicket.history?.length > 0) return true;
       return false;
     },
 
     terminalTabLabel() {
-      if (this.selectedTicket?.status === 'in_progress') return 'terminal';
+      if (this.executionActive(this.selectedTicket)) return 'terminal';
       return 'logs';
     },
 
@@ -406,7 +416,8 @@ export function kontoraTickets() {
       if (this.isSecondary(ticket)) { this.applySecondaryUpdate(ticket); return; }
       this._touchTicket(ticket);
       this.refreshInitContext(ticket.id);
-      var previousOutput = this.outputSubject();
+      var output = this.outputSubject();
+      var previousOutput = output ? { ...output } : null;
       if (this.selectedEpic?.id === ticket.id) {
         this._epicUpdateSeq++;
         var detail = this._epicDetail;
@@ -456,7 +467,7 @@ export function kontoraTickets() {
         }
         if (this.sameTicket(this.selectedTicket, ticket)) {
           var prevSummary = this.selectedTicket.summary;
-          if (this.editing && !['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []).includes(ticket.status)) {
+          if (this.editing && !this.editorCanEdit(ticket)) {
             this.closeAgentPickerHost('edit');
             this.flushEditSave();
             this.editing = false;
@@ -464,6 +475,7 @@ export function kontoraTickets() {
           }
           if (this.editing) {
             this.selectedTicket.status = ticket.status;
+            this.selectedTicket.execution_active = ticket.execution_active;
             this.selectedTicket.kind = ticket.kind;
             this.selectedTicket.epic_execution = ticket.epic_execution;
             this.selectedTicket.epic_child = ticket.epic_child;
@@ -502,7 +514,7 @@ export function kontoraTickets() {
     queueTicketUpdate(ticket) {
       if (!this.isSecondary(ticket)) {
         if (this.sameTicket(this.selectedTicket, ticket) &&
-            JSON.stringify([this.selectedTicket.status, this.selectedTicket.history || []]) !== JSON.stringify([ticket.status, ticket.history || []])) {
+            JSON.stringify([this.selectedTicket.status, this.executionActive(this.selectedTicket), this.selectedTicket.history || []]) !== JSON.stringify([ticket.status, this.executionActive(ticket), ticket.history || []])) {
           this._costDirtyKey = this.ticketKey(ticket);
         }
       }

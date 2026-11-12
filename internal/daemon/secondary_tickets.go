@@ -652,8 +652,8 @@ func (d *Daemon) secondaryTicketInfo(cfg *config.Config, source string, observed
 
 func secondaryClaimRefusal(t *ticket.Ticket) error {
 	switch {
-	case t.Status == ticket.StatusInProgress:
-		return fmt.Errorf("ticket is in_progress")
+	case t.IsRunning():
+		return fmt.Errorf("ticket is running (status %s)", t.Status)
 	case t.InvocationID != "":
 		return fmt.Errorf("ticket has an invocation marker")
 	case t.AnnotationReturnStatus != "":

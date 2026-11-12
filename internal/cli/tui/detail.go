@@ -244,7 +244,7 @@ func (m detailModel) hints() []string {
 	var parts []string
 	st := ticket.Status(m.ticket.Status)
 	if !m.readOnly && m.ticket.Kontora {
-		if st == ticket.StatusInProgress {
+		if m.ticket.IsRunning() {
 			parts = append(parts, "p pause first to change stages")
 		}
 		if st == ticket.StatusPaused || st == ticket.StatusDone {
@@ -254,7 +254,7 @@ func (m detailModel) hints() []string {
 			parts = append(parts, "s skip")
 		}
 	}
-	if !m.readOnly && (st == ticket.StatusOpen || st == ticket.StatusTodo || st == ticket.StatusPaused) {
+	if !m.readOnly && !m.ticket.IsRunning() && (st == ticket.StatusOpen || st == ticket.StatusTodo || st == ticket.StatusPaused) {
 		parts = append(parts, "g agent")
 	}
 	if m.attachable {
@@ -265,7 +265,7 @@ func (m detailModel) hints() []string {
 
 func canSkipStage(t web.TicketInfo) bool {
 	return t.Kontora && t.Kind != string(ticket.KindEpic) &&
-		t.Status != string(ticket.StatusInProgress) && t.Status != string(ticket.StatusDone) && t.Status != string(ticket.StatusCancelled)
+		!t.IsRunning() && t.Status != string(ticket.StatusDone) && t.Status != string(ticket.StatusCancelled)
 }
 
 func writeMeta(b *strings.Builder, key, value string) {

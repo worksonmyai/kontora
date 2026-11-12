@@ -90,13 +90,36 @@ pipelines:
 | `on_success` | yes | `next`, `done`, `human_review`, or a custom status. |
 | `on_failure` | yes | `retry`, `back`, `pause`, `human_review`, or a custom status. |
 | `max_retries` | no | Retry attempts, default 0. Only read when `on_failure: retry`. |
+| `running_status` | no | Actual status while the agent runs: `in_progress` by default, or a declared eligible custom status. |
 
 `on_success: next` advances to the next step and sets the ticket back to `todo`
 so the scheduler picks it up again. `on_failure: back` returns to the previous
 step and is not allowed on the first one. The last step must not have
 `on_success: next`.
 
-A stage cannot appear twice in the same pipeline.
+A stage cannot appear twice in the same pipeline. Other built-ins, legacy
+`closed` and reserved policy names are invalid for `running_status`.
+
+For a waiting stage, declare `statuses: [awaiting_data]` and set
+`running_status: awaiting_data` on that step. Keep the polling instructions in its
+stage prompt. The daemon claims from `todo`, writes that actual status and its
+internal snapshot, then launches the normal agent. The agent keeps its slot and
+branch reservation until termination. `timeout: 0s` disables Kontora's stage
+timeout, not agent or tool limits. Polling consumes the agent's normal resources.
+
+Success with `on_success: next` queues the following step as `todo`. A custom
+`on_success` or `on_failure` still parks work, even in the same column the agent
+ran in. Moving into a custom status never starts an agent or selects a stage.
+Same-status moves do not stop a run; use Pause.
+
+Reload does not change an active run's captured status. Removing its declaration
+leaves a display-only column, not an allowed move destination. Subsequent claims
+use current configuration. Restart follows existing recovery and conversation
+resume; an interrupted shell sleep does not continue.
+
+Upgrade every CLI and daemon sharing the ticket store before enabling the new
+setting. Older loaders reject it and older clients mistake custom-active tickets
+for parked ones. Existing parked tickets need no migration and are not activated.
 
 ## What a run is
 
@@ -140,7 +163,7 @@ The following commands remain available to ordinary operators:
 - `kontora set-stage ID STAGE` — select a named pipeline stage without retrying.
   Status and attempt stay unchanged; a `todo` ticket remains eligible for pickup.
 - `kontora retry ID` — reset an initialized ticket to `todo` with the attempt
-  counter cleared. Refused for `in_progress`, `todo`, `archived`, and passive epics.
+  counter cleared. Refused for active execution, `todo`, `archived`, and passive epics.
   Use it to prepare a `paused` ticket to run again.
 - `kontora pause ID` — stop the running agent and park the ticket in `paused`.
 - `kontora run ID` — enqueue an `open` or `todo` ticket.

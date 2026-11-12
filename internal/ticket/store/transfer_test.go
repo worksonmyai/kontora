@@ -37,6 +37,7 @@ func TestTransferPreservesDocumentAndNormalizesRuntime(t *testing.T) {
 	for _, enrollment := range []string{"", "kontora: false\n", "kontora: true\n"} {
 		t.Run(strings.TrimSpace(enrollment), func(t *testing.T) {
 			req := transferFixture(t, enrollment+`stage: implement
+running_status: awaiting_data
 attempt: 3
 started_at: 2026-01-01T00:00:00Z
 completed_at: 2026-01-02T00:00:00Z
@@ -76,6 +77,7 @@ history:
 			assert.Nil(t, got.StartedAt)
 			assert.Nil(t, got.CompletedAt)
 			assert.Empty(t, got.ClaimedBy)
+			assert.Empty(t, got.RunningStatus)
 			assert.Empty(t, got.ScheduledAt)
 			assert.Empty(t, got.ArchivedFrom)
 			assert.Nil(t, got.ArchivedAt)
@@ -99,7 +101,7 @@ history:
 			assert.Contains(t, string(out), "copy: *custom")
 			assert.Contains(t, string(out), "imported_history_count: 1")
 			assert.Contains(t, string(out), "Description and notes stay.")
-			for _, field := range []string{"archived_from:", "archived_at:", "archived_by:", "archive_note:"} {
+			for _, field := range []string{"running_status:", "archived_from:", "archived_at:", "archived_by:", "archive_note:"} {
 				assert.NotContains(t, string(out), field)
 			}
 			if enrollment == "" {
@@ -130,6 +132,9 @@ func TestTransferNormalizesAliasesAndMerges(t *testing.T) {
 		status string
 		custom any
 	}{
+		{name: "removed running snapshot anchor", fields: "running_status: &running awaiting_data\ncustom: *running\n", custom: "awaiting_data"},
+		{name: "inherited snapshot", fields: "<<: {running_status: awaiting_data, custom: keep}\n", custom: "keep"},
+		{name: "parked custom", status: "awaiting_data", fields: "custom: keep\n", custom: "keep"},
 		{name: "removed scalar anchor", fields: "stage: &oldstage implement\ncustom: *oldstage\n", custom: "implement"},
 		{name: "removed timestamp anchor", fields: "started_at: &when 2026-01-01T00:00:00Z\ncustom: [*when]\n", custom: []any{time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}},
 		{name: "replaced status anchor", status: "&oldstatus paused", fields: "custom: *oldstatus\n", custom: "paused"},
@@ -175,7 +180,7 @@ func TestTransferNormalizesAliasesAndMerges(t *testing.T) {
 			var expected map[string]any
 			require.NoError(t, yaml.Unmarshal([]byte(fm), &expected))
 			for _, field := range []string{"stage", "attempt", "started_at", "completed_at", "claimed_by", "invocation_id",
-				"scheduled_at", "annotation_return_status", "archived_from", "archived_at", "archived_by", "archive_note", "last_error", "last_log"} {
+				"scheduled_at", "running_status", "annotation_return_status", "archived_from", "archived_at", "archived_by", "archive_note", "last_error", "last_log"} {
 				delete(expected, field)
 			}
 			expected["status"] = "open"
@@ -188,6 +193,7 @@ func TestTransferNormalizesAliasesAndMerges(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, ticket.StatusOpen, parsed.Status)
 			assert.Empty(t, parsed.ScheduledAt)
+			assert.Empty(t, parsed.RunningStatus)
 			fm, actualBody, err := frontmatter.Split(string(out))
 			require.NoError(t, err)
 			var actual map[string]any
@@ -208,6 +214,8 @@ func TestTransferRefusalsLeaveSourceUntouched(t *testing.T) {
 		setup  func(*testing.T, *TransferRequest)
 	}{
 		{name: "running", fields: "status: in_progress\n"},
+		{name: "custom active", fields: "status: awaiting_data\nrunning_status: awaiting_data\n"},
+		{name: "inherited active", fields: "status: awaiting_data\n<<: {running_status: awaiting_data}\n"},
 		{name: "invocation", fields: "invocation_id: live\n"},
 		{name: "annotation", fields: "annotation_return_status: paused\n"},
 		{name: "managed", fields: "managed: {}\n"},
@@ -245,15 +253,18 @@ func TestTransferRefusalsLeaveSourceUntouched(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fields := tc.fields
+			status := ""
 			if strings.HasPrefix(fields, "status:") {
-				fields = ""
+				statusLine, rest, _ := strings.Cut(fields, "\n")
+				status = strings.TrimPrefix(statusLine, "status: ")
+				fields = rest
 			}
 			req := transferFixture(t, fields, false)
-			if tc.name == "running" {
+			if status != "" {
 				path := filepath.Join(req.SourceDir, req.ID+".md")
 				data, err := os.ReadFile(path)
 				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(path, []byte(strings.Replace(string(data), "status: paused", "status: in_progress", 1)), 0o644))
+				require.NoError(t, os.WriteFile(path, []byte(strings.Replace(string(data), "status: paused", "status: "+status, 1)), 0o644))
 				req.Revision, err = Revision(req.SourceDir, req.ID)
 				require.NoError(t, err)
 			}

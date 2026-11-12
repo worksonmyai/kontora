@@ -16,7 +16,6 @@ import (
 	"golang.org/x/term"
 
 	"github.com/worksonmyai/kontora/internal/automation"
-	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -134,8 +133,8 @@ func checkAttachable(c *Client, id string) error {
 		}
 		return nil
 	}
-	if info.Status != string(ticket.StatusInProgress) {
-		return fmt.Errorf("ticket %s has status %q, must be %s to attach", id, info.Status, ticket.StatusInProgress)
+	if !info.IsRunning() {
+		return fmt.Errorf("ticket %s has status %q, must be running to attach", id, info.Status)
 	}
 	return nil
 }

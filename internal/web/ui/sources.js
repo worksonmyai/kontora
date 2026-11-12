@@ -74,7 +74,7 @@ export function kontoraSources() {
     },
 
     editorCanEdit(ticket = this.selectedTicket) {
-      return this.ticketCanEdit(ticket) && (this.isSecondary(ticket) || ['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []).includes(ticket.status));
+      return this.ticketCanEdit(ticket) && (this.isSecondary(ticket) || (!this.executionActive(ticket) && ['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []).includes(ticket.status)));
     },
 
     allBoardTickets() {
@@ -187,7 +187,7 @@ export function kontoraSources() {
         indexedLength++;
       } else this.secondaryTickets[idx] = this.boardEntry(ticket);
       if (this.sameTicket(this.selectedTicket, ticket)) {
-        if (this.editing && this.sourceAvailable(ticket) && !this.ticketCanEdit(ticket)) {
+        if (this.editing && this.sourceAvailable(ticket) && !this.editorCanEdit(ticket)) {
           this.closeAgentPickerHost('edit');
           this.flushEditSave();
           this.editing = false;

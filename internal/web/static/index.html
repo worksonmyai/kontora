@@ -1205,7 +1205,7 @@
       <div class="space-y-2 text-[13px] text-surface-600 leading-relaxed">
         <p>This removes only the markdown ticket file.</p>
         <p>Any existing git worktree is left alone.</p>
-        <p x-show="selectedTicket?.status === 'in_progress'" class="text-warn">The running agent will be stopped.</p>
+        <p x-show="executionActive(selectedTicket)" class="text-warn">The running agent will be stopped.</p>
         <p x-show="selectedTicket?.kind === 'epic'">
           Its sub-tickets are kept. Each one loses its <span class="font-mono">parent</span> and goes back to being an ordinary ticket.
         </p>
@@ -1482,7 +1482,7 @@
           <span x-show="isSecondary(selectedTicket) && !ticketCanClaim(selectedTicket)" class="max-w-[240px] text-[11px] text-warn" x-text="selectedTicket?.refusal_reason || 'This ticket cannot be claimed.'"></span>
           <button type="button" x-show="!isSecondary(selectedTicket) && selectedTicket?.kind === 'epic'" @click="openEpic(selectedTicket.id)"
                   class="font-mono text-[12px] text-accent hover:underline">epic overview</button>
-          <template x-if="ticketCanControl(selectedTicket) && selectedTicket?.status === 'in_progress' && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
+          <template x-if="ticketCanControl(selectedTicket) && executionActive(selectedTicket) && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
             <button @click="action('pause')" :disabled="!!actionLoading"
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-st-paused hover:border-st-paused/35 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
                     :data-tip-t="epicIsAgent(selectedTicket) ? 'Stops only the supervisor. Child agents keep running.' : 'Stops the running agent and pauses the ticket. Pause first and wait for the agent to stop before changing stages.'">
@@ -2035,7 +2035,7 @@
           <!-- Tab bar -->
           <div class="flex-1 min-w-0 px-6 pt-[11px]">
             <div class="flex items-center gap-5">
-              <button x-show="!isSecondary(selectedTicket) && selectedTicket?.status === 'in_progress'" @click="switchTab('session')"
+              <button x-show="!isSecondary(selectedTicket) && executionActive(selectedTicket)" @click="switchTab('session')"
                       class="flex items-center gap-[7px] font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'session' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
                 <span class="w-[5px] h-[5px] rounded-full bg-st-progress pulse-dot"></span>session
@@ -2066,7 +2066,7 @@
               <button @click="openRawLog()" x-show="!isSecondary(selectedTicket) && activeTab === 'activity'"
                       class="font-mono text-[10px] px-2.5 py-1 mb-[6px] rounded-md border border-edge-input text-surface-600 hover:text-tx-2 hover:border-edge-hover transition-colors"
                       data-tip-t="Open the current log as plain text">⧉ raw</button>
-              <button x-show="!isSecondary(selectedTicket) && activeTab === 'activity' && selectedTicket?.status === 'in_progress'"
+              <button x-show="!isSecondary(selectedTicket) && activeTab === 'activity' && executionActive(selectedTicket)"
                       @click="switchTab('session')"
                       class="font-mono text-[11px] pb-[9px] text-accent hover:underline">← back to live</button>
             </div>
@@ -2568,7 +2568,7 @@
                               </span>
                               <span class="font-mono text-[11px] text-surface-600" x-text="c.id"></span>
                               <span class="font-mono text-[10.5px]"
-                                    :class="c.status === 'in_progress' ? 'text-st-progress' : 'text-surface-600'"
+                                    :class="executionActive(c) ? 'text-st-progress' : 'text-surface-600'"
                                     x-text="childStageLine(c)"></span>
                               <span class="font-mono text-[10.5px] text-surface-600 text-right num"
                                     x-text="childElapsed(c)"></span>
@@ -3028,7 +3028,7 @@
                     <template x-if="!(ticketCanControl(selectedTicket) && canSetStage() && setStageOpen)">
                       <span class="text-tx-2"
                             :class="ticketCanControl(selectedTicket) && canSetStage() ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
-                            :title="selectedTicket?.status === 'in_progress' ? 'Pause first and wait for the agent to stop before changing stages.' : (plannotatorInFlight[selectedTicket?.id] ? 'Close the review before changing stages.' : '')"
+                            :title="executionActive(selectedTicket) ? 'Pause first and wait for the agent to stop before changing stages.' : (plannotatorInFlight[selectedTicket?.id] ? 'Close the review before changing stages.' : '')"
                             @click="if (ticketCanControl(selectedTicket) && canSetStage()) setStageOpen = true"
                             x-text="displayStage()"></span>
                     </template>
@@ -3156,7 +3156,7 @@
           </div>
 
           <!-- Terminal: pinned to the rail bottom for non-running tickets -->
-          <div class="shrink-0 p-4 pt-0 flex flex-col gap-[9px]" x-show="ticketCanControl(selectedTicket) && selectedTicket?.status !== 'in_progress'">
+          <div class="shrink-0 p-4 pt-0 flex flex-col gap-[9px]" x-show="ticketCanControl(selectedTicket) && !executionActive(selectedTicket)">
             <div class="h-px bg-surface-700"></div>
             <button type="button" @click="attachTerminal()"
                     class="w-full font-mono text-[12px] px-3 py-2.5 rounded-lg bg-surface-900 border border-edge-input text-accent hover:border-accent transition-colors flex items-center justify-center gap-2"
@@ -3305,8 +3305,8 @@
               </div>
 
               <div x-show="epicTab === 'session'" class="flex-1 min-h-0 flex flex-col">
-                <p x-show="outputSubject()?.status !== 'in_progress'" class="px-6 py-3 font-mono text-xs text-surface-600" x-text="outputNoRunText()"></p>
-                <div x-show="outputSubject()?.status === 'in_progress'" class="flex-1 min-h-0 flex flex-col">
+                <p x-show="!executionActive(outputSubject())" class="px-6 py-3 font-mono text-xs text-surface-600" x-text="outputNoRunText()"></p>
+                <div x-show="executionActive(outputSubject())" class="flex-1 min-h-0 flex flex-col">
                   <div class="shrink-0 px-6 py-2 flex items-center gap-3 flex-wrap font-mono text-[11px]">
                     <span class="text-surface-600" x-text="'tmux · ' + outputSubject()?.id"></span>
                     <span :class="terminalConnected ? 'text-st-progress' : 'text-surface-600'" x-text="terminalConnected ? 'connected' : (terminalError ? 'disconnected' : 'connecting…')" role="status"></span>
@@ -5112,7 +5112,7 @@
                     <!-- The filter and the header read the config directly. Only
                          the flow diagram needs settingsPipelineSteps, which
                          resolves a model per step for the agent that runs it. -->
-                    <section x-show="settingsRowVisible(name, settingsConfig.pipelines[name].map(s => s.stage + ' ' + s.agent).join(' '), 'pipelines')"
+                    <section x-show="settingsRowVisible(name, settingsConfig.pipelines[name].map(s => s.stage + ' ' + s.agent + ' ' + s.running_status).join(' '), 'pipelines')"
                              class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden" :data-pipe-color="pipelineColorByName(name)">
                       <header class="flex items-center gap-2.5 p-[13px] px-[18px] border-b border-surface-700/40" style="background: hsl(var(--pipe-h) / .07)">
                         <span class="pipe-tag shrink-0" x-text="name"></span>
@@ -5135,6 +5135,7 @@
                                 <span class="font-mono text-[10px] text-tx-faint truncate" x-text="s.model"></span>
                               </span>
                               <span class="flex flex-col gap-[3px] pt-2 border-t border-surface-700/45 font-mono text-[10.5px] min-w-0">
+                                <span class="text-tx-4 truncate">running_status: <span x-text="s.running_status"></span></span>
                                 <span class="text-ok truncate">✓ <span x-text="s.on_success"></span></span>
                                 <span class="text-err/85 truncate">✕ <span x-text="s.on_failure"></span><span x-show="s.max_retries > 0"> · max <span x-text="s.max_retries"></span></span></span>
                               </span>
@@ -6178,7 +6179,7 @@
             <div class="mobile-card-context">
               <span x-show="epicIsAgent(ticket)" class="pipe-tag">Supervisor</span>
               <span class="pipe-tag" x-show="showPipelineBadges" x-text="mobileTagLabel(ticket)"></span>
-              <template x-if="ticket.status==='in_progress'">
+              <template x-if="executionActive(ticket)">
                 <span class="mobile-card-state text-st-progress">
                   <span x-text="epicIsAgent(ticket) ? 'supervising' : ticket.stage"></span>
                 </span>
@@ -6240,7 +6241,7 @@
                 <span x-text="ticket.agent"></span>
               </template>
             </span>
-            <span x-text="ticket.status==='in_progress' && ticket.started_at ? formatDuration(ticket) : (reviewFinishedAt(ticket) ? finishedAgo(reviewFinishedAt(ticket)) : timeAgo(ticket.created_at))"></span>
+            <span x-text="executionActive(ticket) && ticket.started_at ? formatDuration(ticket) : (reviewFinishedAt(ticket) ? finishedAgo(reviewFinishedAt(ticket)) : timeAgo(ticket.created_at))"></span>
           </div>
         </button>
       </template>
@@ -6344,8 +6345,8 @@
                       class="font-mono text-[10px] px-2 py-1 rounded-md border border-edge-input text-tx-3">⧉ raw</button>
             </div>
             <div x-show="epicTab === 'session'" class="flex-1 min-h-0 flex flex-col">
-              <p x-show="outputSubject()?.status !== 'in_progress'" class="p-4 font-mono text-xs text-surface-600" x-text="outputNoRunText()"></p>
-              <div x-show="outputSubject()?.status === 'in_progress'" class="flex-1 min-h-0 flex flex-col">
+              <p x-show="!executionActive(outputSubject())" class="p-4 font-mono text-xs text-surface-600" x-text="outputNoRunText()"></p>
+              <div x-show="executionActive(outputSubject())" class="flex-1 min-h-0 flex flex-col">
                 <div class="mobile-terminal-toolbar">
                   <div class="mobile-epic-terminal-context">
                     <span class="truncate mobile-technical" :title="outputSubject()?.id" x-text="'tmux: ' + outputSubject()?.id"></span>
@@ -6523,7 +6524,7 @@
           <div class="mobile-detail-tabs flex overflow-x-auto">
             <button class="mobile-tab" @click="mobileSwitchTab(mobileFirstTab())" :aria-pressed="detailTab === mobileFirstTab()"
                     x-text="mobileFirstTabLabel()"></button>
-            <button class="mobile-tab" x-show="selectedTicket?.status === 'in_progress'" @click="mobileSwitchTab('logs')" :aria-pressed="detailTab === 'logs'">Logs</button>
+            <button class="mobile-tab" x-show="executionActive(selectedTicket)" @click="mobileSwitchTab('logs')" :aria-pressed="detailTab === 'logs'">Logs</button>
             <button class="mobile-tab" @click="mobileSwitchTab('activity')" :aria-pressed="detailTab === 'activity'">Activity</button>
             <button class="mobile-tab" @click="mobileSwitchTab('ticket')" :aria-pressed="detailTab === 'ticket'">Ticket</button>
           </div>
@@ -6533,7 +6534,7 @@
       <!-- content -->
       <div style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;">
 
-        <!-- terminal (live; in_progress) -->
+        <!-- terminal (live execution) -->
         <div x-show="!isSecondary(selectedTicket) && detailTab==='terminal'" class="mobile-terminal-pane">
           <div class="mobile-terminal-toolbar">
             <span role="status" x-text="terminalConnected ? (terminalRW ? 'Tap terminal to type' : 'Read-only') : (terminalError ? 'Disconnected' : 'Connecting…')"></span>
@@ -6760,7 +6761,7 @@
                 <span class="mobile-meta-value mobile-label" x-text="selectedTicket.stage"></span>
               </div>
             </template>
-            <template x-if="selectedTicket?.status==='in_progress' && selectedTicket?.started_at">
+            <template x-if="executionActive(selectedTicket) && selectedTicket?.started_at">
               <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;">
                 <span class="mobile-meta-label mobile-label">Running</span>
                 <span class="mobile-meta-value mobile-label" x-text="formatDuration(selectedTicket)"></span>

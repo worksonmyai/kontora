@@ -333,6 +333,31 @@ replace a primary namesake on receipt of a secondary event.
 Assistant message requests naming a secondary `source` are refused before agent
 admission. Secondary-context assistant workflows are unsupported.
 
+### Execution activity
+
+Ticket list, detail, SSE and child payloads include the derived boolean
+`execution_active`. Local CLI JSON projections expose it too. Clients use it for
+running controls and live output, not for column placement or status filtering.
+`status` remains the actual stored value, including a custom `running_status`.
+
+Two tickets can report `status: "awaiting_data"` while only one is active.
+The daemon recognizes custom activity from a matching frontmatter snapshot,
+independently of the current configuration. Legacy `in_progress` remains active.
+Passive epic rollups are not agent processes.
+
+`execution_active` describes ticket lifecycle, not operating-system process
+liveness. Pause clears activity before teardown necessarily finishes; existing
+execution and ownership protections still apply. `can_edit` describes ownership
+permission, not full lifecycle editability. Activity can change in an SSE update
+without any change to `status`, including completion into the same custom column.
+
+Active tickets remain listed after their status declaration disappears. Their
+fallback column is display-only: `/move` still rejects undeclared destinations.
+A move response contains the authoritative ticket, including activity; moving to
+a custom status parks work and never launches a stage. The snapshot is not an
+editable API field. Upgrade all CLI and daemon binaries sharing the ticket store
+before enabling custom running statuses.
+
 ### Stage changes
 
 `skip` and `set-stage` return 409 while execution or Plannotator review owns the ticket.
@@ -693,7 +718,7 @@ Relations ride both ticket payloads as arrays of `{id, title, status}`. `GET /ap
 
 `verdict` is `blocked`, `ready` or `cycle`. It reports the deps alone rather than the ticket's own status, so a `done` ticket with closed deps reads `ready`. `position`, `path_length` and `goal` place the ticket on the critical path. On `cycle` the ids on the cycle are in `cycle`, `nodes` is empty, and `position`, `path_length` and `goal` are zero: a graph with a cycle has no order to draw. `total` is the true node count and `nodes` is capped at 200, so a `total` larger than the length of `nodes` means the payload was trimmed; the critical path is kept whatever the cap. `done` counts the nodes that no longer block, which includes the ones in `human_review` and the cancelled and archived ones. A node whose id names no ticket file has `missing: true` with an empty `title` and `status`. An unknown ticket id returns 404.
 
-A `children` entry carries more than the other relation arrays, so a sub-ticket row renders without another request: `stage`, `stage_index` and `stage_count` for the child's position in its own pipeline, and `started_at` and `completed_at` for its wall time. `stage_index` is 1-based and absent when the child's stage is not in its pipeline. The timestamps bound the child's whole run, first pickup to last exit, rather than the current stage. `completed_at` is absent while the child is `in_progress`.
+A `children` entry carries more than the other relation arrays, so a sub-ticket row renders without another request: `stage`, `stage_index` and `stage_count` for the child's position in its own pipeline, and `started_at` and `completed_at` for its wall time. `stage_index` is 1-based and absent when the child's stage is not in its pipeline. The timestamps bound the child's whole run, first pickup to last exit, rather than the current stage. `execution_active` identifies default and custom-active children; `completed_at` is absent while the child is active.
 
 Both ticket payloads carry `project`, the configured project whose path is the ticket's, and the derived readiness: `ready` when no dependency holds the ticket back, and `blockers` naming the dependency ids that do when one does. Neither is stored; see [dependency-aware scheduling](tickets.md#dependency-aware-scheduling). `POST /api/tickets/{id}/run` answers with the ticket, so a caller can see from `blockers` whether the ticket it just moved to `todo` will actually be picked up.
 

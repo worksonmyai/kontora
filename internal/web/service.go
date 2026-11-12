@@ -510,9 +510,11 @@ type TicketInfo struct {
 	ID            string   `json:"id"`
 	Title         string   `json:"title"`
 	Status        string   `json:"status"`
-	Kontora       bool     `json:"kontora"`
-	Stage         string   `json:"stage"`
-	Pipeline      string   `json:"pipeline"`
+	// ExecutionActive describes ticket lifecycle, not OS-process liveness.
+	ExecutionActive bool   `json:"execution_active"`
+	Kontora         bool   `json:"kontora"`
+	Stage           string `json:"stage"`
+	Pipeline        string `json:"pipeline"`
 	// EpicChild is a preview from the current index, not default-resolution authority.
 	EpicChild bool   `json:"epic_child"`
 	Path      string `json:"path"`
@@ -610,6 +612,14 @@ type TicketInfo struct {
 	ChildOrder    []string `json:"child_order,omitempty"`
 }
 
+// IsRunning also accepts legacy daemon responses without execution_active.
+func (t TicketInfo) IsRunning() bool {
+	if t.Kind == string(ticket.KindEpic) && t.EpicExecution == "" {
+		return false
+	}
+	return t.ExecutionActive || t.Status == string(ticket.StatusInProgress)
+}
+
 // TicketRef is one end of a relation. Title and Status are filled in when the
 // daemon finds the referenced ticket in its store, which includes tickets the
 // board list hides (archived, or a status with no column). A ref with neither
@@ -631,14 +641,15 @@ type TicketRef struct {
 // printing a fixed duration. StageIndex is 1-based, and 0 when the child's stage
 // is not in its pipeline.
 type TicketChild struct {
-	ID          string     `json:"id"`
-	Title       string     `json:"title,omitempty"`
-	Status      string     `json:"status,omitempty"`
-	Stage       string     `json:"stage,omitempty"`
-	StageIndex  int        `json:"stage_index,omitempty"`
-	StageCount  int        `json:"stage_count,omitempty"`
-	StartedAt   *time.Time `json:"started_at,omitempty"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	ID              string     `json:"id"`
+	Title           string     `json:"title,omitempty"`
+	Status          string     `json:"status,omitempty"`
+	ExecutionActive bool       `json:"execution_active"`
+	Stage           string     `json:"stage,omitempty"`
+	StageIndex      int        `json:"stage_index,omitempty"`
+	StageCount      int        `json:"stage_count,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
 }
 
 // NoteInfo is one entry from the ticket body's "## Notes" section. At is the
@@ -869,6 +880,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		ID:              v.ID,
 		Title:           v.Title,
 		Status:          v.Status,
+		ExecutionActive: v.ExecutionActive,
 		Kontora:         v.Kontora,
 		Stage:           v.Stage,
 		Pipeline:        v.Pipeline,

@@ -335,10 +335,10 @@ export function kontoraMobile() {
     // The first (non-ticket) detail tab: a live terminal while running, the
     // stage-log history otherwise.
     mobileFirstTab() {
-      return this.selectedTicket && this.selectedTicket.status === 'in_progress' ? 'terminal' : 'logs';
+      return this.executionActive(this.selectedTicket) ? 'terminal' : 'logs';
     },
     mobileFirstTabLabel() {
-      return this.selectedTicket && this.selectedTicket.status === 'in_progress' ? 'Terminal' : 'Logs';
+      return this.executionActive(this.selectedTicket) ? 'Terminal' : 'Logs';
     },
     mobileTagLabel(t) {
       return t?.pipeline || this.pathBasename(t?.path) || '—';
@@ -351,7 +351,7 @@ export function kontoraMobile() {
       }
       // Pick the detail tab from the card's status before selectTicket() runs,
       // so the right pane is already visible when the live terminal attaches.
-      if (t.status === 'in_progress' && this.mobileHasRun(t)) this.detailTab = 'terminal';
+      if (this.executionActive(t) && this.mobileHasRun(t)) this.detailTab = 'terminal';
       else if (this.mobileHasRun(t)) this.detailTab = 'logs';
       else this.detailTab = 'ticket';
       await this.selectTicket(t, navigation);
@@ -384,7 +384,7 @@ export function kontoraMobile() {
       if (tab === 'terminal') {
         this.logViewContent = null;
         this.logViewStage = null;
-        if (this.selectedTicket.status === 'in_progress') this.openTerminal();
+        if (this.executionActive(this.selectedTicket)) this.openTerminal();
       } else {
         if (this.terminalOpen) this.closeTerminal();
         if (tab === 'logs') {
@@ -475,29 +475,29 @@ export function kontoraMobile() {
         done:         { label: 're-open',        run: run('retry') },
         cancelled:    { label: 're-open',        run: run('retry') },
       };
-      return map[t && t.status] || { label: 'actions', run: function() { self.openActionsSheet(t); } };
+      return map[this.executionActive(t) ? 'in_progress' : t?.status] || { label: 'actions', run: function() { self.openActionsSheet(t); } };
     },
     mobileSecondaryAction(t) {
       if (!this.ticketCanControl(t)) return { label: 'details', run: () => this._paletteOpenTicket(t) };
       var self = this, id = t && t.id;
       var run = function(ep) { return function() { self.moveTicketVia(id, ep, null); }; };
       var move = function(st) { return function() { self.moveTicketVia(id, 'move', { status: st }); }; };
-      if (this.epicIsAgent(t) && t.status === 'in_progress') {
+      if (this.epicIsAgent(t) && this.executionActive(t)) {
         return { label: 'pause supervisor', run: function() { self.action('pause'); } };
       }
       if (t?.kind === 'epic' && !this.epicIsAgent(t)) {
         return { label: 'epic overview', run: function() { self.openEpic(id); } };
       }
+      if (this.executionActive(t)) return { label: 'pause', run: function() { self.action('pause'); } };
       var map = {
         open:         { label: 'cancel',    run: move('cancelled') },
         todo:         { label: 'cancel',    run: move('cancelled') },
-        in_progress:  { label: 'pause',     run: function() { self.action('pause'); } },
         paused:       { label: 'cancel',    run: move('cancelled') },
         human_review: { label: 'send back', run: run('retry') },
         done:         { label: 'delete',    run: function() { self.openDeleteModal(); } },
         cancelled:    { label: 'delete',    run: function() { self.openDeleteModal(); } },
       };
-      return map[t && t.status] || { label: 'more', run: function() { self.openActionsSheet(t); } };
+      return map[t?.status] || { label: 'more', run: function() { self.openActionsSheet(t); } };
     },
 
     mobileComposeDraft: '',
@@ -682,7 +682,7 @@ export function kontoraMobile() {
         add('Queue agent', 'primary', run('run'));
         add('Move to open', 'default', move('open'));
         add('Cancel ticket', 'danger', move('cancelled'));
-      } else if (s === 'in_progress') {
+      } else if (this.executionActive(t)) {
         add(this.epicIsAgent(t) ? 'Pause supervisor' : 'Pause agent before changing stages', 'warn', function() { self.moveTicketVia(t.id, 'pause', null); });
         add('Send to review', 'primary', move('human_review'));
         add('Mark done', 'default', move('done'));
@@ -705,7 +705,7 @@ export function kontoraMobile() {
         add(this.epicIsAgent(t) ? 'Restart supervisor' : 'Re-open', 'default', run('retry'));
         add('Delete file', 'danger', function() { self.openDeleteModal(); });
       } else {
-        (this.validMoves[s] || []).forEach(function(mv) {
+        this.ticketMoves(t).forEach(function(mv) {
           add(mv.label, 'default', mv.status ? move(mv.status) : run(mv.endpoint));
         });
       }

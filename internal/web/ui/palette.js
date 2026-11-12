@@ -65,7 +65,7 @@ export function kontoraPalette() {
     paletteMoves(t) {
       if (!this.ticketCanControl(t)) return [];
       if (!t) return [];
-      var moves = (this.validMoves[t.status] || []).slice();
+      var moves = this.ticketMoves(t).slice();
       if (!t.kontora) moves.unshift({ label: 'Initialize', endpoint: 'run' });
       return moves;
     },
@@ -158,7 +158,7 @@ export function kontoraPalette() {
       return this._paletteCmdRow({
         id: 'tab:' + this.ticketKey(t) + ':' + tab.tab, kind: 'tab', ticketId: this.ticketKey(t), tab: tab.tab,
         glyph: '❯', title: tab.label,
-        meta: tab.tab === 'session' && t.status === 'in_progress' ? 'live' : '',
+        meta: tab.tab === 'session' && this.executionActive(t) ? 'live' : '',
       });
     },
 
@@ -570,7 +570,7 @@ export function kontoraPalette() {
       this.closePalette();
       if (!await this._paletteOpenTicket(t)) return;
       if (row.kind === 'ticket') {
-        this.showToast(t.status === 'in_progress' ? 'opened ' + t.id + ' · live logs' : 'opened ' + t.id);
+        this.showToast(this.executionActive(t) ? 'opened ' + t.id + ' · live logs' : 'opened ' + t.id);
         return;
       }
       // The log and summary tabs hide themselves when the ticket has nothing to

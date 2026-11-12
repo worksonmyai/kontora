@@ -18,6 +18,7 @@ const secondaryFixture = `---
 id: tst-001
 kontora: true
 status: %s
+running_status: awaiting_data
 kind: epic
 epic_execution: agent
 stage: review
@@ -74,7 +75,7 @@ func secondaryFrontmatter(t *testing.T, data []byte) map[string]any {
 }
 
 func TestSecondaryRepoEditsEveryStatusPreserveProtectedFields(t *testing.T) {
-	for _, status := range []string{"open", "todo", "in_progress", "paused", "human_review", "done", "cancelled", "archived", "closed", "foreign-status"} {
+	for _, status := range []string{"open", "todo", "in_progress", "awaiting_data", "paused", "human_review", "done", "cancelled", "archived", "closed", "foreign-status"} {
 		t.Run(status, func(t *testing.T) {
 			dir := t.TempDir()
 			original := []byte(fmt.Sprintf(secondaryFixture, status))
@@ -128,7 +129,7 @@ func TestSecondaryRepoEditsEveryStatusPreserveProtectedFields(t *testing.T) {
 
 func TestSecondaryRepoRejectsProtectedChanges(t *testing.T) {
 	changes := map[string]any{
-		"status": "done", "kontora": false, "kind": "", "epic_execution": "",
+		"status": "done", "running_status": "other", "kontora": false, "kind": "", "epic_execution": "",
 		"stage": "implement", "attempt": 0, "started_at": nil, "completed_at": nil,
 		"created": nil, "claimed_by": "", "invocation_id": "", "annotation_return_status": "",
 		"scheduled_at": "", "archived_from": "", "archived_at": nil, "archived_by": "",

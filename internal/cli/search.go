@@ -91,7 +91,7 @@ func sortResults(results []search.Result) {
 }
 
 func ticketSortTime(t *ticket.Ticket) time.Time {
-	if t.Status == ticket.StatusInProgress && t.StartedAt != nil {
+	if t.IsRunning() && !t.IsPassiveEpic() && t.StartedAt != nil {
 		return *t.StartedAt
 	}
 	return derefTime(t.Created)
@@ -307,15 +307,16 @@ type searchMatchJSON struct {
 }
 
 type searchResultJSON struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Status   string `json:"status"`
-	Stage    string `json:"stage"`
-	Pipeline string `json:"pipeline"`
-	Agent    string `json:"agent"`
-	Path     string `json:"path"`
-	Project  string `json:"project"`
-	File     string `json:"file"`
+	ID              string `json:"id"`
+	Title           string `json:"title"`
+	Status          string `json:"status"`
+	ExecutionActive bool   `json:"execution_active"`
+	Stage           string `json:"stage"`
+	Pipeline        string `json:"pipeline"`
+	Agent           string `json:"agent"`
+	Path            string `json:"path"`
+	Project         string `json:"project"`
+	File            string `json:"file"`
 	// Total counts every match found, the project match included, so a consumer
 	// can tell that -m truncated Matches.
 	Total   int               `json:"total"`
@@ -336,17 +337,18 @@ func writeSearchJSON(cfg *config.Config, w io.Writer, results []search.Result) e
 			})
 		}
 		out = append(out, searchResultJSON{
-			ID:       r.Ticket.ID,
-			Title:    r.Ticket.Title(),
-			Status:   string(r.Ticket.Status),
-			Stage:    r.Ticket.Stage,
-			Pipeline: r.Ticket.Pipeline,
-			Agent:    r.Ticket.Agent,
-			Path:     r.Ticket.Path,
-			Project:  searchProject(cfg, r.Ticket),
-			File:     r.FilePath,
-			Total:    r.Total,
-			Matches:  matches,
+			ID:              r.Ticket.ID,
+			Title:           r.Ticket.Title(),
+			Status:          string(r.Ticket.Status),
+			ExecutionActive: r.Ticket.IsRunning() && !r.Ticket.IsPassiveEpic(),
+			Stage:           r.Ticket.Stage,
+			Pipeline:        r.Ticket.Pipeline,
+			Agent:           r.Ticket.Agent,
+			Path:            r.Ticket.Path,
+			Project:         searchProject(cfg, r.Ticket),
+			File:            r.FilePath,
+			Total:           r.Total,
+			Matches:         matches,
 		})
 	}
 

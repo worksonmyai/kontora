@@ -269,9 +269,14 @@ func TestUpdate_StateGuard(t *testing.T) {
 		name    string
 		status  string
 		kind    string
+		running string
 		allowed bool
 	}{
 		{name: "in_progress", status: "in_progress"},
+		{name: "custom active", status: "blocked", running: "running_status: blocked\n"},
+		{name: "inherited active", status: "blocked", running: "<<: {running_status: blocked}\n"},
+		{name: "custom parked", status: "blocked", allowed: true},
+		{name: "stale snapshot", status: "blocked", running: "running_status: other\n", allowed: true},
 		{name: "done", status: "done"},
 		{name: "cancelled", status: "cancelled"},
 		{name: "archived", status: "archived"},
@@ -291,7 +296,7 @@ func TestUpdate_StateGuard(t *testing.T) {
 			original := `---
 id: tst-st
 status: ` + tc.status + `
-` + kindLine + `pipeline: one-stage
+` + kindLine + tc.running + `pipeline: one-stage
 path: ~/repo
 ---
 # Body

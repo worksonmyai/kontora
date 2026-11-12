@@ -1056,7 +1056,7 @@ func (d *Daemon) initialScan(dir string) error {
 			if t.IsPassiveEpic() {
 				continue
 			}
-			if t.Status != ticket.StatusInProgress || !t.Kontora {
+			if !t.IsRunning() || !t.Kontora {
 				epicID, scopeErr := d.supervision(t, t.AnnotationReturnStatus != "")
 				if epicID == "" && scopeErr == nil {
 					continue
@@ -1065,10 +1065,12 @@ func (d *Daemon) initialScan(dir string) error {
 		}
 		path := d.tickets[t.ID].filePath
 		if !d.reconcileExecutionLocked(t, path) {
+			before := t.Clone()
 			_ = t.SetField("status", string(ticket.StatusTodo))
 			if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
 				d.ticketLog(t.ID).Error("crash recovery: write failed", "err", err)
-				_ = t.SetField("status", string(ticket.StatusInProgress))
+				*t = *before
+				d.reserveRecoveredExecutionLocked(t)
 			}
 		}
 		d.tickets[t.ID] = newTicketState(t, path)
@@ -1195,12 +1197,13 @@ func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.
 		return
 	}
 
+	d.cancelChangedExecutionLocked(t)
 	if !t.Kontora {
 		return
 	}
 
-	switch t.Status { //nolint:exhaustive
-	case ticket.StatusTodo:
+	switch {
+	case t.Status == ticket.StatusTodo:
 		if !known || prev.ticket.Status != ticket.StatusTodo {
 			if cancel, ok := d.running[t.ID]; ok {
 				log.Info("killing agent", "reason", "status changed to todo")
@@ -1216,7 +1219,7 @@ func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.
 				d.enqueueAutomatic(t)
 			}
 		}
-	case ticket.StatusInProgress:
+	case t.IsRunning():
 		if d.claimedElsewhere(t) {
 			// Another instance claimed this ticket and its claim reached us
 			// through sync. If we're running it, yield: cancel our agent and
@@ -1234,17 +1237,19 @@ func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.
 		if _, running := d.running[t.ID]; !running && t.ClaimedBy == d.instanceName && !t.IsPassiveEpic() {
 			log.Info("recovering stale self-claim", "claimed_by", t.ClaimedBy)
 			if !d.reconcileExecutionLocked(t, path) {
+				before := t.Clone()
 				_ = t.SetField("status", string(ticket.StatusTodo))
 				if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
 					log.Error("recover stale self-claim: write failed", "err", err)
-					_ = t.SetField("status", string(ticket.StatusInProgress))
+					*t = *before
+					d.reserveRecoveredExecutionLocked(t)
 				}
 			}
 			d.tickets[t.ID] = newTicketState(t, path)
 			d.enqueueAutomatic(t)
 			d.broadcastTicketUpdate(t.ID)
 		}
-	case ticket.StatusPaused, ticket.StatusHumanReview, ticket.StatusCancelled, ticket.StatusOpen:
+	case t.Status == ticket.StatusPaused, t.Status == ticket.StatusHumanReview, t.Status == ticket.StatusCancelled, t.Status == ticket.StatusOpen:
 		if cancel, ok := d.running[t.ID]; ok {
 			log.Info("killing agent", "reason", "user set "+string(t.Status))
 			cancel()
@@ -1252,7 +1257,7 @@ func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.
 		if t.Status == ticket.StatusCancelled {
 			d.background.Go(func() { d.cleanupWorktree(log, t) })
 		}
-	case ticket.StatusDone, ticket.StatusArchived:
+	case t.Status == ticket.StatusDone, t.Status == ticket.StatusArchived:
 		if cancel, ok := d.running[t.ID]; ok {
 			log.Info("killing agent", "reason", "user set "+string(t.Status))
 			cancel()
@@ -1264,6 +1269,16 @@ func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.
 				log.Info("killing agent", "reason", "user set "+string(t.Status))
 				cancel()
 			}
+		}
+	}
+}
+
+func (d *Daemon) cancelChangedExecutionLocked(t *ticket.Ticket) {
+	// Marker removal cancels even after config removal; teardown retains the reservation.
+	if claim := d.executions[t.ID]; claim != nil && (!t.IsRunning() || executionOf(t) != claim.expected) {
+		if cancel := d.running[t.ID]; cancel != nil {
+			d.ticketLog(t.ID).Info("killing agent", "reason", "execution identity changed")
+			cancel()
 		}
 	}
 }
@@ -1370,7 +1385,7 @@ func (d *Daemon) logRemoveResult(log *slog.Logger, err error) {
 // claimedElsewhere reports whether the ticket carries a non-empty claim owned
 // by a different instance. It guards every place the daemon would otherwise
 // overwrite a ticket that another machine on the shared tickets_dir is running.
-// Callers consult it only for in_progress tickets, per the claim model.
+// This is an ownership guard, independent of the ticket's running status.
 func (d *Daemon) claimedElsewhere(t *ticket.Ticket) bool {
 	return t.ClaimedBy != "" && t.ClaimedBy != d.instanceName
 }
@@ -1982,7 +1997,7 @@ func (d *Daemon) readTicketForExit(p exitGuardParams) (*ticket.Ticket, bool) {
 		return nil, false
 	}
 	// If user changed status while running, respect that.
-	if d.isUserOverride(t2.Status) {
+	if !t2.IsRunning() && d.isUserOverride(t2.Status) {
 		p.log.Info("user override during execution", "status", t2.Status)
 		if isTerminalOverride(t2.Status) && !d.claimedElsewhere(t2) {
 			d.removeWorktreeAt(p.log, p.repoPath, p.wtPath)
@@ -2007,7 +2022,7 @@ func (d *Daemon) readTicketForExit(p exitGuardParams) (*ticket.Ticket, bool) {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if t2.HasOwnershipMetadata() || t2.Status != ticket.StatusInProgress {
+	if t2.HasOwnershipMetadata() || !t2.IsRunning() {
 		return nil, false
 	}
 	if p.claim != nil {

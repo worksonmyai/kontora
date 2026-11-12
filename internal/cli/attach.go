@@ -79,8 +79,8 @@ func resolveAttach(sessionName, tasksDir, taskID string) (string, error) {
 		return "", fmt.Errorf("reading ticket: %w", err)
 	}
 
-	if t.Status != ticket.StatusInProgress {
-		return "", fmt.Errorf("ticket %s has status %q, must be in_progress to attach", resolvedID, t.Status)
+	if !t.IsRunning() || t.IsPassiveEpic() {
+		return "", fmt.Errorf("ticket %s has status %q, must be running to attach", resolvedID, t.Status)
 	}
 
 	if !tmux.HasWindow(sessionName, resolvedID) {
@@ -227,7 +227,7 @@ func buildAttachItems(cfg *config.Config) ([]attachItem, error) {
 		if !ticket.IsCanonicalPath(entry.Name(), t.ID) {
 			continue
 		}
-		if t.Status == ticket.StatusInProgress {
+		if t.IsRunning() && !t.IsPassiveEpic() {
 			tasksByID[t.ID] = t
 		}
 	}

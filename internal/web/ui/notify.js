@@ -229,6 +229,7 @@ export function kontoraNotify() {
     notifyCanEdit() {
       if (!this.ticketCanEdit(this.selectedTicket)) return false;
       if (this.isSecondary(this.selectedTicket)) return true;
+      if (this.executionActive(this.selectedTicket)) return false;
       var status = this.selectedTicket?.status;
       if (!status) return false;
       return ['open', 'todo', 'paused', 'human_review']
@@ -270,7 +271,7 @@ export function kontoraNotify() {
     // compare against.
     async saveNotify() {
       var t = this.selectedTicket;
-      if (!this.ticketCanEdit(t) || !this.notifyDraft) return;
+      if (!this.notifyCanEdit() || !this.notifyDraft) return;
       this.notifyError = null;
       var routeError = this.notifyRouteError(this.notifyDraft);
       if (routeError) {

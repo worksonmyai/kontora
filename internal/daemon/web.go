@@ -51,7 +51,7 @@ func (d *Daemon) ListTickets(opts web.ListTicketsOptions) []web.TicketInfo {
 		// that have no column. All of them stay on disk and remain reachable
 		// by ID via GetTicket, and a caller that asks for the complete set
 		// gets them here too.
-		if !opts.IncludeHidden && !cfg.IsBoardStatus(string(ts.ticket.Status)) {
+		if !opts.IncludeHidden && !cfg.IsBoardStatus(string(ts.ticket.Status)) && !ts.ticket.IsRunning() {
 			continue
 		}
 		tickets = append(tickets, d.buildTicketInfo(cfg, ts, false))
@@ -556,7 +556,7 @@ func (d *Daemon) PauseTicket(id string) error {
 		if t.IsPassiveEpic() {
 			return fmt.Errorf("%w: %s is an epic, its status is derived from its children", web.ErrInvalidState, id)
 		}
-		if t.Status != ticket.StatusInProgress {
+		if !t.IsRunning() {
 			return fmt.Errorf("%w: cannot pause ticket %s in status %s (only a running ticket can be paused)", web.ErrInvalidState, id, t.Status)
 		}
 		cancel = d.running[id]
@@ -1109,7 +1109,7 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 			return err
 		}
 		t := st.Ticket
-		if !t.IsPassiveEpic() && !cfg.StatusAllowsEdit(string(t.Status)) {
+		if !t.IsPassiveEpic() && (t.IsRunning() || !cfg.StatusAllowsEdit(string(t.Status))) {
 			return fmt.Errorf("%w: cannot edit ticket %s in status %s", web.ErrInvalidState, id, t.Status)
 		}
 		if err := applyTicketUpdate(cfg, t, req); err != nil {
@@ -1234,7 +1234,7 @@ func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 				newestRun = h.Run
 			}
 		}
-		stageRunning = ts.ticket.Status == ticket.StatusInProgress && ts.ticket.Stage == q.Stage
+		stageRunning = ts.ticket.IsRunning() && ts.ticket.Stage == q.Stage
 		nextRun = stageRunIndex(ts.ticket, q.Stage)
 		lr, registered = d.liveRuns[q.ID]
 	}
@@ -1866,10 +1866,11 @@ func (d *Daemon) relatedLocked(cfg *config.Config, id string) (blocks []web.Tick
 // the fourth. A running child gets no CompletedAt, and the page clocks it live.
 func childInfo(cfg *config.Config, t *ticket.Ticket) web.TicketChild {
 	c := web.TicketChild{
-		ID:     t.ID,
-		Title:  t.Title(),
-		Status: string(t.Status),
-		Stage:  t.Stage,
+		ID:              t.ID,
+		Title:           t.Title(),
+		Status:          string(t.Status),
+		Stage:           t.Stage,
+		ExecutionActive: t.IsRunning() && !t.IsPassiveEpic(),
 	}
 	if steps, ok := cfg.Pipelines[t.Pipeline]; ok {
 		c.StageCount = len(steps)
@@ -1886,7 +1887,7 @@ func childInfo(cfg *config.Config, t *ticket.Ticket) web.TicketChild {
 			c.StartedAt = h.StartedAt
 		}
 	}
-	if t.Status != ticket.StatusInProgress {
+	if !t.IsRunning() {
 		c.CompletedAt = app.FinishedAt(t)
 	}
 	return c

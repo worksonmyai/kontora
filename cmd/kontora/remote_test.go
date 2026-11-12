@@ -28,21 +28,35 @@ import (
 )
 
 func TestRemoteListEpicMetadata(t *testing.T) {
-	row := remoteListItem(web.TicketInfo{
-		ID: "e1", Kind: "epic", EpicExecution: "agent", ChildOrder: []string{"c2", "c1"},
-		Branch: "integration", BaseBranch: "main", Ready: true,
-	})
-	var out bytes.Buffer
-	require.NoError(t, cli.RenderList(cli.Listing{Items: []cli.ListItem{row}}, &out, cli.ListOpts{JSON: true}))
-	var rows []map[string]any
-	require.NoError(t, json.Unmarshal(out.Bytes(), &rows))
-	require.Len(t, rows, 1)
-	assert.Equal(t, "epic", rows[0]["kind"])
-	assert.Equal(t, "agent", rows[0]["epic_execution"])
-	assert.Equal(t, []any{"c2", "c1"}, rows[0]["child_order"])
-	assert.Equal(t, "integration", rows[0]["branch"])
-	assert.Equal(t, "main", rows[0]["base_branch"])
-	assert.Equal(t, true, rows[0]["ready"])
+	for _, tc := range []struct {
+		status string
+		active bool
+	}{
+		{"in_progress", true},
+		{"awaiting_data", true},
+		{"awaiting_data", false},
+	} {
+		t.Run(fmt.Sprintf("%s/active=%v", tc.status, tc.active), func(t *testing.T) {
+			row := remoteListItem(web.TicketInfo{
+				ID: "e1", Kind: "epic", EpicExecution: "agent", ChildOrder: []string{"c2", "c1"},
+				Branch: "integration", BaseBranch: "main", Ready: true,
+				Status: tc.status, ExecutionActive: tc.active,
+			})
+			var out bytes.Buffer
+			require.NoError(t, cli.RenderList(cli.Listing{Items: []cli.ListItem{row}}, &out, cli.ListOpts{JSON: true}))
+			var rows []map[string]any
+			require.NoError(t, json.Unmarshal(out.Bytes(), &rows))
+			require.Len(t, rows, 1)
+			assert.Equal(t, "epic", rows[0]["kind"])
+			assert.Equal(t, "agent", rows[0]["epic_execution"])
+			assert.Equal(t, []any{"c2", "c1"}, rows[0]["child_order"])
+			assert.Equal(t, "integration", rows[0]["branch"])
+			assert.Equal(t, "main", rows[0]["base_branch"])
+			assert.Equal(t, true, rows[0]["ready"])
+			assert.Equal(t, tc.status, rows[0]["status"])
+			assert.Equal(t, tc.active, rows[0]["execution_active"])
+		})
+	}
 }
 
 func TestPrintRemoteListPreservesServerReadiness(t *testing.T) {

@@ -206,7 +206,7 @@ export function kontoraRelations() {
       if (!holder || holder.missing || this.isSecondary(holder)) return null;
       var want = this._chainResumeEndpoints[holder.status];
       if (!want) return null;
-      var mv = (this.validMoves[holder.status] || []).find(function (m) { return m.endpoint === want; });
+      var mv = this.ticketMoves(holder).find(function (m) { return m.endpoint === want; });
       if (!mv) return null;
       return { id: holder.id, endpoint: mv.endpoint, label: mv.label.toLowerCase() };
     },
@@ -249,7 +249,7 @@ export function kontoraRelations() {
     // already says it this way.
     childStageLine(c) {
       if (!c || !c.stage) return '—';
-      if (c.status === 'in_progress' && c.stage_index && c.stage_count > 1) {
+      if (this.executionActive(c) && c.stage_index && c.stage_count > 1) {
         return c.stage + ' ' + c.stage_index + '/' + c.stage_count;
       }
       return c.stage;
@@ -261,7 +261,7 @@ export function kontoraRelations() {
     // up to, and a live clock on it would climb forever.
     childElapsed(c) {
       if (!c || !c.started_at) return '—';
-      if (c.status === 'in_progress') return this.formatDuration({ started_at: c.started_at }) || '—';
+      if (this.executionActive(c)) return this.formatDuration({ started_at: c.started_at }) || '—';
       return this.formatElapsed(c.started_at, c.completed_at) || '—';
     },
 
@@ -284,7 +284,8 @@ export function kontoraRelations() {
         stage_index: i < 0 ? 0 : i + 1,
         stage_count: stages.length,
         started_at: (h.length && h[0].started_at) || t.started_at,
-        completed_at: t.status === 'in_progress' ? null : (h.length ? h[h.length - 1].completed_at : t.updated_at),
+        execution_active: this.executionActive(t),
+        completed_at: this.executionActive(t) ? null : (h.length ? h[h.length - 1].completed_at : t.updated_at),
       };
     },
 

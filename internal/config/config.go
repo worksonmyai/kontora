@@ -681,11 +681,20 @@ func (h Hooks) applyDefaults() {
 type Pipeline []PipelineStep
 
 type PipelineStep struct {
-	Stage      string `yaml:"stage"`
-	Agent      string `yaml:"agent"`
-	OnSuccess  string `yaml:"on_success"`
-	OnFailure  string `yaml:"on_failure"`
-	MaxRetries int    `yaml:"max_retries"`
+	Stage         string `yaml:"stage"`
+	Agent         string `yaml:"agent"`
+	OnSuccess     string `yaml:"on_success"`
+	OnFailure     string `yaml:"on_failure"`
+	MaxRetries    int    `yaml:"max_retries"`
+	RunningStatus string `yaml:"running_status,omitempty"`
+}
+
+// EffectiveRunningStatus also supplies the default for configs constructed in Go.
+func (s PipelineStep) EffectiveRunningStatus() string {
+	if s.RunningStatus == "" {
+		return "in_progress"
+	}
+	return s.RunningStatus
 }
 
 // ErrNotFound is returned by Load when the config file does not exist.
@@ -1216,6 +1225,9 @@ func (c *Config) validatePipelines() error {
 			}
 			if err := stepAgent.CheckEffort(stageModel, stageEffort); err != nil {
 				return fmt.Errorf("pipeline %q stage %d: stage %q: %w", name, i, step.Stage, err)
+			}
+			if status := step.EffectiveRunningStatus(); status != "in_progress" && (status == "closed" || builtinStatuses[status] || reservedKeywords[status] || !c.IsCustomStatus(status)) {
+				return fmt.Errorf("pipeline %q stage %d: invalid running_status %q (use in_progress or a declared custom status other than closed)", name, i, status)
 			}
 			if !validOnSuccess[step.OnSuccess] {
 				return fmt.Errorf("pipeline %q stage %d: invalid on_success %q (must be next, done, or a custom status)", name, i, step.OnSuccess)

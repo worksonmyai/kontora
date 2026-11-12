@@ -249,7 +249,7 @@ func simpleTicketRun(cfg *config.Config, logsDir string, t *ticket.Ticket) (stat
 }
 
 func simpleTicketEnded(t *ticket.Ticket) bool {
-	if t.Pipeline != "" || t.IsAgentEpic() || t.StartedAt == nil || t.Status == ticket.StatusInProgress {
+	if t.Pipeline != "" || t.IsAgentEpic() || t.StartedAt == nil || t.IsRunning() {
 		return false
 	}
 	for i, h := range t.History {

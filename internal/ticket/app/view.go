@@ -11,21 +11,22 @@ import (
 // View is the domain-level projection of a ticket.
 // Adapters (HTTP handlers, TUI renderers) convert from this.
 type View struct {
-	Managed       *ticket.ManagedOwnership
-	ID            string
-	Title         string
-	Status        string
-	Kontora       bool
-	Stage         string
-	Pipeline      string
-	Path          string
-	Agent         string
-	AgentOverride bool
-	Attempt       int
-	InvocationID  string
-	CreatedAt     *time.Time
-	StartedAt     *time.Time
-	CompletedAt   *time.Time
+	Managed         *ticket.ManagedOwnership
+	ID              string
+	Title           string
+	Status          string
+	ExecutionActive bool
+	Kontora         bool
+	Stage           string
+	Pipeline        string
+	Path            string
+	Agent           string
+	AgentOverride   bool
+	Attempt         int
+	InvocationID    string
+	CreatedAt       *time.Time
+	StartedAt       *time.Time
+	CompletedAt     *time.Time
 	// FinishedAt is when the ticket last stopped running, derived from the
 	// history. Unlike the file mtime it does not move when the markdown is
 	// edited. See FinishedAt for the precedence rule.
@@ -132,30 +133,31 @@ func ResolveViewAgent(cfg *config.Config, t *ticket.Ticket) string {
 func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 	t = t.Clone()
 	v := View{
-		Managed:       t.Managed,
-		ID:            t.ID,
-		Title:         t.Title(),
-		Status:        string(t.Status),
-		Kontora:       t.Kontora,
-		Stage:         t.Stage,
-		Pipeline:      t.Pipeline,
-		Path:          t.Path,
-		Attempt:       t.Attempt,
-		InvocationID:  t.InvocationID,
-		CreatedAt:     t.Created,
-		StartedAt:     t.StartedAt,
-		CompletedAt:   t.CompletedAt,
-		FinishedAt:    FinishedAt(t),
-		Branch:        t.Branch,
-		BaseBranch:    t.BaseBranch,
-		ClaimedBy:     t.ClaimedBy,
-		ScheduledAt:   t.ScheduledAt,
-		Deps:          t.Deps,
-		Links:         t.Links,
-		Parent:        t.Parent,
-		Kind:          string(t.Kind),
-		EpicExecution: t.EpicExecution,
-		Children:      t.Children,
+		Managed:         t.Managed,
+		ID:              t.ID,
+		Title:           t.Title(),
+		Status:          string(t.Status),
+		ExecutionActive: t.IsRunning() && !t.IsPassiveEpic(),
+		Kontora:         t.Kontora,
+		Stage:           t.Stage,
+		Pipeline:        t.Pipeline,
+		Path:            t.Path,
+		Attempt:         t.Attempt,
+		InvocationID:    t.InvocationID,
+		CreatedAt:       t.Created,
+		StartedAt:       t.StartedAt,
+		CompletedAt:     t.CompletedAt,
+		FinishedAt:      FinishedAt(t),
+		Branch:          t.Branch,
+		BaseBranch:      t.BaseBranch,
+		ClaimedBy:       t.ClaimedBy,
+		ScheduledAt:     t.ScheduledAt,
+		Deps:            t.Deps,
+		Links:           t.Links,
+		Parent:          t.Parent,
+		Kind:            string(t.Kind),
+		EpicExecution:   t.EpicExecution,
+		Children:        t.Children,
 
 		Notify:         t.Notify.Statuses,
 		NotifyChannels: t.NotifyChannels,

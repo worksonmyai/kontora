@@ -128,7 +128,7 @@ func (m *ManagedTickets) Enroll(id, workID, objectiveID string, expectedState ui
 		if err := ticket.RejectImportedOwnership(t); err != nil {
 			return err
 		}
-		if t.Status == ticket.StatusTodo || t.Status == ticket.StatusInProgress || t.ScheduledAt != "" || t.AnnotationReturnStatus != "" {
+		if t.Status == ticket.StatusTodo || t.IsRunning() || t.ScheduledAt != "" || t.AnnotationReturnStatus != "" {
 			return fmt.Errorf("ticket has pending or active ordinary work")
 		}
 		state, err := m.Control.State()

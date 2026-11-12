@@ -224,11 +224,12 @@ type ManagedOwnership struct {
 }
 
 type Ticket struct {
-	Managed *ManagedOwnership `yaml:"managed,omitempty"`
-	ID      string            `yaml:"id"`
-	Kontora bool              `yaml:"kontora"`
-	Status  Status            `yaml:"status"`
-	Kind    Kind              `yaml:"kind,omitempty"`
+	Managed       *ManagedOwnership `yaml:"managed,omitempty"`
+	ID            string            `yaml:"id"`
+	Kontora       bool              `yaml:"kontora"`
+	Status        Status            `yaml:"status"`
+	RunningStatus Status            `yaml:"running_status,omitempty"`
+	Kind          Kind              `yaml:"kind,omitempty"`
 	// EpicExecution is empty for passive grouping or "agent" for a supervisor.
 	EpicExecution string     `yaml:"epic_execution,omitempty"`
 	Pipeline      string     `yaml:"pipeline"`
@@ -276,7 +277,7 @@ type Ticket struct {
 	// unlike Summary it never describes a single run.
 	FinalSummary string `yaml:"final_summary"`
 	// ClaimedBy records the daemon instance that last picked the ticket up. It
-	// is consulted only while Status is in_progress, to keep daemons on a shared
+	// is consulted only while IsRunning, to keep daemons on a shared
 	// tickets_dir from stealing or killing each other's work.
 	ClaimedBy string `yaml:"claimed_by"`
 	// AnnotationReturnStatus parks a ticket for an annotation run. It holds the
@@ -420,6 +421,23 @@ func (t *Ticket) Marshal() ([]byte, error) {
 
 // SetField updates or adds a field in the raw YAML node and syncs typed fields.
 func (t *Ticket) SetField(key string, value any) error {
+	candidate := t.Clone()
+	if err := candidate.setFieldNode(key, value); err != nil {
+		return err
+	}
+	if key == "status" {
+		if err := candidate.clearRunningStatus(); err != nil {
+			return err
+		}
+	}
+	if err := candidate.syncFromNode(); err != nil {
+		return err
+	}
+	*t = *candidate
+	return nil
+}
+
+func (t *Ticket) setFieldNode(key string, value any) error {
 	if t.rawNode == nil || t.rawNode.Kind != yaml.MappingNode {
 		return fmt.Errorf("raw node is not a mapping")
 	}
@@ -434,7 +452,7 @@ func (t *Ticket) SetField(key string, value any) error {
 	for i := 0; i < len(content)-1; i += 2 {
 		if content[i].Value == key {
 			*content[i+1] = valNode
-			return t.syncFromNode()
+			return nil
 		}
 	}
 
@@ -445,14 +463,32 @@ func (t *Ticket) SetField(key string, value any) error {
 		Value: key,
 	}
 	t.rawNode.Content = append(t.rawNode.Content, keyNode, &valNode)
-	return t.syncFromNode()
+	return nil
 }
 
 // DeleteField removes a field from the raw YAML node and syncs typed fields.
 // Unlike SetField with a zero value, which leaves the key behind holding an
 // empty value, this leaves no trace of the field in the frontmatter. Removing
-// a key that is not there is not an error.
+// a key that is not there is not an error. Lifecycle snapshot cleanup masks
+// inherited running_status values with an empty value when needed.
 func (t *Ticket) DeleteField(key string) error {
+	candidate := t.Clone()
+	if err := candidate.deleteFieldNode(key); err != nil {
+		return err
+	}
+	if key == "status" || key == "running_status" {
+		if err := candidate.clearRunningStatus(); err != nil {
+			return err
+		}
+	}
+	if err := candidate.syncFromNode(); err != nil {
+		return err
+	}
+	*t = *candidate
+	return nil
+}
+
+func (t *Ticket) deleteFieldNode(key string) error {
 	if t.rawNode == nil || t.rawNode.Kind != yaml.MappingNode {
 		return fmt.Errorf("raw node is not a mapping")
 	}
@@ -460,7 +496,7 @@ func (t *Ticket) DeleteField(key string) error {
 	for i := 0; i < len(content)-1; i += 2 {
 		if content[i].Value == key {
 			t.rawNode.Content = slices.Delete(content, i, i+2)
-			return t.syncFromNode()
+			return nil
 		}
 	}
 	return nil

@@ -134,7 +134,7 @@ export function kontoraBoard() {
 
     // Stage position is the only progress signal, so the current stage counts as half done.
     cardStageProgress(ticket) {
-      if (!ticket || this.epicIsAgent(ticket) || ticket.status !== 'in_progress' ||
+      if (!ticket || this.epicIsAgent(ticket) || !this.executionActive(ticket) ||
           !ticket.stages || ticket.stages.length < 2) return null;
       var index = ticket.stages.indexOf(ticket.stage);
       if (index < 0) return null;
@@ -169,12 +169,12 @@ export function kontoraBoard() {
       if (!ticket.kontora) cls.push('border-dashed');
       if (ticket.status === 'cancelled') cls.push('opacity-60');
       else if (col.key === 'open' && ticket.scheduled_at) cls.push('kt-card-scheduled');
-      if (ticket.status === 'in_progress') cls.push('card-state-running');
+      if (this.executionActive(ticket)) cls.push('card-state-running');
       if (ticket.status === 'paused') cls.push('card-state-paused');
 
-      // Stage / status glyph (IN PROGRESS column only).
+      // Active glyphs follow execution; queued and paused glyphs stay in flight.
       var glyph = '';
-      if (inProgressCol && ticket.status === 'in_progress') {
+      if (this.executionActive(ticket)) {
         glyph = '<span class="flex items-center gap-[5px] text-[10px] font-mono card-glyph-running">'
           + '<span class="w-[5px] h-[5px] rounded-full pulse-dot" style="background: hsl(var(--st-progress))"></span><span>' + esc(supervisor ? 'supervising' : ticket.stage) + '</span></span>';
       } else if (inProgressCol && ticket.status === 'paused') {
@@ -230,7 +230,7 @@ export function kontoraBoard() {
       // the 30s tick without rebuilding the card.
       var timeSpan = '';
       var finishedAt = this.reviewFinishedAt(ticket);
-      if (ticket.status === 'in_progress' && ticket.started_at) {
+      if (this.executionActive(ticket) && ticket.started_at) {
         timeSpan = '<span data-since="' + esc(ticket.started_at) + '" data-tip-t="' + esc('Started: ' + this.formatAbsDate(ticket.started_at)) + '">'
           + esc(this.formatDuration(ticket)) + '</span>';
       } else if (finishedAt) {
@@ -335,7 +335,7 @@ export function kontoraBoard() {
       var epic = this.isSecondary(ticket) ? null : this._epicRollup[(ticket.parent && ticket.parent.id) || ''];
       var epicSig = epic ? [epic.id, epic.title, epic.done, epic.total].join(':') : '';
       var sourceName = this.ticketSources.find(s => s.id === ticket.source)?.path || ticket.source || 'primary';
-      return [col.key, ticket.id, ticket.source, sourceName, ticket.can_control, ticket.title, ticket.status, ticket.stage,
+      return [col.key, ticket.id, ticket.source, sourceName, ticket.can_control, ticket.title, ticket.status, ticket.execution_active, ticket.stage,
               ticket.pipeline, ticket.path, ticket.agent, ticket.attempt,
               ticket.kontora ? 1 : 0, ticket.started_at, ticket.created_at,
               ticket.waiting_for_input ? 1 : 0, ticket.waiting_since,
@@ -376,7 +376,7 @@ export function kontoraBoard() {
       if (!ticket.kontora) {
         items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-warn hover:bg-surface-850 hover:text-warn transition-colors" data-act="init">Initialize</button>';
       }
-      var moves = this.validMoves[ticket.status] || [];
+      var moves = this.ticketMoves(ticket);
       moves.forEach((mv) => {
         var label = mv.label;
         if (supervisor) {
@@ -408,7 +408,7 @@ export function kontoraBoard() {
     // draws, and the tallies recomputeBoard keeps. A status with no column of
     // its own counts as changed, because the caller cannot show it either way.
     boardEntryChanged(before, after) {
-      if (!before || !after || before.status !== after.status || before.epic_execution !== after.epic_execution) return true;
+      if (!before || !after || before.status !== after.status || this.executionActive(before) !== this.executionActive(after) || before.epic_execution !== after.epic_execution) return true;
       var col = this._columnForStatus(after.status);
       if (!col) return true;
       return this._cardSig(before, col) !== this._cardSig(after, col);
@@ -856,7 +856,7 @@ export function kontoraBoard() {
         });
       }
       return mountSortableResource(el, {
-        group: 'kanban',
+        group: { name: 'kanban', put: to => !!to.el.dataset.dropStatus },
         animation: 150,
         ghostClass: 'sortable-ghost',
         dragClass: 'sortable-drag',
@@ -881,7 +881,7 @@ export function kontoraBoard() {
           var ticketId = evt.item.dataset.ticketId;
           var fromDrop = evt.from.dataset.dropStatus;
           var toDrop = evt.to.dataset.dropStatus;
-          if (fromDrop === toDrop || !ticketId) {
+          if (!toDrop || fromDrop === toDrop || !ticketId) {
             // No move to make, but a held render still has to land, and the
             // column the card was dropped back into needs the patch that puts
             // it back in sorted order.
@@ -898,7 +898,8 @@ export function kontoraBoard() {
           // status change (an uninitialized ticket opens the init modal
           // instead) would leave the card sitting in the column it was dropped
           // on.
-          self.invalidateColumnFor(fromDrop);
+          var sourceCol = self.columns.find(c => 'col-' + c.key === evt.from.id);
+          self.invalidateColumnFor(sourceCol?.statuses[0] || fromDrop);
           self.invalidateColumnFor(toDrop);
           // No manual DOM restore: moveTask sets the status optimistically and
           // recomputeBoard → renderBoard patches both columns from canonical
@@ -952,9 +953,12 @@ export function kontoraBoard() {
           epics.push(t);
           if (!this.epicIsAgent(t)) continue;
         }
-        if (!this.isSecondary(t) && t.kontora && counts[t.status] !== undefined) counts[t.status]++;
+        if (!this.isSecondary(t) && t.kontora) {
+          if (this.executionActive(t)) counts.in_progress++;
+          else if (t.status !== 'in_progress' && counts[t.status] !== undefined) counts[t.status]++;
+        }
         if (!this.isSecondary(t) && t.kontora && t.waiting_for_input) counts.needsInput++;
-        if (!this.isSecondary(t) && t.kontora && t.status === 'in_progress' && t.agent) {
+        if (!this.isSecondary(t) && t.kontora && this.executionActive(t) && t.agent) {
           running[t.agent] = (running[t.agent] || 0) + 1;
         }
         var key = colOf[t.status];

@@ -410,6 +410,19 @@ test('cancel source or destination reconciles surviving board DOM from canonical
   }
 });
 
+test('undeclared fallback columns and epic groups reject incoming drops', () => {
+  const h = harness();
+  const board = h.mount("boardSortableOwner('awaiting_data')");
+  const boardSortable = h.ctx.Sortable.get(board);
+  assert.equal(boardSortable.options.group.checkPut(boardSortable, boardSortable), false);
+  const epic = h.mount('epicSortableOwner()', { epicGroup: 'awaiting_data' });
+  const epicSortable = h.ctx.Sortable.get(epic);
+  assert.equal(epicSortable.options.group.checkPut(epicSortable, epicSortable), false);
+  h.destroy(board); h.destroy(epic);
+  assert.deepEqual(h.state.moves, []);
+  assert.deepEqual(h.errors, []);
+});
+
 test('normal board drop still posts exactly once after a cancelled drag', () => {
   const h = harness();
   const from = h.mount("boardSortableOwner('open')", { dropStatus: 'open' });

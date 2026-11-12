@@ -32,6 +32,8 @@ type executionRecord struct {
 	Worktree             string               `json:"worktree"`
 	Pipeline             string               `json:"pipeline"`
 	TicketStage          string               `json:"ticket_stage"`
+	Status               ticket.Status        `json:"status,omitempty"`
+	RunningStatus        ticket.Status        `json:"running_status,omitempty"`
 	Attempt              int                  `json:"attempt"`
 	Branch               string               `json:"branch"`
 	RepoPath             string               `json:"repo_path"`
@@ -161,7 +163,8 @@ func (d *Daemon) bindExecution(t *ticket.Ticket, p spawnAgentParams, params *Run
 	inv := session.Invocation{Version: 1, ID: id, TicketID: p.ticketID, Stage: p.stageName, ResultPath: resultPath}
 	rec := &executionRecord{Invocation: inv, EpicID: epicID, Instance: d.instanceName,
 		Worktree: p.wtPath, Pipeline: t.Pipeline, TicketStage: t.Stage, Attempt: t.Attempt,
-		Branch: t.Branch, RepoPath: t.Path, RepoCommonDir: commonDir, Phase: "preparing", Agent: p.agentName, Run: p.run}
+		Branch: t.Branch, RepoPath: t.Path, RepoCommonDir: commonDir, Phase: "preparing", Agent: p.agentName, Run: p.run,
+		Status: t.Status, RunningStatus: t.RunningStatus}
 	expected := executionOf(t)
 	err = d.withTicketMutationOrigin(notify.OriginDaemon, func(repo app.MutationRepository) error {
 		st, err := repo.Get(t.ID)
@@ -170,7 +173,7 @@ func (d *Daemon) bindExecution(t *ticket.Ticket, p spawnAgentParams, params *Run
 		}
 		current := st.Ticket
 		claim := d.executions[t.ID]
-		if st.FilePath != p.filePath || current.Status != ticket.StatusInProgress || d.claimedElsewhere(current) || current.HasOwnershipMetadata() ||
+		if st.FilePath != p.filePath || !current.IsRunning() || d.claimedElsewhere(current) || current.HasOwnershipMetadata() ||
 			executionOf(current) != expected || (claim != nil && claim.expected != expected) {
 			return errExecutionChanged
 		}
@@ -255,20 +258,35 @@ func executionLifecycleMatches(t *ticket.Ticket, rec *executionRecord) bool {
 		t.Branch == rec.Branch && t.Path == rec.RepoPath && !t.HasOwnershipMetadata()
 }
 
+// Missing active-state fields identify journals written before custom-active runs.
+// Keep this separate from lifecycle matching: recovered todo tickets and
+// committed transitions no longer carry the active pair.
+func executionActiveStateMatches(t *ticket.Ticket, rec *executionRecord) bool {
+	status := rec.Status
+	if status == "" {
+		status = ticket.StatusInProgress
+	}
+	return t.IsRunning() && t.Status == status && t.RunningStatus == rec.RunningStatus
+}
+
 func executionMatches(t *ticket.Ticket, rec *executionRecord) bool {
-	return t.InvocationID == rec.Invocation.ID && t.Status == ticket.StatusInProgress && executionLifecycleMatches(t, rec)
+	return t.InvocationID == rec.Invocation.ID && executionActiveStateMatches(t, rec) && executionLifecycleMatches(t, rec)
+}
+
+func preparingExecutionBindingMatches(t *ticket.Ticket, rec *executionRecord) bool {
+	return rec.Phase == "preparing" && rec.PreviousInvocationID != nil &&
+		t.InvocationID == *rec.PreviousInvocationID && executionLifecycleMatches(t, rec)
 }
 
 func preparingExecutionMatches(t *ticket.Ticket, rec *executionRecord) bool {
-	return rec.Phase == "preparing" && rec.PreviousInvocationID != nil &&
-		t.InvocationID == *rec.PreviousInvocationID && executionLifecycleMatches(t, rec)
+	return preparingExecutionBindingMatches(t, rec) && executionActiveStateMatches(t, rec)
 }
 
 func committedExecutionMatches(t *ticket.Ticket, rec *executionRecord) bool {
 	tr := rec.Transition
 	if rec.Phase != "transition" || tr == nil || t.InvocationID != "" || t.ID != rec.Invocation.TicketID ||
 		t.Pipeline != rec.Pipeline || t.Branch != rec.Branch || t.Path != rec.RepoPath ||
-		t.Status != tr.Status || t.Stage != tr.Stage || t.Attempt != tr.Attempt ||
+		t.Status != tr.Status || t.RunningStatus != "" || t.Stage != tr.Stage || t.Attempt != tr.Attempt ||
 		!reflect.DeepEqual(t.CompletedAt, tr.CompletedAt) || t.LastError != tr.LastError || t.Summary != tr.Summary {
 		return false
 	}
@@ -354,11 +372,47 @@ func (d *Daemon) reconcileRetainedExecutionLocked(t *ticket.Ticket, path string)
 	if _, retained := d.recoveredReservations[t.ID]; !retained {
 		return false
 	}
-	d.reconcileExecutionLocked(t, path)
+	recovered := false
+	if !d.reconcileExecutionLocked(t, path) {
+		recovered = d.recoverRetainedOrdinaryExecutionLocked(t, path)
+	}
 	d.tickets[t.ID] = newTicketState(t, path)
+	if recovered {
+		d.broadcastTicketUpdate(t.ID)
+	}
 	if t.Status == ticket.StatusTodo && *d.config().AutoPickUp {
 		d.enqueueAutomatic(t)
 	}
+	return true
+}
+
+func (d *Daemon) recoverRetainedOrdinaryExecutionLocked(t *ticket.Ticket, path string) bool {
+	expected := executionOf(t)
+	if !d.confirmRecoveryTerminationLocked(t) {
+		return false
+	}
+	// Disk edits can arrive while termination confirmation blocks, even with d.mu held.
+	current, err := ticket.ParseFile(path)
+	if err != nil {
+		return false
+	}
+	*t = *current
+	if d.claimedElsewhere(t) || t.HasOwnershipMetadata() {
+		return false
+	}
+	if executionOf(t) != expected {
+		if !t.IsRunning() || !t.Kontora {
+			d.releaseRecoveredExecutionLocked(t.ID)
+		}
+		return false
+	}
+	before := t.Clone()
+	_ = t.SetField("status", string(ticket.StatusTodo))
+	if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
+		*t = *before
+		return false
+	}
+	d.releaseRecoveredExecutionLocked(t.ID)
 	return true
 }
 
@@ -375,7 +429,7 @@ func (d *Daemon) reconcileExecutionLocked(t *ticket.Ticket, path string) bool {
 		return true
 	}
 	rec, err := loadExecution(cfg, t.ID)
-	if (t.Status != ticket.StatusInProgress || !t.Kontora) && errors.Is(err, os.ErrNotExist) {
+	if (!t.IsRunning() || !t.Kontora) && errors.Is(err, os.ErrNotExist) {
 		d.reconcileLegacyOverrideLocked(t)
 		return true
 	}
@@ -391,7 +445,8 @@ func (d *Daemon) reconcileExecutionLocked(t *ticket.Ticket, path string) bool {
 			return true
 		}
 		rec = &executionRecord{Invocation: session.Invocation{TicketID: t.ID}, EpicID: epicID, Instance: d.instanceName,
-			TicketStage: t.Stage, Pipeline: t.Pipeline, Attempt: t.Attempt, Branch: t.Branch, RepoPath: t.Path, Phase: "legacy"}
+			TicketStage: t.Stage, Pipeline: t.Pipeline, Attempt: t.Attempt, Branch: t.Branch, RepoPath: t.Path, Phase: "legacy",
+			Status: t.Status, RunningStatus: t.RunningStatus}
 		err = nil
 	}
 	if err != nil {
@@ -404,7 +459,7 @@ func (d *Daemon) reconcileExecutionLocked(t *ticket.Ticket, path string) bool {
 		d.reserveRecoveredExecutionLocked(t)
 		return true
 	}
-	if t.InvocationID != "" && t.InvocationID != rec.Invocation.ID && !preparingExecutionMatches(t, rec) {
+	if t.InvocationID != "" && t.InvocationID != rec.Invocation.ID && !preparingExecutionBindingMatches(t, rec) {
 		d.reserveRecoveredExecutionLocked(t)
 		return true
 	}
@@ -441,20 +496,22 @@ func (d *Daemon) finishRecoveredExecutionLocked(t *ticket.Ticket, path string, r
 	if d.claimedElsewhere(t) || t.HasOwnershipMetadata() {
 		return true
 	}
+	before := t.Clone()
 	if committedExecutionMatches(t, rec) {
 		d.completeRecoveredExecutionLocked(t, rec)
 		return true
 	}
 	if !executionMatches(t, rec) && !preparingExecutionMatches(t, rec) {
 		// An older journal can precede the first ticket binding. Never apply its reports.
-		if rec.Phase == "running" && t.InvocationID == "" && t.Status == ticket.StatusInProgress && executionLifecycleMatches(t, rec) {
+		if rec.Phase == "running" && t.InvocationID == "" && executionActiveStateMatches(t, rec) && executionLifecycleMatches(t, rec) {
 			_ = t.SetField("status", string(ticket.StatusTodo))
 		}
 		// Operator edits win, but only confirmed termination permits resource reuse.
-		if t.InvocationID == rec.Invocation.ID {
+		if t.InvocationID == rec.Invocation.ID || preparingExecutionBindingMatches(t, rec) {
 			_ = t.SetField("invocation_id", "")
 		}
 		if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
+			*t = *before
 			d.reserveRecoveredExecutionLocked(t)
 			return true
 		}
@@ -468,6 +525,7 @@ func (d *Daemon) finishRecoveredExecutionLocked(t *ticket.Ticket, path string, r
 		return true
 	}
 	if !d.applyRecoveredExecutionLocked(t, rec) {
+		*t = *before
 		return true
 	}
 	if rec.Phase != "recovered" {
@@ -475,8 +533,7 @@ func (d *Daemon) finishRecoveredExecutionLocked(t *ticket.Ticket, path string, r
 	}
 	if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
 		d.ticketLog(t.ID).Error("invocation recovery: write failed", "err", err)
-		_ = t.SetField("status", string(ticket.StatusInProgress))
-		_ = t.SetField("invocation_id", rec.Invocation.ID)
+		*t = *before
 		d.reserveRecoveredExecutionLocked(t)
 		return true
 	}
@@ -512,10 +569,11 @@ func (d *Daemon) completeRecoveredExecutionLocked(t *ticket.Ticket, rec *executi
 
 func (d *Daemon) applyRecoveredExecutionLocked(t *ticket.Ticket, rec *executionRecord) bool {
 	cfg := d.config()
+	before := t.Clone()
 	switch rec.Phase {
 	case "preparing":
 		// No runner could start before the launch commit. Ignore reports for this identity.
-		if t.Status == ticket.StatusInProgress {
+		if t.IsRunning() {
 			_ = t.SetField("status", string(ticket.StatusTodo))
 		}
 	case "legacy":
@@ -574,8 +632,8 @@ func (d *Daemon) applyRecoveredExecutionLocked(t *ticket.Ticket, rec *executionR
 			_ = t.SetField("status", string(ticket.StatusTodo))
 			rec.Phase = "recovered"
 			if err := saveExecution(cfg, rec); err != nil {
+				*t = *before
 				d.reserveRecoveredExecutionLocked(t)
-				_ = t.SetField("status", string(ticket.StatusInProgress))
 				return false
 			}
 		}
@@ -592,15 +650,15 @@ func (d *Daemon) pauseRecoveryLocked(t *ticket.Ticket, path, reason string) {
 		d.reserveRecoveredExecutionLocked(t)
 		return
 	}
-	if current.Status != ticket.StatusInProgress || d.claimedElsewhere(current) || current.InvocationID != t.InvocationID || current.Stage != t.Stage || current.HasOwnershipMetadata() {
+	if !current.IsRunning() || d.claimedElsewhere(current) || executionOf(current) != executionOf(t) || current.HasOwnershipMetadata() {
 		*t = *current
 		return
 	}
-	*t = *current
+	*t = *current.Clone()
 	_ = t.SetField("status", string(ticket.StatusPaused))
 	_ = t.SetField("last_error", reason)
 	if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
-		_ = t.SetField("status", string(ticket.StatusInProgress))
+		*t = *current
 		d.reserveRecoveredExecutionLocked(t)
 		return
 	}
@@ -683,7 +741,7 @@ func (d *Daemon) reserveRecoveredExecutionLocked(t *ticket.Ticket, transferredTo
 			}
 			if ts, ok := d.tickets[t.ID]; ok {
 				current := ts.ticket.Clone()
-				d.reconcileExecutionLocked(current, ts.filePath)
+				d.reconcileRetainedExecutionLocked(current, ts.filePath)
 				d.setTicketState(t.ID, current, ts.filePath)
 				if current.Status == ticket.StatusTodo && *d.config().AutoPickUp {
 					d.enqueueAutomatic(current)

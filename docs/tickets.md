@@ -45,7 +45,7 @@ Claim moves one ticket and its reaction sidecar into primary storage under the s
 ID. The browser saves the editor first. If saving fails, Claim stops and retains the
 draft. Claim requires the revision the browser reviewed and refuses:
 
-- `in_progress`, including stale statuses, invocation markers, or pending annotations.
+- Active execution, including custom running statuses, stale `in_progress`, invocation markers, or pending annotations.
 - Managed tickets or controlled source boards.
 - Symlinked or nonregular ticket and sidecar files.
 - Destination ticket, reaction, log, or reserved execution identities.
@@ -168,7 +168,7 @@ current default at submission.
 
 For a child ticket, Kontora adds the epic id, title and a brief-reading command to each non-empty agent prompt. This includes pipeline stages, standalone runs and resumed runs. The agent is instructed to run `kontora view --body EPIC_ID` before starting and keep its work scoped to the child. The brief and notes are not copied into the prompt. Missing parents and parents that are not epics add no context.
 
-The daemon rewrites a passive epic's status whenever its children change. Archived children are ignored. Any child in `todo`, `in_progress`, `paused` or `human_review` gives `in_progress`. Otherwise, terminal children with at least one `done` or legacy `closed` give `done`. All remaining children `cancelled` gives `cancelled`; anything else, including no children, gives `open`.
+The daemon rewrites a passive epic's status whenever its children change. Archived children are ignored. Any child in `todo`, `in_progress`, `paused` or `human_review`, or active in a custom status, gives `in_progress`. Otherwise, terminal children with at least one `done` or legacy `closed` give `done`. All remaining children `cancelled` gives `cancelled`; anything else, including no children, gives `open`.
 
 A passive epic's brief stays editable in every status. Manual status changes, pause, retry, skip and schedule are refused. Archiving stops status derivation; restoring resumes it.
 
@@ -353,6 +353,7 @@ These are set and updated by the daemon as the ticket progresses through its pip
 | `stage` | Current pipeline stage name. Set to the first stage on pickup. |
 | `attempt` | Retry counter for the current stage. Reset to 0 on advance/back. |
 | `started_at` | When the current stage started. |
+| `running_status` | Snapshot of a custom-active stage's actual status. Written atomically with `status` on claim; absent or empty for default execution and parked tickets. |
 | `completed_at` | When the ticket finished (status became `done`). |
 | `branch` | Git worktree branch. Set it before pickup to choose the name. If empty, the default is `<prefix>/<title-slug>-<ticket-id>`; [`branch_naming`](configuration.md#branch-naming) mode `off` uses `<prefix>/<ticket-id>`. The daemon stores a slug name before worktree creation and stores the ID-derived name after worktree creation succeeds. |
 | `history` | List of completed stage records. |
@@ -360,7 +361,7 @@ These are set and updated by the daemon as the ticket progresses through its pip
 | `last_error` | Error message from the last failed stage run. |
 | `summary` | Summary of the stage run that ended most recently: the text the agent wrote with `kontora summary`, or its final session message as a fallback. Cleared when a new stage starts; each stage keeps its own copy on its `history` entry. |
 | `final_summary` | Summary of the whole ticket, written after a run ends the pipeline successfully or a rework run succeeds, and at least two runs recorded a summary. The agent that ran that stage writes it from the ticket text and every recorded run summary, in one non-interactive pass with no tools and a two-minute timeout. It opens with a few sentences on what the ticket asked for, then describes what was done; a ticket whose body says nothing beyond its title gets the description alone. It is not a copy of any run: `summary` and the `history` entries keep their own text. Cleared when a new run starts. Generation is best effort: a failure leaves the field empty and is reported in the daemon log, so a ticket can finish without it. |
-| `claimed_by` | The daemon [`instance_name`](configuration.md) that last picked the ticket up. Written in the same update that sets `status: in_progress`. Consulted only while the ticket is `in_progress`; a stale value on a `todo` or `done` ticket is ignored. |
+| `claimed_by` | The daemon [`instance_name`](configuration.md) that last picked the ticket up. Written with the execution claim. Consulted during default or custom-active execution; a stale value on an inactive ticket is ignored. |
 
 ### Custom fields
 
@@ -405,6 +406,32 @@ open → todo → in_progress → done ──────→ archived
 
 The daemon only picks up tickets that have both `kontora: true` and `status: todo`. A non-Kontora ticket can still appear in any status column, but Kontora will not start or resume work on it until you initialize it. To pause a running Kontora ticket, use `kontora pause <id>` or set `status: paused` in the file — the daemon will detect the change and stop the agent.
 
+### Active and parked custom statuses
+
+A pipeline step can set [`running_status`](configuration.md#running-in-a-custom-column)
+to a declared custom status. The daemon stores that actual status while its agent
+runs. A ticket with `status: awaiting_data` and `running_status: awaiting_data` is
+active; another ticket with the same status but no matching snapshot is parked.
+Legacy `in_progress` tickets remain active without a snapshot.
+
+The snapshot is internal metadata, not a user setting. Ordinary status assignments
+clear it, even when the status name stays unchanged. Notes and summary updates
+preserve it. A stale mismatched snapshot does not make the ticket active.
+
+Custom-active tickets support Pause, Cancel, live output and attachment, with the
+same editing and stage-change restrictions as ordinary running tickets. They keep
+their slot and branch reservation and block dependencies. A false
+`execution_active` API field after Pause does not prove the process stopped.
+
+`on_success` and `on_failure` custom destinations still park tickets. Moving into
+a custom column never starts a stage. Same-status manual moves do not stop an
+agent; use Pause. Config removal does not erase an active snapshot: the ticket
+stays visible in a display-only column until execution ends. Restart uses normal
+recovery and resume behavior, not a continuation of an interrupted shell sleep.
+
+Upgrade all CLI and daemon binaries sharing the store before enabling custom
+running statuses. Existing parked tickets need no migration and are not activated.
+
 ## Dependency-aware scheduling
 
 The daemon starts an agent for a `kontora: true` ticket in `todo` only when every id in its `deps` names a ticket that no longer holds work: `human_review`, `done`, `cancelled`, `archived`, or the legacy `closed` that tickets from the external ticket CLI carry. `human_review` releases dependents because the agent has finished and only a person's verdict is left; the review can still send the ticket back, and a dependent that is already running then keeps going. Every other status blocks, including a custom one. So does an id with no ticket file, because nothing on disk says whether that work is finished.
@@ -432,13 +459,13 @@ Ready tickets run oldest `created` first among tickets whose capacity pool has a
 
 ## Running on multiple machines
 
-When a `tickets_dir` is synced across machines (iCloud, Syncthing, ...), two daemons can see the same tickets. File sync is eventually consistent, so there is no cross-machine lock; instead each daemon records its [`instance_name`](configuration.md) in `claimed_by` when it picks a ticket up, and consults that claim before acting on an `in_progress` ticket:
+When a `tickets_dir` is synced across machines (iCloud, Syncthing, ...), two daemons can see the same tickets. File sync is eventually consistent, so there is no cross-machine lock; instead each daemon records its [`instance_name`](configuration.md) in `claimed_by` when it picks a ticket up, and consults that claim before acting on a default or custom-active ticket:
 
-- **Crash recovery** on startup resets an `in_progress` ticket back to `todo` only when `claimed_by` is empty or matches this daemon. A ticket claimed by another instance is left running; starting a second daemon no longer steals or kills the first's work.
+- **Crash recovery** on startup resets an active ticket back to `todo` only when `claimed_by` is empty or matches this daemon. A ticket claimed by another instance is left running; starting a second daemon no longer steals or kills the first's work.
 - **During a run**, if a foreign claim arrives through sync, the daemon cancels its own agent and leaves the file untouched. The losing worktree is kept (it may hold unpushed commits).
-- **Both sides can briefly claim** the same `todo` ticket within the sync window. Once sync settles, one claim wins and the other daemon yields; a ticket left `in_progress` with a self-claim but no running agent is reset to `todo` and re-enqueued.
+- **Both sides can briefly claim** the same `todo` ticket within the sync window. Once sync settles, one claim wins and the other daemon yields; an active ticket with a self-claim but no running agent is reset to `todo` and re-enqueued.
 
-There is no automatic takeover of a claim by claim age or a heartbeat. If the owning machine goes offline mid-run, its tickets stay `in_progress` until that daemon restarts or someone manually sets `status: todo`. Two machines that share a hostname must set `instance_name` explicitly, or the protection cannot tell them apart.
+There is no automatic takeover of a claim by claim age or a heartbeat. If the owning machine goes offline mid-run, its tickets stay in their running status until that daemon restarts or someone manually sets `status: todo`. Two machines that share a hostname must set `instance_name` explicitly, or the protection cannot tell them apart.
 
 `archived` is a terminal built-in status for closed tickets. Archived tickets are hidden from `kontora ls` (including `--closed`), the TUI, and the WebUI board, but their markdown files are kept on disk. The daemon never enqueues an archived ticket, and a live transition to `archived` stops any running agent and cleans up its worktree, just like `done`/`cancelled`. It cannot be set as a custom status, and `move` still refuses it in both directions: archiving and restoring have their own verbs.
 

@@ -2484,7 +2484,7 @@ func TestDaemon_Relations(t *testing.T) {
 	epic, err := d.GetTicket("rel-epic")
 	require.NoError(t, err)
 	assert.Equal(t, []web.TicketChild{
-		{ID: "rel-kid-a", Title: "Running sub-ticket", Status: "in_progress", Stage: "step2", StageIndex: 2, StageCount: 2},
+		{ID: "rel-kid-a", Title: "Running sub-ticket", Status: "in_progress", ExecutionActive: true, Stage: "step2", StageIndex: 2, StageCount: 2},
 		{ID: "rel-kid-z", Title: "Stage off the pipeline", Status: "paused", Stage: "gone", StageCount: 2},
 		{ID: "rel-main", Title: "Main ticket", Status: "todo"},
 	}, epic.Children)

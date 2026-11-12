@@ -107,8 +107,10 @@ function fixtures(options = {}) {
   const receipts = new Map(), runReceipts = new Map();
   const specFields = ['agent', 'enabled', 'model', 'name', 'overlap', 'path', 'prompt', 'schedule', 'timeout', 'timezone', 'workspace'];
   const spec = value => assert.deepEqual(Object.keys(value).sort(), specFields);
-  let rawConfig = 'tickets_dir: /fixtures/primary\nauto_pick_up: false\nmax_concurrent_agents: 3\nagents:\n  fixture-agent:\n    binary: pi\n';
+  const configWrites = [];
+  let rawConfig = options.rawConfig || 'tickets_dir: /fixtures/primary\nauto_pick_up: false\nmax_concurrent_agents: 3\nagents:\n  fixture-agent:\n    binary: pi\n';
   const list = folder => [...records.values()].filter(t => t.source === folder && !t.archived_at);
+  const active = record => record.execution_active ?? (record.status === 'in_progress');
   const json = (route, value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
 
   async function api(route, url) {
@@ -224,7 +226,7 @@ function fixtures(options = {}) {
             { id: source, path: sourcePath, available: true },
             ...(behavior.unavailableFolder ? [{ id: 'unavailable', path: unavailablePath, available: false, error: 'Fixture folder unavailable' }] : []),
           ]);
-        case '/api/tickets': return json(route, { tickets: list('primary'), running_agents: 1 });
+        case '/api/tickets': return json(route, { tickets: list('primary'), running_agents: list('primary').filter(active).length });
         case `/api/sources/${source}/tickets`: return json(route, list(source));
         case '/api/assistant': return json(route, behavior.assistantConfig);
         case '/api/assistant/threads': return json(route, { threads: [...assistantThreads.values()].map(({ messages, ...thread }) => thread) });
@@ -247,6 +249,7 @@ function fixtures(options = {}) {
         return json(route, { error: behavior.saveFailure }, 503);
       }
       rawConfig = request.postDataJSON().content;
+      configWrites.push(rawConfig);
       return route.fulfill({ status: 204 });
     }
     if (method === 'POST' && path === '/api/tickets') {
@@ -318,13 +321,13 @@ function fixtures(options = {}) {
             if (id === 'kon-live') return json(route, { id, cost_usd: '0.42', tracked_runs: 3, priced_runs: 2,
             stages: [{ name: 'plan', cost_usd: '0.30', tracked_runs: 1, priced_runs: 1 },
               { name: 'code', cost_usd: '0.12', tracked_runs: 2, priced_runs: 1 }], runs: [] });
-            return json(route, { id, cost_usd: record.history.length || record.status === 'in_progress' ? '0.12' : null,
-            tracked_runs: record.history.length || (record.status === 'in_progress' ? 1 : 0),
-            priced_runs: record.history.length || (record.status === 'in_progress' ? 1 : 0), stages: [], runs: [] });
+            return json(route, { id, cost_usd: record.history.length || active(record) ? '0.12' : null,
+            tracked_runs: record.history.length || (active(record) ? 1 : 0),
+            priced_runs: record.history.length || (active(record) ? 1 : 0), stages: [], runs: [] });
           case 'chain': return json(route, { nodes: [], verdict: '' });
           case 'changes': return json(route, { base: 'main', files: [], commits: [] });
           case 'logs': return json(route, { content: `${id} ${url.searchParams.get('stage') || 'code'} fixture log revision ${behavior.outputRevision}\n` });
-          case 'activity': return json(route, { live: record.status === 'in_progress', source: 'events',
+          case 'activity': return json(route, { live: active(record), source: 'events',
             tape: { events: behavior.activityEvents || [{ kind: 'text', text: `Fixture activity revision ${behavior.outputRevision}` }] } });
         }
       }
@@ -433,7 +436,7 @@ function fixtures(options = {}) {
       };
     });
   }
-  return { install, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig };
+  return { install, config, configWrites, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig };
 }
 
 async function withPage(t, width, theme, run, options = {}) {
@@ -923,6 +926,154 @@ async function readableStageLabel(locator) {
   });
   assert.ok(ratio >= 4.5, `Stage label contrast ${ratio.toFixed(2)}:1 must reach 4.5:1`);
 }
+
+describe('custom execution activity', () => {
+  for (const order of [[0, 1], [1, 0]]) test(`overlapping physical drags restore active controls after both failures / order=${order}`, async t => {
+    const active = ticket('kon-live', 'Overlapping drag execution', { status: 'awaiting_data', execution_active: true,
+      stage: 'code', started_at: stamp, can_edit: true });
+    await withPage(t, 2560, 'dark', async (page, fixture) => {
+      const pending = [];
+      fixture.expectedHTTPFailures.push(base + '/api/tickets/kon-live/move');
+      await page.route('**/api/tickets/kon-live/move', route => { pending.push(route); });
+      const drag = async (from, to) => {
+        const card = page.locator(`#col-${from} [data-ticket-id="kon-live"]`);
+        await card.scrollIntoViewIfNeeded();
+        const start = await card.boundingBox(), end = await page.locator(`#col-${to}`).boundingBox();
+        assert.ok(start && end, 'Both drag endpoints must be rendered');
+        await page.mouse.move(start.x + start.width / 2, start.y + Math.min(start.height / 2, 45));
+        await page.mouse.down();
+        await page.mouse.move(start.x + start.width / 2 + 12, start.y + 15, { steps: 5 });
+        await page.waitForFunction(() => Alpine.$data(document.body)._dragging);
+        await page.mouse.move(end.x + end.width / 2, end.y + 45, { steps: 30 });
+        await page.mouse.up();
+      };
+      await drag('awaiting_data', 'parked');
+      await expect.poll(() => pending.length).toBe(1);
+      await drag('parked', 'done');
+      await expect.poll(() => pending.length).toBe(2);
+      assert.deepEqual(pending.map(route => route.request().postDataJSON()), [{ status: 'parked' }, { status: 'done' }]);
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedTicket), null, 'The board stays interactive without a detail overlay');
+      for (const index of order) {
+        await pending[index].fulfill({ status: 503, contentType: 'application/json', body: '{"error":"Move rejected"}' });
+        const status = index === order[0] ? (index === 0 ? 'done' : 'parked') : 'awaiting_data';
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).tickets.find(t => t.id === 'kon-live').status)).toBe(status);
+      }
+      await expect(page.locator('#col-awaiting_data [data-ticket-id="kon-live"]')).toHaveClass(/card-state-running/);
+      await expect(page.locator('.running-pill:visible').first()).toContainText('2');
+      assert.equal(fixture.records.get('primary/kon-live').execution_active, true);
+      await openTicket(page, active.id);
+      await visible(page.getByRole('button', { name: 'pause', exact: true }).filter({ visible: true }));
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).editorCanEdit()), false);
+      assert.deepEqual(fixture.mutations, [], 'Rejected moves do not change server state');
+    }, { config: { custom_statuses: ['awaiting_data', 'parked'] }, records: [active] });
+  });
+
+  for (const [name, folder, fields, editable] of [
+    ['custom active primary', 'primary', { status: 'awaiting_data', execution_active: true }, false],
+    ['legacy active primary', 'primary', { status: 'in_progress' }, false],
+    ['custom parked primary', 'primary', { status: 'awaiting_data', execution_active: false }, true],
+    ['custom active secondary', source, { status: 'awaiting_data', execution_active: true }, true],
+    ['legacy active secondary', source, { status: 'in_progress' }, true],
+    ['terminal secondary', source, { status: 'done' }, true],
+  ]) test(`notification editor respects activity and source / ${name}`, async t => {
+    const record = ticket(folder === 'primary' ? 'kon-live' : 'kon-draft', name,
+      { source: folder, can_edit: true, notify: [], notify_channels: [], ...fields });
+    await withPage(t, 1280, 'dark', async (page, fixture) => {
+      await openTicket(page, record.id, folder);
+      await page.locator('[x-text="notifyRailLabel()"]:visible').click();
+      const modes = page.getByRole('radiogroup', { name: 'notify me', exact: true }).filter({ visible: true });
+      if (editable) {
+        await visible(modes);
+        await modes.getByRole('radio', { name: 'when it is finished', exact: true }).click();
+        await expect.poll(() => fixture.mutations.length).toBe(1);
+        assert.equal(fixture.mutations[0].path, folder === 'primary' ? '/api/tickets/kon-live' : '/api/sources/secondary/tickets/kon-draft');
+        assert.deepEqual(fixture.mutations[0].body.notify, ['human_review', 'done']);
+      } else {
+        await expect(modes).toHaveCount(0);
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).notifyEditing), false);
+        assert.deepEqual(fixture.mutations, []);
+      }
+    }, { config: { custom_statuses: ['awaiting_data'], channels: ['tg'], default_channels: ['tg'] }, records: [record] });
+  });
+
+  for (const width of [390, 1280]) test(`custom running_status Settings display and unrelated save / ${width}px`, async t => {
+    const yaml = `auto_pick_up: false\nagents:\n  fixture-agent:\n    binary: pi\nstatuses: [ awaiting_data ]\nstages:\n  code:\n    prompt: Wait for data.\npipelines:\n  research:\n    - stage: code\n      agent: fixture-agent\n      running_status: awaiting_data # keep this comment\n      on_success: awaiting_data\n      on_failure: pause\n`;
+    await withPage(t, width, 'dark', async (page, fixture) => {
+      await routeTo(page, '#/settings');
+      const section = async name => {
+        if (width < 768) await page.locator('#settings-mobile-section').selectOption(name);
+        else await page.getByRole('button', { name: new RegExp('^' + name) }).filter({ visible: true }).click();
+      };
+      await section('pipelines');
+      await visible(page.getByText('running_status: awaiting_data', { exact: true }));
+      await section('general');
+      await page.getByRole('switch', { name: 'auto_pick_up', exact: true }).click();
+      await page.getByRole('button', { name: 'save & reload', exact: true }).click();
+      await expect.poll(() => fixture.configWrites.length).toBe(1);
+      assert.equal(fixture.configWrites[0], yaml.replace('auto_pick_up: false', 'auto_pick_up: true'));
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).settingsDirty())).toBe(false);
+    }, { rawConfig: yaml });
+  });
+  for (const width of [390, 1280]) test(`custom-active and parked share a column with distinct controls / ${width}px`, async t => {
+    const active = ticket('kon-live', 'Custom waiting execution', { status: 'awaiting_data', execution_active: true,
+      stage: 'code', stages: ['plan', 'code'], started_at: stamp, branch: liveBranch,
+      history: [{ stage: 'plan', run: 0, started_at: stamp, completed_at: stamp }], can_edit: true });
+    const parked = ticket('kon-parked', 'Parked waiting ticket', { status: 'awaiting_data', execution_active: false });
+    await withPage(t, width, 'dark', async (page, fixture) => {
+      const column = () => page.locator(width < 768 ? '.mobile-board-layer' : '#col-awaiting_data');
+      if (width < 768) await page.getByRole('navigation', { name: 'Ticket status', exact: true }).getByRole('button', { name: /Awaiting data/i }).click();
+      const card = id => column().locator(width < 768 ? '.mobile-card' : '.kt-card').filter({ hasText: id });
+      await visible(card(active.id)); await visible(card(parked.id));
+      await expect(page.locator('.running-pill:visible').first()).toContainText('2');
+      const elapsed = await page.evaluate(record => Alpine.$data(document.body).formatDuration(record), active);
+      await visible(card(active.id).getByText(elapsed, { exact: true }));
+      await visible(card(active.id).locator('.card-progress'));
+      assert.equal(await card(parked.id).locator('.card-progress').count(), 0);
+      if (width >= 768) {
+        await expect(card(active.id)).toHaveClass(/card-state-running/);
+        await expect(card(parked.id)).not.toHaveClass(/card-state-running/);
+        assert.equal(await page.locator('#col-in_progress [data-ticket-id="kon-live"]').count(), 0);
+      }
+      await openTicket(page, active.id);
+      await visible(page.getByRole('button', { name: 'pause', exact: true }).filter({ visible: true }));
+      await visible(page.locator('.status-chip[data-status="awaiting_data"]').filter({ visible: true }).first());
+      await expect.poll(() => fixture.sockets.filter(url => url.pathname === '/ws/terminal/kon-live').length).toBeGreaterThan(0);
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).editorCanEdit()), false);
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).canSetStage()), false);
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).terminalWanted()), true);
+      // Removing policy must not erase an existing execution or authorize a drop.
+      fixture.config.custom_statuses = [];
+      await emitAutomationEvent(page, 'config_reloaded');
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).columns.find(c => c.key === 'awaiting_data')?.dropStatus ?? null)).toBe(null);
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).terminalWanted()), true);
+      fixture.config.custom_statuses = ['awaiting_data'];
+      await emitAutomationEvent(page, 'config_reloaded');
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).columns.find(c => c.key === 'awaiting_data')?.dropStatus)).toBe('awaiting_data');
+      const record = fixture.records.get('primary/kon-live');
+      record.execution_active = false;
+      record.history.push({ stage: 'code', run: 0, started_at: stamp, completed_at: stamp, exit_code: 0 });
+      await page.evaluate(record => window.__fixtureSSE.filter(stream => !stream.closed && stream.url === '/api/events').forEach(stream => stream.emit('ticket_updated', record)), record);
+      await expect(page.getByRole('button', { name: 'pause', exact: true }).filter({ visible: true })).toHaveCount(0);
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).outputTab())).toBe('activity');
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).terminalOpen)).toBe(false);
+      await expect(page.locator('.running-pill:visible').first()).toContainText('1');
+      await expect.poll(() => page.evaluate(() => window.__fixtureSockets.filter(socket => new URL(socket.url).pathname === '/ws/terminal/kon-live').every(socket => socket.readyState === WebSocket.CLOSED))).toBe(true);
+      await visible(page.locator('#activity-scroll').filter({ visible: true }).getByText('Fixture activity revision 0', { exact: true }));
+      await backToBoard(page);
+      if (width < 768) await page.getByRole('navigation', { name: 'Ticket status', exact: true }).getByRole('button', { name: /Awaiting data/i }).click();
+      await visible(card(active.id)); await visible(card(parked.id));
+      assert.equal(await card(active.id).locator('.card-progress').count(), 0);
+      const sockets = fixture.sockets.length;
+      await openTicket(page, parked.id);
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).editorCanEdit()), true);
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).canSetStage()), true);
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).terminalWanted()), false);
+      assert.equal(fixture.sockets.length, sockets, 'opening a parked ticket must not attach');
+      assert.deepEqual(fixture.mutations, [], 'custom-column visibility never launches work');
+      await noPageOverflow(page);
+    }, { config: { custom_statuses: ['awaiting_data'] }, records: [active, parked] });
+  });
+});
 
 describe('mobile desktop parity', () => {
   for (const width of [320, 390]) for (const theme of themes) {

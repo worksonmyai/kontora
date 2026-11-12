@@ -273,6 +273,33 @@ func TestEvaluate(t *testing.T) {
 		}
 	}
 
+	for _, status := range []string{"in_progress", "awaiting_data", "todo", "done", "closed", "next"} {
+		custom := testPipeline()
+		custom[0].RunningStatus = status
+		tests = append(tests, testCase{
+			name:   "pickup running status " + status,
+			ticket: testTicket("plan", ticket.StatusTodo, 0),
+			ev:     Event{Kind: EventPickedUp}, pipeline: custom,
+			wantErr:  status != "in_progress" && status != "awaiting_data",
+			wantKind: ActionSpawn, wantFields: map[string]string{"status": status},
+			wantSpawnAgent: "opus", wantSpawnStage: "plan",
+		})
+	}
+	for _, tc := range tests {
+		if tc.ev.Kind != EventAgentExited || !tc.ticket.IsRunning() {
+			continue
+		}
+		custom := tc
+		custom.name += " under custom active status"
+		custom.ticket = tc.ticket.Clone()
+		require.NoError(t, custom.ticket.SetRunningStatus("awaiting_data"))
+		tests = append(tests, custom)
+	}
+	tests = append(tests, testCase{
+		name: "parked custom cannot exit", ticket: testTicket("plan", "awaiting_data", 0),
+		ev: Event{Kind: EventAgentExited}, wantErr: true,
+	})
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := pipeline

@@ -1435,8 +1435,12 @@ export function kontoraSettings() {
       if (!target) return;
       for (let parent = target.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true;
       await new Promise(resolve => this.$nextTick(resolve));
+      // Alpine defers x-show until an animation frame, after $nextTick.
+      if (target.getClientRects?.().length === 0) {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }
       if (sequence !== this._settingsRevealSeq || navigation !== this._navigationSeq || this.settingsGuard || this._appDestroyed ||
-          this.currentView !== 'settings' || this.settingsSection !== field.section) return;
+          this.currentView !== 'settings' || this.settingsSection !== field.section || target.getClientRects?.().length === 0) return;
       target.scrollIntoView?.({ block: 'center' });
       target.focus?.({ preventScroll: true });
     },

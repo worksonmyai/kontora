@@ -1428,18 +1428,24 @@ describe('Settings final review regressions', () => {
     }, { rawConfig: settingsRaw, nativeAgentPicker });
   });
 
-  test('Settings review history fallback retains replacement Forward entries without Navigation API', async t => {
+  for (const reload of [false, true]) for (const forwardEntries of [1, 3]) test(`Settings review history fallback retains replacement Forward entries without Navigation API / reload=${reload} / Forward=${forwardEntries}`, async t => {
     await withPage(t, 1280, 'dark', async (page, fixture) => {
       assert.equal(await page.evaluate(() => window.navigation), undefined);
       const dialogs = [];
       page.on('dialog', async dialog => { dialogs.push(dialog.type()); await dialog.dismiss(); });
       await routeTo(page, '#/settings/general');
-      await settingsSection(page, 'environment');
-      await page.goBack();
+      for (const section of ['environment', 'agents', 'stages'].slice(0, forwardEntries)) await settingsSection(page, section);
+      await page.evaluate(delta => history.go(delta), -forwardEntries);
+      await page.waitForURL('**/#/settings/general');
       await ready(page);
-      const length = await page.evaluate(() => history.length);
+      if (reload) {
+        await page.reload({ waitUntil: 'domcontentloaded' });
+        await ready(page);
+        assert.equal(await page.evaluate(() => window.navigation), undefined);
+      }
+      const length = await page.evaluate(() => history.length) - forwardEntries + 1;
       await routeTo(page, '#/settings/web');
-      assert.equal(await page.evaluate(() => history.length), length, 'A new hash replaces the existing Forward entry');
+      assert.equal(await page.evaluate(() => history.length), length, 'A new hash truncates exactly the existing Forward span, including after reload');
       await page.locator('#web-host').fill('127.0.0.2');
       await page.evaluate(() => history.go(-2));
       const guard = page.getByRole('dialog', { name: 'Leave settings?' });
@@ -1471,6 +1477,102 @@ describe('Settings final review regressions', () => {
       assert.equal(await page.evaluate(() => history.length), length);
       assert.equal(settingsWrites(fixture).length, 0);
     }, { rawConfig: settingsRaw, noNavigation: true });
+  });
+
+  for (const reload of [false, true]) for (const forwardEntries of [1, 3]) test(`Settings review rejected native hash uses proven truncation or safe ambiguous fallback / reload=${reload} / Forward=${forwardEntries}`, async t => {
+    await withPage(t, 1280, 'dark', async (page, fixture) => {
+      const dialogs = [];
+      page.on('dialog', async dialog => { dialogs.push(dialog.type()); await dialog.dismiss(); });
+      await routeTo(page, '#/settings/general');
+      for (const section of ['environment', 'agents', 'stages'].slice(0, forwardEntries)) await settingsSection(page, section);
+      await page.evaluate(delta => history.go(delta), -forwardEntries);
+      await page.waitForURL('**/#/settings/general');
+      await ready(page);
+      if (reload) { await page.reload({ waitUntil: 'domcontentloaded' }); await ready(page); }
+      assert.equal(await page.evaluate(() => window.navigation), undefined);
+      const length = await page.evaluate(() => history.length) - forwardEntries + 1;
+      await page.locator('#gen-max_concurrent_agents').fill('4');
+      await page.evaluate(() => {
+        const go = history.go.bind(history);
+        window.__reviewTraversals = [];
+        history.go = delta => { window.__reviewTraversals.push(delta); return go(delta); };
+        location.hash = '#/archive';
+      });
+      const guard = page.getByRole('dialog', { name: 'Leave settings?' });
+      await visible(guard);
+      await page.waitForURL('**/#/settings/general');
+      await ready(page);
+      await page.waitForFunction(() => !Alpine.$data(document.body)._settingsHistory.motion);
+      assert.deepEqual(await page.evaluate(() => window.__reviewTraversals), forwardEntries === 3 ? [-1] : [],
+        'Three truncated entries prove a new branch; one non-growing entry must not invent a traversal or reload');
+      assert.equal(await page.evaluate(() => history.length), length);
+      await expect(page.locator('#gen-max_concurrent_agents')).toHaveValue('4');
+      if (forwardEntries === 3) {
+        await guard.getByRole('button', { name: 'keep editing', exact: true }).click();
+        await page.goForward();
+        await visible(guard);
+        await page.waitForURL('**/#/settings/general');
+        await ready(page);
+      }
+      const beforeDiscard = await page.evaluate(() => history.length);
+      await guard.getByRole('button', { name: 'discard changes', exact: true }).click();
+      await page.waitForURL('**/#/archive');
+      await ready(page);
+      assert.equal(await page.evaluate(() => history.length), beforeDiscard, 'Discard resumes or replaces, never pushes another entry');
+      await page.goBack();
+      await page.waitForURL('**/#/settings/general');
+      await ready(page);
+      await expect(page.locator('#gen-max_concurrent_agents')).toHaveValue('3');
+      await page.goForward();
+      await page.waitForURL('**/#/archive');
+      await ready(page);
+      assert.deepEqual(dialogs, [], 'No compensation may become go(0) or a document reload');
+      assert.equal(settingsWrites(fixture).length, 0);
+    }, { rawConfig: settingsRaw, noNavigation: true });
+  });
+
+  test('Settings review new section navigation survives Keep editing during compensating history.go', async t => {
+    await withPage(t, 1280, 'dark', async (page, fixture) => {
+      await routeTo(page, '#/settings/general');
+      await page.locator('#gen-max_concurrent_agents').fill('4');
+      await settingsSection(page, 'stages');
+      const length = await page.evaluate(() => history.length);
+      // Hold compensation so the section click runs before the browser restores history.
+      await page.evaluate(() => {
+        const go = history.go.bind(history);
+        history.go = delta => {
+          if (delta > 0) {
+            window.__reviewReleaseCompensation = () => { history.go = go; go(delta); };
+          } else go(delta);
+        };
+        history.go(-2);
+      });
+      try {
+        const guard = page.getByRole('dialog', { name: 'Leave settings?' });
+        await visible(guard);
+        await page.waitForFunction(() => !!window.__reviewReleaseCompensation && !!Alpine.$data(document.body)._settingsHistory.motion);
+        await guard.getByRole('button', { name: 'keep editing', exact: true }).click();
+        await page.getByRole('navigation', { name: 'Settings sections' }).getByRole('button').filter({ hasText: 'Server & access' }).click();
+        await expect(settingsView(page).getByRole('heading', { name: 'Server & access', exact: true, level: 1 })).toBeVisible();
+        assert.equal(new URL(page.url()).hash, '#/', 'The physical traversal is still held while the new section renders');
+      } finally {
+        await page.evaluate(() => { window.__reviewReleaseCompensation?.(); delete window.__reviewReleaseCompensation; });
+      }
+      await page.waitForURL('**/#/settings/web');
+      await ready(page);
+      await page.waitForFunction(() => !Alpine.$data(document.body)._settingsHistory.motion);
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).routeHash()), '#/settings/web');
+      assert.equal(await page.evaluate(() => history.length), length + 1, 'The new section is written after compensation, not lost or inserted at the stale position');
+      await page.goBack();
+      await page.waitForURL('**/#/settings/stages');
+      await ready(page);
+      await page.goBack();
+      await page.waitForURL('**/#/settings/general');
+      await ready(page);
+      await expect(page.locator('#gen-max_concurrent_agents')).toHaveValue('4');
+      await expect(page.getByRole('dialog', { name: 'Leave settings?' })).toBeHidden();
+      assert.equal(settingsWrites(fixture).length, 0);
+    }, { rawConfig: settingsRaw });
   });
 
   test('Settings review failed automation history read restores the list presentation', async t => {
@@ -4426,7 +4528,10 @@ describe('phone inline terminal and focused description', () => {
           await mobileTerminalDone(page).click();
           await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected && !Alpine.$data(document.body).terminalRW);
           const readonlySockets = fixture.sockets.length;
-          await mobileTerminalDone(page).dispatchEvent('click');
+          // Queued clicks can reach Done after the toolbar hides.
+          const hiddenDone = surface.locator('.mobile-terminal-bar').getByRole('button', { name: 'Done', exact: true, includeHidden: true });
+          await expect(hiddenDone).toBeHidden();
+          await hiddenDone.dispatchEvent('click');
           assert.equal(await page.evaluate(() => Alpine.$data(document.body).terminalRW), false);
           assert.equal(fixture.sockets.length, readonlySockets, 'Repeated Done is idempotent');
           await page.evaluate(() => { window.__fixtureHoldOpen = true; });

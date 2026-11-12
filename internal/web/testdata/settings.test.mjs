@@ -244,6 +244,35 @@ for (const supersede of ['new navigation', 'leave guard']) {
   });
 }
 
+for (const outcome of ['visible', 'new navigation', 'leave guard', 'destroyed', 'still hidden']) {
+  test(`field reveal waits for Alpine visibility and checks ownership: ${outcome}`, async () => {
+    const frames = [], focused = [], scrolled = [];
+    let visible = false;
+    const target = {
+      getClientRects: () => visible ? [{}] : [],
+      focus: () => focused.push(true), scrollIntoView: () => scrolled.push(true),
+    };
+    const state = await settingsState(settingsFixture, {
+      document: { getElementById: () => target },
+      requestAnimationFrame: callback => frames.push(callback),
+    });
+    const reveal = state.settingsRevealField(state.settingsFieldIdentity(['max_concurrent_agents']), false);
+    for (let n = 0; n < 8; n++) await Promise.resolve();
+    assert.equal(frames.length, 1);
+    assert.deepEqual(focused, []);
+    frames.shift()();
+    assert.equal(frames.length, 1);
+    visible = outcome !== 'still hidden';
+    if (outcome === 'new navigation') ++state._navigationSeq;
+    if (outcome === 'leave guard') state.settingsGuard = true;
+    if (outcome === 'destroyed') state._appDestroyed = true;
+    frames.shift()();
+    await reveal;
+    assert.deepEqual(focused, outcome === 'visible' ? [true] : []);
+    assert.deepEqual(scrolled, focused);
+  });
+}
+
 test('companion diagnostics accept its visible target and segmented identity', async () => {
   const state = await settingsState();
   state.settingsConfig.assistant.companion.name = 'a'.repeat(65);

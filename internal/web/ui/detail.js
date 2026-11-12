@@ -609,7 +609,11 @@ export function kontoraDetail() {
 
     writeHash({ replace = false } = {}) {
       const adapter = this._settingsHistory;
-      if (this._applyingRoute === this._navigationSeq || adapter?.routing === this._navigationSeq || adapter?.motion) return;
+      if (this._applyingRoute === this._navigationSeq || adapter?.routing === this._navigationSeq) return;
+      if (adapter?.motion) {
+        adapter.deferredWrite = { navigation: this._navigationSeq, replace };
+        return;
+      }
       const next = this.routeHash();
       if (location.hash === next) return;
       if (!adapter) {
@@ -629,6 +633,7 @@ export function kontoraDetail() {
       adapter.current = entry;
       adapter.observed = entry;
       adapter.seen = historySignature(entry);
+      this._settingsHistoryRemember();
     },
 
     // Own BOTH route listeners. App-created entries use the History API (which
@@ -641,11 +646,23 @@ export function kontoraDetail() {
       const position = historyPosition();
       const adapter = { current, observed: current, seen: null, routing: null,
         length: history.length, tip: initial.index, offset: position === null ? null : position - initial.index,
-        pending: null, motion: null, resuming: null,
+        pending: null, motion: null, resuming: null, deferredWrite: null,
         listener: event => { void this._settingsHistoryChanged(false, event.type); } };
+      try {
+        const saved = JSON.parse(sessionStorage.getItem(HISTORY_KEY));
+        if (saved?.id === initial.id && Number.isSafeInteger(saved.tip) && saved.tip >= initial.index) adapter.tip = saved.tip;
+      } catch { /* Storage can be unavailable in private browsing. */ }
       this._settingsHistory = adapter;
+      this._settingsHistoryRemember();
       window.addEventListener('popstate', adapter.listener);
       window.addEventListener('hashchange', adapter.listener);
+    },
+
+    _settingsHistoryRemember() {
+      const adapter = this._settingsHistory;
+      if (!adapter) return;
+      try { sessionStorage.setItem(HISTORY_KEY, JSON.stringify({ id: adapter.current.id, tip: adapter.tip })); }
+      catch { /* Storage can be unavailable in private browsing. */ }
     },
 
     destroySettingsHistory() {
@@ -709,13 +726,16 @@ export function kontoraDetail() {
       const newBranch = !known && index === null && adapter.observed.index < adapter.tip;
       // An unknown popstate can also predate setup, so the Forward span alone
       // is not sufficient evidence to compensate a refused route by traversal.
-      const traversable = known || index !== null || history.length > adapter.length || eventType !== 'popstate';
+      const forward = adapter.tip - adapter.observed.index;
+      const truncated = newBranch && history.length < adapter.length && history.length === adapter.length - forward + 1;
+      const traversable = known || index !== null || history.length > adapter.length || truncated || eventType !== 'popstate';
       if (!known) {
         metadata = { id: adapter.current.id, index: index ?? adapter.observed.index + (traversable || newBranch ? 1 : 0), entry: historyIdentity() };
         history.replaceState(historyState(metadata), '', location.hash);
         if ((traversable || newBranch) && (index === null || index > adapter.observed.index)) adapter.tip = metadata.index;
       }
       adapter.length = history.length;
+      this._settingsHistoryRemember();
       const to = { ...metadata, hash: location.hash };
       const signature = historySignature(to);
       if (!force && signature === adapter.seen) return;
@@ -727,7 +747,10 @@ export function kontoraDetail() {
         if (to.entry === motion.target.entry && to.id === motion.target.id) {
           adapter.current = to;
           adapter.motion = null;
-          this._settingsHistoryContinue();
+          const deferred = adapter.deferredWrite;
+          adapter.deferredWrite = null;
+          if (deferred?.navigation === this._navigationSeq) this.writeHash({ replace: deferred.replace });
+          else this._settingsHistoryContinue();
           return;
         }
         if (to.index - previous.index === motion.delta) {

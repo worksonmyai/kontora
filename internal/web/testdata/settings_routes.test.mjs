@@ -45,6 +45,11 @@ function harness(hash = '#/', { reactive = false, nativeNavigation = false } = {
     },
     back() { this.go(-1); }, forward() { this.go(1); },
   };
+  const storage = new Map();
+  globalThis.sessionStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value),
+  };
   globalThis.location = location;
   globalThis.history = history;
   globalThis.window = {
@@ -471,6 +476,86 @@ for (const tick of [1, 2]) {
     await h.flush();
     assert.equal(h.state.settingsSection, 'general');
     assert.deepEqual(focused, ['worker-limit'], 'a subsequent deliberate traversal still reveals its field');
+  });
+}
+
+for (const reload of [false, true]) for (const forwardEntries of [1, 3]) {
+  for (const dirtyFragment of [false, true]) {
+    test(`replacement hashes finish guarded navigation (reload=${reload}, Forward=${forwardEntries}, dirty fragment=${dirtyFragment})`, async () => {
+      const h = harness(); h.state.setupSettingsHistory();
+      await h.go('general');
+      for (const section of ['environment', 'agents', 'stages'].slice(0, forwardEntries)) await h.go(section);
+      h.history.go(-forwardEntries); await h.flush();
+      if (reload) { h.state.destroySettingsHistory(); h.state.setupSettingsHistory(); await h.state.applyRoute(); }
+      h.state.dirty = dirtyFragment;
+      h.location.hash = dirtyFragment ? '#/archive' : '#/settings/web'; await h.flush();
+      if (dirtyFragment && forwardEntries === 1) {
+        assert.equal(h.state._settingsHistory.pending.traversable, false);
+        assert.equal(h.state._settingsHistory.motion, null);
+        assert.equal(h.state.dirty, true);
+        const resume = h.state.settingsGuardDiscard(); await h.flush(); await resume;
+        assert.equal(h.location.hash, '#/archive');
+        assert.equal(h.state.currentView, 'archive');
+        return;
+      }
+      assert.deepEqual(h.entries.map(entry => entry.state.__kontoraHistory.index), [0, 1, 2]);
+      if (dirtyFragment) {
+        assert.equal(h.cursor(), 1);
+        assert.equal(h.state._settingsHistory.motion, null);
+        assert.equal(h.state.settingsSection, 'general');
+      } else {
+        h.state.dirty = true;
+        h.history.go(-2); await h.flush();
+        assert.equal(h.cursor(), 2);
+        assert.equal(h.state._settingsHistory.motion, null);
+        assert.equal(h.state.settingsSection, 'web');
+      }
+      const before = structuredClone(h.entries);
+      const resume = h.state.settingsGuardDiscard(); await h.flush(); await resume;
+      assert.equal(h.cursor(), dirtyFragment ? 2 : 0);
+      assert.equal(h.state.currentView, dirtyFragment ? 'archive' : 'board');
+      assert.deepEqual(h.entries, before);
+    });
+  }
+}
+
+for (const unavailable of ['read', 'write', 'invalid data']) {
+  test(`history storage ${unavailable} does not prevent normal managed traversal`, async () => {
+    const h = harness();
+    if (unavailable === 'read') globalThis.sessionStorage.getItem = () => { throw new Error('Storage denied'); };
+    if (unavailable === 'write') globalThis.sessionStorage.setItem = () => { throw new Error('Storage denied'); };
+    if (unavailable === 'invalid data') globalThis.sessionStorage.getItem = () => '{invalid';
+    h.state.setupSettingsHistory();
+    await h.go('general'); await h.go('web');
+    h.state.dirty = true;
+    h.history.go(-2); await h.flush();
+    assert.equal(h.cursor(), 2); assert.equal(h.state._settingsHistory.motion, null);
+    const resume = h.state.settingsGuardDiscard(); await h.flush(); await resume;
+    assert.equal(h.cursor(), 0); assert.equal(h.state.currentView, 'board');
+  });
+}
+
+for (const action of ['section', 'view']) {
+  test(`a new ${action} navigation writes its route after Keep editing compensation`, async () => {
+    const h = harness(); h.state.setupSettingsHistory();
+    await h.go('general'); await h.go('stages'); h.state.dirty = true;
+    h.history.go(-2); h.events.shift()();
+    for (let n = 0; n < 8; n++) await Promise.resolve();
+    assert.ok(h.state._settingsHistory.motion);
+    h.state.settingsGuardKeepEditing();
+    if (action === 'section') await h.go('web');
+    else {
+      h.state.dirty = false;
+      await h.state.navigateDestination({ view: 'stats', ticketId: null });
+    }
+    await h.flush();
+    assert.equal(h.state._settingsHistory.motion, null);
+    assert.equal(h.location.hash, action === 'section' ? '#/settings/web' : '#/stats');
+    assert.equal(h.state.routeHash(), h.location.hash);
+    assert.equal(h.cursor(), 3);
+    h.history.back(); await h.flush();
+    assert.equal(h.location.hash, '#/settings/stages');
+    assert.equal(h.state.settingsSection, 'stages');
   });
 }
 

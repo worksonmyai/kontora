@@ -97,11 +97,15 @@ func handlePickup(t *ticket.Ticket, pipeline config.Pipeline, ev Event) (Action,
 	}
 
 	step := pipeline[idx]
+	status := ticket.Status(step.EffectiveRunningStatus())
+	if status != ticket.StatusInProgress && !ticket.IsCustomRunningStatus(status) {
+		return Action{}, fmt.Errorf("invalid running_status %q", status)
+	}
 
 	return Action{
 		Kind: ActionSpawn,
 		Fields: []FieldUpdate{
-			{Key: "status", Value: string(ticket.StatusInProgress)},
+			{Key: "status", Value: string(status)},
 			{Key: "started_at", Value: ev.Timestamp},
 		},
 		Spawn: &SpawnInfo{
@@ -112,8 +116,8 @@ func handlePickup(t *ticket.Ticket, pipeline config.Pipeline, ev Event) (Action,
 }
 
 func handleAgentExited(t *ticket.Ticket, pipeline config.Pipeline, ev Event) (Action, error) {
-	if t.Status != ticket.StatusInProgress {
-		return Action{}, fmt.Errorf("agent_exited requires status=in_progress, got %q", t.Status)
+	if !t.IsRunning() {
+		return Action{}, fmt.Errorf("agent_exited requires an active execution, got %q", t.Status)
 	}
 
 	idx, err := stageIndex(pipeline, t.Stage)

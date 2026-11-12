@@ -153,7 +153,7 @@ export function kontoraTerminal() {
     outputNoRunText() {
       var t = this.outputSubject();
       if (!t) return 'This epic has no supervisor.';
-      if (t.status === 'in_progress') return 'Waiting for the supervisor output...';
+      if (this.executionActive(t)) return 'Waiting for the supervisor output...';
       if (t.status === 'todo') return 'Supervisor queued. Output will appear when it starts.';
       if (t.last_error && !(t.history || []).length) return 'Supervisor failed before recording a run.';
       if ((t.history || []).length) return 'No live session. Choose a recorded run above.';
@@ -367,7 +367,7 @@ export function kontoraTerminal() {
         termState.inputDisposable.dispose();
         termState.inputDisposable = null;
       }
-      if (this.outputSubject()?.status !== 'in_progress') return;
+      if (!this.executionActive(this.outputSubject())) return;
       // Whoever asked for a stream gets exactly one. Without this, a read-write
       // toggle landing before _connectTerminal's requestAnimationFrame orphans
       // the socket it opened, and its kontora-view session outlives the page.

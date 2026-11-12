@@ -126,6 +126,7 @@ export function kontoraEpics() {
         total: total,
         pct: total ? Math.round((done / total) * 100) : 0,
         counts: counts,
+        activeCount: ordered.filter(c => this.executionActive(c)).length,
         children: ordered,
         segs: ordered.slice(0, EPIC_METER_CAP).map(function (c) {
           return { id: c.id, hue: EPIC_STATUS_HUE[c.status] || null };
@@ -156,7 +157,7 @@ export function kontoraEpics() {
 
     // What is moving now: the running child, or the queued one behind it.
     _epicNext(children) {
-      return children.find(function (c) { return c.status === 'in_progress'; })
+      return children.find(c => this.executionActive(c))
         || children.find(function (c) { return c.status === 'todo'; })
         || null;
     },
@@ -214,10 +215,11 @@ export function kontoraEpics() {
     // "1 running · 1 review · 2 open" under the donut. Statuses with no child
     // are left out, so the line stays one row.
     epicBreakdown(id) {
-      var counts = this.epicRollup(id).counts;
+      var rollup = this.epicRollup(id);
+      var counts = rollup.counts;
       var parts = [];
       var say = function (n, word) { if (n) parts.push(n + ' ' + word); };
-      say(counts.in_progress, 'running');
+      say(rollup.activeCount, 'running');
       say(counts.todo, 'queued');
       say(counts.paused, 'paused');
       say(counts.human_review, 'review');
@@ -242,7 +244,10 @@ export function kontoraEpics() {
     epicGroups() {
       var children = this.epicRollup(this.selectedEpic ? this.selectedEpic.id : '').children;
       var self = this;
-      return EPIC_GROUPS.map(function (g) {
+      var known = new Set(EPIC_GROUPS.flatMap(g => g.statuses));
+      var extra = [...new Set(children.map(c => c.status).filter(s => !known.has(s)))].sort();
+      var groups = EPIC_GROUPS.concat(extra.map(s => ({ key: s, label: s, statuses: [s] })));
+      return groups.map(function (g) {
         var rows = children.filter(function (c) { return g.statuses.indexOf(c.status) >= 0; });
         return {
           key: g.key,
@@ -297,7 +302,7 @@ export function kontoraEpics() {
       if (!this.epicIsAgent(epic)) return actions;
       actions.push({ label: 'watch agent', run: () => self.epicWatchAgent() });
       actions.push({ label: 'run details', run: () => self.epicRunDetails() });
-      if (epic.status === 'in_progress') {
+      if (this.executionActive(epic)) {
         actions.push({ label: 'pause supervisor', run: () => self.epicAction('pause') });
       }
       if (['paused', 'done', 'cancelled'].includes(epic.status)) {
@@ -321,7 +326,7 @@ export function kontoraEpics() {
 
     epicWatchAgent() {
       if (!this.epicIsAgent(this.selectedEpic)) return;
-      this.epicSwitchTab(this.selectedEpic.status === 'in_progress' ? 'session' : 'activity');
+      this.epicSwitchTab(this.executionActive(this.selectedEpic) ? 'session' : 'activity');
     },
 
     epicSwitchTab(tab, load = true) {
@@ -700,7 +705,7 @@ export function kontoraEpics() {
       if (this.isMobile) return;
       var self = this;
       return mountSortableResource(el, {
-        group: 'epic-children',
+        group: { name: 'epic-children', put: to => !!self._epicDropStatus(to.el.dataset.epicGroup) },
         animation: 150,
         handle: '.epic-row-handle',
         draggable: '.epic-row:not(.epic-row-add)',
@@ -716,7 +721,8 @@ export function kontoraEpics() {
           var order = from === to ? self._epicOrderAfterDrop() : null;
           self._epicRestoreRows();
           if (from !== to) {
-            await self.moveTask(childID, self._epicDropStatus(to));
+            var status = self._epicDropStatus(to);
+            if (status) await self.moveTask(childID, status);
             return;
           }
           await self.epicSaveOrder(order);
@@ -729,7 +735,7 @@ export function kontoraEpics() {
 
     _epicDropStatus(group) {
       var g = EPIC_GROUPS.find(function (x) { return x.key === group; });
-      return g ? g.dropStatus : 'open';
+      return g ? g.dropStatus : (this.configCache?.custom_statuses || []).includes(group) ? group : undefined;
     },
 
     // The order to write after an in-group drop: every group's rows in the

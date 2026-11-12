@@ -171,7 +171,7 @@ func prepareTransferTicket(req TransferRequest, md []byte, destination string) (
 	if t.ID != req.ID {
 		return nil, nil, fmt.Errorf("ticket id does not match source filename")
 	}
-	if t.Status == ticket.StatusInProgress || t.InvocationID != "" || t.AnnotationReturnStatus != "" {
+	if t.IsRunning() || t.InvocationID != "" || t.AnnotationReturnStatus != "" {
 		return nil, nil, fmt.Errorf("ticket %s has running, invocation, or annotation state", req.ID)
 	}
 	if err := ticket.RejectImportedOwnership(t); err != nil {
@@ -210,7 +210,7 @@ func normalizeTransfer(t *ticket.Ticket, md []byte) ([]byte, error) {
 		return nil, err
 	}
 	for _, field := range []string{"stage", "attempt", "started_at", "completed_at", "claimed_by", "invocation_id",
-		"scheduled_at", "annotation_return_status", "archived_from", "archived_at", "archived_by", "archive_note", "last_error", "last_log"} {
+		"scheduled_at", "running_status", "annotation_return_status", "archived_from", "archived_at", "archived_by", "archive_note", "last_error", "last_log"} {
 		delete(fields, field)
 		delete(expected, field)
 	}

@@ -32,7 +32,7 @@ export function kontoraActivity() {
     // when a run ends, so the running one is the next index.
     runningRun() {
       var t = this.outputSubject();
-      if (!t || t.status !== 'in_progress' || !t.stage) return null;
+      if (!this.executionActive(t) || !t.stage) return null;
       var run = 0;
       (t.history || []).forEach(function (h) { if (h.stage === t.stage) run++; });
       return { stage: t.stage, run: run };
@@ -250,11 +250,12 @@ export function kontoraActivity() {
         return;
       }
       if (!t || t.id !== previous?.id) return;
-      if (t.status !== 'in_progress') {
+      if (!this.executionActive(t)) {
         this.closeTerminal();
+        this.terminalRW = false;
         this._stopActivityPoll();
         var completed = this.latestCompletedRun();
-        if (this.outputTab() === 'session' && previous.status === 'in_progress' && completed) {
+        if (this.outputTab() === 'session' && this.executionActive(previous) && completed) {
           this.activity = null;
           this._activityExplicit = false;
           this.activityStage = completed.stage;
@@ -262,6 +263,10 @@ export function kontoraActivity() {
           if (this.selectedEpic) this.epicSwitchTab('activity');
           else if (!this.isMobile) this.switchTab('activity');
           else this.mobileSwitchTab('activity');
+        } else if (this.outputTab() === 'session' && this.executionActive(previous)) {
+          if (this.selectedEpic) this.epicSwitchTab('children');
+          else if (this.isMobile) this.mobileSwitchTab('ticket');
+          else this.switchTab('ticket');
         } else if (this.outputTab() === 'activity') {
           if (!this._activityExplicit && completed &&
               (completed.stage !== this.activityStage || completed.run !== this.activityRun)) {
@@ -275,7 +280,7 @@ export function kontoraActivity() {
       } else if (this.outputTab() === 'activity' && !this._activityExplicit) {
         // History arrives before final status. Stay on the displayed execution
         // until a new start or stage, rather than inventing the next attempt.
-        if (previous.status === 'in_progress' && previous.stage === t.stage &&
+        if (this.executionActive(previous) && previous.stage === t.stage &&
             previous.started_at === t.started_at && previous.history !== undefined && this.activityStage !== null) return;
         var run = this.activityTarget();
         if (run && (run.stage !== this.activityStage || run.run !== this.activityRun)) {
@@ -409,7 +414,7 @@ export function kontoraActivity() {
         var i = pipelineStages.indexOf(name);
         var a = agg[name] || { seconds: 0, runs: 0, last: null };
         var cost = self.ticketStageCost(name);
-        var running = t.status === 'in_progress' && name === t.stage;
+        var running = self.executionActive(t) && name === t.stage;
         var done = !running && (t.status === 'done' || a.runs > 0 || (cost && cost.tracked_runs > 0) || (i >= 0 && currentIdx >= 0 && i < currentIdx));
         var seconds = a.seconds;
         if (running && t.started_at) {
@@ -485,7 +490,7 @@ export function kontoraActivity() {
       var estimate = this.costLabel(cost);
       if (estimate) out.push({ k: 'estimate', v: estimate, title: this.costTooltip(cost) });
       var tokens = this.tapeTokens(this.activity && this.activity.tape);
-      if (t.status === 'in_progress') {
+      if (this.executionActive(t)) {
         if (t.started_at) out.push({ k: 'elapsed', v: this.formatDuration(t) });
         if (tokens) out.push({ k: 'tokens', v: tokens });
         var max = this.stageMaxAttempts();
@@ -514,7 +519,7 @@ export function kontoraActivity() {
       var t = this.selectedTicket;
       if (!t || !t.branch) return 'This ticket has no branch yet.';
       if (!this.ticketChanges) return 'Reading the branch…';
-      if (t.status === 'in_progress') {
+      if (this.executionActive(t)) {
         return 'Nothing committed on ' + t.branch + ' yet. The running stage can still hold uncommitted work in the worktree.';
       }
       return 'No commits on ' + t.branch + ' compared to ' + (this.ticketChanges.base || 'base') + '.';

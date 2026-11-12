@@ -305,6 +305,7 @@ func TestAttach_HandshakeFailuresReported(t *testing.T) {
 		// ticketStatus is what GET /api/tickets/{id} answers; empty means the
 		// ticket lookup itself fails with the handshake status.
 		ticketStatus string
+		active       bool
 		handshake    int
 		want         string
 	}{
@@ -324,13 +325,15 @@ func TestAttach_HandshakeFailuresReported(t *testing.T) {
 			name:         "a ticket that is not running never dials",
 			ticketStatus: "paused",
 			handshake:    http.StatusOK,
-			want:         `has status "paused", must be in_progress to attach`,
+			want:         `has status "paused", must be running to attach`,
 		},
 		{
 			name:      "an unknown ticket is named",
 			handshake: http.StatusNotFound,
 			want:      "not found on the daemon",
 		},
+		{name: "active custom reaches terminal", ticketStatus: "awaiting_data", active: true, handshake: http.StatusNotFound, want: "no live terminal session"},
+		{name: "parked custom never dials", ticketStatus: "awaiting_data", want: "must be running to attach"},
 		{name: "ordinary automation-prefix ticket", id: "aut-1234", ticketStatus: "paused", want: `has status "paused"`},
 		{name: "automation exact-run socket", id: "aut-0123456789abcdef0123456789abcdef", handshake: http.StatusNotFound, want: "no live terminal session"},
 		{name: "automation operator credential", id: "aut-0123456789abcdef0123456789abcdef", operator: true, handshake: http.StatusUnauthorized, want: "rejected the token"},
@@ -356,7 +359,7 @@ func TestAttach_HandshakeFailuresReported(t *testing.T) {
 						w.WriteHeader(http.StatusNotFound)
 						return
 					}
-					_ = json.NewEncoder(w).Encode(web.TicketInfo{ID: "tst-001", Status: tc.ticketStatus})
+					_ = json.NewEncoder(w).Encode(web.TicketInfo{ID: "tst-001", Status: tc.ticketStatus, ExecutionActive: tc.active})
 					return
 				}
 				if automation.IsID(id) {

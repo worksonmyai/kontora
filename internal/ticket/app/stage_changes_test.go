@@ -16,6 +16,8 @@ func TestStageChangesRejectInvalidState(t *testing.T) {
 			name, fields string
 		}{
 			{"running", "status: in_progress\n"},
+			{"custom active", "status: awaiting_data\nrunning_status: awaiting_data\n"},
+			{"inherited active", "status: awaiting_data\n<<: {running_status: awaiting_data}\n"},
 			{"archived", "status: archived\n"},
 			{"epic", "status: paused\nkind: epic\n"},
 			{"uninitialized", "status: paused\nkontora: false\n"},

@@ -4413,6 +4413,9 @@ for (const mobile of [false, true]) {
     assert.equal(state.tickets[0].title, 'Primary namesake');
     assert.equal(state.outputSubject(), null);
     assert.equal(state.ticketCanControl(state.selectedTicket), false);
+    for (const status of ['in_progress', 'awaiting_data']) {
+      assert.equal(state.editorCanEdit({ ...state.selectedTicket, status, execution_active: true }), true, 'secondary editing remains independent of lifecycle');
+    }
     assert.ok(ui.requests.every(r => r.url.startsWith('/api/sources/team/tickets/same')));
     state.applyTicketUpdate({ id: 'same', title: 'Changed primary', status: 'open' });
     assert.equal(state.selectedTicket.source, 'team');
@@ -8529,12 +8532,12 @@ test("a pipeline step node resolves the stage's model for the agent that runs it
   assert.deepEqual(vmValue(state.settingsPipelineSteps("full")), [
     {
       index: 0, stage: "plan", agent: "claude", kind: "claude", model: "",
-      timeout: "45m", on_success: "next", on_failure: "retry", max_retries: 2, running: false,
+      timeout: "45m", running_status: "in_progress", on_success: "next", on_failure: "retry", max_retries: 2, running: false,
     },
     {
       // stages.implement.model is a map; claude's entry wins over the kind.
       index: 1, stage: "implement", agent: "claude", kind: "claude", model: "opus",
-      timeout: "2h", on_success: "human_review", on_failure: "pause", max_retries: 0, running: false,
+      timeout: "2h", running_status: "in_progress", on_success: "human_review", on_failure: "pause", max_retries: 0, running: false,
     },
   ]);
 });
@@ -12384,7 +12387,7 @@ test("phone activity markup has a follow toggle, shared scroller, retry and no r
     assert.ok(button, tab + ' remains reachable');
     assert.equal(button[1].trim(), label);
     assert.ok(button[0].includes(`:aria-pressed="detailTab === '${tab}'"`));
-    if (tab === 'logs') assert.match(button[0], /x-show="selectedTicket\?\.status === 'in_progress'"/);
+    if (tab === 'logs') assert.match(button[0], /x-show="executionActive\(selectedTicket\)"/);
   }
   assert.doesNotMatch(tabs, /text-transform:uppercase|letter-spacing:|JetBrains Mono/);
 });
@@ -19701,6 +19704,52 @@ test("the rail row is read-only exactly where the API refuses a frontmatter edit
   assert.equal(canEdit("blocked"), true);
 });
 
+for (const source of ['primary', 'team']) for (const [name, fields, editable] of [
+  ['custom active', { status: 'awaiting_data', execution_active: true }, false],
+  ['custom parked', { status: 'awaiting_data', execution_active: false }, true],
+  ['legacy active', { status: 'in_progress' }, false],
+  ['review', { status: 'human_review' }, true],
+  ['terminal', { status: 'done' }, false],
+]) {
+  test(`notification editing follows lifecycle without restricting secondary tickets: ${source}, ${name}`, async () => {
+    const requests = [];
+    const selected = { id: 'notify', source, can_edit: true, ...fields };
+    const state = notifyState({ fetch: async (url, opts) => {
+      requests.push({ url, body: JSON.parse(opts.body) });
+      return { ok: true, json: async () => selected };
+    } }, { custom_statuses: ['awaiting_data'] });
+    state.selectedTicket = selected;
+    const allowed = source !== 'primary' || editable;
+    assert.equal(state.notifyCanEdit(), allowed);
+    state.openNotifyEditor();
+    assert.equal(state.notifyEditing, allowed);
+    // A draft opened before pickup must not send an autosave after pickup.
+    state.notifyDraft = { notify: [], notifyChannels: [], autosave: true };
+    await state.saveNotify();
+    assert.equal(requests.length, Number(allowed));
+    if (allowed) assert.equal(requests[0].url, source === 'primary' ? '/api/tickets/notify' : '/api/sources/team/tickets/notify');
+    state.selectedTicket = { ...selected, can_edit: false };
+    assert.equal(state.notifyCanEdit(), false);
+    await state.saveNotify();
+    assert.equal(requests.length, Number(allowed), 'ownership permission still applies');
+  });
+}
+
+test('notification autosave stops when an open draft becomes active', async () => {
+  const requests = [];
+  const state = notifyState({ fetch: async (...args) => { requests.push(args); } }, { custom_statuses: ['awaiting_data'] });
+  state._boardRaf = 1;
+  state.selectedTicket = { id: 'notify', status: 'awaiting_data', execution_active: false, can_edit: true };
+  state.tickets = [{ ...state.selectedTicket }];
+  state.openNotifyEditor();
+  assert.equal(state.notifyEditing, true);
+  state.queueTicketUpdate({ ...state.selectedTicket, execution_active: true });
+  assert.equal(state.notifyCanEdit(), false);
+  state.notifyPickMode(state.notifyDraft, 'off');
+  await flushMicrotasks();
+  assert.deepEqual(requests, []);
+});
+
 test("a rail edit saves at once and folds the answer back into the board", async () => {
   const seen = [];
   const state = notifyState({
@@ -21084,6 +21133,239 @@ test('a failed shared reconnect detail releases its flight for the next reconnec
 test('a failed primary refresh without a queued reconnect still reports its error', async () => {
   const state = loadKontoraState({ fetch: async () => ({ ok: false }) });
   await assert.rejects(state.fetchTasks(), /Failed to fetch tickets/);
+});
+
+test('custom activity is independent of status, grouping, filters and edit permission', () => {
+  const state = loadKontoraState();
+  state.configCache = { custom_statuses: ['awaiting_data'] };
+  const active = { id: 'active', title: 'Active', status: 'awaiting_data', execution_active: true,
+    kontora: true, can_edit: true, agent: 'claude', stage: 'wait', stages: ['collect', 'wait'], started_at: '2026-10-01T10:00:00Z' };
+  const parked = { ...active, id: 'parked', execution_active: false };
+  state.tickets = [active, parked, { ...active, id: 'epic', kind: 'epic' }];
+  state.recomputeBoard();
+  assert.equal(state.executionActive({ status: 'in_progress' }), true, 'legacy fallback');
+  assert.equal(state.executionActive({ status: 'in_progress', execution_active: false }), false, 'explicit false wins');
+  assert.ok(!state.ticketMoves({ status: 'in_progress', execution_active: false }).some(m => m.endpoint === 'pause'));
+  assert.equal(state.executionActive({ status: 'awaiting_data' }), false);
+  assert.deepEqual(bt(state, 'awaiting_data').map(t => t.id).sort(), ['active', 'parked']);
+  assert.equal(bt(state, 'in_progress').length, 0);
+  assert.equal(state.runningAgents, 1, 'passive epic is not an agent');
+  assert.equal(state.agentRunningCount('claude'), 1);
+  assert.equal(state.editorCanEdit(active), false);
+  assert.equal(state.canSetStage(active), false);
+  assert.equal(state.canSkipStage(active), false);
+  assert.equal(state.editorCanEdit(parked), true);
+  assert.equal(state.canSetStage(parked), true);
+  assert.ok(state.ticketMoves(active).some(m => m.endpoint === 'pause'));
+  assert.ok(!state.ticketMoves(parked).some(m => m.endpoint === 'pause'));
+  assert.equal(state.mobileSecondaryAction(active).label, 'pause');
+  assert.equal(state.mobileSecondaryAction(parked).label, 'more');
+  assert.ok(state.mobileSheetActions(active).some(m => /Pause agent/.test(m.label)));
+  assert.equal(state.childRowFromEvent(active).execution_active, true);
+  assert.equal(state.childRowFromEvent(parked).execution_active, false);
+  state.selectedTicket = active;
+  assert.equal(state._activityIsRunning('wait', 0), true);
+  assert.equal(state.stageRibbon().find(s => s.name === 'wait').state, 'running');
+  assert.ok(state.ribbonMeters().some(m => m.k === 'elapsed'));
+  state.selectedTicket = parked;
+  assert.equal(state._activityIsRunning('wait', 0), false);
+  assert.notEqual(state.stageRibbon().find(s => s.name === 'wait').state, 'running');
+  assert.ok(!state.ribbonMeters().some(m => m.k === 'elapsed'));
+  const col = state.columns.find(c => c.key === active.status);
+  assert.notEqual(state._cardSig(active, col), state._cardSig({ ...active, execution_active: false }, col));
+  assert.match(state._cardHTML(active, col), /card-state-running|data-since/);
+  assert.doesNotMatch(state._cardHTML(parked, col), /card-state-running|data-since/);
+  assert.equal(state.ticketsByStatuses(['awaiting_data']).length, 3, 'raw-status selector includes active, parked and passive epic');
+  assert.equal(state.ticketsByStatuses(['in_progress']).length, 0, 'status selectors do not project activity');
+  const rollup = state._epicRollupFor({ id: 'parent' }, [active, parked]);
+  assert.equal(rollup.activeCount, 1);
+  assert.equal(rollup.next.id, active.id);
+  assert.equal(rollup.counts.awaiting_data, 2);
+});
+
+test('removed custom declarations leave display-only primary and child groups', () => {
+  const state = loadKontoraState();
+  state.configCache = { custom_statuses: [] };
+  const active = { id: 'active', title: 'Active', status: 'awaiting_data', execution_active: true, kontora: true };
+  state.tickets = [active];
+  state.recomputeBoard();
+  const col = state.columns.find(c => c.key === active.status);
+  assert.ok(col);
+  assert.equal(col.dropStatus, undefined);
+  assert.equal(bt(state, active.status)[0].id, active.id);
+  state.selectedEpic = { id: 'parent' };
+  state._epicRollup.parent = state._epicRollupFor(state.selectedEpic, [active]);
+  assert.equal(state.epicGroups().find(g => g.key === active.status).count, 1);
+  assert.equal(state._epicDropStatus(active.status), undefined);
+  state.configCache = { custom_statuses: [active.status] };
+  state.recomputeBoard();
+  assert.equal(state.columns.find(c => c.key === active.status).dropStatus, active.status);
+});
+
+for (const mobile of [false, true]) test(`same-name custom parking closes the live terminal and selects completed activity: mobile=${mobile}`, async () => {
+  const { ctx, state } = await openedTerminal({}, { mobile });
+  state.closeTerminal();
+  state.selectedTicket = { id: 'tst-001', status: 'awaiting_data', execution_active: true,
+    kontora: true, stage: 'wait', started_at: '2026-10-01T10:00:00Z', history: [] };
+  state.tickets = [{ ...state.selectedTicket }];
+  await state.openTerminal();
+  const ws = ctx.termState.ws;
+  assert.ok(ws && !ws.closed);
+  assert.equal(state.runningRun().stage, 'wait');
+  assert.equal(state.terminalWanted(), true);
+  const reads = [];
+  state.fetchActivity = (stage, run) => { reads.push([stage, run]); };
+  state.terminalRW = true;
+  state.queueTicketUpdate({ ...state.selectedTicket, execution_active: false,
+    history: [{ stage: 'wait', run: 0, completed_at: '2026-10-01T10:02:00Z' }] });
+  assert.equal(state.selectedTicket.status, 'awaiting_data');
+  assert.equal(state.selectedTicket.execution_active, false);
+  assert.equal(ws.closed, true);
+  assert.equal(state.terminalRW, false);
+  assert.equal(state.terminalWanted(), false);
+  assert.equal(state.outputTab(), 'activity');
+  assert.equal(state.runningRun(), null);
+  assert.equal(state._activityPoll, null);
+  assert.deepEqual(reads, [['wait', 0]]);
+});
+
+test('same-name pickup ends editing and refreshes activity snapshots', () => {
+  const state = loadKontoraState();
+  state._boardRaf = 1;
+  state.configCache = { custom_statuses: ['awaiting_data'] };
+  state.selectedTicket = { id: 'pickup', status: 'awaiting_data', execution_active: false,
+    body: 'Preserved body', stage: 'wait', kontora: true };
+  state.tickets = [{ ...state.selectedTicket }];
+  state.editing = true;
+  state.flushEditSave = () => {};
+  state.queueTicketUpdate({ ...state.selectedTicket, execution_active: true });
+  assert.equal(state.editing, false);
+  assert.equal(state.editorCanEdit(), false);
+  assert.equal(state._costDirtyKey, 'pickup');
+  assert.equal(state.selectedTicket.body, 'Preserved body');
+});
+
+for (const outcome of ['success', 'failure', 'network']) for (const race of ['none', 'SSE', 'second drag']) {
+  test(`drag reconciles status and activity: ${outcome}, ${race}`, async () => {
+    const pending = deferred();
+    const state = loadKontoraState({ fetch: () => pending.promise });
+    state._boardRaf = 1;
+    state.configCache = { custom_statuses: ['awaiting_data', 'parked'] };
+    state.selectedTicket = { id: 'drag', title: 'Drag', status: 'awaiting_data', execution_active: true, kontora: true };
+    state.tickets = [{ ...state.selectedTicket }];
+    state.activeTab = 'ticket';
+    state.recomputeBoard();
+    const moving = state.moveTask('drag', 'parked');
+    assert.equal(state.tickets[0].status, 'parked');
+    assert.equal(state.tickets[0].execution_active, false);
+    assert.equal(state.selectedTicket.execution_active, false);
+    let second;
+    if (race === 'SSE') state.queueTicketUpdate({ ...state.tickets[0], status: 'awaiting_data', execution_active: true, title: 'Newer event' });
+    if (race === 'second drag') second = state.moveTask('drag', 'done');
+    const response = { id: 'drag', title: 'Authoritative', status: race === 'second drag' ? 'done' : 'paused', execution_active: false, kontora: true };
+    if (outcome === 'network') pending.reject(new Error('offline'));
+    else pending.resolve({ ok: outcome === 'success', json: async () => outcome === 'success' ? response : { error: 'Rejected' } });
+    await moving; if (second) await second;
+    const current = state.tickets[0];
+    if (race === 'SSE') {
+      assert.equal(current.title, 'Newer event');
+      assert.equal(current.execution_active, true);
+    } else if (race === 'second drag' && outcome !== 'success') {
+      assert.equal(current.status, 'awaiting_data', 'failed drags restore the original authoritative pair');
+      assert.equal(current.execution_active, true);
+    } else {
+      assert.equal(current.status, outcome === 'success' ? response.status : 'awaiting_data');
+      assert.equal(current.execution_active, outcome !== 'success');
+      if (outcome === 'success') assert.equal(current.title, 'Authoritative');
+    }
+    assert.equal(state.selectedTicket.status, current.status);
+    assert.equal(state.selectedTicket.execution_active, current.execution_active);
+  });
+}
+
+for (const first of ['success', 'failure', 'network']) for (const second of ['success', 'failure', 'network']) {
+  for (const order of [[0, 1], [1, 0]]) for (const race of ['none', 'SSE', 'action response']) {
+    test(`overlapping drags retain authoritative state: ${first}/${second}, order=${order}, ${race}`, async () => {
+      const replies = [deferred(), deferred()];
+      const original = { id: 'drag', title: 'Running', status: 'awaiting_data', execution_active: true, kontora: true };
+      const responses = [
+        { ...original, title: 'First response', status: 'paused', execution_active: false },
+        { ...original, title: 'Second response', status: 'done', execution_active: false },
+      ];
+      const intervening = { ...original, title: 'New authority' };
+      let requests = 0;
+      const state = loadKontoraState({ fetch: () => requests < 2 ? replies[requests++].promise
+        : Promise.resolve({ ok: true, json: async () => intervening }) });
+      state._boardRaf = 1;
+      state.configCache = { custom_statuses: ['awaiting_data', 'parked'] };
+      state.tickets = [{ ...original }];
+      const moves = [state.moveTask('drag', 'parked'), state.moveTask('drag', 'done')];
+      const outcomes = [first, second];
+      for (const [step, index] of order.entries()) {
+        if (outcomes[index] === 'network') replies[index].reject(new Error('offline'));
+        else replies[index].resolve({ ok: outcomes[index] === 'success',
+          json: async () => outcomes[index] === 'success' ? responses[index] : { error: 'Rejected' } });
+        await moves[index];
+        if (step === 0) {
+          if (race === 'SSE') state.queueTicketUpdate(intervening);
+          if (race === 'action response') await state.moveTicketVia('drag', 'pause');
+        }
+      }
+      const expected = race !== 'none' ? intervening : second === 'success' ? responses[1]
+        : first === 'success' ? responses[0] : original;
+      assert.equal(state.tickets[0].status, expected.status);
+      assert.equal(state.tickets[0].execution_active, expected.execution_active);
+      assert.equal(state.tickets[0].title, expected.title);
+      assert.equal(state.ticketMoves(state.tickets[0]).some(move => move.endpoint === 'pause'), expected.execution_active);
+    });
+  }
+}
+
+test('a drag accepts authoritative custom activity rather than retaining its optimistic pair', async () => {
+  const response = { id: 'drag', title: 'Claimed while moving', status: 'awaiting_data', execution_active: true, kontora: true };
+  const state = loadKontoraState({ fetch: async () => ({ ok: true, json: async () => response }) });
+  state._boardRaf = 1;
+  state.tickets = [{ id: 'drag', status: 'paused', execution_active: false, kontora: true }];
+  const moving = state.moveTask('drag', 'todo');
+  assert.equal(state.tickets[0].status, 'todo');
+  assert.equal(state.tickets[0].execution_active, false);
+  await moving;
+  assert.equal(state.tickets[0].status, 'awaiting_data');
+  assert.equal(state.tickets[0].execution_active, true);
+  assert.equal(state.tickets[0].title, response.title);
+});
+
+for (const race of ['SSE during decode', 'deleted ticket']) test(`drag response cannot overwrite ${race}`, async () => {
+  const decode = deferred();
+  const state = loadKontoraState({ fetch: async () => ({ ok: true, json: () => decode.promise }) });
+  state._boardRaf = 1;
+  state.tickets = [{ id: 'drag', status: 'awaiting_data', execution_active: true, kontora: true }];
+  state.activeTab = 'ticket';
+  const moving = state.moveTask('drag', 'paused');
+  await flushMicrotasks();
+  if (race === 'deleted ticket') {
+    state._touchTicket({ id: 'drag' });
+    state.tickets = [];
+  } else state.queueTicketUpdate({ id: 'drag', status: 'awaiting_data', execution_active: true, title: 'New execution', kontora: true });
+  decode.resolve({ id: 'drag', status: 'paused', execution_active: false, title: 'Old response' });
+  await moving;
+  if (race === 'deleted ticket') assert.equal(state.tickets.length, 0);
+  else {
+    assert.equal(state.tickets[0].title, 'New execution');
+    assert.equal(state.tickets[0].execution_active, true);
+  }
+});
+
+test('read-only running_status survives an unrelated Settings save byte-for-byte', async () => {
+  const yaml = `# pipeline comment\nauto_pick_up: false\nstatuses: [ awaiting_data ]\npipelines:\n  research:\n    - stage: wait\n      agent: claude\n      running_status: awaiting_data # retained comment\n      on_success: awaiting_data\n      on_failure: pause\n`;
+  const state = await settingsState(yaml);
+  assert.equal(state.settingsPipelineSteps('research')[0].running_status, 'awaiting_data');
+  assert.equal(await state._settingsWrite(), yaml);
+  state.settingsConfig.auto_pick_up = true;
+  const output = await state._settingsWrite();
+  assert.equal(output, yaml.replace('auto_pick_up: false', 'auto_pick_up: true'));
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  assert.match(html, /running_status: <span x-text="s.running_status"/);
 });
 
 for (const [selected, arriving] of [['archived', 'abandoned'], ['tombstone', 'closed']]) {

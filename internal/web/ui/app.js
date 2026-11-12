@@ -322,8 +322,8 @@ export function kontoraApp() {
       if (!this.ticketCanControl(ticket)) return [];
       if (this.epicCanStart(ticket)) return [{ label: 'Start epic', endpoint: 'run' }];
       if (ticket.kind === 'epic' && !this.epicIsAgent(ticket)) return [];
-      var covered = this._detailCoveredMoves[ticket.status] || [];
-      return (this.validMoves[ticket.status] || []).filter(mv => !covered.includes(mv.endpoint));
+      var covered = this._detailCoveredMoves[this.executionActive(ticket) ? 'in_progress' : ticket.status] || [];
+      return this.ticketMoves(ticket).filter(mv => !covered.includes(mv.endpoint));
     },
 
     _knownCustomStatuses: {

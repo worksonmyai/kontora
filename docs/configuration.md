@@ -319,7 +319,7 @@ pipelines:
 | `instance_name` | no | `os.Hostname()` | Identifies this daemon when several run against one synced `tickets_dir`. Written to a ticket's `claimed_by` on pickup so daemons don't steal or kill each other's work (see [multi-machine tickets](tickets.md#running-on-multiple-machines)). Falls back to `default` if the hostname can't be read. Two machines that share a hostname must set this explicitly, or the protection can't tell them apart. |
 | `author` | no | the OS user | The name a note written by a person is signed with: the web composer's, and a bare `kontora note`. An agent's own note is signed with `$KONTORA_AGENT` instead, and Kontora's own with `kontora` (see [notes](tickets.md#notes)). Cannot contain `·`, a newline or `**`. |
 | `tmux_session` | no | `kontora` | The tmux session the daemon puts agent windows in. Allowed characters are `A-Z a-z 0-9 _ -`, 1 to 64 of them, and the name cannot start with `-`. Set a distinct value per daemon when you run more than one on a machine: startup cleanup, `kontora attach`, the TUI, and the web terminal are all scoped to this session, and two daemons sharing it can also signal each other's agents through the tmux `wait-for` channel when their ticket IDs collide. |
-| `statuses` | no | — | Extra parked statuses beyond the built-ins. Agents can park tickets here via `on_success`/`on_failure`. |
+| `statuses` | no | — | Extra statuses beyond the built-ins. Steps can park tickets via `on_success`/`on_failure`, or run agents there via `running_status`. |
 | `projects` | no | — | Per-repository pipeline, agent, and branch naming defaults (see [projects](#projects)). |
 | `environment` | no | — | Map of environment variables to set for all agent processes. |
 | `hooks` | no | — | Commands run at a ticket's lifecycle events (see [hooks](#hooks)). |
@@ -706,6 +706,7 @@ pipelines:
 | `on_success` | yes | `next`, `done`, `human_review`, or a custom status | What to do when the agent exits 0. |
 | `on_failure` | yes | `retry`, `back`, `pause`, `human_review`, or a custom status | What to do when the agent exits non-zero. |
 | `max_retries` | no | integer (default `0`) | Maximum retry attempts (only relevant when `on_failure=retry`). |
+| `running_status` | no | `in_progress` (default) or a declared eligible custom status | Actual ticket status while the stage's agent runs. |
 
 ### Policies
 
@@ -722,11 +723,76 @@ pipelines:
 - `human_review` — park the ticket in `human_review`.
 - A custom status declared in top-level `statuses:` — park the ticket in that status.
 
+### Running in a custom column
+
+A step's `running_status` changes the stored ticket status when the daemon claims
+that stage. The dashboard and TUI show the ticket in that status's column.
+Queued tickets stay `todo`; paused tickets stay `paused`.
+
+For example, with an existing `claude` agent:
+
+```yaml
+statuses: [awaiting_data]
+
+stages:
+  collect:
+    prompt: Start collection and record how to check readiness in the ticket notes.
+    timeout: 30m
+  wait-for-data:
+    prompt: |
+      Wait until collection finishes. Read the ticket notes for the collection job.
+      Check periodically. Exit successfully only when the data is ready.
+      If collection fails, exit nonzero.
+    timeout: 0s
+  analyze:
+    prompt: Analyze the collected data using the ticket requirements.
+    timeout: 30m
+
+pipelines:
+  research:
+    - stage: collect
+      agent: claude
+      on_success: next
+      on_failure: pause
+    - stage: wait-for-data
+      agent: claude
+      running_status: awaiting_data
+      on_success: next
+      on_failure: pause
+    - stage: analyze
+      agent: claude
+      on_success: human_review
+      on_failure: pause
+```
+
+The waiting agent owns polling. It keeps an ordinary concurrency slot and its
+branch reservation until execution stops. Agent and tool costs continue during
+that time. `timeout: 0s` disables Kontora's stage timeout, not agent or tool limits.
+Restart uses normal recovery and conversation resume; it does not resume an interrupted shell sleep.
+
+Custom statuses still support parking. `on_success: awaiting_data` parks the
+ticket, even if that stage also ran in `awaiting_data`. Moving a ticket into a
+custom column does not start an agent or select a stage. A same-status move does
+not stop the agent; use Pause.
+
+The daemon writes a `running_status` snapshot in ticket frontmatter for custom
+execution. An ordinary status assignment clears that snapshot. Do not set it by hand.
+A running stage retains its captured status after a config reload. If its custom
+status declaration disappears, the column remains visible for active tickets but
+is not a move destination. Later claims use the current configuration.
+Pickup can send the ticket's usual status notification; polling itself sends none.
+
+Upgrade every CLI and daemon binary sharing the ticket store before enabling
+`running_status`. Older config loaders reject the step setting, and older clients
+cannot distinguish custom-active tickets from parked ones. Existing parked
+tickets are not activated or migrated.
+
 ### Validation rules
 
 - Every pipeline step must reference a stage and agent that exist in the config.
 - `on_success` must be `next`, `done`, `human_review`, or a custom status declared in top-level `statuses:`.
 - `on_failure` must be `retry`, `back`, `pause`, `human_review`, or a custom status declared in top-level `statuses:`.
+- `running_status` must be `in_progress` or a declared custom status. Other built-ins, legacy `closed`, and reserved policy names are invalid.
 - `on_failure=back` is not allowed on the first stage.
 - The last stage must not have `on_success=next` (it must terminate with `done`, `human_review`, or a custom status).
 - A stage cannot appear more than once in the same pipeline.
@@ -1648,7 +1714,7 @@ A channel whose notification secret cannot be read is an exception: the daemon
 skips that channel and applies the rest of the config.
 
 **A running agent keeps the settings it started with.** The prompt, arguments,
-model, effort, timeout, and binary are fixed when the stage spawns. Editing a prompt
+model, effort, timeout, binary, and running status are fixed when the stage spawns. Editing a prompt
 while a ticket is mid-stage does nothing visible until the next stage starts.
 That is expected, not a failed reload.
 

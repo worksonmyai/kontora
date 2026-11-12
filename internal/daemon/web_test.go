@@ -2752,7 +2752,7 @@ func TestChildInfo_WallBounds(t *testing.T) {
 				StartedAt: at(40), CompletedAt: at(70), History: fourStages,
 			},
 			want: web.TicketChild{
-				ID: "kid-b", Status: "in_progress", Stage: "step2", StageIndex: 2, StageCount: 2,
+				ID: "kid-b", Status: "in_progress", ExecutionActive: true, Stage: "step2", StageIndex: 2, StageCount: 2,
 				StartedAt: at(0),
 			},
 		},

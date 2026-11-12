@@ -103,6 +103,7 @@ Written by the daemon as a ticket progresses. Never set them by hand.
 | `stage` | Current pipeline stage. Set to the first stage on pickup. |
 | `attempt` | Retry counter for the current stage. Reset on advance or back. |
 | `started_at` | When the current stage started. |
+| `running_status` | Internal snapshot for a custom-active stage, matching its actual `status`. Empty for default execution and parked work. |
 | `completed_at` | When the ticket became `done`. |
 | `branch` | The worktree's git branch. |
 | `history` | One record per completed stage run. |
@@ -135,9 +136,31 @@ open -> todo -> in_progress -> done ------> archived
 | `archived` | An old closed ticket, hidden everywhere, file kept. Terminal. |
 | `closed` | Read-only compatibility with the external `ticket` CLI. No kontora command writes it. |
 
-A config may declare extra parked statuses under `statuses:`. A stage's
-`on_success` or `on_failure` can park a ticket in one, and `kontora move` can
-put a ticket there.
+A config may declare extra statuses under `statuses:`. A stage's `on_success`
+or `on_failure` can park a ticket in one, and `kontora move` can put a ticket
+there. These actions never start an agent.
+
+A pipeline step's `running_status` can instead run the agent under a custom
+status. Claim writes the actual `status` and the ticket's internal `running_status`
+snapshot together. Only a matching eligible custom pair is active; a mismatched
+snapshot is stale. Legacy `in_progress` remains active without a snapshot.
+Ordinary status assignments clear the snapshot, even when the name stays the same.
+Notes and summaries preserve it. Do not edit the snapshot by hand.
+
+Active custom tickets keep running controls, editing restrictions, concurrency
+slots and branch reservations. Pause and Cancel work normally. A same-status
+manual move does not stop execution; use Pause. Status entry never selects a stage.
+The agent owns any polling; `timeout: 0s` disables only Kontora's stage timeout.
+Restart uses normal recovery and conversation resume, not an interrupted shell sleep.
+
+List, detail, SSE and CLI JSON expose derived `execution_active`. It describes
+lifecycle, not proof of process liveness or completed teardown. Actual status
+continues to determine columns and filters. An active snapshot remains recognized
+if its declaration disappears; its fallback column is display-only.
+
+Upgrade every CLI and daemon sharing the store before enabling the step setting.
+Older binaries cannot recognize custom activity. Existing parked tickets are not
+activated or migrated.
 
 The daemon picks up ordinary tickets and agent epics with `kontora: true` and
 `status: todo`. A passive epic is never picked up, even if its file says `todo`.
@@ -221,7 +244,7 @@ Archived children are ignored. Apply these rules in order:
 
 | Remaining children | Epic status |
 |--------------------|-------------|
-| Any `todo`, `in_progress`, `paused` or `human_review` child | `in_progress` |
+| Any `todo`, `in_progress`, `paused`, `human_review` or custom-active child | `in_progress` |
 | No children, or any child outside `done`, `closed` and `cancelled` | `open` |
 | All children terminal, with at least one `done` or legacy `closed` child | `done` |
 | All children `cancelled` | `cancelled` |
@@ -348,8 +371,8 @@ epic file; use remote mode for that cleanup.
 On desktop, create an epic from New ticket by choosing Kind: epic. Epics appear
 above Projects in the sidebar, not in board columns. The sidebar defaults to
 hidden, and its Epics section is hidden when the board has no epics.
-`kontora ls --json` includes `kind`, `epic_execution`, `child_order`, `branch`
-and `base_branch`. `child_order` is the stored display order, not child membership.
+`kontora ls --json` includes `kind`, `epic_execution`, `execution_active`,
+`child_order`, `branch` and `base_branch`. `child_order` is the stored display order, not child membership.
 Use `kontora ls --json --closed --archived` without additional filters or a limit.
 Inspect each ticket's `parent` to find every child.
 

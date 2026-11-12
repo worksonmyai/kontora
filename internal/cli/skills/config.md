@@ -32,7 +32,7 @@ Read `kontora config` for what a particular board actually runs.
 | `auto_pick_up` | `true` | Automatically claim eligible `todo` tickets. Reloads live. Disabling it does not stop explicit runs, pipeline continuations, recovery, or scheduled automations. |
 | `instance_name` | hostname | Identifies this daemon when several share a synced `tickets_dir`. Written to `claimed_by`. |
 | `tmux_session` | `kontora` | The tmux session agent windows go in. |
-| `statuses` | — | Extra parked statuses beyond the built-ins. |
+| `statuses` | — | Extra statuses for parking or a step's `running_status`. |
 | `environment` | — | Environment variables set for every agent process. |
 
 For `tickets_dir` alone the environment beats the file: `--tickets-dir`, then
@@ -152,8 +152,22 @@ statuses: [needs_qa, blocked_on_design]
 Extra statuses a ticket can be parked in, beyond `open`, `todo`,
 `in_progress`, `paused`, `human_review`, `done`, `cancelled` and `archived`.
 A pipeline step's `on_success` or `on_failure` can name one, and
-`kontora move ID STATUS` can put a ticket there. They are parked states: the
-daemon never runs a ticket out of one on its own.
+`kontora move ID STATUS` can put a ticket there. These actions park work and
+never start an agent. A step can instead set `running_status` to a declared
+custom name to run its agent in that column. Omission means `in_progress`;
+other built-ins, legacy `closed` and reserved policy names are invalid.
+
+The daemon claims from `todo`, then writes the actual custom status and a ticket
+`running_status` snapshot together. An ordinary status assignment clears the
+snapshot, including same-name parking. The active agent keeps its slot and branch
+reservation. `timeout: 0s` disables only Kontora's stage timeout. The agent owns
+polling; there is no daemon-managed readiness check.
+
+Active runs keep their captured status after reload. Removed declarations leave
+only display-only fallback columns; they do not authorize new move destinations.
+Upgrade all CLI and daemon binaries sharing the store before enabling the setting.
+Older config loaders reject the new key and older clients treat custom activity
+as parked work. Existing parked tickets are not activated or migrated.
 
 ## web
 

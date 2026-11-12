@@ -1211,7 +1211,25 @@ path: /tmp/testrepo
 # Ticket
 `,
 			ticketID:   "tst-001",
-			wantErrMsg: "must be in_progress",
+			wantErrMsg: "must be running",
+		},
+		{
+			name:       "custom active reaches session lookup",
+			ticketFile: "---\nid: tst-001\nstatus: awaiting_data\nrunning_status: awaiting_data\n---\n# Ticket\n",
+			ticketID:   "tst-001",
+			wantErrMsg: "not found",
+		},
+		{
+			name:       "custom parked cannot attach",
+			ticketFile: "---\nid: tst-001\nstatus: awaiting_data\n---\n# Ticket\n",
+			ticketID:   "tst-001",
+			wantErrMsg: "must be running",
+		},
+		{
+			name:       "passive epic cannot attach",
+			ticketFile: "---\nid: tst-001\nkind: epic\nstatus: in_progress\n---\n# Epic\n",
+			ticketID:   "tst-001",
+			wantErrMsg: "must be running",
 		},
 		{
 			name: "no tmux session",

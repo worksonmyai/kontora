@@ -5,6 +5,8 @@ import { termState } from './terminal.js';
 // The ticket detail panel: summary, stage rail, inline editing, stage logs
 // and the actions the panel offers.
 export function kontoraDetail() {
+  const moves = new Map();
+
   return {
     // What the assistant is told about the open ticket. Null when none is open,
     // so the pane leaves the line out rather than saying "no ticket". The panel
@@ -135,14 +137,14 @@ export function kontoraDetail() {
       if (this.selectedTicket?.id) {
         this.fetchChain(this.selectedTicket.id);
       }
-      if (this.selectedTicket?.status !== 'in_progress' && this.selectedTicket?.status !== 'todo' && this.selectedTicket?.status !== 'open'
+      if (!this.executionActive(this.selectedTicket) && this.selectedTicket?.status !== 'todo' && this.selectedTicket?.status !== 'open'
           && this.selectedTicket?.history?.length > 0) {
         var latest = this.latestCompletedRun();
         if (latest) this.fetchActivity(latest.stage, latest.run);
         // Finished tickets with a summary open on the summary tab; the
         // transcript stays prefetched for the activity tab.
         this.activeTab = this.summaryFirst(this.selectedTicket) ? 'summary' : 'activity';
-      } else if (this.selectedTicket?.status === 'in_progress' &&
+      } else if (this.executionActive(this.selectedTicket) &&
           (this.selectedTicket.kind !== 'epic' || this.epicIsAgent(this.selectedTicket))) {
         this.activeTab = 'session';
         this.openTerminal();
@@ -421,7 +423,7 @@ export function kontoraDetail() {
       }
       // The live session only exists while a stage runs. Asking for it on a
       // finished ticket lands on that stage's transcript instead.
-      if (tab === 'session' && this.selectedTicket?.status !== 'in_progress') tab = 'activity';
+      if (tab === 'session' && !this.executionActive(this.selectedTicket)) tab = 'activity';
       if (tab !== this.activeTab) {
         this._invalidateStageLogs();
         this._invalidateRawLog();
@@ -431,7 +433,7 @@ export function kontoraDetail() {
       // content is x-show, so the container survives, and output that arrives
       // while it is hidden is already in the buffer on return. Only the fit is
       // owed, because a hidden container measures zero.
-      if (tab === 'session' && this.selectedTicket?.status === 'in_progress') {
+      if (tab === 'session' && this.executionActive(this.selectedTicket)) {
         if (this.terminalOpen) {
           var self = this;
           requestAnimationFrame(function() { self.refitTerminal(); });
@@ -920,9 +922,34 @@ export function kontoraDetail() {
         this.recomputeBoard();
         return this.openInitModal(ticket);
       }
-      const oldStatus = ticket ? ticket.status : null;
-      if (ticket) ticket.status = newStatus;
-      this.recomputeBoard();
+      if (!ticket) return;
+      let chain = moves.get(ticketId);
+      const mine = () => !this._appDestroyed && moves.get(ticketId) === chain &&
+        !chain.touched.has(ticketId) && this.tickets.find(t => t.id === ticketId) === chain.current;
+      if (!chain || !mine()) {
+        chain = { previous: { ...ticket }, requests: [], pending: 0, touched: this._beginSnapshot(), current: ticket };
+        moves.set(ticketId, chain);
+      }
+      // Rollback skips failed optimistic states and keeps the last successful response or the original ticket.
+      // Ordinary moves park custom statuses; only a daemon claim activates them.
+      const move = { result: { ...ticket, status: newStatus, execution_active: newStatus === 'in_progress' }, failed: false };
+      chain.requests.push(move);
+      chain.pending++;
+      const reconcile = () => {
+        if (mine()) {
+          const latest = chain.requests.filter(request => !request.failed).pop();
+          const value = latest ? latest.result : chain.previous;
+          if (value !== chain.value) {
+            this.applyTicketUpdate(value);
+            chain.current = this.tickets.find(t => t.id === ticketId);
+            chain.value = value;
+            // Ignore our own writes, but retain invalidation from any intervening authoritative update.
+            chain.touched.delete(ticketId);
+          }
+        }
+        this.recomputeBoard();
+      };
+      reconcile();
       try {
         const res = await fetch('/api/tickets/' + ticketId + '/move', {
           method: 'POST',
@@ -932,13 +959,21 @@ export function kontoraDetail() {
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           this.error = data.error || 'Move failed';
-          if (ticket && oldStatus) ticket.status = oldStatus;
-          this.recomputeBoard();
+          move.failed = true;
+        } else {
+          const updated = await res.json().catch(() => null);
+          if (updated?.id === ticketId) move.result = updated;
         }
+        reconcile();
       } catch (e) {
         this.error = 'Move failed: ' + e.message;
-        if (ticket && oldStatus) ticket.status = oldStatus;
-        this.recomputeBoard();
+        move.failed = true;
+        reconcile();
+      } finally {
+        if (--chain.pending === 0) {
+          this._endSnapshot(chain.touched);
+          if (moves.get(ticketId) === chain) moves.delete(ticketId);
+        }
       }
     },
 
@@ -1314,7 +1349,7 @@ export function kontoraDetail() {
 
     clickStage(stage) {
       if (!this.selectedTicket) return;
-      if (stage === this.selectedTicket.stage && this.selectedTicket.status === 'in_progress') {
+      if (stage === this.selectedTicket.stage && this.executionActive(this.selectedTicket)) {
         this._invalidateStageLogs();
         this.logViewContent = null;
         this.logViewStage = null;
@@ -1332,7 +1367,7 @@ export function kontoraDetail() {
     // stays queued after a stage edit; selecting a stage does not retry it.
     canSetStage(ticket = this.selectedTicket) {
       const status = ticket?.status;
-      if (!this.ticketCanControl(ticket) || !status || ticket.kind === 'epic' || this.plannotatorInFlight?.[ticket.id]) return false;
+      if (!this.ticketCanControl(ticket) || this.executionActive(ticket) || !status || ticket.kind === 'epic' || this.plannotatorInFlight?.[ticket.id]) return false;
       return ['open', 'todo', 'paused', 'human_review', 'done', 'cancelled']
         .concat(this.configCache?.custom_statuses || [])
         .includes(status);
@@ -1428,7 +1463,7 @@ export function kontoraDetail() {
       if (ticket.status === 'done') return doneCls;
       if (stage === ticket.stage) {
         if (ticket.status === 'paused') return 'text-st-paused bg-st-paused/[0.12] border-st-paused/[0.3]';
-        if (ticket.status === 'in_progress') return 'stage-active-progress';
+        if (this.executionActive(ticket)) return 'stage-active-progress';
         if (ticket.status === 'human_review') return 'stage-active-review';
         return 'text-tx-2 bg-surface-800 border-edge-input';
       }
@@ -1464,7 +1499,7 @@ export function kontoraDetail() {
     // otherwise the attach command is copied.
     attachTerminal() {
       if (!this.selectedTicket) return;
-      if (this.selectedTicket.status === 'in_progress') {
+      if (this.executionActive(this.selectedTicket)) {
         this.logViewContent = null;
         this.logViewStage = null;
         this.switchTab('session');

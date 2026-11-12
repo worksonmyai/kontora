@@ -138,7 +138,7 @@ func sortTickets(tasks []web.TicketInfo) {
 }
 
 func ticketSortTime(t web.TicketInfo) time.Time {
-	if t.Status == string(ticket.StatusInProgress) && t.StartedAt != nil {
+	if t.IsRunning() && t.StartedAt != nil {
 		return *t.StartedAt
 	}
 	return derefTimePtr(t.CreatedAt)
@@ -182,6 +182,17 @@ func (m *listModel) buildColumns() {
 	for _, cs := range m.customStatuses {
 		order = append(order, ticket.Status(cs))
 	}
+	// Removed custom declarations remain visible for captured active runs.
+	// This changes display columns only, never the configured move targets.
+	var fallback []ticket.Status
+	for _, t := range m.filtered {
+		status := ticket.Status(t.Status)
+		if t.IsRunning() && !slices.Contains(order, status) && !slices.Contains(fallback, status) {
+			fallback = append(fallback, status)
+		}
+	}
+	slices.Sort(fallback)
+	order = append(order, fallback...)
 	if m.showDone {
 		order = append(order, doneStatuses...)
 	}
@@ -459,7 +470,7 @@ func (m listModel) View() string {
 	hints := []string{"h/l columns", "j/k navigate", "enter detail", "d done", "/ filter"}
 	if m.connected {
 		hints = append(hints, "n new", "p pause", "r retry")
-		if sel := m.selected(); sel != nil && sel.Status == string(ticket.StatusInProgress) {
+		if sel := m.selected(); sel != nil && sel.IsRunning() {
 			hints = append(hints, "pause first to change stages")
 		} else {
 			hints = append(hints, "s skip")
@@ -535,7 +546,7 @@ func renderCardLine(t web.TicketInfo, colW int, selected bool, line int) string 
 }
 
 func ticketDuration(t web.TicketInfo) string {
-	if ticket.Status(t.Status) == ticket.StatusInProgress && t.StartedAt != nil {
+	if t.IsRunning() && t.StartedAt != nil {
 		return cli.FormatDuration(time.Since(*t.StartedAt))
 	}
 	return "—"

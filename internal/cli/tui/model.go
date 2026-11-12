@@ -288,7 +288,7 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case isKey(msg, "s"):
 		if sel := m.list.selected(); sel != nil {
-			if sel.Status == string(ticket.StatusInProgress) {
+			if sel.IsRunning() {
 				m.list.err = errors.New("pause first and wait for the agent to stop before changing stages")
 				return m, nil
 			}
@@ -329,7 +329,7 @@ func (m model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case isKey(msg, "r"):
 		return m, actionCmd(func() error { return m.source.RetryTicket(m.detail.ticket.ID) })
 	case isKey(msg, "s"):
-		if m.detail.ticket.Status == string(ticket.StatusInProgress) {
+		if m.detail.ticket.IsRunning() {
 			m.detail.err = errors.New("pause first and wait for the agent to stop before changing stages")
 			return m, nil
 		}
@@ -339,6 +339,9 @@ func (m model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case isKey(msg, "g"):
+		if m.detail.ticket.IsRunning() {
+			return m, nil
+		}
 		st := ticket.Status(m.detail.ticket.Status)
 		switch st {
 		case ticket.StatusOpen, ticket.StatusTodo, ticket.StatusPaused, ticket.StatusHumanReview:
@@ -632,14 +635,14 @@ func (m model) handleTaskUpdated(ev web.TicketEvent) (model, tea.Cmd) {
 func (m *model) countRunning() {
 	m.list.running = 0
 	for _, info := range m.list.tickets {
-		if info.Kontora && info.Status == string(ticket.StatusInProgress) {
+		if info.Kontora && info.Source == "" && info.IsRunning() {
 			m.list.running++
 		}
 	}
 }
 
 func (m model) handleAgentConfig(msg agentConfigMsg) (tea.Model, tea.Cmd) {
-	if m.view != viewDetail {
+	if m.view != viewDetail || m.detail.ticket.IsRunning() {
 		return m, nil
 	}
 	if msg.err != nil {

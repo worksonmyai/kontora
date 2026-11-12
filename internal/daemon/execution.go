@@ -21,7 +21,7 @@ var errExecutionChanged = errors.New("ticket execution changed")
 type executionIdentity struct {
 	id, pipeline, stage, path, branch, base, owner, epic, parent, invocation string
 	kind                                                                     ticket.Kind
-	annotation                                                               ticket.Status
+	annotation, status, runningStatus                                        ticket.Status
 	attempt                                                                  int
 	started                                                                  string
 	kontora                                                                  bool
@@ -32,7 +32,8 @@ func executionOf(t *ticket.Ticket) executionIdentity {
 		id: t.ID, pipeline: t.Pipeline, stage: t.Stage, path: t.Path,
 		branch: t.Branch, base: t.BaseBranch, owner: t.ClaimedBy,
 		epic: t.EpicExecution, parent: t.Parent, kind: t.Kind,
-		annotation: t.AnnotationReturnStatus, attempt: t.Attempt, invocation: t.InvocationID,
+		annotation: t.AnnotationReturnStatus, status: t.Status, runningStatus: t.RunningStatus,
+		attempt: t.Attempt, invocation: t.InvocationID,
 		started: derefTime(t.StartedAt).UTC().Format(time.RFC3339Nano), kontora: t.Kontora,
 	}
 }
@@ -57,7 +58,7 @@ func (d *Daemon) executionMatchesLocked(ctx context.Context, snapshot, current *
 		}
 		expected = claim.expected
 	}
-	return !current.HasOwnershipMetadata() && current.Status == ticket.StatusInProgress && executionOf(current) == expected
+	return !current.HasOwnershipMetadata() && current.IsRunning() && executionOf(current) == expected
 }
 
 func (d *Daemon) patchExecution(ctx context.Context, snapshot *ticket.Ticket, filePath string, patch func(*ticket.Ticket) error) (*ticket.Ticket, error) {
@@ -144,6 +145,7 @@ func (d *Daemon) prepareExecution(ctx context.Context, snapshot *ticket.Ticket, 
 }
 
 func (d *Daemon) initializeExecution(cfg *config.Config, t *ticket.Ticket, now time.Time) error {
+	runningStatus := ticket.StatusInProgress
 	if t.AnnotationReturnStatus == "" {
 		_ = t.SetField("branch", effectiveClaimBranch(cfg, t))
 		if t.IsAgentEpic() {
@@ -167,9 +169,12 @@ func (d *Daemon) initializeExecution(cfg *config.Config, t *ticket.Ticket, now t
 			if err := d.applyAction(t, action); err != nil {
 				return err
 			}
+			runningStatus = t.Status
 		}
 	}
-	_ = t.SetField("status", string(ticket.StatusInProgress))
+	if err := t.SetRunningStatus(runningStatus); err != nil {
+		return err
+	}
 	_ = t.SetField("started_at", now.Format(time.RFC3339Nano))
 	return t.SetField("claimed_by", d.instanceName)
 }

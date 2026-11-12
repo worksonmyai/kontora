@@ -61,7 +61,7 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 	if t.ScheduledAt != "" {
 		fmt.Fprintf(w, "starts:    %s\n", FormatSchedule(t.ScheduledAt))
 	}
-	if t.Status == ticket.StatusInProgress && t.StartedAt != nil {
+	if t.IsRunning() && !t.IsPassiveEpic() && t.StartedAt != nil {
 		fmt.Fprintf(w, "running:   %s\n", FormatDuration(time.Since(*t.StartedAt)))
 	} else if t.StartedAt != nil {
 		fmt.Fprintf(w, "started:   %s\n", FormatTimestamp(t.StartedAt))

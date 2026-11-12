@@ -223,7 +223,7 @@ func validateRetry(t *ticket.Ticket, resolved string) error {
 	if err := refuseEpic(t, resolved, "retry"); err != nil {
 		return err
 	}
-	if t.Status == ticket.StatusInProgress || t.Status == ticket.StatusTodo || t.Status == ticket.StatusArchived {
+	if t.IsRunning() || t.Status == ticket.StatusTodo || t.Status == ticket.StatusArchived {
 		return fmt.Errorf("%w: cannot retry ticket in status %s", ErrInvalidState, t.Status)
 	}
 	return nil
@@ -344,7 +344,7 @@ func (s *Service) skip(id string) (Result, error) {
 }
 
 func (s *Service) stageChangePipeline(t *ticket.Ticket) (config.Pipeline, error) {
-	if t.Status == ticket.StatusInProgress {
+	if t.IsRunning() {
 		return nil, fmt.Errorf("%w: cannot change the stage of ticket %s while it is running; pause first and wait for the agent to stop", ErrInvalidState, t.ID)
 	}
 	if t.Status == ticket.StatusArchived {

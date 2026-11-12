@@ -67,7 +67,7 @@ func Update(cfg *config.Config, id string, req web.UpdateTicketRequest) error {
 func applyUpdate(cfg *config.Config, t *ticket.Ticket, req web.UpdateTicketRequest) error {
 	// Only a passive epic's derived status does not constrain brief editing.
 	// Agent epics use the same edit guard as ordinary work.
-	if !t.IsPassiveEpic() && !cfg.StatusAllowsEdit(string(t.Status)) {
+	if !t.IsPassiveEpic() && (t.IsRunning() || !cfg.StatusAllowsEdit(string(t.Status))) {
 		return fmt.Errorf("%w: cannot update ticket in status %s", app.ErrInvalidState, t.Status)
 	}
 

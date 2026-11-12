@@ -216,7 +216,7 @@ func DeriveEpicStatus(index map[string]*Ticket, epicID string) Status {
 		switch {
 		case c.Status == StatusArchived:
 			continue
-		case epicActiveStatuses[c.Status]:
+		case c.IsRunning() || epicActiveStatuses[c.Status]:
 			return StatusInProgress
 		case c.Status == StatusDone || c.Status == StatusLegacyClosed:
 			done++

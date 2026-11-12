@@ -145,7 +145,7 @@ const SETTINGS_SEARCH_EXTRA = {
   assistant: ['agent', 'model', 'effort', 'autonomy', 'prompt brief', 'companion enabled name Kotik inbox observation'],
   agents: ['binary', 'effort', 'args', 'failure_patterns'],
   stages: ['prompt', 'timeout', 'model', 'effort'],
-  pipelines: ['on_success', 'on_failure', 'max_retries'],
+  pipelines: ['running_status', 'on_success', 'on_failure', 'max_retries'],
   projects: ['pipeline', 'epic_child_pipeline', 'agent', 'branch_prefix', 'notify_channels'],
   notifications: [
     'enabled', 'timeout one delivery attempt', 'attempts', 'backoff between attempts',
@@ -1170,7 +1170,7 @@ export function kontoraSettings() {
       if (key === 'pipelines') {
         for (const p of this.settingsPipelineNames()) {
           out.push(p);
-          for (const step of cfg.pipelines[p]) out.push(step.stage, step.agent, step.on_success, step.on_failure);
+          for (const step of cfg.pipelines[p]) out.push(step.stage, step.agent, step.running_status, step.on_success, step.on_failure);
         }
       }
       if (key === 'projects') for (const n of this.settingsProjectNames()) {
@@ -1288,7 +1288,7 @@ export function kontoraSettings() {
 
     settingsProjectTickets(name) {
       const rows = (this.tickets || []).filter(t => t.project === name);
-      return { total: rows.length, running: rows.filter(t => t.status === 'in_progress').length };
+      return { total: rows.length, running: rows.filter(t => this.executionActive(t)).length };
     },
 
     // One node of a pipeline's flow diagram. The model and timeout come from
@@ -1307,6 +1307,7 @@ export function kontoraSettings() {
           kind,
           model: stage ? settingsPerAgentFor(stage.model, step.agent, kind) : '',
           timeout: stage ? stage.timeout : '',
+          running_status: step.running_status || 'in_progress',
           on_success: step.on_success,
           on_failure: step.on_failure,
           max_retries: step.max_retries,
@@ -1601,6 +1602,7 @@ function settingsModel(raw) {
     model.pipelines[name] = (steps || []).map(s => ({
       stage: str(s?.stage),
       agent: str(s?.agent),
+      running_status: str(s?.running_status),
       on_success: str(s?.on_success),
       on_failure: str(s?.on_failure),
       max_retries: Number(s?.max_retries) || 0,

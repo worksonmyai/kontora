@@ -88,6 +88,12 @@
   --tx-faint:138,144,164;
 }
 
+.loading-spinner { width:18px; height:18px; flex:none; border:2px solid rgb(var(--surface-700)); border-top-color:rgb(var(--accent)); border-radius:50%; animation:loading-spin .8s linear infinite; }
+@keyframes loading-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) {
+  .loading-spinner { animation:none; }
+}
+
 /* The cat is a still, original pixel sprite. State never depends on motion. */
 .companion-cat { display:inline-block; width:32px; height:32px; flex:none; background:url('/kotik.png') 0 0 / 96px 32px no-repeat; image-rendering:pixelated; }
 .companion-cat[data-state="needs you"] { background-position:-32px 0; }
@@ -195,6 +201,8 @@
   width:var(--mobile-vv-width,100%); height:var(--mobile-vv-height,100dvh);
   right:auto; bottom:auto; z-index:40; display:flex; flex-direction:column; min-height:0; overflow:hidden; background:rgb(var(--surface-950));
 }
+.mobile-detail-body { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
+.mobile-detail-loading { position:absolute; inset:0; z-index:1; display:flex; align-items:center; justify-content:center; gap:12px; background:rgb(var(--surface-950)); }
 .mobile-detail-header { flex:none; max-height:55%; overflow-y:auto; padding-top:env(safe-area-inset-top); border-bottom:1px solid rgb(var(--surface-700) / .4); background:rgb(var(--surface-deep)); }
 .mobile-detail-context { display:flex; align-items:center; gap:10px; padding:6px 14px; }
 .mobile-detail-heading { flex:1; min-width:0; }

@@ -1798,8 +1798,9 @@
     </template>
 
     <!-- Loading state -->
-    <div x-show="loading" class="flex-1 flex items-center justify-center">
-      <span class="text-surface-600 font-mono text-sm">loading...</span>
+    <div x-show="loading" class="startup-loading flex-1 flex items-center justify-center gap-3 text-tx-3 font-mono text-sm" role="status">
+      <span class="loading-spinner" aria-hidden="true"></span>
+      <span>Loading tickets…</span>
     </div>
 
     <template x-if="!isMobile">
@@ -6021,7 +6022,7 @@
   <!-- sheet) differ.                                                 -->
   <!-- ============================================================= -->
   <template x-if="isMobile">
-  <div x-show="currentView === 'board'" class="mobile-board-layer">
+  <div x-show="!loading && currentView === 'board'" class="mobile-board-layer">
 
     <div x-show="epics.length" class="flex gap-2 overflow-x-auto p-3">
       <template x-for="e in epics" :key="e.id">
@@ -6039,9 +6040,8 @@
     <div class="flex-1 min-h-0 overflow-y-auto"
          style="padding:14px 12px 48px;display:flex;flex-direction:column;gap:9px;"
          @touchstart.passive="onBoardTouchStart($event)" @touchend="onBoardTouchEnd($event)">
-      <!-- Empty-board panel, same gate as the desktop one plus !loading: the
-           mobile layer has no loading guard above it, and init() holds loading
-           true across two fetches with tickets still empty. -->
+      <!-- Empty-board panel, same gate as the desktop one plus !loading:
+           init() holds loading true across two fetches with tickets still empty. -->
       <template x-if="!loading && allBoardTickets().length === 0 && !sourcesError && !ticketSources.some(s => s.available === false)">
         <div id="board-empty-mobile" style="border:1px solid rgba(var(--surface-700),.6);border-radius:12px;background:rgba(var(--surface-900),1);padding:18px 16px;margin-top:6px;display:flex;flex-direction:column;gap:12px;">
           <div style="font-size:15px;font-weight:600;color:rgba(var(--tx),1);">The board is empty</div>
@@ -6448,7 +6448,13 @@
       </div>
 
       <!-- content -->
-      <div class="mobile-detail-content">
+      <div class="mobile-detail-body">
+        <!-- x-show defers visibility changes that can outlive a fast detail read. -->
+        <div :style="{ display: detailLoading ? 'flex' : 'none' }" x-cloak class="mobile-detail-loading font-mono text-sm text-tx-3" role="status">
+          <span class="loading-spinner" aria-hidden="true"></span>
+          <span>Loading ticket…</span>
+        </div>
+        <div class="mobile-detail-content" :style="{ visibility: detailLoading ? 'hidden' : 'visible' }">
 
         <!-- terminal (live execution) -->
         <div x-show="!isSecondary(selectedTicket) && detailTab==='terminal'" class="mobile-terminal-pane">
@@ -6748,6 +6754,8 @@
             </section>
           </template>
         </div>
+      </div>
+
       </div>
 
       <!-- action bar -->

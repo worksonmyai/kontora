@@ -499,6 +499,7 @@ export function kontoraDetail() {
       this.editSubmitting = false;
       this.deleteSubmitting = false;
       this.selectedTicket = null;
+      this.detailLoading = false;
       this.activeTab = 'ticket';
       this.logViewContent = null;
       this.logViewStage = null;

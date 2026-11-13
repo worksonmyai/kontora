@@ -3660,7 +3660,7 @@ test("index.html shares routed pages and builds board layers exclusively", () =>
   const html = fs.readFileSync(htmlPath, "utf8");
   assert.match(html, /<main id="main-content" class="app-main"/);
   assert.match(html, /<template x-if="!isMobile">\s*<!-- Board view:/);
-  assert.match(html, /<template x-if="isMobile">\s*<div x-show="currentView === 'board'" class="mobile-board-layer"/);
+  assert.match(html, /<template x-if="isMobile">\s*<div x-show="!loading && currentView === 'board'" class="mobile-board-layer"/);
   assert.equal(/<main x-show=/.test(html), false);
   for (const view of ['stats', 'settings', 'archive']) {
     assert.equal(html.split(`<template x-if="!loading && currentView === '${view}'">`).length - 1, 1, view);
@@ -3675,6 +3675,33 @@ test("index.html shares routed pages and builds board layers exclusively", () =>
   }
   for (const tag of html.matchAll(/<button\b[^>]*class="mobile-sheet-primary"[^>]*>/g)) {
     assert.doesNotMatch(tag[0], /\s:style=|\sstyle=/);
+  }
+  for (const [selector, text] of [
+    ['startup-loading', 'Loading tickets…'],
+    ['mobile-detail-loading', 'Loading ticket…'],
+  ]) {
+    const status = html.match(new RegExp(`<div [^>]*class="${selector}[^>]+>[\\s\\S]*?</div>`))?.[0];
+    assert.ok(status, selector);
+    assert.match(status, /role="status"/);
+    assert.match(status, /<span class="loading-spinner" aria-hidden="true"><\/span>/);
+    assert.ok(status.includes(text));
+  }
+  assert.match(html, /<div x-show="loading" class="startup-loading/);
+  assert.match(html, /<div :style="\{ display: detailLoading \? 'flex' : 'none' \}" x-cloak class="mobile-detail-loading/);
+  assert.match(css, /\.loading-spinner[^{}]*\{[^}]*animation:loading-spin/);
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\)\s*\{\s*\.loading-spinner\s*\{\s*animation:none;/);
+  const mobile = html.slice(html.indexOf('class="mobile-detail detail-enter"'), html.indexOf('<!-- action bar -->'));
+  assert.ok(mobile.indexOf('aria-label="Back"') < mobile.indexOf('class="mobile-detail-body"'));
+  assert.match(mobile, /class="mobile-detail-content" :style="\{ visibility: detailLoading \? 'hidden' : 'visible' \}"/);
+  assert.match(mobile, /x-show="!isSecondary\(selectedTicket\) && detailTab==='terminal'" class="mobile-terminal-pane"/);
+  assert.match(mobile, /<div id="terminal-container-mobile" class="mobile-terminal-host"><\/div>/);
+  const pendingContent = mobile.slice(mobile.indexOf('class="mobile-detail-content"'));
+  assert.doesNotMatch(pendingContent, /x-(?:if|show)="[^"]*detailLoading/);
+  for (const name of ['mobile-detail-body', 'mobile-detail-content']) {
+    const rule = css.match(new RegExp(`\\.${name}[^{}]*\\{([^}]*)\\}`))?.[1];
+    for (const declaration of ['flex:1;', 'min-height:0;', 'display:flex;']) {
+      assert.ok(rule?.includes(declaration), `${name}: ${declaration}`);
+    }
   }
 });
 
@@ -11619,22 +11646,62 @@ test("normal and archive detail open paths request ticket cost", async () => {
   }
 });
 
-test("overlapping detail requests keep the newest selected ticket", async () => {
-  const first = deferred();
-  const second = deferred();
-  var calls = 0;
-  const state = loadKontoraState({ fetch: () => (++calls === 1 ? first.promise : second.promise) });
-  state.fetchTicketCost = () => {};
-
-  const oldRequest = state.selectTicket({ id: "kon-first", title: "First", status: "done" });
-  const newRequest = state.selectTicket({ id: "kon-second", title: "Second", status: "done" });
-  second.resolve({ ok: true, json: async () => ({ id: "kon-second", title: "Second full", status: "done" }) });
-  await newRequest;
-  first.resolve({ ok: true, json: async () => ({ id: "kon-first", title: "First full", status: "done" }) });
-  await oldRequest;
-
-  assert.equal(state.selectedTicket.id, "kon-second");
-  assert.equal(state.selectedTicket.title, "Second full");
+test("obsolete detail reads preserve the current selection, loading and error", async () => {
+  for (const source of ['primary', 'secondary']) {
+    for (const boundary of ['close', 'source switch', 'ticket switch', 'reopen']) {
+      for (const outcome of ['success', 'HTTP', 'network', 'JSON success', 'JSON failure'])
+      for (const newerSettled of boundary === 'close' ? [false] : [false, true]) {
+        const label = `${source}/${boundary}/${outcome}/settled=${newerSettled}`;
+        const first = deferred(), second = deferred(), json = deferred(), decoding = deferred();
+        let calls = 0;
+        const state = loadKontoraState({ fetch: () => (++calls === 1 ? first.promise : second.promise) });
+        state.fetchTicketCost = () => {};
+        state.fetchChain = () => {};
+        state.fetchChanges = () => {};
+        state.startEditing = async () => {};
+        const original = { id: 'kon-same', source, title: 'Original card', status: 'open' };
+        const current = boundary === 'source switch'
+          ? { ...original, source: source === 'primary' ? 'secondary' : 'primary', title: 'Other source card' }
+          : boundary === 'ticket switch' ? { ...original, id: 'kon-other', title: 'Other ticket card' } : original;
+        const oldRead = state.selectTicket(original);
+        assert.equal(state.detailLoading, true);
+        if (outcome.startsWith('JSON')) {
+          first.resolve({ ok: true, json: () => { decoding.resolve(); return json.promise; } });
+          await decoding.promise;
+        }
+        if (boundary === 'close' || boundary === 'reopen') {
+          state.closeDetail(false);
+          assert.equal(state.selectedTicket, null);
+          assert.equal(state.detailLoading, false, `${boundary}: close must clear loading`);
+        }
+        const newRead = boundary === 'close' ? null : state.selectTicket(current);
+        const finishCurrent = async () => {
+          second.resolve({ ok: true, json: async () => ({ ...current, title: 'Current full', body: 'Fetched body' }) });
+          await newRead;
+        };
+        if (newerSettled) await finishCurrent();
+        state.error = 'Current feedback';
+        if (outcome === 'network') first.reject(new Error('offline'));
+        else if (outcome === 'HTTP') first.resolve({ ok: false });
+        else if (outcome === 'JSON failure') json.reject(new Error('invalid JSON'));
+        else if (outcome === 'JSON success') json.resolve({ ...original, title: 'Obsolete full' });
+        else first.resolve({ ok: true, json: async () => ({ ...original, title: 'Obsolete full' }) });
+        await oldRead;
+        assert.equal(state.error, 'Current feedback', label);
+        assert.equal(state.detailLoading, boundary !== 'close' && !newerSettled, label);
+        assert.equal(state.selectedTicket?.title ?? null,
+          boundary === 'close' ? null : newerSettled ? 'Current full' : current.title, label);
+        if (newRead) {
+          if (!newerSettled) await finishCurrent();
+          assert.equal(state.detailLoading, false);
+          assert.equal(state.selectedTicket.title, 'Current full');
+          assert.equal(state.selectedTicket.source, current.source);
+          assert.equal(state.selectedTicket.body, 'Fetched body');
+          assert.equal(state.error, 'Current feedback');
+        }
+      }
+    }
+  }
 });
 
 test("same-ticket SSE updates outrank older detail responses", async () => {

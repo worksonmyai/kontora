@@ -144,6 +144,25 @@ notifications:
 statuses: [needs_review]
 `;
 
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+function detailPath(folder, id) {
+  return (folder === 'primary' ? '/api' : `/api/sources/${encodeURIComponent(folder)}`) + `/tickets/${encodeURIComponent(id)}`;
+}
+
+function listProjection(record) {
+  const result = structuredClone(record);
+  for (const field of ['body', 'description', 'description_tail', 'history', 'notes', 'last_error', 'last_log', 'summary', 'final_summary']) delete result[field];
+  if (record.source !== 'primary') {
+    for (const field of ['blocks', 'children']) delete result[field];
+  }
+  return result;
+}
+
 // Keys include source and id so a primary PUT cannot save a secondary namesake.
 function fixtures(options = {}) {
   const records = new Map();
@@ -204,9 +223,47 @@ function fixtures(options = {}) {
   const spec = value => assert.deepEqual(Object.keys(value).sort(), specFields);
   const configWrites = [];
   let rawConfig = options.rawConfig ?? 'tickets_dir: /fixtures/primary\nauto_pick_up: false\nmax_concurrent_agents: 3\nagents:\n  fixture-agent:\n    binary: pi\n';
-  const list = folder => [...records.values()].filter(t => t.source === folder && !t.archived_at);
+  const list = folder => [...records.values()].filter(t => t.source === folder && !t.archived_at)
+    .map(t => options.thinLists ? listProjection(t) : t);
   const active = record => record.execution_active ?? (record.status === 'in_progress');
   const json = (route, value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
+  const heldReads = [], readQueues = new Map();
+  function holdRead(path) {
+    const started = deferred(), response = deferred(), done = deferred();
+    const held = { path, started: started.promise, done: done.promise, claimed: false,
+      release: result => response.resolve(result || {}), response, signalStarted: started.resolve, signalDone: done.resolve };
+    heldReads.push(held);
+    if (!readQueues.has(path)) readQueues.set(path, []);
+    readQueues.get(path).push(held);
+    return held;
+  }
+  const holdSnapshot = (folder = 'primary') => holdRead(folder === 'primary' ? '/api/tickets' : `/api/sources/${folder}/tickets`);
+  const holdDetail = (folder, id = 'kon-draft') => holdRead(detailPath(folder, id));
+  const pendingSnapshot = options.pendingSnapshot ? holdSnapshot(options.pendingSnapshot) : null;
+  async function readResponse(route, path, value) {
+    const held = readQueues.get(path)?.shift();
+    if (!held) return json(route, value);
+    const snapshot = structuredClone(value);
+    held.claimed = true;
+    held.signalStarted();
+    try {
+      const result = await held.response.promise;
+      if (result.failure === 'network') {
+        expectedHTTPFailures.push(base + path);
+        return await route.abort('failed');
+      }
+      if (result.failure === 'http') {
+        expectedHTTPFailures.push(base + path);
+        return await json(route, { error: 'Fixture detail read failed' }, 503);
+      }
+      if (result.failure === 'json') return await route.fulfill({ contentType: 'application/json', body: '{invalid json' });
+      return await json(route, result.value ?? snapshot);
+    } finally { held.signalDone(); }
+  }
+  async function releaseReads() {
+    for (const held of heldReads) held.release();
+    await Promise.all(heldReads.filter(held => held.claimed).map(held => held.done));
+  }
 
   async function api(route, url) {
     const request = route.request(), method = request.method(), path = url.pathname;
@@ -328,8 +385,8 @@ function fixtures(options = {}) {
             { id: source, path: sourcePath, available: true },
             ...(behavior.unavailableFolder ? [{ id: 'unavailable', path: unavailablePath, available: false, error: 'Fixture folder unavailable' }] : []),
           ]);
-        case '/api/tickets': return json(route, { tickets: list('primary'), running_agents: list('primary').filter(active).length });
-        case `/api/sources/${source}/tickets`: return json(route, list(source));
+        case '/api/tickets': return readResponse(route, path, { tickets: list('primary'), running_agents: list('primary').filter(active).length });
+        case `/api/sources/${source}/tickets`: return readResponse(route, path, list(source));
         case '/api/assistant': return json(route, behavior.assistantConfig);
         case '/api/assistant/threads': return json(route, { threads: [...assistantThreads.values()].map(({ messages, ...thread }) => thread) });
         case '/api/assistant/companion':
@@ -430,7 +487,7 @@ function fixtures(options = {}) {
         return json(route, { error: 'Ticket not found' }, 404);
       }
       assert.ok(record, `Unknown source-qualified ticket: ${folder}/${id}`);
-      if (method === 'GET' && !action) return json(route, record.archived_at ? { ...record, status: 'archived', archived_from: record.status } : record);
+      if (method === 'GET' && !action) return readResponse(route, path, record.archived_at ? { ...record, status: 'archived', archived_from: record.status } : record);
       if (method === 'PUT' && !action) {
         const body = request.postDataJSON();
         assert.ok(!('body' in body), 'Description edits must not replace the protected tail');
@@ -573,6 +630,7 @@ function fixtures(options = {}) {
     });
   }
   return { install, config, configWrites, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig, descriptionWrites, pendingResizes,
+    holdSnapshot, holdDetail, pendingSnapshot, releaseReads,
     get rawConfig() { return rawConfig; }, set rawConfig(content) { rawConfig = content; } };
 }
 
@@ -612,7 +670,8 @@ async function withPage(t, width, theme, run, options = {}) {
     errors.push(msg.text());
   });
   try {
-    await page.goto(base, { waitUntil: 'domcontentloaded' });
+    await page.goto(base + (options.hash || ''), { waitUntil: 'domcontentloaded' });
+    await options.beforeReady?.(page, fixture);
     await ready(page);
     await run(page, fixture);
   } catch (error) {
@@ -620,6 +679,7 @@ async function withPage(t, width, theme, run, options = {}) {
     throw error;
   } finally {
     fixture.releaseConfig();
+    await fixture.releaseReads();
     await context.close();
     assert.deepEqual(fixture.violations, [], 'Unexpected requests (all must be explicitly modelled)');
     assert.deepEqual(errors, [], 'Browser/Alpine/console errors');
@@ -2869,6 +2929,337 @@ async function terminalRows(page, height, top = 0, grid = true) {
     await terminalGridFits(page, undefined, typing ? 8 : 5);
   }
 }
+
+const loadingOptions = { thinLists: true };
+const mobileDetail = page => page.locator('.mobile-detail');
+const loadingStatus = page => mobileDetail(page).locator('.mobile-detail-loading');
+const draftTitle = folder => folder === 'primary' ? 'Primary draft' : 'Secondary namesake';
+
+async function assertLoadingStatus(status, text, reduced = true) {
+  await expect(status).toBeVisible();
+  await expect(status).toHaveAttribute('role', 'status');
+  await expect(status).toHaveText(text);
+  const spinner = status.locator('.loading-spinner');
+  await expect(spinner).toBeVisible();
+  await expect(spinner).toHaveAttribute('aria-hidden', 'true');
+  if (reduced) await expect(spinner).toHaveCSS('animation-name', 'none');
+  else assert.notEqual(await spinner.evaluate(el => getComputedStyle(el).animationName), 'none');
+}
+
+async function pendingDetail(page, folder, id = 'kon-draft', title = draftTitle(folder)) {
+  const detail = mobileDetail(page);
+  await assertLoadingStatus(loadingStatus(page), 'Loading ticket…');
+  await expect(detail.locator('.mobile-detail-title-text')).toHaveText(title);
+  await expect(detail.locator('.mobile-detail-heading').getByText(id, { exact: true })).toBeVisible();
+  await inViewport(detail.getByRole('button', { name: 'Back', exact: true }));
+  await expect(detail.locator('.mobile-detail-content')).toBeHidden();
+  await expect(loadingStatus(page)).toHaveCSS('position', 'absolute');
+  assert.equal(await detail.evaluate(el => {
+    const body = el.querySelector('.mobile-detail-body').getBoundingClientRect();
+    const overlay = el.querySelector('.mobile-detail-loading').getBoundingClientRect();
+    return body.width > 0 && body.height > 0 &&
+      ['x', 'y', 'width', 'height'].every(key => Math.abs(body[key] - overlay[key]) <= 1);
+  }), true, 'Loading overlay must cover the detail body');
+  assert.equal(await detail.locator('.ticket-prose:visible, pre:visible, textarea:visible').count(), 0);
+  assert.equal(await detail.getByText('No ticket description.', { exact: true }).isVisible(), false);
+  assert.equal(await detail.getByRole('button', { name: 'Edit description', exact: true }).count(), 0);
+  assert.deepEqual(await page.evaluate(() => {
+    const app = Alpine.$data(document.body);
+    return [app.detailLoading, app.editing, app.selectedTicket?.source || 'primary', app.selectedTicket?.id];
+  }), [true, false, folder, id]);
+  assert.deepEqual(await page.evaluate(() => {
+    const ticket = Alpine.$data(document.body).selectedTicket;
+    return ['body', 'description', 'description_tail', 'notes']
+      .filter(field => Object.hasOwn(ticket, field));
+  }), [], 'Pending selection must not contain description fields');
+}
+
+async function clickDraft(page, folder) {
+  await page.locator('.mobile-board-layer').getByRole('button').filter({ hasText: draftTitle(folder) }).click();
+}
+
+async function settleRead(page, held, result = {}) {
+  const delivered = result.failure === 'network'
+    ? page.waitForEvent('requestfailed', request => request.method() === 'GET' && request.url() === base + held.path)
+    : page.waitForResponse(response => response.request().method() === 'GET' && response.url() === base + held.path);
+  held.release(result);
+  const response = await delivered;
+  if (result.failure !== 'network') await response.finished();
+  await held.done;
+  // Render after the fetch continuation, including obsolete reads that change no observable state.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
+async function closePendingDetail(page) {
+  await mobileDetail(page).getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(mobileDetail(page)).toBeHidden();
+  await page.waitForFunction(() => {
+    const app = Alpine.$data(document.body);
+    return app.selectedTicket === null && app.detailLoading === false;
+  });
+  await expect(page.locator('.mobile-board-layer')).toBeVisible();
+}
+
+describe('initial board and mobile detail loading', { timeout: 120000 }, () => {
+  for (const width of [390, 1280]) for (const folder of ['primary', source]) {
+    test(`pending ${folder} startup snapshot / ${width}px`, async t => {
+      await withPage(t, width, 'dark', async page => {
+        await expect(page.locator('.startup-loading')).toBeHidden();
+        await expect(page.locator(width === 390 ? '.mobile-board-layer' : '#board-cols')).toBeVisible();
+        await noPageOverflow(page);
+      }, { ...loadingOptions, pendingSnapshot: folder,
+        beforeReady: async (page, fixture) => {
+          await fixture.pendingSnapshot.started;
+          const status = page.locator('#main-content .startup-loading');
+          await assertLoadingStatus(status, 'Loading tickets…');
+          await inViewport(status);
+          const main = await page.locator('#main-content').boundingBox(), box = await status.boundingBox();
+          assert.ok(box.y >= main.y && box.y + box.height <= main.y + main.height + 1);
+          if (width === 390) await expect(page.locator('.mobile-board-layer')).toBeHidden();
+          assert.equal(await page.locator('#board-empty-mobile:visible, #board-empty-desktop:visible, #board-cols:visible').count(), 0);
+          assert.equal(await page.locator('.mobile-board-layer button:visible').count(), 0);
+          await page.emulateMedia({ reducedMotion: 'no-preference' });
+          await assertLoadingStatus(status, 'Loading tickets…', false);
+          await page.emulateMedia({ reducedMotion: 'reduce' });
+          await assertLoadingStatus(status, 'Loading tickets…');
+          await settleRead(page, fixture.pendingSnapshot);
+        } });
+    });
+  }
+
+  test('phone deep link has separate startup and detail loading stages', async t => {
+    let detailRead;
+    await withPage(t, 390, 'dark', async (page, fixture) => {
+      await expect(page.locator('.startup-loading')).toBeHidden();
+      await expect(loadingStatus(page)).toBeHidden();
+      await expect(mobileDetail(page).getByRole('button', { name: 'Edit description', exact: true })).toBeVisible();
+      assert.ok(fixture.requests.includes('GET ' + detailRead.path));
+    }, { ...loadingOptions, hash: '#/t/kon-draft', pendingSnapshot: 'primary',
+      beforeReady: async (page, fixture) => {
+        detailRead = fixture.holdDetail('primary');
+        await fixture.pendingSnapshot.started;
+        await assertLoadingStatus(page.locator('.startup-loading'), 'Loading tickets…');
+        await settleRead(page, fixture.pendingSnapshot);
+        await detailRead.started;
+        await expect(page.locator('.startup-loading')).toBeHidden();
+        await pendingDetail(page, 'primary');
+        await settleRead(page, detailRead);
+      } });
+  });
+
+  for (const folder of ['primary', source]) for (const empty of [false, true]) {
+    test(`${folder} pending detail reveals ${empty ? 'genuinely empty' : 'populated'} content`, async t => {
+      await withPage(t, 390, 'dark', async (page, fixture) => {
+        const record = fixture.records.get(`${folder}/kon-draft`);
+        Object.assign(record, { description: empty ? '' : `${folder} fetched description.`, description_tail: '',
+          body: empty ? '' : `${folder} fetched description.` });
+        const held = fixture.holdDetail(folder);
+        await clickDraft(page, folder);
+        await held.started;
+        await pendingDetail(page, folder);
+        await page.emulateMedia({ reducedMotion: 'no-preference' });
+        await assertLoadingStatus(loadingStatus(page), 'Loading ticket…', false);
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        await assertLoadingStatus(loadingStatus(page), 'Loading ticket…');
+        await settleRead(page, held);
+        await ready(page);
+        await expect(loadingStatus(page)).toBeHidden();
+        await expect(mobileDetail(page).locator('.mobile-detail-content')).toBeVisible();
+        if (folder === source) {
+          await expect(page.locator('#mobile-secondary-description')).toBeVisible();
+          await expect(page.locator('#mobile-secondary-description')).toHaveValue(record.description);
+        } else if (empty) {
+          await expect(mobileDetail(page).getByText('No description yet. Tap Edit description to write one.', { exact: true })).toBeVisible();
+        } else {
+          await expect(mobileDetail(page).getByText(record.description, { exact: true })).toBeVisible();
+          await expect(mobileDetail(page).getByRole('button', { name: 'Edit description', exact: true })).toBeVisible();
+        }
+        assert.equal(fixture.requests.filter(request => request === 'GET ' + held.path).length, 1);
+        assert.deepEqual(fixture.mutations, []);
+      }, loadingOptions);
+    });
+  }
+
+  for (const folder of ['primary', source]) for (const failure of ['http', 'network', 'json']) {
+    test(`${folder} current ${failure} failure clears loading without enabling the description editor`, async t => {
+      await withPage(t, 390, 'dark', async (page, fixture) => {
+        const held = fixture.holdDetail(folder);
+        await clickDraft(page, folder);
+        await held.started;
+        await pendingDetail(page, folder);
+        await settleRead(page, held, { failure });
+        await ready(page);
+        await expect(loadingStatus(page)).toBeHidden();
+        await expect(page.locator('[x-text="error"]')).toHaveText('Failed to load ticket details');
+        await expect(page.locator('[x-text="error"]')).toBeVisible();
+        assert.equal(await mobileDetail(page).getByRole('button', { name: 'Edit description', exact: true }).count(), 0);
+        assert.equal(await mobileDetail(page).locator('textarea:visible').count(), 0);
+        assert.deepEqual(await page.evaluate(() => {
+          const app = Alpine.$data(document.body);
+          return [app.editing, app.editingBody, Object.hasOwn(app.selectedTicket, 'description')];
+        }), [false, false, false]);
+        assert.deepEqual(fixture.mutations, []);
+      }, loadingOptions);
+    });
+  }
+
+  for (const folder of ['primary', source]) {
+    test(`${folder} Back cancels a pending detail read and resets loading`, async t => {
+      await withPage(t, 390, 'dark', async (page, fixture) => {
+        const held = fixture.holdDetail(folder);
+        await clickDraft(page, folder);
+        await held.started;
+        await pendingDetail(page, folder);
+        await closePendingDetail(page);
+        await settleRead(page, held);
+        await expect(mobileDetail(page)).toBeHidden();
+        assert.deepEqual(await page.evaluate(() => {
+          const app = Alpine.$data(document.body);
+          return [app.selectedTicket, app.detailLoading, app.error];
+        }), [null, false, null]);
+      }, loadingOptions);
+    });
+
+    for (const navigation of ['source switch', 'same-ticket reopen']) {
+      test(`${folder} ${navigation} ignores obsolete success and failures while the newer read is pending`, async t => {
+        await withPage(t, 390, 'dark', async (page, fixture) => {
+          for (const outcome of ['success', 'http', 'network', 'json']) {
+            const nextFolder = navigation === 'source switch' ? (folder === 'primary' ? source : 'primary') : folder;
+            const old = fixture.holdDetail(folder);
+            await clickDraft(page, folder);
+            await old.started;
+            await pendingDetail(page, folder);
+            const current = fixture.holdDetail(nextFolder);
+            if (navigation === 'same-ticket reopen') {
+              await closePendingDetail(page);
+              await clickDraft(page, nextFolder);
+            } else {
+              // Start routing without the ready() helper, which waits for detail completion.
+              await page.evaluate(folder => { location.hash = folder === 'primary' ? '#/t/kon-draft' : `#/s/${folder}/t/kon-draft`; }, nextFolder);
+            }
+            await current.started;
+            await pendingDetail(page, nextFolder);
+            const stale = { ...fixture.records.get(`${folder}/kon-draft`), title: 'Obsolete ticket title',
+              description: 'Obsolete detail content.', body: 'Obsolete detail content.' };
+            await settleRead(page, old, outcome === 'success' ? { value: stale } : { failure: outcome });
+            await pendingDetail(page, nextFolder);
+            assert.equal(await page.evaluate(() => Alpine.$data(document.body).error), null);
+            assert.equal(await page.getByText('Obsolete detail content.', { exact: true }).filter({ visible: true }).count(), 0);
+            const fresh = { ...fixture.records.get(`${nextFolder}/kon-draft`), description_tail: '',
+              description: `Current ${navigation} after ${outcome}.`, body: `Current ${navigation} after ${outcome}.` };
+            await settleRead(page, current, { value: fresh });
+            await ready(page);
+            await expect(loadingStatus(page)).toBeHidden();
+            if (nextFolder === source) await expect(page.locator('#mobile-secondary-description')).toHaveValue(fresh.description);
+            else await expect(mobileDetail(page).getByText(fresh.description, { exact: true })).toBeVisible();
+            assert.equal(await page.evaluate(() => Alpine.$data(document.body).error), null);
+            await mobileDetail(page).getByRole('button', { name: 'Back', exact: true }).click();
+            await ready(page);
+          }
+          assert.deepEqual(fixture.mutations, []);
+        }, loadingOptions);
+      });
+    }
+  }
+
+  test('pending detail hides body and logs while preserving a fitted terminal host', async t => {
+    await withPage(t, 390, 'dark', async (page, fixture) => {
+      const held = fixture.holdDetail('primary', 'kon-live');
+      await page.getByRole('navigation', { name: 'Ticket status', exact: true }).getByRole('button', { name: /^In Progress/ }).click();
+      await page.locator('.mobile-board-layer').getByRole('button').filter({ hasText: liveTitle }).click();
+      await held.started;
+      const detail = mobileDetail(page);
+      await pendingDetail(page, 'primary', 'kon-live', liveTitle);
+      await detail.getByRole('button', { name: 'Logs', exact: true }).click();
+      await page.waitForFunction(() => Alpine.$data(document.body).logViewContent?.includes('fixture log revision 0'));
+      await expect(detail.getByText('kon-live code fixture log revision 0', { exact: true })).toBeHidden();
+      await detail.getByRole('button', { name: 'Ticket', exact: true }).click();
+      await expect(detail.locator('h1')).toBeHidden();
+      await expect(detail.getByText('No ticket description.', { exact: true })).toBeHidden();
+      await detail.getByRole('button', { name: 'Terminal', exact: true }).click();
+      await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+      const host = page.locator('#terminal-container-mobile');
+      const identity = await host.elementHandle();
+      try {
+        const box = await host.boundingBox();
+        assert.ok(box && box.width > 0 && box.height > 0, `Pending terminal host must remain measurable: ${JSON.stringify(box)}`);
+        await page.waitForFunction(terminalGrid);
+        await expect(host).toBeHidden();
+        await assertLoadingStatus(loadingStatus(page), 'Loading ticket…');
+        await settleRead(page, held);
+        await ready(page);
+        assert.equal(await host.evaluate((el, previous) => el === previous, identity), true);
+        await expect(host).toBeVisible();
+        await terminalGridFits(page, fixture);
+        await expect(loadingStatus(page)).toBeHidden();
+      } finally { await identity.dispose(); }
+    }, loadingOptions);
+  });
+
+  test('completed ticket summary and description remain hidden until hydration', async t => {
+    await withPage(t, 390, 'dark', async (page, fixture) => {
+      const held = fixture.holdDetail('primary', 'kon-done');
+      await page.evaluate(() => { location.hash = '#/t/kon-done'; });
+      await held.started;
+      await mobileDetail(page).getByRole('button', { name: 'Ticket', exact: true }).click();
+      await pendingDetail(page, 'primary', 'kon-done', 'Completed fixture');
+      assert.equal(await mobileDetail(page).getByText('Second code run complete.', { exact: true }).count(), 0);
+      await settleRead(page, held);
+      await ready(page);
+      await expect(mobileDetail(page).getByText('Second code run complete.', { exact: true })).toBeVisible();
+      await expect(mobileDetail(page).getByText('Fixture description.', { exact: true })).toBeVisible();
+    }, loadingOptions);
+  });
+
+  for (const folder of ['primary', source]) {
+    test(`${folder} background updates and reconnect retain loaded content without initial-loading indicators`, async t => {
+      await withPage(t, 390, 'dark', async (page, fixture) => {
+        await clickDraft(page, folder);
+        await ready(page);
+        const content = folder === source ? page.locator('#mobile-secondary-description')
+          : mobileDetail(page).getByText('Fixture description.', { exact: true });
+        await expect(content).toBeVisible();
+        await page.evaluate(() => {
+          window.__fixtureLoadingFlashes = [];
+          const check = () => {
+            for (const selector of ['.startup-loading', '.mobile-detail-loading']) {
+              const el = document.querySelector(selector), css = el && getComputedStyle(el);
+              if (el?.getClientRects().length && css.display !== 'none' && css.visibility !== 'hidden') window.__fixtureLoadingFlashes.push(selector);
+            }
+          };
+          window.__fixtureLoadingObserver = new MutationObserver(check);
+          window.__fixtureLoadingObserver.observe(document.body, { subtree: true, attributes: true, childList: true });
+          check();
+        });
+        const updated = { ...fixture.records.get(`${folder}/kon-draft`), status: 'open', scheduled_at: '2099-10-01T10:00:00Z' };
+        delete updated.body;
+        delete updated.description;
+        delete updated.description_tail;
+        await page.evaluate(({ folder, updated }) => {
+          window.__fixtureSSE.at(-1).dispatchEvent(new MessageEvent(folder === 'primary' ? 'ticket_updated' : 'secondary_ticket_updated',
+            { data: JSON.stringify(folder === 'primary' ? updated : { ticket: updated }) }));
+        }, { folder, updated });
+        await page.waitForFunction(at => Alpine.$data(document.body).selectedTicket?.scheduled_at === at, updated.scheduled_at);
+        await expect(content).toBeVisible();
+        const refresh = fixture.holdDetail(folder);
+        await page.evaluate(() => window.__fixtureSSE.at(-1).dispatchEvent(new Event('open')));
+        await refresh.started;
+        await expect(content).toBeVisible();
+        await expect(page.locator('.startup-loading')).toBeHidden();
+        await expect(loadingStatus(page)).toBeHidden();
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).detailLoading), false);
+        await settleRead(page, refresh);
+        await expect(content).toBeVisible();
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).error), null);
+        assert.deepEqual(await page.evaluate(() => {
+          window.__fixtureLoadingObserver.disconnect();
+          return window.__fixtureLoadingFlashes;
+        }), []);
+        assert.deepEqual(fixture.mutations, []);
+      }, loadingOptions);
+    });
+  }
+});
 
 function observationOptions(options = {}) {
   return {

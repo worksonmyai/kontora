@@ -696,12 +696,22 @@ func (s *Server) handleGetActivity(w http.ResponseWriter, r *http.Request) {
 		}
 		after = n
 	}
+	tail := 0
+	if values, present := r.URL.Query()["log_tail_bytes"]; present {
+		n, err := strconv.Atoi(values[0])
+		if err != nil || n < 0 || n > MaxLogTailBytes {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "log_tail_bytes must be an integer between 0 and 1048576"})
+			return
+		}
+		tail = n
+	}
 	activity, err := s.svc.GetActivity(ActivityQuery{
-		ID:          id,
-		Stage:       stage,
-		Run:         run,
-		After:       after,
-		IfNoneMatch: r.Header.Get("If-None-Match"),
+		LogTailBytes: tail,
+		ID:           id,
+		Stage:        stage,
+		Run:          run,
+		After:        after,
+		IfNoneMatch:  r.Header.Get("If-None-Match"),
 	})
 	if err != nil {
 		writeServiceError(w, err)

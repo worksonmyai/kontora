@@ -427,6 +427,7 @@ function kontoraContext(overrides = {}) {
     crypto: webcrypto,
     TextEncoder,
     URLSearchParams,
+    AbortController,
     requestAnimationFrame(callback) {
       callback();
       return 1;
@@ -5156,7 +5157,8 @@ for (const boundary of ['tab', 'close', 'selection', 'breakpoint']) {
     if (boundary === 'breakpoint') { state.isMobile = false; state._onBreakpointChange(); }
     assert.equal(state._editDebounce, null);
     assert.equal(state.editingBody, false);
-    assert.equal(state.editForm, form);
+    if (['close', 'selection'].includes(boundary)) assert.equal(state.editForm.body, '');
+    else assert.equal(state.editForm, form);
     await flushMicrotasks();
     assert.deepEqual(ui.writes, [{ description: '# Flush this draft\n' }]);
     pending.resolve();
@@ -5226,6 +5228,204 @@ for (const { editing, boundary } of [false, true].flatMap(editing =>
     ui.close();
   });
 }
+
+for (const kind of ['', 'epic']) {
+  test(`clean inactive editor bodies retire without writes: ${kind || 'ordinary'}`, async () => {
+    const ui = descriptionEditorUI(kind);
+    const { state } = ui;
+    for (let i = 0; i < 359; i++) {
+      ui.stored().id = 'clean-' + i;
+      ui.stored().description = 'large description '.repeat(3200);
+      ui.stored().body = ui.stored().description + ui.stored().description_tail;
+      state.tickets = [state.boardEntry(ui.stored())];
+      await ui.open();
+      assert.ok(state._editorSaves[ui.stored().id]);
+      await ui.close();
+    }
+    await flushMicrotasks();
+    await flushMicrotasks();
+    assert.equal(Object.keys(state._editorSaves).length, 0);
+    assert.equal(state.editForm.body, '');
+    assert.equal(state._blockOffsetsSrc, null);
+    assert.equal(ui.writes.length, 0);
+  });
+}
+
+for (const outcome of ['pending', 'http', 'json', 'identity']) {
+  test(`inactive ${outcome} description save remains recoverable`, async () => {
+    const ui = descriptionEditorUI();
+    await ui.open();
+    const { state } = ui;
+    const wait = deferred();
+    ui.respond(async (_url, opts, full) => {
+      if (opts?.method !== 'PUT') return { ok: true, json: async () => full };
+      if (outcome === 'pending') await wait.promise;
+      return { ok: outcome !== 'http', json: async () => {
+        if (outcome === 'json') throw new Error('broken body');
+        return outcome === 'identity' ? {} : full;
+      } };
+    });
+    state.editForm.body = '# Recover me\n';
+    const saving = ui.save();
+    state.closeDetail(false);
+    await flushMicrotasks();
+    const retained = state._editorSaves['kon-desc'];
+    assert.ok(retained);
+    assert.equal(retained.draft.description, '# Recover me\n');
+    wait.resolve();
+    assert.equal(await saving, outcome === 'pending');
+    await state._waitEditorSaves('kon-desc');
+    await flushMicrotasks();
+    await flushMicrotasks();
+    assert.equal(!!state._editorSaves['kon-desc'], outcome !== 'pending');
+    if (outcome !== 'pending') {
+      await ui.open();
+      assert.equal(state.editForm.body, '# Recover me\n');
+      ui.respond(async (_url, _opts, full) => ({ ok: true, json: async () => full }));
+      await ui.save();
+      await ui.close();
+    }
+  });
+}
+
+for (const { failure, kind } of ['http', 'json', 'identity'].flatMap(failure =>
+  ['', 'epic'].map(kind => ({ failure, kind })))) {
+  test(`a reverted ${kind || 'ordinary'} draft still needs acknowledgement after ${failure} failure`, async () => {
+    const ui = descriptionEditorUI(kind);
+    await ui.open();
+    const { state } = ui;
+    const original = state.editForm.body;
+    ui.respond(async (_url, opts, full) => ({ ok: opts?.method !== 'PUT' || failure !== 'http', json: async () => {
+      if (opts?.method === 'PUT' && failure === 'json') throw new Error('bad body');
+      return opts?.method === 'PUT' && failure === 'identity' ? {} : full;
+    } }));
+    state.editForm.body = '# Unknown server result\n';
+    assert.equal(await ui.save(), false);
+    state.editForm.body = original;
+    const closed = await ui.close();
+    if (kind === 'epic') {
+      assert.equal(closed, false);
+      assert.equal(state.epicBriefSaved, false);
+    }
+    await state._waitEditorSaves('kon-desc');
+    await flushMicrotasks();
+    await flushMicrotasks();
+    assert.equal(state._editorSaves['kon-desc'].failed, true);
+    assert.equal(state._editorSaves['kon-desc'].draft.description, original);
+    if (kind !== 'epic') await ui.open();
+    ui.respond(async (_url, _opts, full) => ({ ok: true, json: async () => full }));
+    assert.equal(await ui.save(), true);
+    assert.equal(ui.stored().description, original);
+    await ui.close();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    assert.equal(state._editorSaves['kon-desc'], undefined);
+    await ui.open();
+    assert.equal((kind === 'epic' ? state._epicBriefLead : '') + state.editForm.body, original);
+    await ui.close();
+  });
+}
+
+for (const active of ['ticket', 'epic', 'claim', 'replacement', 'continuation']) {
+  test(`editor retirement rechecks ${active} ownership and the latest queue tail`, async () => {
+    const state = loadKontoraState();
+    const ticket = { id: 'constructor', description: 'body', status: 'open' };
+    const first = state._loadEditorDraft(ticket, { description: 'body' });
+    state._retireEditorState(ticket.id);
+    let replacement;
+    if (active === 'ticket') state.selectedTicket = ticket;
+    if (active === 'epic') state.selectedEpic = ticket;
+    if (active === 'claim') state._claimKey = ticket.id;
+    if (active === 'replacement') replacement = state._loadEditorDraft(ticket, { description: 'new body' });
+    if (active === 'continuation') {
+      const wait = deferred();
+      first.tail.then(() => { first.tail = wait.promise; first.pending++; });
+    }
+    await flushMicrotasks();
+    await flushMicrotasks();
+    assert.equal(state._editorSaves[ticket.id], replacement || first);
+  });
+}
+
+for (const reopened of [false, true]) {
+  test(`note response cannot reset acknowledged fields after body eviction: reopened=${reopened}`, async () => {
+    const ui = descriptionEditorUI();
+    await ui.open();
+    const { state } = ui;
+    const wait = deferred();
+    ui.respond(async (_url, opts, full) => {
+      if (opts?.method === 'POST') await wait.promise;
+      if (opts?.method === 'PUT') { full.title = 'New title'; ui.stored().title = full.title; }
+      return { ok: true, json: async () => full };
+    });
+    state.noteDraft = 'late note';
+    const note = state.submitNote();
+    await flushMicrotasks();
+    state.editForm.body = '# New description\n';
+    await ui.save();
+    const version = state._editorAckVersion('kon-desc');
+    state.closeDetail(false);
+    await flushMicrotasks();
+    await flushMicrotasks();
+    assert.equal(state._editorSaves['kon-desc'], undefined);
+    assert.equal(state._editorAckVersion('kon-desc'), version);
+    if (reopened) {
+      await ui.open();
+      assert.equal(state._editorSaves['kon-desc'].ackSequence, version);
+    }
+    wait.resolve();
+    await note;
+    assert.equal(state.tickets[0].title, 'New title');
+    if (reopened) {
+      assert.equal(state.selectedTicket.description, '# New description\n');
+      assert.equal(state.selectedTicket.title, 'New title');
+      await ui.close();
+    }
+  });
+}
+
+for (const matchingDescription of [false, true]) {
+  test(`secondary note revision matches the displayed description: matching=${matchingDescription}`, async () => {
+    const ui = descriptionEditorUI('', 'same', 'team');
+    await ui.open();
+    const { state } = ui;
+    const displayed = state.descriptionText(state.selectedTicket);
+    const full = { ...state.selectedTicket, revision: 'unseen', notes: [{ id: 'new', text: 'note' }],
+      description: matchingDescription ? displayed : '# Unseen description\n' };
+    full.body = full.description + full.description_tail;
+    state._noteApplyTicket('team/same', full, state._selectedTicketUpdateSeq, state._editorAckVersion('team/same'));
+    assert.equal(state.selectedTicket.description, displayed);
+    assert.equal(state.selectedTicket.revision, matchingDescription ? 'unseen' : 'reviewed');
+    await ui.close();
+  });
+}
+
+test('plaintext previews avoid repeated colorizing and truncated exports read the full log', async () => {
+  const urls = [], opened = [], blobs = [];
+  const state = loadKontoraState({
+    fetch: async url => { urls.push(url); return { ok: true, json: async () => ({ content: 'complete raw output' }) }; },
+    Blob: class { constructor(parts) { blobs.push(parts.join('')); } },
+    URL: { createObjectURL: () => 'blob:full-log' },
+    window: { innerWidth: 1200, open: url => opened.push(url) },
+  });
+  state.selectedTicket = { id: 'full', status: 'done', stage: 'code' };
+  state.activity = { content: 'tail', content_start: 10, content_size: 14, content_truncated: true };
+  const original = state.activity;
+  state._mergeActivity({ ...original });
+  assert.equal(state.activity, original);
+  const el = { writes: 0, set innerHTML(value) { this.value = value; this.writes++; } };
+  let colors = 0;
+  const color = state.renderLogHTML;
+  state.renderLogHTML = value => { colors++; return color.call(state, value); };
+  state.setLogHTML(el, 'tail');
+  state.setLogHTML(el, 'tail');
+  assert.equal(el.writes, 1);
+  assert.equal(colors, 1);
+  await state.openRawLog();
+  assert.deepEqual(urls, ['/api/tickets/full/logs?stage=code']);
+  assert.deepEqual(blobs, ['complete raw output']);
+  assert.deepEqual(opened, ['blob:full-log']);
+});
 
 test('ordinary description draft survives a note acknowledgement without SSE, then a delayed SSE', async () => {
   const ui = descriptionEditorUI();
@@ -11306,6 +11506,42 @@ test("a malformed escape in the hash does not throw", async () => {
   assert.equal(location.hash, "#/");
 });
 
+for (const row of [
+  { name: 'completed phone', mobile: true, status: 'done', activity: 1 },
+  { name: 'summary phone', mobile: true, status: 'done', summary: 'Result' },
+  { name: 'completed desktop', mobile: false, status: 'done', activity: 1 },
+  { name: 'summary desktop', mobile: false, status: 'done', summary: 'Result', activity: 1 },
+  { name: 'running phone', mobile: true, status: 'in_progress', terminal: 1 },
+  { name: 'open phone', mobile: true, status: 'open', history: [] },
+  { name: 'secondary phone', mobile: true, status: 'done', source: 'team' },
+  { name: 'imported phone', mobile: true, status: 'done', history: [{ stage: 'code', imported: true }] },
+]) {
+  test(`opening ${row.name} reads only its intended output`, async () => {
+    const full = { id: 'mobile-output', description: 'body', stage: 'code', status: row.status,
+      summary: row.summary, source: row.source, history: row.history || [{ stage: 'code', run: 0 }] };
+    const requests = [];
+    const state = loadKontoraState({ fetch: async url => {
+      requests.push(url);
+      return { ok: true, headers: { get: () => null }, json: async () => /\/(logs|activity)/.test(url) ? { content: 'output' } : full };
+    } });
+    state.configCache = {};
+    state.$nextTick = async cb => cb?.();
+    state.isMobile = row.mobile;
+    state.tickets = row.source ? [] : [state.boardEntry(full)];
+    state.secondaryTickets = row.source ? [state.boardEntry(full)] : [];
+    state.fetchChain = state.fetchTicketCost = state.startEditing = () => {};
+    let terminals = 0;
+    state.openTerminal = () => { terminals++; };
+    if (row.mobile) await state.openMobileTicket(state.boardEntry(full));
+    else await state.selectTicket(state.boardEntry(full));
+    await flushMicrotasks();
+    assert.equal(requests.filter(url => /\/activity(?:\?|$)/.test(url)).length, row.activity || 0);
+    assert.equal(requests.filter(url => /\/logs(?:\?|$)/.test(url)).length, row.logs || 0);
+    assert.equal(terminals, row.terminal || 0);
+    state.closeDetail(false);
+  });
+}
+
 test("mobileSwitchTab drives the terminal and synchronizes the shared detail mode", () => {
   const cases = [
     {
@@ -12360,7 +12596,7 @@ test("phone activity fetches its target, polls, and re-arms the cached live tran
   assert.equal(closed, 1);
   assert.equal(h.state.activeTab, 'activity');
   assert.equal(h.state.outputContainerID('activity'), 'activity-scroll');
-  assert.match(h.calls[0].url, /\/api\/tickets\/kon-1\/activity\?stage=commit&run=0$/);
+  assert.match(h.calls[0].url, /\/api\/tickets\/kon-1\/activity\?stage=commit&run=0&log_tail_bytes=262144$/);
   assert.equal(h.pending(), 1);
   assert.equal(h.delay(), 2000);
   await h.tick();
@@ -12403,7 +12639,7 @@ for (const hiddenTab of ['ticket', 'terminal']) for (const live of [false, true]
         assert.equal(h.pending(), live ? 1 : 0);
       } else {
         assert.equal(h.calls.length, 2, 'automatic selection refreshes a stale cached transcript');
-        assert.match(h.calls[1].url, advance === 'stage' ? /activity\?stage=code&run=0$/ : /activity\?stage=plan&run=1$/);
+        assert.match(h.calls[1].url, advance === 'stage' ? /activity\?stage=code&run=0&log_tail_bytes=262144$/ : /activity\?stage=plan&run=1&log_tail_bytes=262144$/);
         assert.deepEqual(h.state.tapeEvents().map(e => e.text), ['line 1']);
         assert.equal(h.pending(), 1);
       }
@@ -12445,7 +12681,7 @@ test("phone activity on a finished ticket opens the last completed run without p
   Object.assign(h.state, { isMobile: true, activeTab: 'summary' });
   h.state.mobileSwitchTab('activity');
   await flushMicrotasks();
-  assert.match(h.calls[0].url, /activity\?stage=review&run=1$/);
+  assert.match(h.calls[0].url, /activity\?stage=review&run=1&log_tail_bytes=262144$/);
   assert.equal(h.state.activity.content, 'finished');
   assert.equal(h.state.activeTab, 'activity');
   assert.equal(h.pending(), 0);
@@ -15638,6 +15874,49 @@ function assistantState(opts = {}) {
   return { state, store, requests, listeners, scroller, streams, runFrames, runTimers, routes };
 }
 
+for (const boundary of ['sheet', 'actions', 'new', 'schedule', 'breakpoint', 'companion ticket', 'destroy']) {
+  test(`mobile assistant ${boundary} retires foreground resources without stopping the running turn`, async () => {
+    const wait = deferred();
+    const { state, requests, streams } = assistantState({ manualFrames: true, manualTimers: true,
+      fetch: async url => url.includes('/activity') ? wait.promise : ({ ok: true, json: async () => ({}) }) });
+    state.isMobile = true;
+    state.assistantAgent = { enabled: true };
+    state.assistantOpen = true;
+    state.assistantThread = { id: 'mobile-live', running: true };
+    state.assistantDraft = 'recover draft';
+    state.sheet = { type: 'assistant' };
+    state._assistantSetStreaming(true, Date.now());
+    const loading = state._loadAssistantActivity();
+    const sheetThread = state.assistantThread;
+    state.loadCreateConfig = async () => true;
+    const ticket = { id: 'navigation', status: 'open', kontora: true };
+    if (boundary === 'sheet') state.closeSheet();
+    if (boundary === 'actions') state.openActionsSheet(ticket);
+    if (boundary === 'new') await state.openNewSheet();
+    if (boundary === 'schedule') state.openScheduleSheet(ticket);
+    if (boundary === 'breakpoint') state.mobileBreakpointChanged();
+    if (boundary === 'companion ticket') {
+      state._paletteOpenTicket = async () => true;
+      await state.companionOpenTicket({ ticket_id: ticket.id });
+    }
+    if (boundary === 'destroy') state.destroy();
+    const hiddenPoll = state._assistantPoll;
+    wait.resolve({ ok: true, headers: { get: () => 'late' }, json: async () => ({ running: true, partial: 'late partial' }) });
+    await loading;
+    assert.equal(state.assistantOpen, false);
+    assert.equal(state._assistantPoll, hiddenPoll, 'obsolete foreground reads cannot replace the launch-badge poll');
+    if (boundary === 'destroy') assert.equal(hiddenPoll, null);
+    else assert.notEqual(hiddenPoll, null, 'a hidden running thread still updates its launch badge');
+    assert.equal(state._assistantTick, null);
+    assert.equal(streams.every(stream => stream.closed), true);
+    assert.equal(state.assistantPartial, '');
+    assert.equal(state.assistantStreaming, true);
+    assert.equal(state.assistantThread, sheetThread);
+    assert.equal(state.assistantDraft, 'recover draft');
+    assert.equal(requests.some(request => request.init?.method === 'POST'), false);
+  });
+}
+
 test("the pane opens and closes, and remembers that it was open", async () => {
   const { state, store } = assistantState();
   await state.initAssistant();
@@ -16080,7 +16359,9 @@ test("the context is trimmed to the byte cap the API enforces", async () => {
 });
 
 test("the mode goes out with the message, so the switch takes effect next turn", async () => {
-  const { state, requests } = assistantState();
+  const { state, requests } = assistantState({ routes: {
+    '/api/assistant/threads/t1/activity': { running: true, tape: { events: [] } },
+  } });
   await state.initAssistant();
   state.assistantThread = { id: "t1" };
   state.setAssistantAutonomy("auto");
@@ -16095,6 +16376,7 @@ test("the mode goes out with the message, so the switch takes effect next turn",
   // while the turn is starting.
   assert.equal(state.assistantMessages.at(-1).text, "move kon-7d21 to done");
   assert.equal(state.assistantStreaming, true);
+  state.destroy();
 });
 
 test("an empty draft sends nothing", async () => {
@@ -16548,6 +16830,18 @@ test("the pending tool row clears when the message lands in the tape", () => {
   assert.equal(state.assistantPartialTool, "");
 });
 
+test("both assistant row windows can load earlier rows without replacing the shared transcript fragments", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  for (const [id, fragment] of [['assistant-thread', 'assistantTranscriptMarkup'], ['assistant-sheet-thread', 'assistantSheetTranscriptMarkup']]) {
+    const host = html.slice(html.indexOf(`id="${id}"`), html.indexOf(`x-html="${fragment}"`));
+    assert.match(host, /x-show="assistantView === 'thread' && assistantThreadVisible\(\)"/);
+    assert.match(host, /<button type="button" x-show="assistantHiddenRows\(\)" @click="assistantLoadEarlier\(\)"/);
+    assert.match(host, /Load earlier messages and events<\/button>/);
+    assert.match(host, /class="assistant-fragment"/);
+  }
+  assert.equal([...html.matchAll(/@click="assistantLoadEarlier\(\)"/g)].length, 2);
+});
+
 test("both transcripts latch the scroll on their own scroll event", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
   assert.equal([...html.matchAll(/@scroll\.passive="assistantThreadScrolled\(\)"/g)].length, 2);
@@ -16593,7 +16887,9 @@ test("the poll carries the parked write alongside the tape", () => {
 });
 
 test("the pane says it is working from the moment the message goes out", async () => {
-  const { state } = assistantState();
+  const { state } = assistantState({ routes: {
+    '/api/assistant/threads/t1/activity': { running: true, tape: { events: [] } },
+  } });
   await state.initAssistant();
   state.assistantThread = { id: "t1" };
   state.assistantDraft = "what is running?";
@@ -16610,6 +16906,7 @@ test("the pane says it is working from the moment the message goes out", async (
   state._mergeAssistantActivity({ running: false, tape: { events: [] } });
   assert.equal(state.assistantStreaming, false);
   assert.equal(state._assistantTurnStart, null, "the clock stops with the turn");
+  state.destroy();
 });
 
 test("a turn the pane did not start is working with no count", () => {
@@ -18353,7 +18650,7 @@ for (const mobile of [false, true]) {
       assert.equal(state.outputRunKey(), 'default#0');
       assert.equal(state.activity.content, 'supervisor activity');
       assert.ok(requests.some(r => r.url.includes('/activity?stage=default&run=0')));
-      assert.ok(requests.every(r => !r.url.endsWith('run=1')), 'completion cannot request an unrecorded next attempt');
+      assert.ok(requests.every(r => !/[?&]run=1(?:&|$)/.test(r.url)), 'completion cannot request an unrecorded next attempt');
       assert.equal(state._activityPoll, null);
       assert.ok(sockets.every(s => s.closed));
       state.destroy();
@@ -18660,7 +18957,7 @@ for (const mobile of [false, true]) {
         await detail.promise;
         return { ok: true, json: async () => ({ ...epic }) };
       }
-      const old = url.endsWith('run=0');
+      const old = /[?&]run=0(?:&|$)/.test(url);
       await (old ? oldRead : currentRead).promise;
       return { ok: true, headers: { get: () => null }, json: async () => ({ content: old ? 'old run' : 'current run', live: !old }) };
     };
@@ -18734,7 +19031,7 @@ for (const mobile of [false, true]) {
       state.selectOutputRun('default#1');
       await flushMicrotasks();
       assert.equal(state.outputRunKey(), 'default#1');
-      assert.ok(requests.at(-1).url.endsWith('/activity?stage=default&run=1'));
+      assert.ok(requests.at(-1).url.includes('/activity?stage=default&run=1&log_tail_bytes=262144'));
       assert.ok(state._activityPoll !== null);
       state.epicWatchAgent();
       await flushMicrotasks();
@@ -20658,7 +20955,8 @@ for (const kind of ["briefing", "investigation"]) {
       assert.equal(state.assistantView, navigation === "History" ? "history" : "thread");
       if (adopts) {
         await state.stopAssistantTurn();
-        assert.equal(requests.at(-1).url, "/api/assistant/threads/kadmitted/stop");
+        assert.equal(requests.filter(r => r.init?.method === 'POST').at(-1).url, "/api/assistant/threads/kadmitted/stop");
+        assert.match(requests.at(-1).url, /\/kadmitted\/activity\?after=0$/);
       }
       state.destroy();
     });
@@ -20683,7 +20981,8 @@ for (const revision of [7, 8]) {
     assert.equal(state.companionEvidence()[0].outdated, true);
     const reads = requests.filter(r => r.url.includes("/kold/activity"));
     assert.equal(reads.length, 2);
-    assert.ok(reads.every(r => !r.init.headers["If-None-Match"]), "evidence must be revalidated without the old activity ETag");
+    assert.equal(reads[0].init.headers['If-None-Match'], undefined);
+    assert.equal(reads[1].init.headers['If-None-Match'], 'current', 'evidence revalidation keeps the accepted validator');
     assert.equal(requests.some(r => r.init?.method === "POST"), false);
     state.destroy();
   });
@@ -20794,8 +21093,9 @@ for (const entry of ["startup", "desktop", "mobile", "history"]) {
     await state.initAssistant();
     if (entry === "desktop") state.toggleAssistant();
     if (entry === "mobile") { state.isMobile = true; state.openAssistantSheet(); }
-    if (entry === "history") state.assistantView = "history";
+    if (entry === "history") { state.assistantOpen = true; state.assistantView = "history"; }
     await state.assistantLoadThreads();
+    await flushMicrotasks();
     assert.equal(state.assistantEnabled(), false);
     assert.deepEqual(vmValue(state.assistantVisibleThreads()), [ordinary]);
     assert.equal(state.assistantThread, null);
@@ -20957,6 +21257,34 @@ test("companion settings round-trip independently without rewriting the assistan
   state.settingsConfig.assistant.companion.name = "x".repeat(65);
   assert.match(state._settingsAssistantErrors().join(" "), /assistant.companion.name/);
 });
+
+for (const outcome of ['success', 'http', 'json', 'network']) {
+  test(`raw logs from ticket A cannot overwrite ticket B after ${outcome}`, async () => {
+    const first = deferred(), body = deferred(), second = deferred();
+    const state = loadKontoraState({ fetch: url => url.includes('/ticket-a/') ? first.promise : second.promise });
+    state.isMobile = true;
+    state.detailTab = 'logs';
+    state.selectedTicket = { id: 'ticket-a' };
+    const old = state.fetchStageLogs('ticket-a', 'one');
+    if (outcome !== 'network') {
+      first.resolve({ ok: outcome !== 'http', json: () => body.promise });
+      await flushMicrotasks();
+    }
+    state.selectedTicket = { id: 'ticket-b' };
+    ++state._ticketDetailSeq;
+    const fresh = state.fetchStageLogs('ticket-b', 'two');
+    second.resolve({ ok: true, json: async () => ({ content: 'B output' }) });
+    await fresh;
+    if (outcome === 'network') first.reject(new Error('A connection'));
+    else if (outcome === 'json') body.reject(new Error('A JSON'));
+    else body.resolve(outcome === 'http' ? { error: 'A error' } : { content: 'A output' });
+    await old;
+    assert.equal(state.logViewContent, 'B output');
+    assert.equal(state.logViewStage, 'two');
+    assert.equal(state.logViewLoading, false);
+    assert.equal(state.error, null);
+  });
+}
 
 for (const sameStage of [false, true]) {
   for (const delayed of ['response', 'json']) {

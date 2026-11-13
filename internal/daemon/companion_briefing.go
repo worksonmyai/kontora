@@ -230,11 +230,11 @@ func (d *Daemon) captureCompanionTicket(p *companionEvidence, t companionTicket)
 }
 
 func companionActivityRevision(activity web.ActivityInfo) string {
-	if activity.ETag != "" {
+	if activity.Tape != nil && activity.ETag != "" {
 		return activity.ETag
 	}
-	// Plaintext activity has no ETag. Fingerprint the captured bytes, not the
-	// shared log's path or modtime, which can stay the same after a rewrite.
+	// Fingerprint plaintext bytes, not the shared log's path or modtime,
+	// which can stay the same after a rewrite.
 	data, _ := json.Marshal(activity)
 	return web.ContentETag(data, "")
 }

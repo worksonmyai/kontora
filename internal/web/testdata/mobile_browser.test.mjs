@@ -288,7 +288,7 @@ function fixtures(options = {}) {
       : /\/runs$/.test(path) ? ['offset', 'limit']
       : /\/runs\/\d+\/log$/.test(path) ? ['raw']
       : /^\/api\/assistant\/threads\/[^/]+\/activity$/.test(path) ? ['after']
-      : /\/(logs|activity)$/.test(path) ? ['stage', 'run', 'offset', 'limit', 'after'] : [];
+      : /\/(logs|activity)$/.test(path) ? ['stage', 'run', 'offset', 'limit', 'after', 'log_tail_bytes'] : [];
     assert.ok([...url.searchParams.keys()].every(k => allowedQuery.includes(k)), `Unexpected query: ${url}`);
     if (path === '/api/automations' && method === 'GET') return json(route, { available: behavior.automationsAvailable,
       error: behavior.automationsAvailable ? undefined : 'Automation store locked', definitions: [...definitions.values()] });
@@ -822,6 +822,17 @@ function fixtures(options = {}) {
     get rawConfig() { return rawConfig; }, set rawConfig(content) { rawConfig = content; } };
 }
 
+async function closeFixtureContext(context) {
+  try {
+    // context.close() starts bypassing route handlers before the documents stop
+    // polling. Unload every page (including popups) while interception is still
+    // active, so a final activity read cannot reach the asset-only Go server.
+    await Promise.all(context.pages().filter(page => !page.isClosed()).map(page => page.goto('about:blank')));
+  } finally {
+    await context.close();
+  }
+}
+
 async function withPage(t, width, theme, run, options = {}) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: theme,
     reducedMotion: options.reducedMotion || 'reduce', hasTouch: options.hasTouch || false, serviceWorkers: 'block', locale: 'en-US', timezoneId: 'UTC' });
@@ -833,7 +844,9 @@ async function withPage(t, width, theme, run, options = {}) {
   if (options.nativeAgentPicker) await context.addInitScript(() => {
     Object.defineProperty(HTMLElement.prototype, 'showPopover', { configurable: true, value: undefined });
   });
-  await context.addInitScript(({ theme, sidebar, savedThread, assistantOpen }) => {
+  await context.addInitScript(({ theme, sidebar, savedThread, assistantOpen, base }) => {
+    // Teardown navigates to an opaque about:blank document with no storage.
+    if (location.origin !== base) return;
     if (localStorage.getItem('kontora-theme') === null) localStorage.setItem('kontora-theme', theme);
     localStorage.setItem('kontora-assistant-open', assistantOpen ? '1' : '0');
     if (savedThread) localStorage.setItem('kontora-assistant-thread', savedThread);
@@ -847,7 +860,7 @@ async function withPage(t, width, theme, run, options = {}) {
       emit(type, data = {}) { if (!this.closed) this.dispatchEvent(new MessageEvent(type, { data: JSON.stringify(data) })); }
       close() { this.closed = true; }
     };
-  }, { theme, sidebar: options.sidebar, savedThread: options.savedThread, assistantOpen: options.assistantOpen });
+  }, { theme, sidebar: options.sidebar, savedThread: options.savedThread, assistantOpen: options.assistantOpen, base });
   const page = await context.newPage();
   page.setDefaultTimeout(4000);
   page.setDefaultNavigationTimeout(15000);
@@ -870,8 +883,11 @@ async function withPage(t, width, theme, run, options = {}) {
     throw error;
   } finally {
     fixture.releaseConfig();
-    await fixture.releaseReads();
-    await context.close();
+    try {
+      await fixture.releaseReads();
+    } finally {
+      await closeFixtureContext(context);
+    }
     assert.deepEqual(fixture.violations, [], 'Unexpected requests (all must be explicitly modelled)');
     assert.deepEqual(errors, [], 'Browser/Alpine/console errors');
   }
@@ -4363,17 +4379,17 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       });
     });
     for (const width of [320, 390]) {
-      test(`phone cached activity follows on reveal ${width}px / ${theme}`, async t => {
+      test(`phone activity loads on demand and reuses cache on reveal ${width}px / ${theme}`, async t => {
         await withPage(t, width, theme, async (page, fixture) => {
           fixture.behavior.activityEvents = Array.from({ length: 80 }, (_, i) => ({ kind: 'text', text: `Cached activity event ${i}` }));
           await openTicket(page, 'kon-done');
-          await page.waitForFunction(() => Alpine.$data(document.body).activity?.tape?.events.length === 80);
-          await page.evaluate(() => Alpine.nextTick());
-          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
           assert.equal(await page.evaluate(() => Alpine.$data(document.body).detailTab), 'ticket');
-          const reads = fixture.requests.filter(request => request === 'GET /api/tickets/kon-done/activity').length;
+          assert.equal(fixture.requests.filter(request => request === 'GET /api/tickets/kon-done/activity').length, 0);
           const detail = page.locator('.mobile-detail');
           await phoneOutputView(page, 'Activity');
+          await page.waitForFunction(() => Alpine.$data(document.body).activity?.tape?.events.length === 80);
+          const reads = fixture.requests.filter(request => request === 'GET /api/tickets/kon-done/activity').length;
+          assert.equal(reads, 1);
           const scroller = detail.locator('#activity-scroll');
           await visible(scroller.getByText('Cached activity event 79', { exact: true }));
           await page.evaluate(() => Alpine.nextTick());
@@ -4381,7 +4397,6 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           const geometry = await scroller.evaluate(el => ({ height: el.scrollHeight, client: el.clientHeight, top: el.scrollTop }));
           assert.ok(geometry.height > geometry.client, 'Cached transcript overflows');
           assert.ok(geometry.height - geometry.client - geometry.top <= 1, `Follow opens at the newest event: ${JSON.stringify(geometry)}`);
-          assert.equal(fixture.requests.filter(request => request === 'GET /api/tickets/kon-done/activity').length, reads, 'Reveal reuses the completed transcript');
           await detail.getByRole('button', { name: /follow/i }).click();
           await scroller.evaluate(el => { el.scrollTop = 200; });
           const top = await scroller.evaluate(el => el.scrollTop);
@@ -4390,6 +4405,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await visible(scroller);
           await page.evaluate(() => Alpine.nextTick());
           assert.equal(await scroller.evaluate(el => el.scrollTop), top, 'Follow off preserves the reading position');
+          assert.equal(fixture.requests.filter(request => request === 'GET /api/tickets/kon-done/activity').length, reads, 'Reveal reuses the completed transcript');
           await detail.getByRole('button', { name: /follow/i }).click();
           await expect.poll(() => scroller.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThanOrEqual(1);
         });
@@ -5039,6 +5055,32 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       });
     });
   }
+  test('fixture teardown unloads polling pages before disabling interception', async () => {
+    const context = await browser.newContext({ serviceWorkers: 'block' });
+    const fixture = fixtures();
+    await fixture.install(context);
+    const pages = [];
+    try {
+      for (let i = 0; i < 2; i++) {
+        const page = await context.newPage();
+        pages.push(page);
+        // A minimal document isolates fixture disposal from application cleanup.
+        await page.route(base + '/fixture-teardown', route => route.fulfill({ contentType: 'text/html', body: '<body>Polling fixture</body>' }));
+        await page.goto(base + '/fixture-teardown');
+        await page.evaluate(async () => {
+          const poll = () => fetch('/api/tickets/kon-live/activity?stage=code&run=0&log_tail_bytes=262144').catch(() => {});
+          await poll();
+          setInterval(poll, 1);
+        });
+      }
+      assert.ok(fixture.requests.filter(request => request === 'GET /api/tickets/kon-live/activity').length >= pages.length);
+      await closeFixtureContext(context);
+      assert.deepEqual(pages.map(page => page.url()), ['about:blank', 'about:blank']);
+      assert.deepEqual(fixture.violations, []);
+    } finally {
+      if (pages.some(page => !page.isClosed())) await closeFixtureContext(context);
+    }
+  });
   test('the harness permits only same-origin GET navigations for Blob requests', async () => {
     const fixture = fixtures();
     let handler;
@@ -5088,7 +5130,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       assert.ok(fixture.violations.some(message => message.includes('External request')));
       assert.equal(fixture.sockets.length, 0);
     } finally {
-      await context.close();
+      await closeFixtureContext(context);
     }
   });
   for (const theme of themes) {
@@ -7214,7 +7256,7 @@ test('management parity rendered fixture bridge', { skip: !parityBridgeMS, timeo
       const blocked = await fetch(bridge.url + '/api/tickets', { method: 'POST', body: '{}' });
       assert.equal(blocked.status, 405);
       await new Promise(resolve => setTimeout(resolve, Math.min(parityBridgeMS, 600000)));
-    } finally { await context.close(); }
+    } finally { await closeFixtureContext(context); }
   } finally { await bridge.close(); }
 });
 

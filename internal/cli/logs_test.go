@@ -1,13 +1,50 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLogsExactPreservesFallbacks(t *testing.T) {
+	for _, tc := range []struct {
+		name, stage, want string
+		logs              bool
+	}{
+		{name: "named", stage: "plan", logs: true, want: "plan output"},
+		{name: "unnamed newest", logs: true, want: "review output"},
+		{name: "missing named stage uses newest", stage: "missing", logs: true, want: "review output"},
+		{name: "history without logs", want: "review"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ticketsDir, logsDir := t.TempDir(), t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(ticketsDir, "act-exact.md"), []byte("---\nid: act-exact\nstatus: done\nhistory:\n  - {stage: review, agent: local, exit_code: 0}\n---\n# Exact\n"), 0o644))
+			if tc.logs {
+				dir := filepath.Join(logsDir, "act-exact")
+				require.NoError(t, os.Mkdir(dir, 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "plan.log"), []byte("plan output"), 0o644))
+				require.NoError(t, os.Chtimes(filepath.Join(dir, "plan.log"), time.Unix(1, 0), time.Unix(1, 0)))
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "review.log"), []byte("review output"), 0o644))
+			}
+			var exact, prefix bytes.Buffer
+			require.NoError(t, LogsExact(ticketsDir, logsDir, "act-exact", tc.stage, &exact))
+			require.NoError(t, Logs(ticketsDir, logsDir, "act-ex", tc.stage, &prefix))
+			assert.Equal(t, exact.String(), prefix.String())
+			assert.Contains(t, exact.String(), tc.want)
+			if tc.logs {
+				require.NoError(t, os.Remove(filepath.Join(ticketsDir, "act-exact.md")))
+				exact.Reset()
+				require.NoError(t, LogsExact(ticketsDir, logsDir, "act-exact", tc.stage, &exact))
+				assert.Equal(t, prefix.String(), exact.String())
+			}
+		})
+	}
+}
 
 func TestStageActivityImportedHistory(t *testing.T) {
 	ticketsDir := t.TempDir()

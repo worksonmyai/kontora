@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +30,14 @@ func Logs(tasksDir, logsDir, taskID, stage string, w io.Writer) error {
 		return err
 	}
 
+	return LogsExact(tasksDir, logsDir, resolvedID, stage, w)
+}
+
+// LogsExact reads an already resolved ticket without scanning the ticket store.
+// Named-stage misses keep the CLI newest-log and history fallback.
+func LogsExact(tasksDir, logsDir, resolvedID, stage string, w io.Writer) error {
+	tasksDir = config.ExpandTilde(tasksDir)
+	logsDir = config.ExpandTilde(logsDir)
 	logDir := filepath.Join(logsDir, resolvedID)
 	if stage != "" {
 		if t, err := ticket.ParseFile(filepath.Join(tasksDir, resolvedID+".md")); err == nil {
@@ -106,28 +113,21 @@ func StageActivity(tasksDir, logsDir, taskID, stage string, run int) (tape *logf
 		return nil, "", fmt.Errorf("imported run has no local activity: %w", os.ErrNotExist)
 	}
 
-	logDir := session.TicketDir(expandedLogsDir, resolvedID)
-	sidecar := session.EventsPath(expandedLogsDir, resolvedID, stage, run)
-	switch data, readErr := readLogFile(logDir, sidecar); {
-	case readErr == nil:
-		var t logfmt.Tape
-		if err := json.Unmarshal(data, &t); err != nil {
-			return nil, "", fmt.Errorf("parsing activity sidecar %s: %w", sidecar, err)
-		}
-		return &t, "", nil
-	case !errors.Is(readErr, os.ErrNotExist):
-		return nil, "", readErr
-	}
-
 	path := session.LogPath(expandedLogsDir, resolvedID, stage)
 	if graphPath, _, graph := GraphRunLog(t, expandedLogsDir, stage, run); graph {
 		path = graphPath
 	}
-	data, err := readLogFile(logDir, path)
+	a, err := session.OpenActivityLog(expandedLogsDir, resolvedID, stage, run, path)
 	if err != nil {
 		return nil, "", err
 	}
-	return nil, string(data), nil
+	defer a.File.Close()
+	if a.Source == "events" {
+		tape, err := a.Tape()
+		return tape, "", err
+	}
+	content, _, _, err = a.Content(0)
+	return nil, content, err
 }
 
 // ResolveTicketID expands a ticket ID prefix against the tickets directory.

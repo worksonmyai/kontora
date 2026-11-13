@@ -215,6 +215,7 @@ export function kontoraMobile() {
       if (!lifecycle || this._appDestroyed) return;
       const sheet = this.isMobile ? this.sheet : null;
       if (sheetFocus?.sheet === sheet) return;
+      if (sheetFocus?.sheet?.type === 'assistant' && this.assistantOpen) this.closeAssistant();
       const returnFocus = sheetFocus?.returnFocus || document.activeElement;
       this._releaseMobileSheetFocus(!sheet);
       if (!sheet) return;
@@ -644,7 +645,7 @@ export function kontoraMobile() {
 
     openActionsSheet(t) {
       if (!t || this._appDestroyed) return;
-      this.closeAgentPicker(false);
+      this.closeSheet(false);
       this.sheet = { type: 'actions', ticket: t };
       this._syncMobileSheet();
     },
@@ -662,6 +663,7 @@ export function kontoraMobile() {
       return '';
     },
     closeSheet(restoreFocus = true) {
+      if (this.sheet?.type === 'assistant') this.closeAssistant();
       this.closeAgentPicker(false);
       this.sheet = null;
       this._releaseMobileSheetFocus(restoreFocus);
@@ -673,7 +675,7 @@ export function kontoraMobile() {
     // detail overlay has no spare width for a date field and its buttons.
     openScheduleSheet(t) {
       if (this._appDestroyed || !this.canSchedule(t)) return;
-      this.closeAgentPicker(false);
+      this.closeSheet(false);
       this.openScheduleEditor(t);
       // The draft is the text the one field holds, in the grammar the CLI and
       // the desktop form take, not the datetime-local value openScheduleEditor

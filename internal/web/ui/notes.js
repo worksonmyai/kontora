@@ -339,7 +339,7 @@ export function kontoraNotes() {
     async _noteSend(t, path, method, body, failure, mine, feedback) {
       var id = this.ticketKey(t);
       var update = this._selectedTicketUpdateSeq;
-      var acknowledged = this._editorSaves[id]?.ackSequence || 0;
+      var acknowledged = this._editorAckVersion(id);
       var snapshot = JSON.stringify(this.selectedTicket);
       var committed = false;
       var refreshFailure = 'Note saved, but the latest conversation could not be loaded. Reopen the ticket to refresh.';
@@ -363,7 +363,7 @@ export function kontoraNotes() {
         // Re-read stale snapshots without replaying the successful write.
         for (var attempt = 0; attempt < 3 && mine(); attempt++) {
           update = this._selectedTicketUpdateSeq;
-          acknowledged = this._editorSaves[id]?.ackSequence || 0;
+          acknowledged = this._editorAckVersion(id);
           snapshot = JSON.stringify(this.selectedTicket);
           var fresh = await fetch(this.ticketURL(t));
           if (!mine()) return true;
@@ -382,15 +382,18 @@ export function kontoraNotes() {
 
     _noteApplyTicket(id, full, update, acknowledged, snapshot) {
       var stale = (update !== undefined && update !== this._selectedTicketUpdateSeq) ||
-        (acknowledged !== undefined && acknowledged !== (this._editorSaves[id]?.ackSequence || 0)) ||
+        (acknowledged !== undefined && acknowledged !== this._editorAckVersion(id)) ||
         (snapshot !== undefined && snapshot !== JSON.stringify(this.selectedTicket));
       if (stale || this.ticketKey(this.selectedTicket) !== id) return false;
       if (this.ticketKey(this.selectedTicket) === id) {
         if (this.editing) {
           var description = this.descriptionText(this.selectedTicket);
           var tail = this.descriptionTail(full);
+          // Claim must use the revision of the description the user reviewed.
+          var revision = this.isSecondary(this.selectedTicket) && description !== this.descriptionText(full)
+            ? this.selectedTicket.revision : full.revision;
           this.selectedTicket = { ...this.selectedTicket, notes: full.notes,
-            description: description, description_tail: tail, body: description + tail, revision: full.revision,
+            description: description, description_tail: tail, body: description + tail, revision: revision,
             can_edit: full.can_edit, can_claim: full.can_claim, refusal_reason: full.refusal_reason, claim_warnings: full.claim_warnings };
         } else {
           this.selectedTicket = full;

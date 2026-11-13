@@ -214,9 +214,7 @@ rows contribute spend but not stage quality.
 
 Graph annotations and Plannotator rework are deferred and refused; epic
 supervisors cannot use graphs. Upgrade all clients and daemons sharing config
-or tickets together. Execution remains disabled until combined verification
-passes. Production readiness depends on combined validation, execution,
-recovery, control, client and accounting verification. No exactly-once shell or
+or tickets together. No exactly-once shell or
 hook effects, host-power-loss durability, or arbitrary detached-process
 containment is promised. Graph participation grants no commit or publication
 authority.

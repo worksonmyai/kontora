@@ -18,6 +18,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"gopkg.in/yaml.v3"
 )
 
 func workflowTestGraph() *config.WorkflowGraph {
@@ -38,6 +39,19 @@ func workflowTestGraph() *config.WorkflowGraph {
 		{From: config.WorkflowPort{Node: "revise", Port: "repeat"}, To: "implement"},
 		{From: config.WorkflowPort{Node: "revise", Port: "exhausted"}, To: "stop"},
 	}}
+}
+
+func loadWorkflowTestConfig(t *testing.T, cfg *config.Config) *config.Config {
+	t.Helper()
+	fixture := *cfg
+	fixture.TmuxSession = "kontora-test-" + newSessionID()
+	fixture.Web.Enabled = new(false)
+	data, err := yaml.Marshal(&fixture)
+	require.NoError(t, err)
+	loaded, err := config.LoadReader(strings.NewReader(string(data)))
+	require.NoError(t, err)
+	require.Equal(t, new(false), loaded.Web.Enabled)
+	return loaded
 }
 
 func TestWorkflowExecution(t *testing.T) {
@@ -68,13 +82,13 @@ func TestWorkflowExecution(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			cfg := h.cfg
-			graph := workflowTestGraph()
-			if tc.endStatus != "" {
-				graph.Nodes[4].Status = tc.endStatus
-			}
-			cfg.Pipelines["graph"] = config.PipelineDefinition{Graph: graph}
+			cfg.Pipelines["graph"] = config.PipelineDefinition{Graph: workflowTestGraph()}
 			cfg.Agents["agent1"] = config.Agent{Binary: "claude"}
 			cfg.Agents["agent2"] = config.Agent{Binary: "claude"}
+			cfg = loadWorkflowTestConfig(t, cfg)
+			if tc.endStatus != "" {
+				cfg.Pipelines["graph"].Graph.Nodes[4].Status = tc.endStatus
+			}
 			var spawns summarySpawns
 			var mu sync.Mutex
 			var launches []RunnerParams
@@ -112,7 +126,6 @@ func TestWorkflowExecution(t *testing.T) {
 				return process.Result{StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone}, err
 			}
 			d, collect := h.newMetricsDaemon(cfg, WithRunner(runner), WithFinalSummarySpawner(spawns.spawner("workflow summary")))
-			d.graphWorkflowsReady = true
 			h.writeTicket("tst-graph.md", h.taskMD("tst-graph", "todo", "graph"))
 			ctx, cancel := context.WithCancel(context.Background())
 			errCh := make(chan error, 1)
@@ -169,6 +182,72 @@ func TestWorkflowExecution(t *testing.T) {
 	}
 }
 
+func TestWorkflowAndLegacyExecution(t *testing.T) {
+	for _, tc := range []struct {
+		pipeline string
+		stages   []string
+		exits    []int
+	}{
+		{pipeline: "two-stage", stages: []string{"step1", "step2"}, exits: []int{0, 0}},
+		{pipeline: "retry-stage", stages: []string{"step1", "step1"}, exits: []int{1, 0}},
+	} {
+		t.Run(tc.pipeline, func(t *testing.T) {
+			h := newHarness(t)
+			h.cfg.Pipelines["graph"] = config.PipelineDefinition{Graph: workflowTestGraph()}
+			h.cfg.Agents["agent1"] = config.Agent{Binary: "claude"}
+			h.cfg.Agents["agent2"] = config.Agent{Binary: "claude"}
+			cfg := loadWorkflowTestConfig(t, h.cfg)
+			var spawns summarySpawns
+			var mu sync.Mutex
+			legacyCalls := 0
+			d := h.newDaemon(cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+				now := time.Now()
+				result := process.Result{StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone}
+				if p.Env[session.ResultVersionEnvVar] == "2" {
+					verdict := ""
+					if p.Env[session.ResultStageEnvVar] == "review" {
+						verdict = "approve"
+					}
+					_, err := session.PublishResult(p.Env[session.ResultFileEnvVar], session.Result{Outcome: "complete", Summary: "node finished", Verdict: verdict}, 2)
+					return result, err
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				require.Less(t, legacyCalls, len(tc.exits))
+				result.ExitCode = tc.exits[legacyCalls]
+				legacyCalls++
+				return result, nil
+			}), WithFinalSummarySpawner(spawns.spawner("workflow summary")))
+			h.writeTicket("tst-graph.md", h.taskMD("tst-graph", "todo", "graph"))
+			h.writeTicket("tst-legacy.md", h.taskMD("tst-legacy", "todo", tc.pipeline))
+			ctx, cancel := context.WithCancel(context.Background())
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			stop := sync.OnceFunc(func() { cancel(); require.NoError(t, <-errCh) })
+			t.Cleanup(stop)
+			graph := h.waitForStatus("tst-graph.md", ticket.StatusHumanReview, 15*time.Second)
+			legacy := h.waitForStatus("tst-legacy.md", ticket.StatusDone, 15*time.Second)
+			h.waitForFinalSummary("tst-graph.md", "workflow summary", 5*time.Second)
+			require.Len(t, spawns.all(), 1)
+			waitForAgentsDone(t, d, 5*time.Second)
+			stop()
+			require.Len(t, graph.History, 2)
+			require.Equal(t, "implement", graph.History[0].Stage)
+			require.Equal(t, "review", graph.History[1].Stage)
+			require.Empty(t, graph.GraphState.LoopCounts)
+			require.Nil(t, legacy.GraphState)
+			require.Len(t, legacy.History, len(tc.stages))
+			for i, row := range legacy.History {
+				require.Equal(t, tc.stages[i], row.Stage)
+				require.Equal(t, tc.exits[i], row.ExitCode)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			require.Equal(t, len(tc.exits), legacyCalls)
+		})
+	}
+}
+
 func TestWorkflowCheck(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -201,6 +280,7 @@ func TestWorkflowCheck(t *testing.T) {
 				{From: config.WorkflowPort{Node: "test", Port: "pass"}, To: "pass"},
 				{From: config.WorkflowPort{Node: "test", Port: "fail"}, To: "fail"},
 			}}}
+			cfg = loadWorkflowTestConfig(t, cfg)
 			calls := make(chan RunnerParams, 1)
 			d, collect := h.newMetricsDaemon(cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
 				calls <- p
@@ -213,7 +293,6 @@ func TestWorkflowCheck(t *testing.T) {
 				}
 				return process.Result{ExitCode: tc.exit, StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone, Interruption: tc.interruption}, nil
 			}))
-			d.graphWorkflowsReady = true
 			path := h.writeTicket("tst-check.md", h.taskMD("tst-check", "todo", "graph"))
 			stored := h.readTask("tst-check.md")
 			require.NoError(t, stored.SetField("agent", "override"))
@@ -335,7 +414,6 @@ func TestWorkflowHookPairing(t *testing.T) {
 			if tc.failure == "lookup" {
 				d.agentLookup = func(string) (string, error) { return "", fmt.Errorf("agent unavailable") }
 			}
-			d.graphWorkflowsReady = true
 			d.tickets["tst-hooks"] = newTicketState(h.readTask("tst-hooks.md"), path)
 			d.runTicket(context.Background(), "tst-hooks")
 			require.Zero(t, calls)
@@ -406,7 +484,6 @@ func TestWorkflowFinalizationMetrics(t *testing.T) {
 					started := time.Now()
 					return process.Result{StartedAt: started, ExitedAt: started.Add(2 * time.Second), Termination: process.TerminationProcessGroupGone}, nil
 				}), WithFinalSummarySpawner(func(context.Context, FinalSummaryParams) (string, error) { return "summary", nil }))
-				d.graphWorkflowsReady = true
 				d.windows.list = func(string) ([]string, error) { return nil, nil }
 				d.tickets["tst-metrics"] = newTicketState(h.readTask("tst-metrics.md"), path)
 				ctx, cancel := context.WithCancel(context.Background())
@@ -471,28 +548,33 @@ func TestGraphResultInstructions(t *testing.T) {
 
 func TestWorkflowAdmission(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		ready  bool
-		entry  string
-		status ticket.Status
+		name       string
+		annotation bool
+		supervisor bool
+		status     ticket.Status
 	}{
-		{name: "normal pickup refused", entry: "test", status: ticket.StatusPaused},
-		{name: "terminal entry", ready: true, entry: "end", status: ticket.StatusHumanReview},
+		{name: "terminal entry", status: ticket.StatusHumanReview},
+		{name: "annotation refused", annotation: true, status: ticket.StatusPaused},
+		{name: "epic supervisor refused", supervisor: true, status: ticket.StatusPaused},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			graph := &config.WorkflowGraph{Version: 2, Entry: "end", Nodes: []config.WorkflowNode{{ID: "end", Type: "end", Status: "human_review"}}}
-			if tc.entry == "test" {
-				graph = workflowTestGraph()
-			}
 			h.cfg.Pipelines["graph"] = config.PipelineDefinition{Graph: graph}
+			h.cfg = loadWorkflowTestConfig(t, h.cfg)
 			calls := make(chan struct{}, 1)
 			d := h.newDaemon(h.cfg, WithRunner(func(context.Context, RunnerParams) (process.Result, error) {
 				calls <- struct{}{}
 				return process.Result{}, nil
 			}))
-			d.graphWorkflowsReady = tc.ready
-			h.writeTicket("tst-entry.md", h.taskMD("tst-entry", "todo", "graph"))
+			body := h.taskMD("tst-entry", "todo", "graph")
+			if tc.annotation {
+				body = strings.Replace(body, "status: todo", "status: todo\nannotation_return_status: open", 1)
+			}
+			if tc.supervisor {
+				body = strings.Replace(body, "status: todo", "status: todo\nkind: epic\nepic_execution: agent", 1)
+			}
+			h.writeTicket("tst-entry.md", body)
 			ctx, cancel := context.WithCancel(context.Background())
 			errCh := make(chan error, 1)
 			go func() { errCh <- d.Run(ctx) }()
@@ -501,6 +583,9 @@ func TestWorkflowAdmission(t *testing.T) {
 			require.Empty(t, got.History)
 			require.Empty(t, got.StartedAt)
 			require.Empty(t, got.InvocationID)
+			if tc.annotation || tc.supervisor {
+				require.Contains(t, got.LastError, "graph workflows do not support annotation runs or epic supervisors")
+			}
 			select {
 			case <-calls:
 				t.Fatal("non-executable admission launched a runner")

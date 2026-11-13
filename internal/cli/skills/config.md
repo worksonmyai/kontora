@@ -113,9 +113,7 @@ worktree first; recovery does not start work. Both controls require the daemon.
 Graph annotations and Plannotator rework are deferred and refused.
 
 Upgrade every CLI and daemon sharing config or tickets together before enabling
-graphs. Execution remains disabled until combined verification passes.
-Production readiness depends on combined verification of execution, recovery,
-controls, clients and accounting. Recovery does not promise exactly-once shell
+graphs. Recovery does not promise exactly-once shell
 effects or arbitrary detached-process containment. A missing tmux window alone
 does not prove termination.
 

@@ -417,9 +417,7 @@ legacy rows retain ticket/stage accounting. Unknown semantic outcomes are never
 verified completions, and failed runs still contribute measured spend.
 
 Upgrade CLI, daemon and other clients sharing config or ticket storage together.
-Graph execution remains disabled until combined verification passes. Production
-readiness depends on combined execution, recovery, client and accounting
-verification. No endpoint promises exactly-once arbitrary shell effects or
+No endpoint promises exactly-once arbitrary shell effects or
 containment of arbitrary detached processes. A missing terminal window is not
 proof of termination.
 

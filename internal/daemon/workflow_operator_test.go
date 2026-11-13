@@ -22,7 +22,9 @@ func TestWorkflowOperatorRestartIntegration(t *testing.T) {
 	h.cfg.Pipelines["graph"] = config.PipelineDefinition{Graph: workflowTestGraph()}
 	h.cfg.Agents["agent1"] = config.Agent{Binary: "claude"}
 	h.cfg.Agents["agent2"] = config.Agent{Binary: "claude"}
+	h.cfg = loadWorkflowTestConfig(t, h.cfg)
 	var approve atomic.Bool
+	var spawns summarySpawns
 	var mu sync.Mutex
 	logs := make(map[string]bool)
 	d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
@@ -44,8 +46,7 @@ func TestWorkflowOperatorRestartIntegration(t *testing.T) {
 		require.NoError(t, os.WriteFile(p.LogFile, []byte(inv.ID), 0o600))
 		now := time.Now()
 		return process.Result{StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone}, nil
-	}))
-	d.graphWorkflowsReady = true
+	}), WithFinalSummarySpawner(spawns.spawner("workflow summary")))
 	h.writeTicket("tst-restart.md", h.taskMD("tst-restart", "todo", "graph"))
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -68,6 +69,8 @@ func TestWorkflowOperatorRestartIntegration(t *testing.T) {
 	approve.Store(true)
 	require.NoError(t, d.WorkflowRestart(before.ID))
 	after := h.waitForStatus("tst-restart.md", ticket.StatusHumanReview, 10*time.Second)
+	h.waitForFinalSummary("tst-restart.md", "workflow summary", 5*time.Second)
+	require.Len(t, spawns.all(), 1)
 	waitForAgentsDone(t, d, 5*time.Second)
 	require.Len(t, after.History, 10)
 	assert.Equal(t, before.History, after.History[:8])
@@ -95,6 +98,7 @@ func TestWorkflowInterruptedCheckRecoveryIntegration(t *testing.T) {
 			{From: config.WorkflowPort{Node: "test", Port: "fail"}, To: "stop"},
 		},
 	}}
+	h.cfg = loadWorkflowTestConfig(t, h.cfg)
 	calls := 0
 	d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
 		calls++
@@ -106,7 +110,6 @@ func TestWorkflowInterruptedCheckRecoveryIntegration(t *testing.T) {
 		}
 		return result, nil
 	}))
-	d.graphWorkflowsReady = true
 	path := h.writeTicket("tst-recover.md", h.taskMD("tst-recover", "todo", "graph"))
 	d.tickets["tst-recover"] = newTicketState(h.readTask("tst-recover.md"), path)
 	d.runTicket(context.Background(), "tst-recover")

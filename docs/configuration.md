@@ -794,10 +794,7 @@ legacy stage-list editor. Upgrade all CLI and daemon binaries that read the
 config or share the ticket store together before enabling graphs. Older loaders
 and clients cannot interpret graph definitions or cursor state.
 
-Graph execution remains disabled until combined verification passes.
-Production readiness depends on combined verification of graph validation,
-execution, recovery, controls, clients, history and statistics, not this example
-or any one package's tests. Recovery does not promise exactly-once shell or hook
+Recovery does not promise exactly-once shell or hook
 effects, host-power-loss durability, or containment of arbitrary detached
 processes. A missing tmux window alone does not prove termination.
 

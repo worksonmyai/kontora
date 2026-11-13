@@ -268,7 +268,6 @@ func TestWorkflowAdmissionCapturedConfig(t *testing.T) {
 				now := time.Now()
 				return process.Result{StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone}, err
 			}))
-			d.graphWorkflowsReady = true
 			path := h.writeTicket("tst-captured.md", h.taskMD("tst-captured", "todo", "graph"))
 			d.tickets["tst-captured"] = newTicketState(h.readTask("tst-captured.md"), path)
 			ctx, cancel := context.WithCancel(context.Background())
@@ -359,7 +358,6 @@ func TestWorkflowAdmissionStaleCompletion(t *testing.T) {
 				now := time.Now()
 				return process.Result{StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone}, nil
 			}))
-			d.graphWorkflowsReady = true
 			d.tickets["tst-stale-graph"] = newTicketState(h.readTask("tst-stale-graph.md"), path)
 			d.runTicket(context.Background(), "tst-stale-graph")
 			require.Equal(t, 1, calls)
@@ -417,7 +415,6 @@ func TestWorkflowAdmissionInterruptedNode(t *testing.T) {
 				now := time.Now()
 				return process.Result{StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone, Interruption: tc.interruption}, tc.runnerErr
 			}))
-			d.graphWorkflowsReady = true
 			path := h.writeTicket("tst-interrupted.md", h.taskMD("tst-interrupted", "todo", "graph"))
 			d.tickets["tst-interrupted"] = newTicketState(h.readTask("tst-interrupted.md"), path)
 			d.runTicket(context.Background(), "tst-interrupted")

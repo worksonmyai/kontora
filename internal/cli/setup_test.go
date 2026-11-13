@@ -153,13 +153,13 @@ func TestBuildConfigYAML(t *testing.T) {
 			assert.Len(t, cfg.Pipelines, 2)
 			assert.Equal(t, config.Pipeline{
 				{Stage: "code", Agent: cfg.DefaultAgent, OnSuccess: "human_review", OnFailure: "pause"},
-			}, cfg.Pipelines["default"])
+			}, cfg.Pipelines["default"].Legacy)
 			assert.Equal(t, config.Pipeline{
 				{Stage: "implement", Agent: cfg.DefaultAgent, OnSuccess: "next", OnFailure: "pause"},
 				{Stage: "review", Agent: cfg.DefaultAgent, OnSuccess: "next", OnFailure: "retry", MaxRetries: 1},
 				{Stage: "fix-review", Agent: cfg.DefaultAgent, OnSuccess: "next", OnFailure: "retry", MaxRetries: 1},
 				{Stage: "commit", Agent: cfg.DefaultAgent, OnSuccess: "human_review", OnFailure: "retry", MaxRetries: 1},
-			}, cfg.Pipelines["implement-review-commit"])
+			}, cfg.Pipelines["implement-review-commit"].Legacy)
 
 			code := cfg.Stages["code"]
 			assert.Equal(t, 30*time.Minute, code.Timeout.Duration)

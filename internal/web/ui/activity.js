@@ -33,6 +33,7 @@ export function kontoraActivity() {
     runningRun() {
       var t = this.outputSubject();
       if (!this.executionActive(t) || !t.stage) return null;
+      if (t.graph_definition && !(t.graph_definition.nodes || []).some(n => n.id === t.stage && ['agent', 'check'].includes(n.type))) return null;
       var run = 0;
       (t.history || []).forEach(function (h) { if (h.stage === t.stage) run++; });
       return { stage: t.stage, run: run };
@@ -210,11 +211,21 @@ export function kontoraActivity() {
       var t = this.outputSubject();
       if (!t) return [];
       var runs = (t.history || []).filter(h => !h.imported).map(h => ({ stage: h.stage, run: h.run || 0,
-        key: h.stage + '#' + (h.run || 0), label: h.stage + ' · attempt ' + ((h.run || 0) + 1) }));
+        key: h.stage + '#' + (h.run || 0), label: h.node_visit_id ? this.historyLabel(h) : h.stage + ' · attempt ' + ((h.run || 0) + 1) }));
       var live = this.runningRun();
       if (live) runs.push({ ...live, key: live.stage + '#' + live.run,
-        label: live.stage + ' · attempt ' + (live.run + 1) + ' · live' });
+        label: t.graph_execution ? live.stage + ' · visit ' + t.graph_execution.visit + ' · attempt ' + ((t.graph_execution.attempt || 0) + 1) + ' · live' : live.stage + ' · attempt ' + (live.run + 1) + ' · live' });
       return runs.reverse();
+    },
+
+    activityRunLabel() {
+      const t = this.outputSubject();
+      if (!t?.graph_execution && !t?.graph_definition) return 'attempt ' + (this.activityRun + 1);
+      const h = this.activityHistoryEntry();
+      if (h?.node_visit_id) return this.historyLabel(h);
+      const live = this.runningRun();
+      if (t.graph_execution && live?.stage === this.activityStage && live.run === this.activityRun) return 'visit ' + t.graph_execution.visit_id + ' · attempt ' + ((t.graph_execution.attempt || 0) + 1);
+      return 'artifact run ' + (this.activityRun + 1);
     },
 
     outputRunKey() {
@@ -404,18 +415,21 @@ export function kontoraActivity() {
         seen[name] = true;
         stages.push(name);
       }
-      (t.stages || []).forEach(add);
+      const graph = !!(t.graph_definition || t.graph_execution);
+      if (!graph) (t.stages || []).forEach(add);
       (t.history || []).forEach(function (h) { add(h.stage); });
-      (this.currentTicketCost()?.stages || []).forEach(function (cost) { add(cost.name); });
+      if (graph) {
+        if ((t.graph_definition?.nodes || []).some(n => n.id === t.stage && ['agent', 'check'].includes(n.type))) add(t.stage);
+      } else (this.currentTicketCost()?.stages || []).forEach(function (cost) { add(cost.name); });
 
-      var pipelineStages = t.stages || [];
+      var pipelineStages = graph ? [] : t.stages || [];
       var currentIdx = pipelineStages.indexOf(t.stage);
       return stages.map(function (name) {
         var i = pipelineStages.indexOf(name);
         var a = agg[name] || { seconds: 0, runs: 0, last: null };
         var cost = self.ticketStageCost(name);
         var running = self.executionActive(t) && name === t.stage;
-        var done = !running && (t.status === 'done' || a.runs > 0 || (cost && cost.tracked_runs > 0) || (i >= 0 && currentIdx >= 0 && i < currentIdx));
+        var done = !running && (a.runs > 0 || (!graph && (t.status === 'done' || (cost && cost.tracked_runs > 0) || (i >= 0 && currentIdx >= 0 && i < currentIdx))));
         var seconds = a.seconds;
         if (running && t.started_at) {
           var live = Math.floor((self.now - new Date(t.started_at)) / 1000);
@@ -456,7 +470,7 @@ export function kontoraActivity() {
     // Attempt denominator: the initial attempt plus the stage's max_retries.
     stageMaxAttempts() {
       var t = this.selectedTicket;
-      if (!t || !t.pipeline || !t.stage) return 0;
+      if (!t || t.graph_definition || t.graph_execution || !t.pipeline || !t.stage) return 0;
       var infos = (this.configCache && this.configCache.pipeline_infos) || [];
       for (var i = 0; i < infos.length; i++) {
         if (infos[i].name !== t.pipeline) continue;

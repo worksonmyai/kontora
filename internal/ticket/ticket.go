@@ -170,6 +170,11 @@ const (
 )
 
 type HistoryEntry struct {
+	WorkflowExecutionID   string `yaml:"workflow_execution_id,omitempty" json:"workflow_execution_id,omitempty"`
+	NodeVisitID           string `yaml:"node_visit_id,omitempty" json:"node_visit_id,omitempty"`
+	DefinitionFingerprint string `yaml:"definition_fingerprint,omitempty" json:"definition_fingerprint,omitempty"`
+	Template              string `yaml:"template,omitempty" json:"template,omitempty"`
+
 	RunOutcome    RunOutcome `yaml:"run_outcome,omitempty" json:"run_outcome,omitempty"`
 	OutcomeReason string     `yaml:"outcome_reason,omitempty" json:"outcome_reason,omitempty"`
 	InvocationID  string     `yaml:"invocation_id,omitempty" json:"invocation_id,omitempty"`
@@ -240,6 +245,9 @@ type Ticket struct {
 	StartedAt     *time.Time `yaml:"started_at"`
 	CompletedAt   *time.Time `yaml:"completed_at"`
 	Branch        string     `yaml:"branch"`
+
+	GraphState *GraphState `yaml:"graph_state,omitempty" json:"graph_state,omitempty"`
+
 	// InvocationID identifies the active invocation, not the most recent run.
 	InvocationID string `yaml:"invocation_id,omitempty" json:"invocation_id,omitempty"`
 	// BaseBranch names the branch the work branch starts from. Empty means the

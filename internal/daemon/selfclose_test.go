@@ -43,9 +43,9 @@ func TestSelfCloseDuringStageDiscardsTheRun(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			cfg := h.defaultConfig("true", "true")
-			cfg.Pipelines["park-stage"] = config.Pipeline{
+			cfg.Pipelines["park-stage"] = config.PipelineDefinition{Legacy: config.Pipeline{
 				{Stage: "step1", Agent: "agent1", OnSuccess: "human_review", OnFailure: "pause"},
-			}
+			}}
 			path := filepath.Join(h.tasksDir, "tst-self.md")
 
 			runner := func(ctx context.Context, p RunnerParams) (process.Result, error) {

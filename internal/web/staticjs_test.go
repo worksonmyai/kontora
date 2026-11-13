@@ -25,7 +25,7 @@ func TestStaticIndexJS(t *testing.T) {
 
 func TestSettingsJS(t *testing.T) {
 	bundle := writeBundle(t)
-	for _, name := range []string{"settings.test.mjs", "settings_picker.test.mjs", "settings_routes.test.mjs", "automations.test.mjs"} {
+	for _, name := range []string{"settings.test.mjs", "settings_picker.test.mjs", "settings_routes.test.mjs", "automations.test.mjs", "graph.test.mjs"} {
 		t.Run(name, func(t *testing.T) {
 			cmd := nodeTest(t, name)
 			cmd.Env = append(os.Environ(), "KONTORA_BUNDLE="+bundle)

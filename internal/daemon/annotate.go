@@ -91,7 +91,7 @@ func (d *Daemon) StartPlannotatorAnnotate(id string) error {
 		d.mu.Unlock()
 		return web.ErrTicketNotFound
 	}
-	refusal := annotateRefusal(ts.ticket)
+	refusal := d.annotateRefusal(ts.ticket)
 	d.mu.Unlock()
 	if refusal != nil {
 		return refusal
@@ -134,7 +134,7 @@ func (d *Daemon) claimAnnotateSession(id string, cancel context.CancelFunc) (str
 	if !ok {
 		return "", web.ErrTicketNotFound
 	}
-	if err := annotateRefusal(ts.ticket); err != nil {
+	if err := d.annotateRefusal(ts.ticket); err != nil {
 		return "", err
 	}
 	if _, running := d.running[id]; running {
@@ -160,7 +160,10 @@ const annotateStatus = ticket.StatusOpen
 //
 // An uninitialized ticket is not refused: parkForAnnotation adopts it, the same
 // way a move on the board does.
-func annotateRefusal(t *ticket.Ticket) error {
+func (d *Daemon) annotateRefusal(t *ticket.Ticket) error {
+	if d.isGraphTicket(t) {
+		return fmt.Errorf("%w: automatic ticket annotation is unavailable for graph workflows; edit the ticket manually", web.ErrInvalidState)
+	}
 	switch {
 	case t.Status != annotateStatus:
 		return fmt.Errorf("%w: a ticket in %s cannot be annotated", web.ErrInvalidState, t.Status)
@@ -281,6 +284,9 @@ func (d *Daemon) parkForAnnotation(id string) error {
 	t2, err := ticket.ParseFile(filePath)
 	if err != nil {
 		return fmt.Errorf("re-read ticket: %w", err)
+	}
+	if d.isGraphTicket(t2) {
+		return fmt.Errorf("%w: automatic ticket annotation is unavailable for graph workflows", web.ErrInvalidState)
 	}
 	// A Plannotator session can stay open for as long as its timeout allows, and
 	// the ticket can be moved or finished in the meantime. Parking then would

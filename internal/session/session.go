@@ -45,6 +45,10 @@ func LogPath(logsDir, ticketID, stage string) string {
 	return filepath.Join(logsDir, ticketID, stage+".log")
 }
 
+func GraphLogPath(logsDir, ticketID, nodeID, visitID string) string {
+	return filepath.Join(logsDir, ticketID, nodeID+"."+visitID+".log")
+}
+
 // EventsPath is the structured activity sidecar for one run of a stage. It sits
 // beside the stage log; the .json suffix keeps it out of every existing
 // log-directory scanner, all of which filter on .log.
@@ -164,7 +168,10 @@ func SafeRef(kind, ref string) bool {
 // Record is the on-disk <stage>.session JSON: the agent session a stage run
 // opened. The JSON tags are persisted and must not change.
 type Record struct {
-	AttemptID string `json:"attempt_id,omitempty"`
+	AttemptID             string `json:"attempt_id,omitempty"`
+	WorkflowExecutionID   string `json:"workflow_execution_id,omitempty"`
+	NodeVisitID           string `json:"node_visit_id,omitempty"`
+	DefinitionFingerprint string `json:"definition_fingerprint,omitempty"`
 	// SessionID is the Claude session UUID. Pi leaves it empty: pi names its
 	// session file itself, so the file does not exist yet at write time.
 	SessionID string    `json:"session_id"`

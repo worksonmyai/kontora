@@ -32,7 +32,11 @@ Commands that take a `TICKET_ID` accept a unique prefix, except for `result`, wh
 | `KONTORA_AGENT` | `kontora note` | The configured name of the agent the run belongs to. The daemon exports it to the agents it spawns, so an agent's own note is signed with the name it runs as. `--author` outranks it. |
 | `KONTORA_STAGE` | agents and hooks | The stage the run belongs to. |
 | `KONTORA_TICKET_ID` | stage agents and lifecycle commands | Current ticket; prevents an agent from changing its own lifecycle. |
-| `KONTORA_RESULT_VERSION` | `result` | Supervised result protocol version, currently `1`. |
+| `KONTORA_RESULT_VERSION` | `result` | Bound result protocol version: `1` for legacy supervised runs, `2` for graph agent nodes. |
+| `KONTORA_WORKFLOW_EXECUTION_ID` | graph results | Current workflow execution identity. |
+| `KONTORA_NODE_VISIT_ID` | graph results | Current executable visit identity, retained on retry. |
+| `KONTORA_DEFINITION_FINGERPRINT` | graph results | Bound effective workflow definition fingerprint. |
+| `KONTORA_RESULT_VERDICTS` | graph results | JSON array of this node's declared verdicts. |
 | `KONTORA_INVOCATION_ID` | `result` | Identity of this physical invocation; changes on retry and resume-to-fresh fallback. |
 | `KONTORA_RESULT_TICKET` | `result` | Exact ticket identity bound to this invocation. |
 | `KONTORA_RESULT_STAGE` | `result` | Stage identity bound to this invocation. |
@@ -204,7 +208,7 @@ Marks an existing ticket file `kontora: true` so the daemon will run it. Without
 | `--path PATH` | Repository path. Required when the frontmatter has none. |
 | `--pipeline NAME` | Pipeline to run, or `none` for a standalone ticket. |
 | `--agent NAME` | Agent to use, or `none` to skip the project default. |
-| `--stage NAME` | Starting stage. Defaults to the pipeline's first stage when `--pipeline` is given. |
+| `--stage NAME` | Starting legacy stage. Graphs must start at their configured entry node; arbitrary starting nodes are refused. |
 | `--status STATUS` | `open` or `todo`. Defaults to asking. |
 
 For ordinary tickets, pipeline precedence is explicit request, stored nonempty
@@ -223,7 +227,7 @@ Operators must retarget stored pipelines explicitly with `kontora update --pipel
 
 For an epic, explicit `--status todo` activates a supervisor and validates that every child uses the epic's repository. Omit `--pipeline` and `--stage`; use `--agent` to select the supervisor. Passive epic initialization without explicit `--status todo` is refused. Starting an epic through local `init` requires a running daemon, so it queues the supervisor even with `auto_pick_up: false`.
 
-For ordinary tickets in remote mode, `--pipeline` and `--path` are both required, because the pickers cannot run over HTTP. `--status` is sent; `--stage` is not, so the remote form starts at the pipeline's first stage. Initializing a [scheduled](tickets.md#scheduled-pickup) ticket with `--status todo` queues it now and drops the timestamp; `--status open` keeps it.
+For ordinary tickets in remote mode, `--pipeline` and `--path` are both required, because the pickers cannot run over HTTP. `--status` is sent; `--stage` is not, so the remote form starts at the legacy pipeline's first stage or the graph's entry. Initializing a [scheduled](tickets.md#scheduled-pickup) ticket with `--status todo` queues it now and drops the timestamp; `--status open` keeps it.
 
 ## Lifecycle
 
@@ -262,11 +266,60 @@ Stops a running ticket and parks it in `paused`. A ticket that already closed ca
 
 ### `kontora retry TICKET_ID`
 
-Resets an initialized ticket to `todo` with the attempt counter cleared. Refused for tickets in `in_progress`, `todo`, or `archived`, and for passive epics.
+For legacy execution, resets an initialized ticket to `todo` with the attempt counter cleared.
+For a graph, repeats the same executable visit with a fresh invocation, preserving
+execution identity, visit identity and loop counts. Graph retry at an `end` node
+is refused; use workflow restart for a new traversal. Refused for tickets in `in_progress`, `todo`, or `archived`, and for passive epics.
 
 Local mode only updates the ticket file. With `auto_pick_up: false`, follow retry with `kontora run TICKET_ID`. Remote mode and dashboard/API retry queue dependency-ready work even with automatic pickup off.
 
 Queueing does not mean the run has started. Before preparing a replacement workspace, the daemon checks for leftover tmux windows. Duplicate windows or uncertain cleanup prevent replacement and preserve execution reservations. Inspect `last_error` and the prior window before retrying again.
+
+### `kontora workflow-restart TICKET_ID`
+
+Requires a running daemon.
+
+```sh
+kontora workflow-restart TICKET_ID
+```
+
+`workflow-restart` starts a new execution at the graph's `entry`. It resets visit
+and loop counters, but retains history, sidecar numbering and the existing
+worktree. It does not undo shell effects or discard files. Stop execution and
+resolve outstanding recovery before restarting. A changed definition requires
+inspection and an explicit new execution, not silent continuation.
+
+### `kontora workflow-recover TICKET_ID`
+
+Requires a running daemon. Put flags before the ticket ID:
+
+```sh
+kontora workflow-recover --execution-id EXECUTION_ID --revision N TICKET_ID
+```
+
+`workflow-recover` acknowledges termination for the execution identity and
+revision the operator inspected. Before acknowledgement:
+
+1. Read current `graph_state` and the pause reason.
+2. Inspect invocation journals, saved results, processes and the worktree,
+   including dirty files and interrupted Git operations.
+3. Establish that the previous executable stopped. A missing tmux window is not
+   proof that detached descendants stopped.
+4. Submit the inspected execution ID and revision. If either changed, inspect
+   the new state rather than automatically repeating the request.
+
+Recovery does not launch work or reset loop counts. Use `retry` separately for
+an eligible executable visit. Ordinary retry preserves execution and visit
+identity, while each physical invocation gets a fresh invocation ID. Restart
+creates a new execution identity. Neither operation erases old history.
+
+`skip` and `set-stage` are refused for graphs, including stopped graphs.
+Graph annotations and Plannotator rework are deferred and refused. Upgrade all
+CLI and daemon binaries sharing config or tickets together. Graph execution
+remains disabled until combined verification passes. Focused tests alone do
+not establish production readiness. Recovery
+does not promise exactly-once shell or hook effects, host-power-loss durability,
+or containment of arbitrary detached processes.
 
 ### `kontora cancel TICKET_ID` / `kontora done TICKET_ID`
 
@@ -278,13 +331,13 @@ The general form of the three above: moves a ticket to any status the config all
 
 ### `kontora skip TICKET_ID`
 
-Intermediate skip sets the next stage to `todo`. Daemon/API skip queues dependency-ready work even with `auto_pick_up: false`. Disk-only skip does not enqueue; use `kontora run TICKET_ID` afterward when automatic pickup is off. Final skip marks the ticket done without recording a successful run.
+Legacy list pipelines only; graph skip is refused. Intermediate skip sets the next stage to `todo`. Daemon/API skip queues dependency-ready work even with `auto_pick_up: false`. Disk-only skip does not enqueue; use `kontora run TICKET_ID` afterward when automatic pickup is off. Final skip marks the ticket done without recording a successful run.
 
 If an agent is running, use `kontora pause TICKET_ID` first. Wait for the agent to stop before using `skip`. An active Plannotator review also blocks stage changes; close the review first.
 
 ### `kontora set-stage TICKET_ID STAGE`
 
-Moves the ticket to a named stage of its pipeline. Leaves status and attempt unchanged; does not retry or queue the ticket. A ticket already in `todo` remains eligible for pickup.
+Legacy list pipelines only; graph set-stage is refused. Moves the ticket to a named stage of its pipeline. Leaves status and attempt unchanged; does not retry or queue the ticket. A ticket already in `todo` remains eligible for pickup.
 
 If an agent is running, pause the ticket first and wait for the agent to stop. Close any active Plannotator review before changing the stage. Use `kontora retry TICKET_ID` separately when you want to restart a paused ticket.
 
@@ -633,7 +686,8 @@ Use `kontora automation attach REF --run N` to select an exact run or use a conf
 
 ### `kontora review TICKET_ID` / `kontora annotate TICKET_ID`
 
-Open the ticket's diff, or its markdown, in [Plannotator](https://plannotator.ai). The daemon spawns the binary, so in remote mode the window opens on the daemon host, not on the caller's screen. `review` needs the ticket to be in `human_review`.
+For graph tickets, `annotate` is refused. `review` can show the diff, but feedback cannot start automatic rework.
+For eligible tickets, open the diff or markdown in [Plannotator](https://plannotator.ai). The daemon spawns the binary, so in remote mode the window opens on the daemon host, not on the caller's screen. `review` needs the ticket to be in `human_review`.
 
 ## Supervised results
 
@@ -653,7 +707,23 @@ The daemon binds result variables after configured agent environment merging.
 }
 ```
 
-Only `outcome`, `summary`, and optional `next_step` are accepted. `outcome` is
+Version 1 accepts only `outcome`, `summary`, and optional `next_step`.
+Graph agent nodes use version 2 and additionally accept `verdict`. A complete
+result must include a declared verdict when the node defines `verdicts`;
+undeclared verdicts are refused. For example:
+
+```json
+{"outcome":"complete","summary":"Review found required fixes","verdict":"changes_requested"}
+```
+
+This completes the review node; it does not mean the ticket is accepted. A
+condition can compare the verdict and follow an explicit rework loop. Graph
+agent nodes always require results, independently of epic membership. Check nodes
+use observed process exit codes rather than agent result submission. Invocation,
+workflow execution, visit and fingerprint identity come from daemon-bound
+context, never user payload fields.
+
+For both versions, `outcome` is
 `complete` or `blocked`; `summary` must be nonblank, and `blocked` requires a
 nonblank `next_step`. All fields are strings. Payloads must be valid UTF-8 JSON,
 at most 32 KiB, with no NULs, duplicate or unknown fields, or trailing content.
@@ -661,7 +731,7 @@ Incompatible context versions are rejected. Invocation identity is not a payload
 field. Use a file-writing tool to create a unique scratch file outside the repo,
 then submit it; do not interpolate generated JSON into shell commands.
 
-Pi also exposes `kontora_result({outcome, summary, next_step?})`, independently of
+Pi also exposes `kontora_result({outcome, summary, next_step?, verdict?})`, independently of
 checkpoint compaction. It submits through the CLI without a shell and checks the
 acknowledgement. Check acknowledgement with either transport: identical
 resubmission is idempotent; a conflicting submission cannot replace the first
@@ -669,8 +739,8 @@ result. A late result cannot finalize a replacement invocation. Notes, summaries
 final prose, question markers, and phase checkpoints are not terminal results.
 
 Activated epic supervisors and their children, including rework, must report.
-Passive-epic children, unrelated tickets, annotations, and assistant-only runs
-retain their existing result requirements. `complete` means the assigned current
+Non-graph passive-epic children and unrelated tickets, annotations, and
+assistant-only runs retain their existing result requirements. `complete` means the assigned current
 stage is complete, not the whole ticket or human acceptance. Review completion
 can still leave fixes for later stages. Fixture work is not complete if the
 stage still requires production foundations or other acceptance evidence.

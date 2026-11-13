@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"cmp"
 	"errors"
 	"fmt"
@@ -93,35 +94,35 @@ func (m PerAgent) For(agentName string, a Agent) string {
 }
 
 type Config struct {
-	TicketsDir                   string                     `yaml:"tickets_dir"`
-	SecondaryTicketsDirs         []string                   `yaml:"secondary_tickets_dirs"`
-	BranchPrefix                 string                     `yaml:"branch_prefix"`
-	BranchNaming                 BranchNaming               `yaml:"branch_naming"`
-	WorktreesDir                 string                     `yaml:"worktrees_dir"`
-	LogsDir                      string                     `yaml:"logs_dir"`
-	Editor                       string                     `yaml:"editor"`
-	Pager                        string                     `yaml:"pager"`
-	DefaultAgent                 string                     `yaml:"default_agent"`
-	DefaultPipeline              string                     `yaml:"default_pipeline"`
-	MaxConcurrentAgents          int                        `yaml:"max_concurrent_agents"`
-	MaxConcurrentEpicSupervisors int                        `yaml:"max_concurrent_epic_supervisors"`
-	AutoPickUp                   *bool                      `yaml:"auto_pick_up"`
-	InstanceName                 string                     `yaml:"instance_name"`
-	Author                       string                     `yaml:"author"`
-	TmuxSession                  string                     `yaml:"tmux_session"`
-	Web                          Web                        `yaml:"web"`
-	Agents                       map[string]Agent           `yaml:"agents"`
-	Stages                       map[string]Stage           `yaml:"stages"`
-	Pipelines                    map[string]Pipeline        `yaml:"pipelines"`
-	Projects                     map[string]Project         `yaml:"projects"`
-	Automations                  map[string]automation.Spec `yaml:"automations"`
-	Statuses                     []string                   `yaml:"statuses"`
-	Environment                  map[string]string          `yaml:"environment"`
-	Hooks                        Hooks                      `yaml:"hooks"`
-	Plannotator                  Plannotator                `yaml:"plannotator"`
-	Assistant                    Assistant                  `yaml:"assistant"`
-	Metrics                      Metrics                    `yaml:"metrics"`
-	Notifications                Notifications              `yaml:"notifications"`
+	TicketsDir                   string                        `yaml:"tickets_dir"`
+	SecondaryTicketsDirs         []string                      `yaml:"secondary_tickets_dirs"`
+	BranchPrefix                 string                        `yaml:"branch_prefix"`
+	BranchNaming                 BranchNaming                  `yaml:"branch_naming"`
+	WorktreesDir                 string                        `yaml:"worktrees_dir"`
+	LogsDir                      string                        `yaml:"logs_dir"`
+	Editor                       string                        `yaml:"editor"`
+	Pager                        string                        `yaml:"pager"`
+	DefaultAgent                 string                        `yaml:"default_agent"`
+	DefaultPipeline              string                        `yaml:"default_pipeline"`
+	MaxConcurrentAgents          int                           `yaml:"max_concurrent_agents"`
+	MaxConcurrentEpicSupervisors int                           `yaml:"max_concurrent_epic_supervisors"`
+	AutoPickUp                   *bool                         `yaml:"auto_pick_up"`
+	InstanceName                 string                        `yaml:"instance_name"`
+	Author                       string                        `yaml:"author"`
+	TmuxSession                  string                        `yaml:"tmux_session"`
+	Web                          Web                           `yaml:"web"`
+	Agents                       map[string]Agent              `yaml:"agents"`
+	Stages                       map[string]Stage              `yaml:"stages"`
+	Pipelines                    map[string]PipelineDefinition `yaml:"pipelines"`
+	Projects                     map[string]Project            `yaml:"projects"`
+	Automations                  map[string]automation.Spec    `yaml:"automations"`
+	Statuses                     []string                      `yaml:"statuses"`
+	Environment                  map[string]string             `yaml:"environment"`
+	Hooks                        Hooks                         `yaml:"hooks"`
+	Plannotator                  Plannotator                   `yaml:"plannotator"`
+	Assistant                    Assistant                     `yaml:"assistant"`
+	Metrics                      Metrics                       `yaml:"metrics"`
+	Notifications                Notifications                 `yaml:"notifications"`
 
 	// SummaryModel selects the model the final summary pass runs with, resolved
 	// against the agent that ran the last stage. It is one top-level field rather
@@ -731,8 +732,19 @@ func Load(path string) (*Config, error) {
 }
 
 func LoadReader(r io.Reader) (*Config, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("reading config: %w", err)
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	if err := validateGraphAliases(&document); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
 	var cfg Config
-	dec := yaml.NewDecoder(r)
+	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
@@ -1192,10 +1204,20 @@ func (c *Config) validatePipelines() error {
 		validOnFailure[s] = true
 	}
 
-	for name, pipeline := range c.Pipelines {
+	for name, definition := range c.Pipelines {
 		if name == NoneSentinel {
 			return fmt.Errorf("pipeline %q: name is reserved for the project-default opt-out", name)
 		}
+		if definition.IsGraph() {
+			if definition.Legacy != nil {
+				return fmt.Errorf("pipeline %q: cannot contain both legacy stages and a graph", name)
+			}
+			if err := c.validateWorkflow(definition.Graph); err != nil {
+				return fmt.Errorf("pipeline %q: %w", name, err)
+			}
+			continue
+		}
+		pipeline := definition.Legacy
 		if len(pipeline) == 0 {
 			return fmt.Errorf("pipeline %q: must have at least one stage", name)
 		}

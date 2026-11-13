@@ -215,11 +215,11 @@ func testConfig(dir string) *config.Config {
 			"code":   {Prompt: "code"},
 			"review": {Prompt: "review"},
 		},
-		Pipelines: map[string]config.Pipeline{
-			"default": {
+		Pipelines: map[string]config.PipelineDefinition{
+			"default": {Legacy: config.Pipeline{
 				{Stage: "code", Agent: "claude-sonnet", OnSuccess: "next", OnFailure: "pause"},
 				{Stage: "review", Agent: "claude-sonnet", OnSuccess: "done", OnFailure: "pause"},
-			},
+			}},
 		},
 	}
 }
@@ -1175,8 +1175,8 @@ func TestShowConfig_IncludesDefaults(t *testing.T) {
 		TicketsDir: "/tmp/tasks",
 		Agents:     map[string]config.Agent{"a": {Binary: "bin"}},
 		Stages:     map[string]config.Stage{"s": {Prompt: "p"}},
-		Pipelines: map[string]config.Pipeline{
-			"p": {{Stage: "s", Agent: "a", OnSuccess: "done", OnFailure: "pause"}},
+		Pipelines: map[string]config.PipelineDefinition{
+			"p": {Legacy: config.Pipeline{{Stage: "s", Agent: "a", OnSuccess: "done", OnFailure: "pause"}}},
 		},
 	}
 	var buf bytes.Buffer

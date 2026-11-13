@@ -13,6 +13,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/ticket/store"
@@ -121,6 +122,24 @@ func (s *apiSource) FetchLogs(id, stage string) (string, error) {
 	return s.client.Logs(id, stage)
 }
 
+func (s *apiSource) FetchRunLogs(id, stage string, run int) (string, error) {
+	info, err := s.client.Activity(id, stage, run)
+	if err != nil {
+		return "", err
+	}
+	if info.Stale {
+		return "No exact transcript for this attempt; the visit log was overwritten by a later retry.", nil
+	}
+	if info.Tape != nil {
+		return renderRunTape(info.Tape), nil
+	}
+	return info.Content, nil
+}
+
+func (s *apiSource) RestartWorkflow(id string) error {
+	return s.client.WorkflowRestart(id)
+}
+
 func (s *apiSource) FetchConfig() (web.ConfigInfo, error) {
 	s.mu.Lock()
 	s.configSeq++
@@ -217,6 +236,44 @@ func (s *fileSource) FetchLogs(id, stage string) (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+func (s *fileSource) FetchRunLogs(id, stage string, run int) (string, error) {
+	if !ticket.IsSafeID(id) || !ticket.IsSafeID(stage) || run < 0 {
+		return "", fmt.Errorf("invalid run identity")
+	}
+	tk, err := ticket.ParseFile(filepath.Join(config.ExpandTilde(s.cfg.TicketsDir), id+".md"))
+	if err != nil {
+		return "", err
+	}
+	tape, content, err := cli.StageActivity(s.cfg.TicketsDir, s.cfg.LogsDir, id, stage, run)
+	if os.IsNotExist(err) {
+		return "No structured record for this visit; the shared stage log may belong to another visit.", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if tape != nil {
+		return renderRunTape(tape), nil
+	}
+	_, stale, graph := cli.GraphRunLog(tk, config.ExpandTilde(s.cfg.LogsDir), stage, run)
+	if !graph || stale {
+		return "No exact transcript for this attempt; the visit log may belong to a later retry.", nil
+	}
+	return content, nil
+}
+
+func renderRunTape(tape *logfmt.Tape) string {
+	var b strings.Builder
+	for _, event := range tape.Events {
+		if event.Text != "" {
+			b.WriteString(event.Text + "\n")
+		}
+		if event.Tool != "" {
+			fmt.Fprintf(&b, "> %s %s\n%s\n", event.Tool, event.Arg, event.Result)
+		}
+	}
+	return b.String()
 }
 
 var errDaemonNotRunning = fmt.Errorf("daemon not verified; actions and attachment unavailable in file mode")

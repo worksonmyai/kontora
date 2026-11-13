@@ -34,9 +34,9 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 	if t.Pipeline != "" {
 		fmt.Fprintf(w, "pipeline:  %s\n", t.Pipeline)
 
-		if pipeline, ok := cfg.Pipelines[t.Pipeline]; ok {
+		if pipeline, ok := cfg.Pipelines[t.Pipeline]; ok && !pipeline.IsGraph() && t.GraphState == nil {
 			var stages []string
-			for _, step := range pipeline {
+			for _, step := range pipeline.Legacy {
 				if step.Stage == t.Stage {
 					stages = append(stages, "["+step.Stage+"]")
 				} else {
@@ -46,6 +46,8 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 			fmt.Fprintf(w, "stage:     %s\n", strings.Join(stages, " → "))
 		}
 	}
+	view := app.BuildView(cfg, t, true)
+	PrintWorkflow(w, view.GraphDefinition, view.GraphExecution)
 	if t.Path != "" {
 		fmt.Fprintf(w, "path:      %s\n", t.Path)
 	}
@@ -69,7 +71,7 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 	if t.InvocationID != "" {
 		fmt.Fprintf(w, "invocation: %s\n", t.InvocationID)
 	}
-	if t.Attempt > 0 {
+	if t.Attempt > 0 && view.GraphExecution == nil {
 		fmt.Fprintf(w, "attempt:   %d\n", t.Attempt)
 	}
 	if t.CompletedAt != nil {
@@ -89,6 +91,9 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 			}
 			if h.InvocationID != "" {
 				fmt.Fprintf(w, " · invocation %s", h.InvocationID)
+			}
+			if h.WorkflowExecutionID != "" {
+				fmt.Fprintf(w, " · execution %s · visit %s", h.WorkflowExecutionID, h.NodeVisitID)
 			}
 			fmt.Fprintln(w)
 		}

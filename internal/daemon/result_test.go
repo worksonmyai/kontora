@@ -536,8 +536,8 @@ func TestResultSupervisedPipelineOutcomes(t *testing.T) {
 			if onFailure == "" {
 				onFailure = "pause"
 			}
-			cfg.Pipelines["two-stage"][1].OnFailure = onFailure
-			cfg.Pipelines["two-stage"][1].MaxRetries = 3
+			cfg.Pipelines["two-stage"].Legacy[1].OnFailure = onFailure
+			cfg.Pipelines["two-stage"].Legacy[1].MaxRetries = 3
 			cfg.Agents["agent2"] = config.Agent{Binary: "true", FailurePatterns: []string{"provider unavailable"}}
 			if tc.hookReject {
 				cfg.Hooks = config.Hooks{config.HookStageEnd: {{Name: "reject", Run: "exit 1", OnFailure: "pause"}}}
@@ -689,7 +689,7 @@ func TestResultExitGuardsBeforeAndAfterHooks(t *testing.T) {
 				f.d.handleAgentExit(context.Background(), context.Background(), handleExitParams{
 					cfg: f.h.cfg, log: testLogger(t), ticketID: f.tkt.ID, filePath: f.path,
 					stageName: "step2", agentName: "agent2", run: 1, runData: run, result: run.Result,
-					pipelineCfg: f.h.cfg.Pipelines["two-stage"], repoPath: f.h.repoDir, wtPath: f.h.wtDir,
+					pipelineCfg: f.h.cfg.Pipelines["two-stage"].Legacy, repoPath: f.h.repoDir, wtPath: f.h.wtDir,
 				})
 				got, err := os.ReadFile(f.path)
 				require.NoError(t, err)

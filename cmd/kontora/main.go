@@ -94,6 +94,8 @@ var handlers = map[string]func(){
 	"summary":             cmdSummary,
 	"pause":               func() { cmdAction("pause") },
 	"retry":               func() { cmdAction("retry") },
+	"workflow-restart":    func() { cmdWorkflow("workflow-restart") },
+	"workflow-recover":    func() { cmdWorkflow("workflow-recover") },
 	"skip":                cmdSkip,
 	"set-stage":           cmdSetStage,
 	"cancel":              func() { cmdAction("cancel") },
@@ -1121,6 +1123,46 @@ func daemonClient(configPath, urlFlag, tokenFlag string) *remote.Client {
 	return cli.LocalClient(mustLoadConfig(configPath))
 }
 
+func cmdWorkflow(action string) {
+	fs := flag.NewFlagSet(action, flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	var executionID, revision string
+	if action == "workflow-recover" {
+		fs.StringVar(&executionID, "execution-id", "", "inspected workflow execution ID (required)")
+		fs.StringVar(&revision, "revision", "", "inspected workflow state revision (required)")
+	}
+	taskID := parseTicketFlags(fs, os.Args[2:])
+	if taskID == "" {
+		log.Fatalf("usage: kontora %s TICKET_ID", action)
+	}
+	rejectSelfMove(action, taskID)
+	var expectedRevision uint64
+	if action == "workflow-recover" {
+		var err error
+		expectedRevision, err = cli.ParseWorkflowRecovery(executionID, revision)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	// Resolve through the daemon in both modes. Never fall back to disk:
+	// journals and outstanding reservations are not represented by the ticket.
+	rc := daemonClient(*configPath, *urlFlag, *tokenFlag)
+	id := mustResolveRemote(rc, taskID)
+	var err error
+	message := "workflow restarted"
+	if action == "workflow-recover" {
+		err = rc.WorkflowRecover(id, executionID, expectedRevision)
+		message = "workflow recovery acknowledged"
+	} else {
+		err = rc.WorkflowRestart(id)
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+	confirm(id, message)
+}
+
 func cmdStats() {
 	fs := flag.NewFlagSet("stats", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
@@ -1196,11 +1238,18 @@ func cmdPhaseComplete() {
 func cmdResult() {
 	fs := flag.NewFlagSet("result", flag.ExitOnError)
 	inputFile := fs.String("input-file", "", "absolute path to result JSON (default: stdin)")
+	verdict := fs.String("verdict", "", "declared workflow verdict (result version 2)")
 	ticketID := parseTicketFlags(fs, os.Args[2:])
 	if ticketID == "" {
 		log.Fatal("ticket ID is required: kontora result [--input-file /absolute/path/result.json] TICKET_ID")
 	}
-	if err := cli.ReportResult(ticketID, *inputFile, os.Stdin, os.Stdout, os.Getenv); err != nil {
+	var verdictFlag []string
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "verdict" {
+			verdictFlag = []string{*verdict}
+		}
+	})
+	if err := cli.ReportResult(ticketID, *inputFile, os.Stdin, os.Stdout, os.Getenv, verdictFlag...); err != nil {
 		log.Fatal(err)
 	}
 }

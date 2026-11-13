@@ -145,6 +145,12 @@ func (s *Service) setStatus(id string, status ticket.Status) (Result, error) {
 		return Result{}, fmt.Errorf("%w: cannot pause ticket %s in status %s (use retry to reopen it)", ErrInvalidState, resolved, st.Ticket.Status)
 	}
 
+	if status == ticket.StatusTodo {
+		if err := ValidateWorkflowReentry(s.cfg(), st.Ticket); err != nil {
+			return Result{}, err
+		}
+	}
+
 	if err := st.Ticket.SetField("kontora", true); err != nil {
 		return Result{}, fmt.Errorf("setting kontora: %w", err)
 	}
@@ -246,6 +252,9 @@ func (s *Service) retry(id string) (Result, error) {
 		return Result{}, err
 	}
 
+	if err := retryWorkflow(s.cfg(), st.Ticket); err != nil {
+		return Result{}, err
+	}
 	if err := st.Ticket.SetField("attempt", 0); err != nil {
 		return Result{}, fmt.Errorf("setting attempt: %w", err)
 	}
@@ -344,6 +353,9 @@ func (s *Service) skip(id string) (Result, error) {
 }
 
 func (s *Service) stageChangePipeline(t *ticket.Ticket) (config.Pipeline, error) {
+	if t.GraphState != nil || s.cfg().Pipelines[t.Pipeline].IsGraph() {
+		return nil, fmt.Errorf("%w: skip and set-stage are not supported for graph workflows; use retry or workflow-restart", ErrInvalidState)
+	}
 	if t.IsRunning() {
 		return nil, fmt.Errorf("%w: cannot change the stage of ticket %s while it is running; pause first and wait for the agent to stop", ErrInvalidState, t.ID)
 	}
@@ -360,7 +372,7 @@ func (s *Service) stageChangePipeline(t *ticket.Ticket) (config.Pipeline, error)
 	if !ok {
 		return nil, fmt.Errorf("%w: unknown pipeline %q for ticket %s", ErrInvalidState, t.Pipeline, t.ID)
 	}
-	return steps, nil
+	return steps.Legacy, nil
 }
 
 // SetStage changes only the stage. It does not retry or enqueue the ticket.
@@ -422,7 +434,7 @@ func (s *Service) resolveInitFields(cfg *config.Config, t *ticket.Ticket, req In
 	pipeline, agent = cfg.ResolveTicketDefaults(repoPath, pipeline, agent, epicChild)
 
 	if pipeline != "" {
-		if steps, ok := cfg.Pipelines[pipeline]; !ok || len(steps) == 0 {
+		if steps, ok := cfg.Pipelines[pipeline]; !ok || (!steps.IsGraph() && len(steps.Legacy) == 0) {
 			return "", "", fmt.Errorf("%w: unknown pipeline %q", ErrInvalidState, pipeline)
 		}
 	}
@@ -561,6 +573,12 @@ func (s *Service) init(id string, req InitRequest) (Result, error) {
 	if err := applyInitFields(t, req, pipeline, agent); err != nil {
 		return Result{}, err
 	}
+	if err := initStage(cfg, t, req, reinit, prevPipeline, prevStage); err != nil {
+		return Result{}, err
+	}
+	if err := ValidateWorkflowReentry(cfg, t); err != nil {
+		return Result{}, err
+	}
 	if err := s.validateExecution(t); err != nil {
 		return Result{}, err
 	}
@@ -583,21 +601,6 @@ func (s *Service) init(id string, req InitRequest) (Result, error) {
 	if status != string(ticket.StatusOpen) {
 		if err := t.ClearSchedule(); err != nil {
 			return Result{}, fmt.Errorf("clearing %s: %w", ticket.FieldScheduledAt, err)
-		}
-	}
-
-	if pipeline != "" {
-		stageName := req.Stage
-		if stageName == "" {
-			stageName = cfg.Pipelines[pipeline][0].Stage
-			// A re-init keeps the stage the ticket reached. Only a pipeline
-			// change restarts it, because the old stage is not in the new one.
-			if reinit && prevStage != "" && pipeline == prevPipeline {
-				stageName = prevStage
-			}
-		}
-		if err := t.SetField("stage", stageName); err != nil {
-			return Result{}, fmt.Errorf("setting stage: %w", err)
 		}
 	}
 
@@ -629,12 +632,11 @@ func AgentForStage(cfg *config.Config, pipelineName, stageName string) string {
 	if !ok || stageName == "" {
 		return ""
 	}
-	for _, step := range pipeline {
-		if step.Stage == stageName {
-			return step.Agent
-		}
+	node, err := pipeline.Resolve(stageName, "")
+	if err != nil {
+		return ""
 	}
-	return ""
+	return node.Agent
 }
 
 func stageIndex(pipeline config.Pipeline, stageName string) int {

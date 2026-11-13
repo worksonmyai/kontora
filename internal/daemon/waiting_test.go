@@ -93,9 +93,9 @@ func runningTicket(t *testing.T, d *Daemon, id string) web.TicketInfo {
 func TestWaiting_MarkerDrivesTicketState(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.defaultConfig("pi", "pi")
-	cfg.Pipelines["one-stage"] = config.Pipeline{
+	cfg.Pipelines["one-stage"] = config.PipelineDefinition{Legacy: config.Pipeline{
 		{Stage: "step1", Agent: "agent1", OnSuccess: "done", OnFailure: "pause"},
-	}
+	}}
 
 	since := time.Now().Add(-90 * time.Second).Truncate(time.Second)
 	release := make(chan struct{})

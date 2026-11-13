@@ -1,8 +1,9 @@
 # Pipelines and runs
 
-A pipeline is an ordered list of steps. Each step names a stage and the agent
-that runs it, and says what happens on success and on failure. A ticket
-references a pipeline by name in its `pipeline` frontmatter field.
+A pipeline is either a legacy ordered list of steps or a version 2 workflow
+graph. A ticket selects it by name in its `pipeline` frontmatter field.
+Legacy steps name stages, agents, and success/failure policies. Graphs use
+explicit nodes and edges; YAML list order does not determine execution order.
 
 An ordinary ticket with no pipeline runs standalone: one agent invocation with
 the default agent, no stages. An epic has no pipeline. A passive epic never
@@ -121,11 +122,112 @@ Upgrade every CLI and daemon sharing the ticket store before enabling the new
 setting. Older loaders reject it and older clients mistake custom-active tickets
 for parked ones. Existing parked tickets need no migration and are not activated.
 
+## Workflow graphs
+
+Author graphs in YAML. Do not edit them through a legacy stage-list editor.
+This complete configuration checks tests and permits two repair passes before
+parking. Execution is sequential, not parallel fan-out or join.
+
+```yaml
+default_pipeline: repair
+agents:
+  claude: {binary: claude}
+stages:
+  fix:
+    prompt: |
+      {{ .Ticket.Description }}
+      Fix failing tests. Do NOT commit or push.
+    timeout: 30m
+pipelines:
+  repair:
+    version: 2
+    entry: tests
+    nodes:
+      - {id: tests, type: check, command: "go test ./...", timeout: 5m}
+      - {id: passed, type: condition, when: {field: exit_code, equals: 0}}
+      - {id: budget, type: loop, max: 2}
+      - {id: fix-code, type: agent, stage: fix, agent: claude}
+      - {id: review, type: end, status: human_review}
+      - {id: inspect, type: end, status: paused}
+    edges:
+      - {from: {node: tests, port: pass}, to: passed}
+      - {from: {node: tests, port: fail}, to: passed}
+      - {from: {node: passed, port: "true"}, to: review}
+      - {from: {node: passed, port: "false"}, to: budget}
+      - {from: {node: budget, port: repeat}, to: fix-code}
+      - {from: {node: budget, port: exhausted}, to: inspect}
+      - {from: {node: fix-code, port: complete}, to: tests}
+      - {from: {node: fix-code, port: failed}, to: inspect}
+```
+
+`entry` selects the first node. Every port needs exactly one edge. Agent ports
+are `complete`/`failed`; check ports are `pass`/`fail`; condition ports are
+`"true"`/`"false"`; loop ports are `repeat`/`exhausted`. End nodes have no ports
+and select `done`, `human_review`, `paused`, or a declared custom parked status.
+Checks require a nonempty command and positive timeout.
+
+A condition compares the most recent executable result on the current path.
+Use `when: {field: exit_code, equals: 0}` for a check, or
+`when: {field: verdict, equals: approved}` for a successful agent result.
+Agent nodes can declare `verdicts: [approved, changes_requested]`; their complete
+version 2 results must include a declared verdict. Consecutive conditions read
+the same result until another executable replaces it. Missing or incompatible
+results pause. Review requesting changes is complete with a verdict, not a
+runner failure. Blocked or malformed results pause the same visit.
+
+IDs use lowercase letters, digits, `_` and `-`. Reserved IDs are `default`,
+`annotation`, `rework`, and names ending in `-annotation`. Distinct agent node IDs
+can reuse one `stage` template. All nodes must be reachable. Every cycle must
+cross `loop.repeat` and include an executable; control-only cycles are invalid.
+Positive `max` counts the total repeat transitions for that loop in one
+execution, not per nesting level. Aliases, merge keys and unknown fields are
+refused. Legacy policies and `running_status` are not graph-node fields.
+
+The ticket's `stage` is the node ID. `graph_state` holds execution identity,
+revision, fingerprint, visit identity, loop counts, last result and transition
+trace. Changed effective definitions pause an existing execution. Do not edit
+or clear graph state to bypass recovery. Graph agent nodes require version 2
+results even outside epic supervision; checks use observed exit codes.
+Timeout, interruption, provider/infrastructure errors, and uncertain termination
+pause rather than taking ordinary failure edges.
+
+Graph controls are listed below. Restart and recovery require a daemon.
+Local CLI retry only updates the ticket file.
+
+- `kontora retry ID` repeats the same executable visit with a fresh invocation;
+  execution identity, visit identity and loop counts stay unchanged. Refused at
+  an `end` node.
+- `kontora workflow-restart ID` creates a new execution at entry with fresh visit
+  and loop counters. History, sidecar numbering and worktree stay intact.
+- `kontora workflow-recover --execution-id ID --revision N TICKET_ID`
+  acknowledges termination for the inspected saved state. First inspect
+  processes, invocation journals, results and worktree. Stale identity or revision
+  requires fresh inspection. Recovery does not launch work or reset counts;
+  retry is separate. A missing tmux window does not prove descendants stopped.
+- `skip` and `set-stage` are refused for graph workflows.
+
+History's `workflow_execution_id` and `node_visit_id` distinguish intentional
+loop visits and new executions from failure retries. A positive run index alone
+is not a graph retry. First-pass quality uses graph visits, retaining legacy
+stage-pair accounting for legacy rows. Failed runs still cost tokens; annotation
+rows contribute spend but not stage quality.
+
+Graph annotations and Plannotator rework are deferred and refused; epic
+supervisors cannot use graphs. Upgrade all clients and daemons sharing config
+or tickets together. Execution remains disabled until combined verification
+passes. Production readiness depends on combined validation, execution,
+recovery, control, client and accounting verification. No exactly-once shell or
+hook effects, host-power-loss durability, or arbitrary detached-process
+containment is promised. Graph participation grants no commit or publication
+authority.
+
 ## What a run is
 
-One run is one agent process for one stage of one ticket, started in the
-ticket's git worktree, in a detached tmux window. A stage that retries produces
-several runs; the run number counts them within the stage.
+For legacy pipelines, one run is one agent process for one stage of one ticket,
+started in the ticket's git worktree, in a detached tmux window. Graph executable
+runs can be agent calls or shell checks. Both retries and intentional visits
+produce history rows; the run number counts rows within the node or stage,
+not failures.
 
 The daemon runs at most `max_concurrent_agents` workers at once. Epic supervisors
 use a separate `max_concurrent_epic_supervisors` pool, default `4`. This allows
@@ -156,7 +258,8 @@ another pipeline. These are prompt instructions, not runtime enforcement.
 A pipeline default does not authorize commits or publication; `commit-no-push`
 still contains a commit stage.
 
-The following commands remain available to ordinary operators:
+For legacy pipelines, the following commands remain available to ordinary operators.
+Graph controls and refusals are described above:
 
 - `kontora skip ID` — intermediate skip sets the next stage to `todo`.
   Final skip marks the ticket done without recording a successful run.
@@ -197,7 +300,7 @@ and not under `logs_dir`.
 Every run of a stage overwrites `<stage>.log`, so that file only ever holds the
 newest one. The activity sidecar is per run.
 
-## Failures
+## Legacy failures
 
 A stage fails when the agent exits non-zero, when it exceeds the stage timeout,
 or when its output matches one of the agent's `failure_patterns` even on a
@@ -222,8 +325,9 @@ Supervised work first follows the reconciliation rules below.
 Activated epic supervisors and actual children, including child rework, must
 submit `complete` or `blocked` for each invocation. Scope comes from actual
 membership, not display order or whether the supervisor is running, and is
-snapshotted for recovery. Unrelated tickets, passive-epic children, annotations,
-and assistant-only runs retain their existing result requirements. Instructions
+snapshotted for recovery. Non-graph unrelated tickets and passive-epic children,
+annotations, and assistant-only runs retain their existing result requirements.
+Graph agent nodes independently require version 2 results. Instructions
 for local authority, results, and escalation apply to fresh, resumed, and rework
 execution independently of a custom `system_prompt`; stored pipelines and review
 stages are unchanged. See `kontora skills show cli 'kontora result'` for the

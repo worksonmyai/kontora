@@ -534,6 +534,7 @@ export function kontoraSettings() {
       // config.Validate: a step pairing a stage override with an agent whose CLI
       // takes no flag for it. The pair is only visible where both are named.
       for (const name of Object.keys(cfg.pipelines).sort()) {
+        if (!Array.isArray(cfg.pipelines[name])) continue;
         cfg.pipelines[name].forEach((step, i) => {
           const agent = cfg.agents[step.agent];
           if (!agent || !agent.binary.trim() || settingsAgentKind(agent)) return;
@@ -865,7 +866,7 @@ export function kontoraSettings() {
     // what breaks?" without leaving the card.
     settingsStagePipelines(stage) {
       const pipes = this.settingsConfig?.pipelines || {};
-      return Object.keys(pipes).filter(p => (pipes[p] || []).some(s => s.stage === stage)).sort();
+      return Object.keys(pipes).filter(p => (Array.isArray(pipes[p]) ? pipes[p] : pipes[p]?.nodes || []).some(s => s.stage === stage)).sort();
     },
 
     settingsToggleStage(name) {
@@ -1189,6 +1190,19 @@ export function kontoraSettings() {
       return (this.settingsConfig?.agents?.[name]?.args || '').split('\n').includes('--dangerously-skip-permissions');
     },
 
+    settingsPipelineGraph(name) {
+      const value = this.settingsConfig?.pipelines?.[name];
+      return value && !Array.isArray(value) ? value : null;
+    },
+
+    settingsPipelineGraphText(name) {
+      const graph = this.settingsPipelineGraph(name);
+      if (!graph) return '';
+      return ['entry: ' + graph.entry,
+        ...(graph.nodes || []).map(n => n.id + ' [' + n.type + ']' + (n.stage ? ' · template ' + n.stage : '') + (n.agent ? ' · ' + n.agent : '') + (n.command ? ' · ' + n.command : '') + (n.when ? ' · ' + n.when.field + ' = ' + (typeof n.when.equals === 'bigint' ? String(n.when.equals) : JSON.stringify(n.when.equals)) : '') + (n.type === 'loop' ? ' · max ' + n.max : '') + (n.status ? ' · ' + n.status : '')),
+        ...(graph.edges || []).map(e => e.from.node + '.' + e.from.port + ' -> ' + e.to)].join('\n');
+    },
+
     settingsPipelineEnds(name) {
       const steps = this.settingsConfig?.pipelines?.[name] || [];
       if (!steps.length) return '';
@@ -1233,8 +1247,9 @@ export function kontoraSettings() {
       if (key === 'stages') return plural(this.settingsStageNames().length, 'prompt template', 'prompt templates');
       if (key === 'pipelines') {
         const names = this.settingsPipelineNames();
-        const steps = names.reduce((n, p) => n + cfg.pipelines[p].length, 0);
-        return `${names.length} · ${plural(steps, 'step', 'steps')}`;
+        const steps = names.reduce((n, p) => n + (Array.isArray(cfg.pipelines[p]) ? cfg.pipelines[p].length : 0), 0);
+        const graphs = names.filter(p => !Array.isArray(cfg.pipelines[p])).length;
+        return `${names.length} · ${plural(steps, 'step', 'steps')}` + (graphs ? ' · ' + plural(graphs, 'graph', 'graphs') : '');
       }
       if (key === 'projects') return this.settingsProjectNames().join(', ');
       if (key === 'assistant') {
@@ -1321,7 +1336,7 @@ export function kontoraSettings() {
         entity: name, readonly: true,
         aliases: ['pipeline', 'epic_child_pipeline', 'agent'].includes(key) ? [cfg.projects[name][key]] : [],
       });
-      for (const name of this.settingsPipelineNames()) cfg.pipelines[name].forEach((step, index) => {
+      for (const name of this.settingsPipelineNames()) (Array.isArray(cfg.pipelines[name]) ? cfg.pipelines[name] : []).forEach((step, index) => {
         for (const key of Object.keys(step)) add('pipelines', ['pipelines', name, String(index), key], { entity: name + ' / step ' + (index + 1), readonly: true, aliases: ['stage', 'agent'].includes(key) ? [step[key]] : [] });
       });
       for (const name of this.settingsNotifChannelNames()) {
@@ -1459,7 +1474,7 @@ export function kontoraSettings() {
       if (!cfg) return [];
       const stages = new Set();
       for (const steps of Object.values(cfg.pipelines)) {
-        for (const step of steps) if (step.agent === name && step.stage) stages.add(step.stage);
+        for (const step of (Array.isArray(steps) ? steps : steps.nodes || [])) if (step.agent === name && step.stage) stages.add(step.stage);
       }
       return [...stages].sort();
     },
@@ -1479,6 +1494,7 @@ export function kontoraSettings() {
     settingsPipelineSteps(name) {
       const cfg = this.settingsConfig;
       if (!cfg) return [];
+      if (!Array.isArray(cfg.pipelines[name])) return [];
       return (cfg.pipelines[name] || []).map((step, i) => {
         const stage = cfg.stages[step.stage];
         const kind = this.settingsAgentKindOf(step.agent);
@@ -1806,6 +1822,10 @@ function settingsModel(raw) {
     };
   }
   for (const [name, steps] of Object.entries(raw.pipelines || {})) {
+    if (steps && !Array.isArray(steps)) {
+      model.pipelines[name] = settingsClone(steps);
+      continue;
+    }
     model.pipelines[name] = (steps || []).map(s => ({
       stage: str(s?.stage),
       agent: str(s?.agent),

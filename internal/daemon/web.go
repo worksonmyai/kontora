@@ -213,6 +213,15 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 		return web.TicketInfo{}, fmt.Errorf("clearing %s: %w", ticket.FieldScheduledAt, err)
 	}
 
+	for _, field := range []string{"graph_state", "stage", "attempt", "started_at", "completed_at", "claimed_by", "invocation_id", "last_log", "last_error", "annotation_return_status", "running_status"} {
+		if err := t.DeleteField(field); err != nil {
+			return web.TicketInfo{}, fmt.Errorf("clearing %s: %w", field, err)
+		}
+	}
+	if err := t.SetField("imported_history_count", len(t.History)); err != nil {
+		return web.TicketInfo{}, err
+	}
+
 	// Ensure created timestamp exists.
 	if t.Created == nil {
 		now := time.Now().UTC()
@@ -355,7 +364,7 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 	pipelines := slices.Sorted(maps.Keys(cfg.Pipelines))
 	infos := make([]web.PipelineInfo, len(pipelines))
 	for i, name := range pipelines {
-		steps := cfg.Pipelines[name]
+		steps := cfg.Pipelines[name].Legacy
 		stageNames := make([]string, len(steps))
 		maxRetries := make([]int, len(steps))
 		for j, s := range steps {
@@ -366,7 +375,8 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 		if len(steps) > 0 {
 			defaultAgent = steps[0].Agent
 		}
-		infos[i] = web.PipelineInfo{Name: name, Stages: stageNames, MaxRetries: maxRetries, DefaultAgent: defaultAgent}
+		infos[i] = web.PipelineInfo{Name: name, Stages: stageNames, MaxRetries: maxRetries, DefaultAgent: defaultAgent,
+			GraphDefinition: app.BuildGraphDefinition(cfg.Pipelines[name].Graph)}
 	}
 	agents := slices.Sorted(maps.Keys(cfg.Agents))
 	agentInfos := make([]web.AgentInfo, len(agents))
@@ -622,6 +632,9 @@ func (d *Daemon) RunTicket(id string) error {
 			}
 			activateEpic = true
 			return nil
+		}
+		if err := app.ValidateWorkflowReentry(d.config(), t); err != nil {
+			return err
 		}
 		switch t.Status { //nolint:exhaustive // only open and todo can be run
 		case ticket.StatusOpen, ticket.StatusTodo:
@@ -1211,13 +1224,15 @@ func (d *Daemon) GetLogs(id string, stage string) (string, error) {
 
 // GetActivity returns the transcript of one run of a stage. A run still in
 // flight is read from the session JSONL the agent is appending to; a finished
-// run is read from its structured sidecar, and from the shared plaintext log
+// run is read from its structured sidecar, and from the plaintext log
 // when it has none.
 //
 // A fallback is marked stale when its bytes may describe a different run than
-// the one asked for. That happens two ways, because <stage>.log holds only the
-// newest run: the ticket's history records a newer run of the same stage, or
-// the stage is running right now and appending to the same file.
+// the one asked for. Legacy <stage>.log holds only the newest run: the ticket's
+// history records a newer run of the same stage, or the stage is running right
+// now and appending to the same file.
+// Historical graph attempts use visit-specific logs. A fallback is stale if a
+// later attempt reused the same visit log or that visit is currently running.
 func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 	d.mu.Lock()
 	ts, ok := d.tickets[q.ID]
@@ -1226,6 +1241,7 @@ func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 	var nextRun int
 	var lr liveRun
 	var registered bool
+	var graphLog, graphStale bool
 	if ok && ts.ticket.IsImportedRun(q.Stage, q.Run) {
 		d.mu.Unlock()
 		return web.ActivityInfo{}, web.ErrLogNotFound
@@ -1236,6 +1252,7 @@ func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 				newestRun = h.Run
 			}
 		}
+		_, graphStale, graphLog = cli.GraphRunLog(ts.ticket, "", q.Stage, q.Run)
 		stageRunning = ts.ticket.IsRunning() && ts.ticket.Stage == q.Stage
 		nextRun = stageRunIndex(ts.ticket, q.Stage)
 		lr, registered = d.liveRuns[q.ID]
@@ -1285,6 +1302,9 @@ func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 		info.Source = "log"
 		info.Content = content
 		info.Stale = q.Run < newestRun || stageRunning
+		if graphLog {
+			info.Stale = graphStale
+		}
 		return info, nil
 	}
 	info.ETag = sidecarETag
@@ -1736,7 +1756,7 @@ func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBod
 	if strings.TrimSpace(info.Branch) == "" {
 		info.AutoBranch = autoTicketBranch(cfg, ts.ticket)
 	}
-	info.CanAnnotate = annotateRefusal(ts.ticket) == nil
+	info.CanAnnotate = d.annotateRefusal(ts.ticket) == nil
 	info.Project, _, _ = cfg.ProjectFor(ts.ticket.Path)
 	if parent := d.tickets[ts.ticket.Parent]; parent != nil && ts.ticket.Kind != ticket.KindEpic {
 		info.EpicChild = parent.ticket.Kind == ticket.KindEpic
@@ -1875,8 +1895,8 @@ func childInfo(cfg *config.Config, t *ticket.Ticket) web.TicketChild {
 		ExecutionActive: t.IsRunning() && !t.IsPassiveEpic(),
 	}
 	if steps, ok := cfg.Pipelines[t.Pipeline]; ok {
-		c.StageCount = len(steps)
-		for i, step := range steps {
+		c.StageCount = len(steps.Legacy)
+		for i, step := range steps.Legacy {
 			if step.Stage == t.Stage {
 				c.StageIndex = i + 1
 				break

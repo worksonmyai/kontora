@@ -86,6 +86,11 @@ var Commands = []Command{
 	{Name: "summary", Group: "Tickets", Desc: "Set a ticket's summary", Config: true, Store: true, Remote: true, TicketID: true, Args: "[TEXT]"},
 	{Name: "pause", Group: "Running work", Desc: "Pause a running ticket", Config: true, Store: true, Remote: true, TicketID: true},
 	{Name: "retry", Group: "Running work", Desc: "Re-queue a paused ticket", Config: true, Store: true, Remote: true, TicketID: true},
+	{Name: "workflow-restart", Group: "Running work", Desc: "Restart a graph workflow at its entry (requires daemon)", Config: true, Remote: true, TicketID: true},
+	{Name: "workflow-recover", Group: "Running work", Desc: "Acknowledge an interrupted graph execution after inspection (requires daemon)", Config: true, Remote: true, TicketID: true, Flags: []Flag{
+		{Name: "execution-id", Desc: "Inspected workflow execution ID (required)", Value: "text"},
+		{Name: "revision", Desc: "Inspected workflow state revision (required)", Value: "text"},
+	}},
 	{Name: "skip", Group: "Running work", Desc: "Skip to the next pipeline stage", Config: true, Store: true, Remote: true, TicketID: true},
 	{Name: "set-stage", Group: "Running work", Desc: "Move ticket to a specific pipeline stage", Config: true, Store: true, Remote: true, TicketID: true, Args: "STAGE"},
 	{Name: "cancel", Group: "Running work", Desc: "Cancel a ticket", Config: true, Store: true, Remote: true, TicketID: true},
@@ -129,6 +134,7 @@ var Commands = []Command{
 	}},
 	{Name: "result", Group: "Other", Desc: "Report a terminal stage result for the current invocation", TicketID: true, Flags: []Flag{
 		{Name: "input-file", Desc: "Absolute path to result JSON (default: stdin)", Value: "path"},
+		{Name: "verdict", Desc: "Declared workflow verdict (result version 2)", Value: "text"},
 	}},
 	{Name: "phase-complete", Group: "Other", Desc: "Signal a phase boundary from inside a checkpointing run", TicketID: true, Flags: []Flag{
 		{Name: "completed", Desc: "The phase that just finished", Value: "text"},

@@ -36,7 +36,7 @@ func TestDocumentedConfigs(t *testing.T) {
 			cfg, err := config.LoadReader(strings.NewReader(example))
 			require.NoError(t, err)
 			require.NotEmpty(t, cfg.DefaultPipeline)
-			pipeline := cfg.Pipelines[cfg.DefaultPipeline]
+			pipeline := cfg.Pipelines[cfg.DefaultPipeline].Legacy
 			require.NotEmpty(t, pipeline)
 			assert.Equal(t, "human_review", pipeline[len(pipeline)-1].OnSuccess)
 			first := cfg.Stages[pipeline[0].Stage]

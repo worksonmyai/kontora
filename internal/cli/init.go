@@ -182,7 +182,14 @@ func enableEpic(cfg *config.Config, t *ticket.Ticket, opts EnableOpts, w io.Writ
 // pipeline on the command line is scripting init, so it gets the first stage
 // rather than a picker it has no terminal to answer.
 func startingStage(cfg *config.Config, pipelineName string, opts EnableOpts) (string, error) {
-	steps, ok := cfg.Pipelines[pipelineName]
+	definition, ok := cfg.Pipelines[pipelineName]
+	if ok && definition.IsGraph() {
+		if opts.Stage != "" && opts.Stage != definition.Graph.Entry {
+			return "", fmt.Errorf("graph initialization must start at entry %q", definition.Graph.Entry)
+		}
+		return definition.Graph.Entry, nil
+	}
+	steps := definition.Legacy
 	if !ok || len(steps) == 0 {
 		if opts.Stage != "" {
 			return "", fmt.Errorf("ticket has no pipeline, so it has no stage to start on")
@@ -394,7 +401,12 @@ func pickOneDescs(field string, choices, descs []string) (string, error) {
 func pipelineDescs(cfg *config.Config, names []string) []string {
 	descs := make([]string, len(names))
 	for i, name := range names {
-		stages := cfg.Pipelines[name]
+		definition := cfg.Pipelines[name]
+		if definition.IsGraph() {
+			descs[i] = fmt.Sprintf("graph · entry %s · %d nodes", definition.Graph.Entry, len(definition.Graph.Nodes))
+			continue
+		}
+		stages := definition.Legacy
 		stageNames := make([]string, len(stages))
 		for j, s := range stages {
 			stageNames[j] = s.Stage

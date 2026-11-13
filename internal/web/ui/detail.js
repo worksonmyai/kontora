@@ -239,6 +239,9 @@ export function kontoraDetail() {
           stage: h.stage,
           run: run,
           historyIndex: historyIndex,
+          nodeVisitID: h.node_visit_id || '',
+          template: h.template || '',
+          visitAttempt: h.visit_attempt || 1,
           imported: !!h.imported,
           summary: summary,
           failed: h.run_outcome === 'failed' || h.run_outcome === 'protocol_error',
@@ -247,7 +250,7 @@ export function kontoraDetail() {
           invocationID: h.invocation_id || '',
           exitCode: h.exit_code,
           agent: h.agent || '',
-          seconds: seg ? seg.seconds : runSeconds(h),
+          seconds: h.node_visit_id ? runSeconds(h) : (seg ? seg.seconds : runSeconds(h)),
           runs: h.imported ? 1 : (seg ? seg.runs : totalRuns[h.stage]),
         });
       });
@@ -280,7 +283,10 @@ export function kontoraDetail() {
     stageCardMeta(card) {
       var parts = [];
       if (card.seconds > 0) parts.push(this.formatSeconds(card.seconds));
-      if (card.runs > 1) parts.push('×' + card.runs);
+      if (card.nodeVisitID) {
+        parts.push('visit ' + card.nodeVisitID, 'attempt ' + card.visitAttempt);
+        if (card.template) parts.push('template ' + card.template);
+      } else if (card.runs > 1) parts.push('×' + card.runs);
       if (card.agent) parts.push(card.agent);
       var cost = this.costLabel(this.ticketRunCost(card.historyIndex));
       if (cost) parts.push(cost);
@@ -315,7 +321,7 @@ export function kontoraDetail() {
       var stages = Object.create(null);
       this.summaryCards().forEach(function (c) { stages[c.stage] = true; });
       var n = Object.keys(stages).length;
-      var parts = [n + ' stage' + (n === 1 ? '' : 's')];
+      var parts = [n + ((this.selectedTicket?.graph_definition || this.selectedTicket?.graph_execution) ? ' node' : ' stage') + (n === 1 ? '' : 's')];
       var c = this.churn();
       if (c.count) parts.push(c.count + ' file' + (c.count === 1 ? '' : 's'), '+' + c.added + ' −' + c.deleted);
       var commits = this.ticketChanges?.commits?.length || 0;
@@ -1614,6 +1620,7 @@ export function kontoraDetail() {
     // stays queued after a stage edit; selecting a stage does not retry it.
     canSetStage(ticket = this.selectedTicket) {
       const status = ticket?.status;
+      if (ticket?.graph_definition || ticket?.graph_execution) return false;
       if (!this.ticketCanControl(ticket) || this.executionActive(ticket) || !status || ticket.kind === 'epic' || this.plannotatorInFlight?.[ticket.id]) return false;
       return ['open', 'todo', 'paused', 'human_review', 'done', 'cancelled']
         .concat(this.configCache?.custom_statuses || [])
@@ -1621,7 +1628,7 @@ export function kontoraDetail() {
     },
 
     canSkipStage(ticket = this.selectedTicket) {
-      return !!(ticket?.kontora && ticket.stage && ticket.stages?.length && this.canSetStage(ticket));
+      return !!(ticket?.kontora && !ticket.graph_definition && !ticket.graph_execution && ticket.stage && ticket.stages?.length && this.canSetStage(ticket));
     },
 
     // A ticket that gained a pipeline through the detail form has no stage yet.
@@ -1703,7 +1710,7 @@ export function kontoraDetail() {
     // green tint treatment, the active stage a solid status-colored pill with
     // dark text, queued stages stay dimmed.
     stageStyle(stage, ticket) {
-      if (!ticket || !ticket.stages) return 'text-surface-600 border-surface-700/60';
+      if (!ticket || ticket.graph_definition || ticket.graph_execution || !ticket.stages) return 'text-surface-600 border-surface-700/60';
       var stageIdx = ticket.stages.indexOf(stage);
       var currentIdx = ticket.stages.indexOf(ticket.stage);
       var doneCls = 'text-st-done bg-st-done/[0.08] border-st-done/[0.24]';
@@ -1720,7 +1727,7 @@ export function kontoraDetail() {
 
     // Whether a stage is behind the current one (renders with a ✓ prefix).
     isStageDone(stage, ticket) {
-      if (!ticket || !ticket.stages) return false;
+      if (!ticket || ticket.graph_definition || ticket.graph_execution || !ticket.stages) return false;
       if (ticket.status === 'done') return true;
       var si = ticket.stages.indexOf(stage);
       var ci = ticket.stages.indexOf(ticket.stage);

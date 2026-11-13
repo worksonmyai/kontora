@@ -288,6 +288,9 @@ func (d *Daemon) transitionToRework(id string) error {
 	if err != nil {
 		return fmt.Errorf("re-read ticket: %w", err)
 	}
+	if d.isGraphTicket(t2) {
+		return fmt.Errorf("%w: Plannotator rework is unavailable for graph workflows; use the configured review loop", web.ErrInvalidState)
+	}
 	if err := t2.SetField("stage", config.ReworkStageName); err != nil {
 		return fmt.Errorf("set stage: %w", err)
 	}

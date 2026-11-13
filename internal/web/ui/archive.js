@@ -592,7 +592,7 @@ export function kontoraArchive() {
       const wall = this.ticketWall();
       if (wall) out.push({ k: 'wall', v: wall });
       const segs = this.stageRibbon();
-      if (segs.length) {
+      if (segs.length && !this.isGraphTicket(this.selectedTicket)) {
         out.push({ k: 'stages', v: segs.filter(s => s.state === 'done').length + ' / ' + segs.length });
       }
       const tokens = this.tapeTokens(this.activity && this.activity.tape);

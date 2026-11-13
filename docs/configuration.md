@@ -532,8 +532,9 @@ An agent that had in fact finished its work can exit within a second of resuming
 Activated epic supervisors and their actual children (including rework) require
 invocation-bound results. Scope is snapshotted from actual membership for each
 invocation and retained for recovery, not inferred from display order or whether
-the supervisor is running. Passive-epic children, unrelated tickets, annotations,
-and assistant-only executions keep their existing result requirements. The
+the supervisor is running. Non-graph passive-epic children, unrelated non-graph
+tickets, annotations, and assistant-only executions keep their existing result
+requirements. Graph agent nodes independently require version 2 results. The
 shared local-authority, result, and escalation instructions are delivered on
 fresh, resumed, and rework runs independently of the replaceable `system_prompt`.
 This does not rewrite stored pipelines or bypass review stages.
@@ -686,7 +687,9 @@ Custom prompts remain user-owned. Kontora does not rewrite unsafe examples in `s
 
 ## pipelines
 
-Map of pipeline name to an ordered list of stages. Each ticket references a pipeline by name in its `pipeline` frontmatter field.
+Each pipeline name maps to either a legacy ordered stage list or a version 2
+workflow graph. A ticket selects one by its `pipeline` frontmatter field.
+The list syntax below is unchanged; its policies do not apply to graph nodes.
 
 ```yaml
 pipelines:
@@ -696,6 +699,107 @@ pipelines:
       on_success: human_review
       on_failure: pause
 ```
+
+### Workflow graphs
+
+Graph workflows execute one node at a time in the ticket's shared worktree.
+`entry` selects the starting node; explicit edges select every subsequent node.
+The order of `nodes` and `edges` in YAML has no execution meaning. There is no
+parallel fan-out or join.
+
+This complete example runs a check, tests its exit code, and allows two repair
+passes before parking for inspection. It does not authorize commits or pushes.
+
+```yaml
+default_pipeline: repair
+agents:
+  claude:
+    binary: claude
+stages:
+  fix:
+    prompt: |
+      {{ .Ticket.Description }}
+      Fix the failing tests. Do NOT commit or push.
+    timeout: 30m
+pipelines:
+  repair:
+    version: 2
+    entry: tests
+    nodes:
+      - {id: tests, type: check, command: "go test ./...", timeout: 5m}
+      - id: passed
+        type: condition
+        when: {field: exit_code, equals: 0}
+      - {id: budget, type: loop, max: 2}
+      - {id: fix-code, type: agent, stage: fix, agent: claude}
+      - {id: review, type: end, status: human_review}
+      - {id: inspect, type: end, status: paused}
+    edges:
+      - {from: {node: tests, port: pass}, to: passed}
+      - {from: {node: tests, port: fail}, to: passed}
+      - {from: {node: passed, port: "true"}, to: review}
+      - {from: {node: passed, port: "false"}, to: budget}
+      - {from: {node: budget, port: repeat}, to: fix-code}
+      - {from: {node: budget, port: exhausted}, to: inspect}
+      - {from: {node: fix-code, port: complete}, to: tests}
+      - {from: {node: fix-code, port: failed}, to: inspect}
+```
+
+| Node `type` | Fields | Required outgoing ports |
+|-------------|--------|-------------------------|
+| `agent` | `stage` names a prompt template; `agent` names a configured agent. Optional `verdicts` declares allowed result strings. | `complete`, `failed` |
+| `check` | `command` runs in the worktree; `timeout` must be positive. | `pass` (exit zero), `fail` (nonzero) |
+| `condition` | `when: {field: verdict, equals: approved}` or `when: {field: exit_code, equals: 0}`. | `true`, `false` |
+| `loop` | Positive `max`, the total allowance of `repeat` transitions for this loop in one execution. | `repeat`, `exhausted` |
+| `end` | `status`: `done`, `human_review`, `paused`, or a declared custom parked status. | None |
+
+Conditions inspect the most recent executable result on the current path.
+A verdict comparison requires a successful agent result with a declared verdict;
+an exit-code comparison requires a check result and an integer `equals`.
+Consecutive conditions can inspect that same result until another executable
+node replaces it. A missing, stale, or incompatible result pauses execution.
+Quote `"true"` and `"false"` port names in YAML.
+
+Each port must have exactly one edge. All nodes must be reachable from `entry`.
+IDs use lowercase letters, digits, `_` and `-`; `default`, `annotation`, `rework`
+and names ending in `-annotation` are reserved. Multiple agent nodes may reuse
+one stage template under distinct node IDs. Unknown fields, fields for the wrong
+node type, duplicate IDs, aliases and YAML merge keys are rejected.
+Every cycle must cross a `loop.repeat` edge and include an executable node;
+control-only cycles are invalid. Loop allowances accumulate across visits, not
+per nesting level, and ordinary retry does not reset them.
+
+Graph agent nodes require invocation-bound version 2 results, even outside an
+epic. A complete result must include one of the node's `verdicts` when declared.
+For example, `{"outcome":"complete","summary":"Changes required","verdict":"changes_requested"}`
+reports a completed review, not a runner failure. `blocked` requires `next_step`
+and pauses the same visit. Missing or malformed reports, timeout, interruption,
+provider or infrastructure errors, and uncertain termination pause instead of
+following an ordinary failure edge. A check's observed nonzero exit follows
+`fail`; a successfully finalized agent failure follows `failed`.
+See [result submission](cli.md#supervised-results).
+
+The ticket's `stage` is a node ID, not a template name or list position.
+Execution identity, visit identity, loop counts and definition fingerprint are
+stored in `graph_state`; history retains provenance across retries and restarts.
+A changed effective graph, stage, agent or relevant execution configuration
+pauses an existing execution rather than silently adopting the new definition.
+Use [workflow controls](cli.md#kontora-workflow-restart-ticket_id) after inspection.
+`retry` keeps the same executable visit and loop counts; it is refused at an
+`end` node. `skip` and `set-stage` are refused for graph workflows.
+
+Graph annotations and Plannotator rework are deferred and refused; graph
+workflows do not support epic supervisors. Use YAML for graph authoring, not a
+legacy stage-list editor. Upgrade all CLI and daemon binaries that read the
+config or share the ticket store together before enabling graphs. Older loaders
+and clients cannot interpret graph definitions or cursor state.
+
+Graph execution remains disabled until combined verification passes.
+Production readiness depends on combined verification of graph validation,
+execution, recovery, controls, clients, history and statistics, not this example
+or any one package's tests. Recovery does not promise exactly-once shell or hook
+effects, host-power-loss durability, or containment of arbitrary detached
+processes. A missing tmux window alone does not prove termination.
 
 ### Stage fields
 
@@ -1064,6 +1168,9 @@ plannotator:
 | `binary` | no | `plannotator` | The binary to spawn. Resolved on the daemon's `PATH`, or used as-is when absolute. |
 | `timeout` | no | `30m` | How long a session may stay open before it is cancelled. |
 | `reviews_dir` | no | `~/.kontora/plannotator-reviews` | Where captured feedback waits for the agent that consumes it. Requires a daemon restart. |
+
+Graph annotations and Plannotator rework are deferred and refused, even when
+an open or human-review status would otherwise permit them.
 
 Only one Plannotator process runs per ticket, so a review and an annotation
 cannot overlap. While a session is open the scheduler leaves the ticket alone,

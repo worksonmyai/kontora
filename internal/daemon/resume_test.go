@@ -191,9 +191,16 @@ func TestResumableRecordGuards(t *testing.T) {
 		// windows is what the tmux window list reports.
 		windows    []string
 		wantResume bool
+		graph      bool
 	}{
 		{name: "claude record passes every guard", binary: "claude", wantResume: true},
 		{name: "pi record passes every guard", binary: "pi", wantResume: true},
+		{name: "graph visit matches", binary: "claude", graph: true, wantResume: true},
+		{name: "graph pi visit matches", binary: "pi", graph: true, wantResume: true},
+		{name: "graph execution changed", binary: "claude", graph: true, mutate: func(r *resumeRecord) { r.WorkflowExecutionID = "older" }},
+		{name: "graph visit changed", binary: "claude", graph: true, mutate: func(r *resumeRecord) { r.NodeVisitID = "older.1" }},
+		{name: "graph definition changed", binary: "claude", graph: true, mutate: func(r *resumeRecord) { r.DefinitionFingerprint = "older" }},
+		{name: "graph record cannot resume legacy", binary: "claude", mutate: func(r *resumeRecord) { r.WorkflowExecutionID = "older" }},
 		{name: "no record", binary: "claude", noRecord: true},
 		{
 			name:   "record names another stage",
@@ -243,6 +250,10 @@ func TestResumableRecordGuards(t *testing.T) {
 				kind = agentKindPi
 			}
 			rec := f.validRecord(kind)
+			if tc.graph {
+				f.p.graphState = &ticket.GraphState{ExecutionID: "workflow", VisitID: "workflow.2", Visit: 2, DefinitionFingerprint: "definition"}
+				rec.WorkflowExecutionID, rec.NodeVisitID, rec.DefinitionFingerprint = "workflow", "workflow.2", "definition"
+			}
 			if tc.mutate != nil {
 				tc.mutate(&rec)
 			}
@@ -251,7 +262,7 @@ func TestResumableRecordGuards(t *testing.T) {
 			}
 			if !tc.noSessionFile {
 				plantClaudeSession(t, f.claudeDir, resumeTestSessionID)
-				plantPiSession(t, f.p.cfg, f.p.ticketID, f.p.stageName, "session-code.jsonl", time.Now())
+				plantPiSession(t, f.p.cfg, f.p.ticketID, f.p.sessionStage(&rec), "session-code.jsonl", time.Now())
 			}
 
 			got := f.d.resumableRecord(f.p)
@@ -262,7 +273,7 @@ func TestResumableRecordGuards(t *testing.T) {
 			require.NotNil(t, got)
 			if tc.binary == "pi" {
 				assert.Equal(t,
-					filepath.Join(f.h.logsDir, resumeTicketID, "pi-sessions", "code", "session-code.jsonl"),
+					filepath.Join(f.h.logsDir, resumeTicketID, "pi-sessions", f.p.sessionStage(&rec), "session-code.jsonl"),
 					got.SessionPath)
 			} else {
 				assert.Equal(t, resumeTestSessionID, got.SessionID)

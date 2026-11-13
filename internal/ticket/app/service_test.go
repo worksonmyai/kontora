@@ -125,11 +125,11 @@ func testCfg() *config.Config {
 			"code":   {Prompt: "code"},
 			"review": {Prompt: "review"},
 		},
-		Pipelines: map[string]config.Pipeline{
-			"default": {
+		Pipelines: map[string]config.PipelineDefinition{
+			"default": {Legacy: config.Pipeline{
 				{Stage: "code", Agent: "claude-sonnet", OnSuccess: "next", OnFailure: "pause"},
 				{Stage: "review", Agent: "claude-sonnet", OnSuccess: "done", OnFailure: "pause"},
-			},
+			}},
 		},
 	}
 }
@@ -388,9 +388,9 @@ func TestInit_AlreadyInitialized(t *testing.T) {
 
 	cfg := testCfg()
 	cfg.Stages["review-only"] = config.Stage{Prompt: "review"}
-	cfg.Pipelines["alt"] = config.Pipeline{
+	cfg.Pipelines["alt"] = config.PipelineDefinition{Legacy: config.Pipeline{
 		{Stage: "review-only", Agent: "claude-sonnet", OnSuccess: "done", OnFailure: "pause"},
-	}
+	}}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -645,9 +645,9 @@ func TestService_LiveConfig(t *testing.T) {
 	next.Statuses = []string{"waiting_external"}
 	next.Agents["codex"] = config.Agent{Binary: "codex"}
 	next.Stages["verify"] = config.Stage{Prompt: "verify"}
-	next.Pipelines["verify-only"] = config.Pipeline{
+	next.Pipelines["verify-only"] = config.PipelineDefinition{Legacy: config.Pipeline{
 		{Stage: "verify", Agent: "codex", OnSuccess: "done", OnFailure: "pause"},
-	}
+	}}
 	cfg = next
 
 	_, err = svc.SetStatus("tst-001", ticket.Status("waiting_external"))

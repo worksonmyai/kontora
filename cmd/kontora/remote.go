@@ -87,12 +87,13 @@ func printRemoteTicket(w io.Writer, t web.TicketInfo) {
 	fmt.Fprintf(w, "ID:       %s\n", t.ID)
 	fmt.Fprintf(w, "Title:    %s\n", t.Title)
 	fmt.Fprintf(w, "Status:   %s\n", t.Status)
-	if t.Stage != "" {
+	if t.Stage != "" && t.GraphDefinition == nil && t.GraphExecution == nil {
 		fmt.Fprintf(w, "Stage:    %s\n", t.Stage)
 	}
 	if t.Pipeline != "" {
 		fmt.Fprintf(w, "Pipeline: %s\n", t.Pipeline)
 	}
+	cli.PrintWorkflow(w, t.GraphDefinition, t.GraphExecution)
 	if t.Agent != "" {
 		fmt.Fprintf(w, "Agent:    %s\n", t.Agent)
 	}
@@ -125,7 +126,11 @@ func printRemoteConfig(w io.Writer, cfg web.ConfigInfo) {
 	fmt.Fprintln(w, "\nPipelines:")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, p := range cfg.PipelineInfos {
-		fmt.Fprintf(tw, "  %s\t%s\n", p.Name, strings.Join(p.Stages, " -> "))
+		if p.GraphDefinition != nil {
+			fmt.Fprintf(tw, "  %s\tgraph · entry %s · %d nodes\n", p.Name, p.GraphDefinition.Entry, len(p.GraphDefinition.Nodes))
+		} else {
+			fmt.Fprintf(tw, "  %s\t%s\n", p.Name, strings.Join(p.Stages, " -> "))
+		}
 	}
 	_ = tw.Flush()
 

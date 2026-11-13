@@ -112,6 +112,11 @@ func (d *Daemon) writeResumeRecord(p spawnAgentParams, kind, sessionID string) {
 		Instance:  d.instanceName,
 		StartedAt: time.Now(),
 	}
+	if p.graphState != nil {
+		rec.WorkflowExecutionID = p.graphState.ExecutionID
+		rec.NodeVisitID = p.graphState.VisitID
+		rec.DefinitionFingerprint = p.graphState.DefinitionFingerprint
+	}
 	path := resumeRecordPath(p.cfg, p.ticketID, p.stageName)
 	data, err := json.Marshal(rec)
 	if err != nil {
@@ -225,6 +230,13 @@ func (d *Daemon) resumableRecord(p spawnAgentParams) *resumeRecord {
 	if rec.Stage != p.stageName {
 		return reject("record belongs to another stage", "recorded", rec.Stage)
 	}
+	if p.graphState == nil && rec.WorkflowExecutionID != "" {
+		return reject("record belongs to a graph workflow")
+	}
+	if p.graphState != nil && (rec.WorkflowExecutionID != p.graphState.ExecutionID ||
+		rec.NodeVisitID != p.graphState.VisitID || rec.DefinitionFingerprint != p.graphState.DefinitionFingerprint) {
+		return reject("record belongs to another workflow visit or definition")
+	}
 	if rec.Instance != d.instanceName {
 		return reject("record belongs to another daemon instance", "recorded", rec.Instance, "instance", d.instanceName)
 	}
@@ -244,9 +256,9 @@ func (d *Daemon) resumableRecord(p spawnAgentParams) *resumeRecord {
 			return reject("session file not found", "pattern", pattern, "err", err)
 		}
 	case agentKindPi:
-		path := piResumeSessionFile(p.cfg, p.ticketID, p.stageName, rec.StartedAt)
+		path := piResumeSessionFile(p.cfg, p.ticketID, p.sessionStage(rec), rec.StartedAt)
 		if path == "" {
-			return reject("session file not found", "session_dir", piSessionDir(p.cfg, p.ticketID, p.stageName))
+			return reject("session file not found", "session_dir", piSessionDir(p.cfg, p.ticketID, p.sessionStage(rec)))
 		}
 		rec.SessionPath = path
 	}

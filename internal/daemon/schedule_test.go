@@ -708,7 +708,7 @@ func TestUploadDropsTheSchedule(t *testing.T) {
 	require.NoError(t, d.initialScan(h.tasksDir))
 
 	content := "---\nid: up-a\nkontora: true\nstatus: todo\nscheduled_at: \"2020-01-01T00:00:00Z\"\npath: " +
-		h.repoDir + "\n---\n# Uploaded\n"
+		h.repoDir + "\ninvocation_id: foreign-invocation\nstage: review\nattempt: 3\ngraph_state: {version: 1, execution_id: foreign-execution, revision: 8, definition_fingerprint: foreign}\nhistory: [{stage: review, workflow_execution_id: foreign-execution, node_visit_id: foreign-execution.2}]\n---\n# Uploaded\n"
 
 	info, err := d.UploadTicket([]byte(content))
 	require.NoError(t, err)
@@ -718,6 +718,12 @@ func TestUploadDropsTheSchedule(t *testing.T) {
 	got := h.readTask(info.ID + ".md")
 	assert.Equal(t, ticket.StatusOpen, got.Status)
 	assert.Empty(t, got.ScheduledAt)
+	assert.Nil(t, got.GraphState)
+	assert.Empty(t, got.InvocationID)
+	assert.Empty(t, got.Stage)
+	assert.Zero(t, got.Attempt)
+	assert.Len(t, got.History, 1)
+	assert.True(t, got.IsImportedRun("review", 0))
 
 	d.promoteDueSchedules(time.Now())
 	assert.Empty(t, d.queuedIDs(), "an upload must not queue itself")

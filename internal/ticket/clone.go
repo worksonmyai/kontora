@@ -13,6 +13,7 @@ func (t *Ticket) Clone() *Ticket {
 		return nil
 	}
 	out := *t
+	out.GraphState = t.GraphState.Clone()
 	out.StartedAt = cloneTime(t.StartedAt)
 	out.CompletedAt = cloneTime(t.CompletedAt)
 	out.Created = cloneTime(t.Created)

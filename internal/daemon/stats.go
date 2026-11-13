@@ -177,16 +177,18 @@ func (d *Daemon) statsTicketsLocked(cfg *config.Config, now time.Time) ([]statsT
 				continue
 			}
 			st.ticket.History = append(st.ticket.History, stats.Run{
-				Stage:         h.Stage,
-				Agent:         h.Agent,
-				ExitCode:      h.ExitCode,
-				RunOutcome:    string(h.RunOutcome),
-				OutcomeReason: h.OutcomeReason,
-				InvocationID:  h.InvocationID,
-				Run:           attempt,
-				StartedAt:     cloneTime(h.StartedAt),
-				CompletedAt:   cloneTime(h.CompletedAt),
-				Kind:          h.Kind,
+				Stage:               h.Stage,
+				Agent:               h.Agent,
+				ExitCode:            h.ExitCode,
+				RunOutcome:          string(h.RunOutcome),
+				OutcomeReason:       h.OutcomeReason,
+				InvocationID:        h.InvocationID,
+				WorkflowExecutionID: h.WorkflowExecutionID,
+				NodeVisitID:         h.NodeVisitID,
+				Run:                 attempt,
+				StartedAt:           cloneTime(h.StartedAt),
+				CompletedAt:         cloneTime(h.CompletedAt),
+				Kind:                h.Kind,
 			})
 			st.paths = append(st.paths, statsSidecarPath(logsDir, t.ID, h.Stage, file))
 		}

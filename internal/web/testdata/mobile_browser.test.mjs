@@ -1613,7 +1613,7 @@ describe('Settings final review regressions', () => {
     });
   });
 
-  for (const traversal of ['queued pair', 'next popstate']) test(`Settings review rapid Back cancels routed field reveal / ${traversal}`, async t => {
+  for (const traversal of ['two-entry jump', 'next popstate']) test(`Settings review rapid Back cancels routed field reveal / ${traversal}`, async t => {
     await withPage(t, 1280, 'dark', async (page, fixture) => {
       const fieldRoute = '#/settings/general?field=' + encodeURIComponent(JSON.stringify([['max_concurrent_agents'], 'value']));
       await routeTo(page, fieldRoute);
@@ -1622,15 +1622,25 @@ describe('Settings final review regressions', () => {
       await worker.fill('4');
       await settingsSection(page, 'stages');
       const length = await page.evaluate(() => history.length);
+      await page.clock.install();
+      await page.clock.setFixedTime(new Date(stamp));
+      // Hold Alpine's reveal ticks until the leave guard opens.
+      await page.clock.pauseAt(new Date(stamp));
       await page.evaluate(traversal => {
         window.__reviewFieldFocus = [];
         document.addEventListener('focusin', event => {
           if (event.target.id === 'gen-max_concurrent_agents') window.__reviewFieldFocus.push(event.target.id);
         });
-        if (traversal === 'next popstate') window.addEventListener('popstate', () => history.back(), { once: true });
-        history.back();
-        if (traversal === 'queued pair') history.back();
+        if (traversal === 'two-entry jump') {
+          // Consecutive back() calls need not traverse two entries.
+          history.go(-2);
+        } else {
+          window.addEventListener('popstate', () => history.back(), { once: true });
+          history.back();
+        }
       }, traversal);
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).settingsGuard)).toBe(true);
+      await page.clock.resume();
       const guard = page.getByRole('dialog', { name: 'Leave settings?' });
       await visible(guard);
       await expect.poll(() => new URL(page.url()).hash).toBe('#/settings/stages');
@@ -2040,6 +2050,34 @@ async function readableStageLabel(locator) {
   });
   assert.ok(ratio >= 4.5, `Stage label contrast ${ratio.toFixed(2)}:1 must reach 4.5:1`);
 }
+
+describe('graph execution evidence', () => {
+  for (const width of [390, 1280]) for (const graph of [false, true]) {
+    test(`stale output identifies ${graph ? 'graph visit' : 'legacy stage'} / ${width}px`, async t => {
+      const record = ticket('kon-evidence', 'Recorded execution', { status: 'paused', stage: graph ? 'stop' : 'code', history: [
+        { stage: 'code', run: 0, node_visit_id: graph ? 'exec.1' : undefined, visit_attempt: 1, completed_at: stamp },
+      ] });
+      if (graph) {
+        record.graph_definition = { version: 2, entry: 'code', nodes: [{ id: 'code', type: 'agent', template: 'implement' }, { id: 'stop', type: 'end', status: 'paused' }], edges: [] };
+        record.graph_execution = { execution_id: 'exec', revision: 2, current_node: 'stop', visit_id: 'exec.1', visit: 1 };
+      }
+      await withPage(t, width, 'dark', async page => {
+        await page.route('**/api/tickets/kon-evidence/activity?*', route => route.fulfill({
+          contentType: 'application/json', body: JSON.stringify({ stale: true, live: false, source: 'plaintext', content: 'Saved attempt output' }),
+        }));
+        await openTicket(page, record.id);
+        await page.getByRole('button', { name: /^activity$/i }).filter({ visible: true }).click();
+        const warning = page.locator('[x-show="activity?.stale && !activity?.live"]:visible');
+        await expect(warning).toContainText(graph ? 'Showing the latest attempt of this visit.' : /[Ss]howing the latest run of this stage/, { useInnerText: true });
+        if (graph) {
+          await expect(warning).toContainText('visit exec.1', { useInnerText: true });
+          await expect(warning).not.toContainText('latest run of this stage', { useInnerText: true });
+          await expect(page.locator('[x-text="seg.name"]:visible')).not.toContainText(['stop']);
+        }
+      }, { records: [record] });
+    });
+  }
+});
 
 describe('custom execution activity', () => {
   for (const order of [[0, 1], [1, 0]]) test(`overlapping physical drags restore active controls after both failures / order=${order}`, async t => {
@@ -3263,26 +3301,36 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         const surface = mobileTerminalSurface(page), compose = mobileComposer(page);
         fixture.behavior.bracketedPaste = true;
         await page.clock.install();
+        await page.clock.setFixedTime(new Date(stamp));
         for (const cancel of [null, 'Done', 'Escape']) {
           await compose.fill('первая\nвторая\x00\x03\x1b\x7f');
           await page.waitForFunction(() => Alpine.$data(document.body).terminalRW && Alpine.$data(document.body).terminalConnected);
           await terminalGridFits(page, fixture);
           fixture.socketRoutes.at(-1).send(Buffer.from('\x1b[?2004h'));
           await page.waitForFunction(() => termState.term.modes.bracketedPasteMode);
+          const send = surface.getByRole('button', { name: 'Send', exact: true });
+          await expect(send).toBeVisible();
+          await expect(send).toBeEnabled();
+          // install() leaves timers running between Playwright actions.
+          await page.clock.pauseAt(new Date(stamp));
           const before = fixture.messages.filter(message => message.type === 'input').length;
-          await surface.getByRole('button', { name: 'Send', exact: true }).click();
+          await send.click();
           await expect(compose).toHaveValue('');
           await expect(compose).toBeFocused();
           await expect.poll(() => fixture.messages.filter(message => message.type === 'input')[before]?.data)
             .toBe('\x1b[200~первая\rвторая\x1b[201~');
+          await page.clock.runFor(149);
+          assert.deepEqual(fixture.messages.filter(message => message.type === 'input').slice(before).map(message => message.data),
+            ['\x1b[200~первая\rвторая\x1b[201~']);
           if (cancel === 'Done') await surface.locator('.mobile-terminal-bar').getByRole('button', { name: 'Done', exact: true }).click();
           if (cancel === 'Escape') await compose.press('Escape');
-          await page.clock.runFor(150);
+          await page.clock.runFor(1);
           if (!cancel) await expect.poll(() => fixture.messages.filter(message => message.type === 'input').length).toBe(before + 2);
           assert.deepEqual(fixture.messages.filter(message => message.type === 'input').slice(before).map(message => message.data),
             cancel ? ['\x1b[200~первая\rвторая\x1b[201~'] : ['\x1b[200~первая\rвторая\x1b[201~', '\r']);
           assert.equal(new URL(page.url()).hash, '#/t/kon-live');
           if (cancel) await page.waitForFunction(() => !Alpine.$data(document.body).terminalRW && !Alpine.$data(document.body).mobileTerminalInputTarget);
+          await page.clock.resume();
         }
       });
     });

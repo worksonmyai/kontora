@@ -37,6 +37,8 @@ func TestDecodeResult(t *testing.T) {
 		{"blocked blank next", `{"outcome":"blocked","summary":"No.","next_step":" "}`, false},
 		{"unknown outcome", `{"outcome":"success","summary":"Done."}`, false},
 		{"unknown key", `{"outcome":"complete","summary":"Done.","version":1}`, false},
+		{"v1 verdict", `{"outcome":"complete","summary":"Done.","verdict":"approve"}`, false},
+		{"v1 empty verdict", `{"outcome":"complete","summary":"Done.","verdict":""}`, false},
 		{"cannot override invocation", `{"outcome":"complete","summary":"Done.","invocation_id":"other"}`, false},
 		{"cannot override ticket", `{"outcome":"complete","summary":"Done.","ticket_id":"other"}`, false},
 		{"wrong case", `{"Outcome":"complete","summary":"Done."}`, false},
@@ -77,6 +79,7 @@ func TestInvocationEnv(t *testing.T) {
 	env := inv.Env()
 	assert.Equal(t, map[string]string{
 		"KONTORA_RESULT_AUTOMATION": "", "KONTORA_RESULT_RUN_NUMBER": "",
+		"KONTORA_RESULT_VERDICTS": "", "KONTORA_WORKFLOW_EXECUTION_ID": "", "KONTORA_NODE_VISIT_ID": "", "KONTORA_DEFINITION_FINGERPRINT": "",
 		"KONTORA_RESULT_VERSION": "1", "KONTORA_INVOCATION_ID": "inv-123", "KONTORA_RESULT_TICKET": "kon-test", "KONTORA_RESULT_STAGE": "implement", "KONTORA_RESULT_FILE": inv.ResultPath,
 	}, env)
 	got, err := InvocationFromEnv(func(k string) string { return env[k] })
@@ -107,7 +110,7 @@ func TestInvocationEnv(t *testing.T) {
 		})
 	}
 	for _, tt := range []struct{ key, value string }{
-		{ResultVersionEnvVar, "2"}, {ResultVersionEnvVar, "01"}, {ResultVersionEnvVar, "garbage"},
+		{ResultVersionEnvVar, "3"}, {ResultVersionEnvVar, "01"}, {ResultVersionEnvVar, "garbage"},
 		{InvocationIDEnvVar, "../old"}, {InvocationIDEnvVar, `a\b`}, {InvocationIDEnvVar, "."}, {InvocationIDEnvVar, ".."},
 		{InvocationIDEnvVar, "bad\x00id"}, {InvocationIDEnvVar, "bad\xffid"}, {InvocationIDEnvVar, "bad id"}, {InvocationIDEnvVar, "bad\u00a0id"}, {InvocationIDEnvVar, "bad\nid"},
 		{InvocationIDEnvVar, "inv*"}, {InvocationIDEnvVar, "inv?"}, {InvocationIDEnvVar, "inv[1]"},

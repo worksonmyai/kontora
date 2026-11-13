@@ -2715,8 +2715,8 @@ completed_at: %s
 // frontmatter's started_at is rewritten at every spawn, so a ticket that ran
 // four stages would otherwise report only the fourth.
 func TestChildInfo_WallBounds(t *testing.T) {
-	cfg := &config.Config{Pipelines: map[string]config.Pipeline{
-		"two-stage": {{Stage: "step1"}, {Stage: "step2"}},
+	cfg := &config.Config{Pipelines: map[string]config.PipelineDefinition{
+		"two-stage": {Legacy: config.Pipeline{{Stage: "step1"}, {Stage: "step2"}}},
 	}}
 	at := func(mins int) *time.Time {
 		v := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC).Add(time.Duration(mins) * time.Minute)
@@ -2856,7 +2856,7 @@ func TestDaemon_ArchiveListAndRoundTrip(t *testing.T) {
 func TestDaemon_ArchiveListScalarAgent(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.DefaultAgent = "agent1"
-	h.cfg.Pipelines["archive-test"] = config.Pipeline{{Stage: "work", Agent: "agent2"}}
+	h.cfg.Pipelines["archive-test"] = config.PipelineDefinition{Legacy: config.Pipeline{{Stage: "work", Agent: "agent2"}}}
 	d := h.newDaemon(h.cfg)
 	cases := []struct {
 		id, fields, agent string

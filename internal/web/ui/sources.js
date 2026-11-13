@@ -271,7 +271,7 @@ export function kontoraSources() {
         if (!await this.flushEditSave()) return false;
         await this._waitEditorSaves(key);
         var state = this._editorSaves[key];
-        if (state && (state.pending || !this._sameEditorDraft(state.draft, state.ack))) return false;
+        if (state && (state.pending || state.failed || !this._sameEditorDraft(state.draft, state.ack))) return false;
         if (this.sameTicket(this.selectedTicket, ticket) && this.editing && state &&
             !this._sameEditorDraft(this._ordinaryEditorDraft(), state.ack)) return false;
         if (!this.sameTicket(this.selectedTicket, ticket) || !this.ticketCanClaim(this.selectedTicket)) return false;

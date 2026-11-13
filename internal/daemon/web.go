@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/frontmatter"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/notify"
+	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/ticket/store"
@@ -1213,7 +1215,7 @@ func (d *Daemon) GetLogs(id string, stage string) (string, error) {
 
 	cfg := d.config()
 	var buf bytes.Buffer
-	if err := cli.Logs(cfg.TicketsDir, cfg.LogsDir, id, stage, &buf); err != nil {
+	if err := cli.LogsExact(cfg.TicketsDir, cfg.LogsDir, id, stage, &buf); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", web.ErrLogNotFound
 		}
@@ -1234,14 +1236,18 @@ func (d *Daemon) GetLogs(id string, stage string) (string, error) {
 // Historical graph attempts use visit-specific logs. A fallback is stale if a
 // later attempt reused the same visit log or that visit is currently running.
 func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
+	if q.LogTailBytes < 0 || q.LogTailBytes > web.MaxLogTailBytes {
+		return web.ActivityInfo{}, fmt.Errorf("%w: log_tail_bytes must be between 0 and %d", web.ErrInvalidConfig, web.MaxLogTailBytes)
+	}
 	d.mu.Lock()
 	ts, ok := d.tickets[q.ID]
 	var newestRun int
-	var stageRunning bool
+	var stageRunning, fallbackStale bool
 	var nextRun int
 	var lr liveRun
 	var registered bool
-	var graphLog, graphStale bool
+	logsDir := expandTilde(d.config().LogsDir)
+	logPath := session.LogPath(logsDir, q.ID, q.Stage)
 	if ok && ts.ticket.IsImportedRun(q.Stage, q.Run) {
 		d.mu.Unlock()
 		return web.ActivityInfo{}, web.ErrLogNotFound
@@ -1252,9 +1258,12 @@ func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 				newestRun = h.Run
 			}
 		}
-		_, graphStale, graphLog = cli.GraphRunLog(ts.ticket, "", q.Stage, q.Run)
 		stageRunning = ts.ticket.IsRunning() && ts.ticket.Stage == q.Stage
 		nextRun = stageRunIndex(ts.ticket, q.Stage)
+		fallbackStale = q.Run < newestRun || stageRunning
+		if path, stale, graph := cli.GraphRunLog(ts.ticket, logsDir, q.Stage, q.Run); graph {
+			logPath, fallbackStale = path, stale
+		}
 		lr, registered = d.liveRuns[q.ID]
 	}
 	d.mu.Unlock()
@@ -1272,19 +1281,45 @@ func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 	liveMatch := registered && q.Stage == lr.stage && q.Run == lr.run
 	live := q.Stage != "" && (liveMatch || (!registered && stageRunning && q.Run == nextRun))
 
-	cfg := d.config()
 	if liveMatch {
 		if info, ok := d.liveActivity(q, lr); ok {
 			return info, nil
 		}
 	}
+	return d.recordedActivity(q, live, fallbackStale, logPath)
+}
 
-	sidecarETag := fileETag(stageEventsPath(cfg, q.ID, q.Stage, q.Run), q.Run)
-	if sidecarETag != "" && sidecarETag == q.IfNoneMatch {
-		return web.ActivityInfo{NotModified: true, ETag: sidecarETag}, nil
+func (d *Daemon) recordedActivity(q web.ActivityQuery, live, fallbackStale bool, logPath string) (web.ActivityInfo, error) {
+	cfg := d.config()
+	var a *session.Artifact
+	var err error
+	if q.Stage == "" {
+		a, err = session.OpenNewestLog(expandTilde(cfg.LogsDir), q.ID)
 	}
-
-	tape, content, err := cli.StageActivity(cfg.TicketsDir, cfg.LogsDir, q.ID, q.Stage, q.Run)
+	if q.Stage == "" && a == nil {
+		var buf bytes.Buffer
+		if err := cli.LogsExact(cfg.TicketsDir, cfg.LogsDir, q.ID, "", &buf); err != nil {
+			return web.ActivityInfo{}, err
+		}
+		content := buf.String()
+		size := len(content)
+		start := 0
+		if q.LogTailBytes > 0 && size > q.LogTailBytes {
+			start = size - q.LogTailBytes
+			for start < size && !utf8.RuneStart(content[start]) {
+				start++
+			}
+		}
+		info := web.ActivityInfo{Source: "log", Run: q.Run, Content: content[start:], ContentStart: int64(start), ContentSize: int64(size), ContentTruncated: start > 0}
+		info.ETag = activityETag(web.ContentETag(buf.Bytes(), ""), q, info)
+		if info.ETag == q.IfNoneMatch {
+			return web.ActivityInfo{NotModified: true, ETag: info.ETag}, nil
+		}
+		return info, nil
+	}
+	if a == nil {
+		a, err = session.OpenActivityLog(expandTilde(cfg.LogsDir), q.ID, q.Stage, q.Run, logPath)
+	}
 	if err != nil {
 		// A live run whose first bytes are still being written has nothing to
 		// read yet. Answering with an error would flash one on every poll.
@@ -1297,17 +1332,35 @@ func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 		return web.ActivityInfo{}, err
 	}
 
-	info := web.ActivityInfo{Source: "events", Stage: q.Stage, Run: q.Run, Tape: tape, Live: live}
-	if tape == nil {
-		info.Source = "log"
-		info.Content = content
-		info.Stale = q.Run < newestRun || stageRunning
-		if graphLog {
-			info.Stale = graphStale
-		}
-		return info, nil
+	defer a.File.Close()
+	info := web.ActivityInfo{Source: a.Source, Stage: q.Stage, Run: q.Run, Live: live}
+	if a.Source == "log" && q.Stage != "" {
+		info.Stale = fallbackStale
 	}
-	info.ETag = sidecarETag
+	info.ETag = activityETag(session.FileVersion(a.Path, a.Info), q, info)
+	if (a.Source != "log" || q.LogTailBytes > 0) && info.ETag == q.IfNoneMatch && transcriptStable(a.Path, a.File, a.Info) {
+		return web.ActivityInfo{NotModified: true, ETag: info.ETag}, nil
+	}
+	if a.Source == "events" {
+		info.Tape, err = a.Tape()
+	} else {
+		info.Content, info.ContentStart, info.ContentSize, err = a.Content(q.LogTailBytes)
+		info.ContentTruncated = info.ContentStart > 0
+	}
+	if err != nil {
+		return web.ActivityInfo{}, err
+	}
+	// Full reads also serve evidence capture, which must detect equal-size
+	// rewrites even when a writer preserves the modification time.
+	if a.Source == "log" && q.LogTailBytes == 0 {
+		info.ETag = activityETag(session.FileVersion(a.Path, a.Info)+web.ContentETag([]byte(info.Content), ""), q, info)
+	}
+	if !transcriptStable(a.Path, a.File, a.Info) {
+		info.ETag = ""
+	}
+	if info.ETag != "" && info.ETag == q.IfNoneMatch {
+		return web.ActivityInfo{NotModified: true, ETag: info.ETag}, nil
+	}
 	return info, nil
 }
 
@@ -1330,14 +1383,15 @@ func (d *Daemon) liveActivity(q web.ActivityQuery, lr liveRun) (web.ActivityInfo
 		return info, true
 	}
 
-	info.ETag = fileETag(path, q.Run)
-	if info.ETag != "" && info.ETag == q.IfNoneMatch {
-		return web.ActivityInfo{NotModified: true, ETag: info.ETag}, true
-	}
-
-	tape, err := sessionTape(path, isPi)
+	tape, version, err := d.transcripts.readConditional(path, isPi, func(version string) bool {
+		return q.IfNoneMatch != "" && activityETag(version, q, info) == q.IfNoneMatch
+	})
 	if err != nil {
 		return web.ActivityInfo{}, false
+	}
+	info.ETag = activityETag(version, q, info)
+	if info.ETag != "" && info.ETag == q.IfNoneMatch {
+		return web.ActivityInfo{NotModified: true, ETag: info.ETag}, true
 	}
 	info.Tape = &tape
 	info.Offset = tape.SliceAt(q.After)
@@ -1356,16 +1410,11 @@ func emptyTape(isPi bool) logfmt.Tape {
 	return tape
 }
 
-// fileETag is a validator over a transcript file's metadata, so a poll that
-// changes nothing costs one stat instead of a full parse. The run index is
-// folded in because two runs of a stage can share a session file. An
-// unstattable file yields "", which never matches a client's validator.
-func fileETag(path string, run int) string {
-	st, err := os.Stat(path)
-	if err != nil {
+func activityETag(version string, q web.ActivityQuery, info web.ActivityInfo) string {
+	if version == "" {
 		return ""
 	}
-	return web.ContentETag(fmt.Appendf(nil, "%d-%d-%d", st.Size(), st.ModTime().UnixNano(), run), "")
+	return web.ContentETag(fmt.Appendf(nil, "%s|id=%s|stage=%s|run=%d|source=%s|live=%t|stale=%t|tail=%d|schema=%d", version, q.ID, q.Stage, q.Run, info.Source, info.Live, info.Stale, q.LogTailBytes, logfmt.TapeVersion), "")
 }
 
 // chainNodeCap bounds the ladder the ticket page draws. The critical path is

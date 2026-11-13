@@ -21,6 +21,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/notify"
+	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/stats"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
@@ -2005,6 +2006,393 @@ func TestDaemon_GetConfig_ExposesMaxRetries(t *testing.T) {
 	}
 	require.Equal(t, []string{"step1"}, retry.Stages)
 	assert.Equal(t, []int{1}, retry.MaxRetries)
+}
+
+func TestDaemon_ActivityConcurrentAppend(t *testing.T) {
+	for _, kind := range []string{"ticket", "assistant"} {
+		t.Run(kind, func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.assistantConfig("pi"))
+			dir := t.TempDir()
+			q := web.ActivityQuery{ID: "tst-append", Stage: "step1"}
+			read := func() (web.ActivityInfo, error) { return d.GetActivity(q) }
+			if kind == "assistant" {
+				thread, err := d.CreateAssistantThread(web.CreateAssistantThreadRequest{})
+				require.NoError(t, err)
+				dir, err = d.assistantThreadStore(d.config(), thread.ID).PiSessionDir(thread.ID)
+				require.NoError(t, err)
+				require.NoError(t, os.MkdirAll(dir, 0o755))
+				read = func() (web.ActivityInfo, error) {
+					info, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID, After: q.After, IfNoneMatch: q.IfNoneMatch})
+					return web.ActivityInfo{Tape: info.Tape, Offset: info.Offset, ETag: info.ETag, NotModified: info.NotModified}, err
+				}
+			} else {
+				path := h.writeTicket(q.ID+".md", h.taskMD(q.ID, "in_progress", "one-stage"))
+				tk, err := ticket.ParseFile(path)
+				require.NoError(t, err)
+				d.tickets[tk.ID] = newTicketState(tk, path)
+				d.liveRuns[tk.ID] = liveRun{stage: q.Stage, params: RunnerParams{SessionDir: dir}}
+			}
+			path := filepath.Join(dir, "s.jsonl")
+			require.NoError(t, os.WriteFile(path, []byte(piSessionJSONL), 0o644))
+			appendText := func(text string) {
+				f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+				require.NoError(t, err)
+				_, err = fmt.Fprintf(f, "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":%q}]}}\n", text)
+				require.NoError(t, err)
+				require.NoError(t, f.Close())
+			}
+			first, err := read()
+			require.NoError(t, err)
+			require.NotNil(t, first.Tape)
+			require.NotEmpty(t, first.ETag)
+			held := slices.Clone(first.Tape.Events)
+			original := len(held)
+			q.IfNoneMatch = first.ETag
+			appendText("before parsing")
+			calls := 0
+			d.transcripts.parse = func(r io.Reader, pi bool) (logfmt.Tape, error) {
+				calls++
+				tape, err := parseTranscript(r, pi)
+				appendText(fmt.Sprintf("during parse %d", calls))
+				return tape, err
+			}
+			for i := range 3 {
+				q.After = len(held)
+				got, err := read()
+				require.NoError(t, err)
+				require.False(t, got.NotModified)
+				require.NotNil(t, got.Tape)
+				require.Empty(t, got.ETag)
+				held = append(held[:got.Offset], got.Tape.Events...)
+				require.Len(t, held, original+i+1, "overlapping writes must not erase displayed history")
+				assert.Len(t, d.transcripts.entries, 1, "only the initial stable version may be cached")
+				q.IfNoneMatch = got.ETag
+			}
+			assert.Equal(t, 3, calls)
+			d.transcripts.parse = nil
+			q.After = len(held)
+			got, err := read()
+			require.NoError(t, err)
+			require.NotNil(t, got.Tape)
+			assert.False(t, got.NotModified)
+			assert.NotEmpty(t, got.ETag)
+			held = append(held[:got.Offset], got.Tape.Events...)
+			assert.Len(t, held, original+4)
+			q.IfNoneMatch = got.ETag
+			unchanged, err := read()
+			require.NoError(t, err)
+			assert.True(t, unchanged.NotModified)
+		})
+	}
+}
+
+func TestDaemon_LiveActivityOversizedConditional(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+	cc := t.TempDir()
+	dir := filepath.Join(cc, "projects", "p")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	path := filepath.Join(dir, "s.jsonl")
+	content := strings.Repeat(claudeTextJSONL(strings.Repeat("x", 17<<10)), 2000)
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	lr := liveRun{stage: "step1", params: RunnerParams{SessionID: "s", Env: map[string]string{"CLAUDE_CONFIG_DIR": cc}}}
+	calls := 0
+	d.transcripts.parse = func(r io.Reader, pi bool) (logfmt.Tape, error) {
+		calls++
+		return parseTranscript(r, pi)
+	}
+	q := web.ActivityQuery{ID: "known", Stage: lr.stage}
+	first, ok := d.liveActivity(q, lr)
+	require.True(t, ok)
+	require.NotNil(t, first.Tape)
+	require.Len(t, first.Tape.Events, 2001)
+	require.False(t, first.Tape.Truncated)
+	require.NotEmpty(t, first.ETag)
+	require.Empty(t, d.transcripts.entries)
+	q.IfNoneMatch = first.ETag
+	for _, after := range []int{0, 2001, 9999} {
+		q.After = after
+		got, ok := d.liveActivity(q, lr)
+		require.True(t, ok)
+		require.True(t, got.NotModified)
+		assert.Equal(t, first.ETag, got.ETag)
+		assert.Nil(t, got.Tape)
+	}
+	assert.Equal(t, 1, calls, "unchanged oversized sessions must validate before parsing or cloning")
+	if os.Geteuid() != 0 {
+		require.NoError(t, os.Chmod(path, 0))
+		_, ok := d.liveActivity(q, lr)
+		assert.False(t, ok, "an unreadable file must not validate")
+		require.NoError(t, os.Chmod(path, 0o644))
+		recovered, ok := d.liveActivity(q, lr)
+		require.True(t, ok)
+		assert.True(t, recovered.NotModified)
+		assert.Equal(t, 1, calls)
+	}
+	q.Run++
+	q.After = 0
+	changed, ok := d.liveActivity(q, lr)
+	require.True(t, ok)
+	assert.False(t, changed.NotModified)
+	assert.NotEqual(t, first.ETag, changed.ETag)
+	require.NotNil(t, changed.Tape)
+	assert.Equal(t, 2, calls)
+	require.NoError(t, os.WriteFile(path, []byte(claudeTextJSONL("replacement")), 0o644))
+	changed, ok = d.liveActivity(q, lr)
+	require.True(t, ok)
+	assert.False(t, changed.NotModified)
+	require.NotNil(t, changed.Tape)
+	require.NotEmpty(t, changed.Tape.Events)
+	assert.Equal(t, "replacement", changed.Tape.Events[len(changed.Tape.Events)-1].Text)
+	assert.Equal(t, 3, calls)
+}
+
+func BenchmarkLiveActivityOversizedConditional(b *testing.B) {
+	cc := b.TempDir()
+	dir := filepath.Join(cc, "projects", "p")
+	require.NoError(b, os.MkdirAll(dir, 0o755))
+	content := strings.Repeat(claudeTextJSONL(strings.Repeat("x", 17<<10)), 2000)
+	require.NoError(b, os.WriteFile(filepath.Join(dir, "s.jsonl"), []byte(content), 0o644))
+	lr := liveRun{stage: "step1", params: RunnerParams{SessionID: "s", Env: map[string]string{"CLAUDE_CONFIG_DIR": cc}}}
+	d := &Daemon{}
+	q := web.ActivityQuery{ID: "known", Stage: lr.stage}
+	first, ok := d.liveActivity(q, lr)
+	require.True(b, ok)
+	require.NotEmpty(b, first.ETag)
+	q.IfNoneMatch = first.ETag
+	b.ReportAllocs()
+	for b.Loop() {
+		got, ok := d.liveActivity(q, lr)
+		require.True(b, ok)
+		require.True(b, got.NotModified)
+	}
+}
+
+func TestDaemon_LiveActivityCacheDetached(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	require.NoError(t, os.WriteFile(path, []byte(piSessionJSONL), 0o644))
+	lr := liveRun{stage: "step1", params: RunnerParams{SessionDir: dir}}
+	calls := 0
+	d.transcripts.parse = func(r io.Reader, pi bool) (logfmt.Tape, error) { calls++; return parseTranscript(r, pi) }
+	q := web.ActivityQuery{ID: "known", Stage: "step1"}
+	first, ok := d.liveActivity(q, lr)
+	require.True(t, ok)
+	require.NotEmpty(t, first.ETag)
+	expected := cloneTape(*first.Tape, true)
+	first.Tape.Events[0].Model = "mutated"
+	for _, after := range []int{0, 1, 999, 0} {
+		q.After = after
+		got, ok := d.liveActivity(q, lr)
+		require.True(t, ok)
+		want := cloneTape(expected, true)
+		offset := want.SliceAt(after)
+		assert.Equal(t, offset, got.Offset)
+		assert.Equal(t, want, *got.Tape)
+	}
+	q.IfNoneMatch = first.ETag
+	unchanged, ok := d.liveActivity(q, lr)
+	require.True(t, ok)
+	assert.True(t, unchanged.NotModified)
+	assert.Equal(t, 1, calls)
+	require.NoError(t, os.WriteFile(path, []byte(piSessionJSONL+"{}\n"), 0o644))
+	got, ok := d.liveActivity(q, lr)
+	require.True(t, ok)
+	assert.False(t, got.NotModified)
+	assert.Equal(t, 2, calls)
+}
+
+func TestDaemon_ActivityImportedRuns(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+	path := h.writeTicket("tst-import.md", `---
+id: tst-import
+status: done
+imported_history_count: 2
+history:
+ - {stage: review}
+ - {stage: plan}
+ - {stage: review, run: 1}
+---
+# Imported
+`)
+	tk, err := ticket.ParseFile(path)
+	require.NoError(t, err)
+	d.tickets[tk.ID] = newTicketState(tk, path)
+	dir := filepath.Join(h.logsDir, tk.ID)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "review.log"), []byte("local"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "review.0.events.json"), []byte(`{"version":1,"events":[]}`), 0o644))
+	for _, stage := range []string{"review", "plan"} {
+		_, err := d.GetActivity(web.ActivityQuery{ID: tk.ID, Stage: stage})
+		assert.ErrorIs(t, err, web.ErrLogNotFound)
+	}
+	got, err := d.GetActivity(web.ActivityQuery{ID: tk.ID, Stage: "review", Run: 1})
+	require.NoError(t, err)
+	assert.Equal(t, "local", got.Content)
+}
+
+func TestDaemon_ActivityPreviewAndExactIdentity(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+	path := h.writeTicket("tst-preview.md", h.taskMD("tst-preview", "paused", "one-stage"))
+	tk, err := ticket.ParseFile(path)
+	require.NoError(t, err)
+	d.tickets[tk.ID] = newTicketState(tk, path)
+	// Neither endpoint needs the ticket file or a store-wide prefix resolver.
+	require.NoError(t, os.Remove(path))
+	dir := filepath.Join(h.logsDir, tk.ID)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	logPath := filepath.Join(dir, "step1.log")
+	full := "prefix€xyz"
+	require.NoError(t, os.WriteFile(logPath, []byte(full), 0o644))
+	for _, tc := range []struct {
+		name    string
+		tail    int
+		content string
+		start   int64
+		unnamed bool
+	}{
+		{name: "full", content: full},
+		{name: "preview", tail: 5, content: "xyz", start: 9},
+		{name: "large window", tail: 100, content: full},
+		{name: "unnamed preview", tail: 5, content: "xyz", start: 9, unnamed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := web.ActivityQuery{ID: tk.ID, Stage: "step1", LogTailBytes: tc.tail}
+			if tc.unnamed {
+				q.Stage = ""
+			}
+			got, err := d.GetActivity(q)
+			require.NoError(t, err)
+			assert.Equal(t, tc.content, got.Content)
+			assert.Equal(t, tc.start, got.ContentStart)
+			assert.EqualValues(t, len(full), got.ContentSize)
+			assert.Equal(t, tc.start > 0, got.ContentTruncated)
+			require.NotEmpty(t, got.ETag)
+			q.IfNoneMatch = got.ETag
+			again, err := d.GetActivity(q)
+			require.NoError(t, err)
+			assert.True(t, again.NotModified)
+			assert.Empty(t, again.Content)
+			exported, err := d.GetLogs(tk.ID, "step1")
+			require.NoError(t, err)
+			assert.Equal(t, full, exported)
+		})
+	}
+}
+
+func TestDaemon_ActivityGraphVisitPreviews(t *testing.T) {
+	for _, tc := range []struct {
+		name, visit string
+		run         int
+		stale       bool
+	}{
+		{name: "earlier visit", visit: "execution.1"},
+		{name: "retried visit", visit: "execution.2", run: 1, stale: true},
+		{name: "latest retry", visit: "execution.2", run: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.cfg)
+			path := h.writeTicket("tst-graph-preview.md", h.taskMD("tst-graph-preview", "paused", "one-stage"))
+			tk, err := ticket.ParseFile(path)
+			require.NoError(t, err)
+			require.NoError(t, tk.SetField("history", []ticket.HistoryEntry{
+				{Stage: "check", NodeVisitID: "execution.1"},
+				{Stage: "check", Run: 1, NodeVisitID: "execution.2"},
+				{Stage: "check", Run: 2, NodeVisitID: "execution.2"},
+			}))
+			d.tickets[tk.ID] = newTicketState(tk, path)
+			log := session.GraphLogPath(h.logsDir, tk.ID, "check", tc.visit)
+			require.NoError(t, os.MkdirAll(filepath.Dir(log), 0o755))
+			require.NoError(t, os.WriteFile(log, []byte("prefix "+tc.visit), 0o600))
+			require.NoError(t, os.WriteFile(session.LogPath(h.logsDir, tk.ID, "check"), []byte("wrong legacy log"), 0o600))
+			q := web.ActivityQuery{ID: tk.ID, Stage: "check", Run: tc.run, LogTailBytes: len(tc.visit)}
+			got, err := d.GetActivity(q)
+			require.NoError(t, err)
+			assert.Equal(t, tc.visit, got.Content)
+			assert.Equal(t, tc.stale, got.Stale)
+			assert.True(t, got.ContentTruncated)
+			q.IfNoneMatch = got.ETag
+			again, err := d.GetActivity(q)
+			require.NoError(t, err)
+			assert.True(t, again.NotModified)
+		})
+	}
+}
+
+func TestDaemon_ActivityValidatorTransitions(t *testing.T) {
+	for _, change := range []string{"window", "run", "stale", "live", "sidecar", "session", "replacement", "truncation", "missing", "malformed sidecar"} {
+		t.Run(change, func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.cfg)
+			path := h.writeTicket("tst-v.md", h.taskMD("tst-v", "paused", "one-stage"))
+			tk, err := ticket.ParseFile(path)
+			require.NoError(t, err)
+			d.tickets[tk.ID] = newTicketState(tk, path)
+			dir := filepath.Join(h.logsDir, tk.ID)
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+			logPath := filepath.Join(dir, "step1.log")
+			require.NoError(t, os.WriteFile(logPath, []byte("original"), 0o644))
+			q := web.ActivityQuery{ID: tk.ID, Stage: "step1", LogTailBytes: 4}
+			first, err := d.GetActivity(q)
+			require.NoError(t, err)
+			require.NotEmpty(t, first.ETag)
+			q.IfNoneMatch = first.ETag
+			switch change {
+			case "window":
+				q.LogTailBytes = 0
+			case "run":
+				q.Run = 1
+			case "stale":
+				tk.History = append(tk.History, ticket.HistoryEntry{Stage: "step1", Run: 1})
+			case "live":
+				tk.Status = ticket.StatusInProgress
+				tk.Stage = "step1"
+			case "sidecar", "malformed sidecar":
+				content := `{"version":1,"events":[]}`
+				if change == "malformed sidecar" {
+					content = "{bad"
+				}
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "step1.0.events.json"), []byte(content), 0o644))
+			case "session":
+				sessionDir := filepath.Join(dir, "session")
+				require.NoError(t, os.Mkdir(sessionDir, 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "s.jsonl"), []byte(piSessionJSONL), 0o644))
+				d.liveRuns[tk.ID] = liveRun{stage: "step1", params: RunnerParams{SessionDir: sessionDir}}
+			case "replacement":
+				st, err := os.Stat(logPath)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(logPath+".new", []byte("replaced"), 0o644))
+				require.NoError(t, os.Chtimes(logPath+".new", st.ModTime(), st.ModTime()))
+				require.NoError(t, os.Rename(logPath+".new", logPath))
+			case "truncation":
+				require.NoError(t, os.Truncate(logPath, 2))
+			case "missing":
+				require.NoError(t, os.Remove(logPath))
+			}
+			got, err := d.GetActivity(q)
+			if change == "missing" {
+				require.ErrorIs(t, err, web.ErrLogNotFound)
+				return
+			}
+			if change == "malformed sidecar" {
+				require.ErrorContains(t, err, "parsing activity sidecar")
+				return
+			}
+			require.NoError(t, err)
+			assert.False(t, got.NotModified)
+			assert.NotEqual(t, first.ETag, got.ETag)
+			if change == "sidecar" || change == "session" {
+				assert.Equal(t, "events", got.Source)
+				require.NotNil(t, got.Tape)
+			}
+		})
+	}
 }
 
 func TestDaemon_GetActivity(t *testing.T) {

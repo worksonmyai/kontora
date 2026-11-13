@@ -215,7 +215,7 @@ function fixtures(options = {}) {
       : /\/runs$/.test(path) ? ['offset', 'limit']
       : /\/runs\/\d+\/log$/.test(path) ? ['raw']
       : /^\/api\/assistant\/threads\/[^/]+\/activity$/.test(path) ? ['after']
-      : /\/(logs|activity)$/.test(path) ? ['stage', 'run', 'offset', 'limit', 'after'] : [];
+      : /\/(logs|activity)$/.test(path) ? ['stage', 'run', 'offset', 'limit', 'after', 'log_tail_bytes'] : [];
     assert.ok([...url.searchParams.keys()].every(k => allowedQuery.includes(k)), `Unexpected query: ${url}`);
     if (path === '/api/automations' && method === 'GET') return json(route, { available: behavior.automationsAvailable,
       error: behavior.automationsAvailable ? undefined : 'Automation store locked', definitions: [...definitions.values()] });
@@ -3404,17 +3404,17 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       });
     });
     for (const width of [320, 390]) {
-      test(`phone cached activity follows on reveal ${width}px / ${theme}`, async t => {
+      test(`phone activity loads on demand and reuses cache on reveal ${width}px / ${theme}`, async t => {
         await withPage(t, width, theme, async (page, fixture) => {
           fixture.behavior.activityEvents = Array.from({ length: 80 }, (_, i) => ({ kind: 'text', text: `Cached activity event ${i}` }));
           await openTicket(page, 'kon-done');
-          await page.waitForFunction(() => Alpine.$data(document.body).activity?.tape?.events.length === 80);
-          await page.evaluate(() => Alpine.nextTick());
-          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
           assert.equal(await page.evaluate(() => Alpine.$data(document.body).detailTab), 'ticket');
-          const reads = fixture.requests.filter(request => request === 'GET /api/tickets/kon-done/activity').length;
+          assert.equal(fixture.requests.filter(request => request === 'GET /api/tickets/kon-done/activity').length, 0);
           const detail = page.locator('.mobile-detail');
           await detail.getByRole('button', { name: 'Activity', exact: true }).click();
+          await page.waitForFunction(() => Alpine.$data(document.body).activity?.tape?.events.length === 80);
+          const reads = fixture.requests.filter(request => request === 'GET /api/tickets/kon-done/activity').length;
+          assert.equal(reads, 1);
           const scroller = detail.locator('#activity-scroll');
           await visible(scroller.getByText('Cached activity event 79', { exact: true }));
           await page.evaluate(() => Alpine.nextTick());
@@ -3422,7 +3422,6 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           const geometry = await scroller.evaluate(el => ({ height: el.scrollHeight, client: el.clientHeight, top: el.scrollTop }));
           assert.ok(geometry.height > geometry.client, 'Cached transcript overflows');
           assert.ok(geometry.height - geometry.client - geometry.top <= 1, `Follow opens at the newest event: ${JSON.stringify(geometry)}`);
-          assert.equal(fixture.requests.filter(request => request === 'GET /api/tickets/kon-done/activity').length, reads, 'Reveal reuses the completed transcript');
           await detail.getByRole('button', { name: /follow/i }).click();
           await scroller.evaluate(el => { el.scrollTop = 200; });
           const top = await scroller.evaluate(el => el.scrollTop);
@@ -3431,6 +3430,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await visible(scroller);
           await page.evaluate(() => Alpine.nextTick());
           assert.equal(await scroller.evaluate(el => el.scrollTop), top, 'Follow off preserves the reading position');
+          assert.equal(fixture.requests.filter(request => request === 'GET /api/tickets/kon-done/activity').length, reads, 'Reveal reuses the completed transcript');
           await detail.getByRole('button', { name: /follow/i }).click();
           await expect.poll(() => scroller.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThanOrEqual(1);
         });

@@ -90,7 +90,7 @@ export function kontoraActivity() {
       var id = this.outputSubject().id;
       var seq = ++this._activityLoadSeq;
       var url = '/api/tickets/' + encodeURIComponent(id) + '/activity'
-        + '?stage=' + encodeURIComponent(stage || '') + '&run=' + (run || 0);
+        + '?stage=' + encodeURIComponent(stage || '') + '&run=' + (run || 0) + '&log_tail_bytes=262144';
       var headers = {};
       if (merge) {
         url += '&after=' + this.tapeEvents().length;
@@ -167,6 +167,10 @@ export function kontoraActivity() {
       // A run with no structured record tails the plaintext log, which carries
       // no cursor: the payload is whole every time.
       if (!data.tape) {
+        if (!this.activity?.tape && this.activity?.content === data.content &&
+            this.activity?.content_start === data.content_start && this.activity?.content_size === data.content_size &&
+            this.activity?.content_truncated === data.content_truncated && this.activity?.live === data.live &&
+            this.activity?.stale === data.stale) return;
         this.activity = data;
         return;
       }

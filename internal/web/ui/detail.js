@@ -24,7 +24,7 @@ function historyPosition() {
 // and the actions the panel offers.
 export function kontoraDetail() {
   const moves = new Map();
-
+  const retirements = new Map();
   return {
     // What the assistant is told about the open ticket. Null when none is open,
     // so the pane leaves the line out rather than saying "no ticket". The panel
@@ -60,9 +60,11 @@ export function kontoraDetail() {
       // The editor holds the previous ticket's body. Saving it before the swap,
       // then dropping it, keeps a pending debounce or a later flush from writing
       // that body onto the ticket being opened. startEditing re-arms it below.
+      var releasedEditor = this.ticketKey(this.selectedTicket);
       this.flushEditSave();
       this.editing = false;
       this.editingBody = false;
+      this._releaseEditorBody();
       this.closeTerminal();
       this.terminalRW = false;
       this.logViewContent = null;
@@ -93,6 +95,7 @@ export function kontoraDetail() {
       var key = this.ticketKey(ticket);
       var mine = () => this.sameTicket(this.selectedTicket, ticket) && detailSeq === this._ticketDetailSeq;
       this.selectedTicket = ticket;
+      this._retireEditorState(releasedEditor);
       this._pushRecentTicket(key);
       this.fetchTicketCost(ticket.id);
       this.detailLoading = true;
@@ -158,9 +161,9 @@ export function kontoraDetail() {
       if (!this.executionActive(this.selectedTicket) && this.selectedTicket?.status !== 'todo' && this.selectedTicket?.status !== 'open'
           && this.selectedTicket?.history?.length > 0) {
         var latest = this.latestCompletedRun();
-        if (latest) this.fetchActivity(latest.stage, latest.run);
+        if (latest && !this.isMobile) this.fetchActivity(latest.stage, latest.run);
         // Finished tickets with a summary open on the summary tab; the
-        // transcript stays prefetched for the activity tab.
+        // transcript stays prefetched for the desktop activity tab.
         this.activeTab = this.summaryFirst(this.selectedTicket) ? 'summary' : 'activity';
       } else if (this.executionActive(this.selectedTicket) &&
           (this.selectedTicket.kind !== 'epic' || this.epicIsAgent(this.selectedTicket))) {
@@ -498,7 +501,10 @@ export function kontoraDetail() {
       ++this._editorGeneration;
       this.editSubmitting = false;
       this.deleteSubmitting = false;
+      var releasedEditor = this.ticketKey(this.selectedTicket);
       this.selectedTicket = null;
+      this._releaseEditorBody();
+      this._retireEditorState(releasedEditor);
       this.activeTab = 'ticket';
       this.logViewContent = null;
       this.logViewStage = null;
@@ -1359,10 +1365,10 @@ export function kontoraDetail() {
     _loadEditorDraft(ticket, snapshot) {
       var key = this.ticketKey(ticket);
       var state = this._editorSaves[key];
-      if (!state || (!state.pending && this._sameEditorDraft(state.draft, state.ack))) {
+      if (!state || (!state.pending && !state.failed && this._sameEditorDraft(state.draft, state.ack))) {
         state = this._editorSaves[key] = {
           ack: { ...snapshot }, draft: { ...snapshot }, target: { ...snapshot }, sequence: 0,
-          pending: 0, ackSequence: state?.ackSequence || 0, tail: Promise.resolve(true),
+          pending: 0, failed: false, ackSequence: this._editorAckVersion(key), tail: Promise.resolve(true),
         };
       } else {
         var ack = state.pending ? { ...state.ack } : {};
@@ -1378,6 +1384,43 @@ export function kontoraDetail() {
       return state;
     },
 
+    _editorAckVersion(id) {
+      return Math.max(this._editorAckVersions[id] || 0, this._editorSaves[id]?.ackSequence || 0);
+    },
+
+    _releaseEditorBody() {
+      this.editForm = { body: '', pipeline: '', path: '', agent: '' };
+      this._bodyLead = '';
+      this._blockOffsetsSrc = null;
+      this._blockOffsetsFor = null;
+      this._editorTicketKey = null;
+    },
+
+    _retireEditorState(id) {
+      var state = this._editorSaves[id];
+      if (!state || retirements.has(state)) return;
+      retirements.set(state, null);
+      var tail = state.tail;
+      // Save callers can append work in their promise continuations.
+      Promise.resolve(tail).then(() => {
+        if (this._appDestroyed) { retirements.delete(state); return; }
+        retirements.set(state, setTimeout(() => {
+          retirements.delete(state);
+          if (this._editorSaves[id] !== state) return;
+          if (tail !== state.tail) { this._retireEditorState(id); return; }
+          if (this.ticketKey(this.selectedTicket) === id || this.ticketKey(this.selectedEpic) === id ||
+              this._claimKey === id || state.pending || state.failed || !this._sameEditorDraft(state.draft, state.ack)) return;
+          this._editorAckVersions[id] = this._editorAckVersion(id);
+          delete this._editorSaves[id];
+        }, 0));
+      });
+    },
+
+    _destroyEditorRetirements() {
+      retirements.forEach(timer => { if (timer !== null) clearTimeout(timer); });
+      retirements.clear();
+    },
+
     async _waitEditorSaves(id) {
       // A completion may enqueue another submission before its caller closes.
       var tail;
@@ -1391,7 +1434,7 @@ export function kontoraDetail() {
       var state = this._editorSaves[id];
       if (!state) return Promise.resolve(false);
       state.draft = { ...draft };
-      if (this._sameEditorDraft(draft, state.target)) return state.tail;
+      if (!state.failed && this._sameEditorDraft(draft, state.target)) return state.tail;
       var submitted = { ...draft };
       var sequence = ++state.sequence;
       state.pending++;
@@ -1399,7 +1442,7 @@ export function kontoraDetail() {
       var save = async () => {
         var body = {};
         Object.keys(submitted).forEach(key => {
-          if (submitted[key] !== state.ack[key]) body[key] = submitted[key];
+          if (state.failed || submitted[key] !== state.ack[key]) body[key] = submitted[key];
         });
         try {
           if (Object.keys(body).length) {
@@ -1441,9 +1484,11 @@ export function kontoraDetail() {
             }
           }
           state.ack = submitted;
-          state.ackSequence++;
+          state.failed = false;
+          state.ackSequence = this._editorAckVersions[id] = this._editorAckVersion(id) + 1;
           return true;
         } catch (e) {
+          state.failed = true;
           this.error = e.message;
           return false;
         } finally {
@@ -1452,6 +1497,7 @@ export function kontoraDetail() {
         }
       };
       state.tail = state.tail.then(save);
+      this._retireEditorState(id);
       return state.tail;
     },
 
@@ -1604,6 +1650,7 @@ export function kontoraDetail() {
       if (!this.selectedTicket) return;
       if (stage === this.selectedTicket.stage && this.executionActive(this.selectedTicket)) {
         this._invalidateStageLogs();
+        this._invalidateRawLog();
         this.logViewContent = null;
         this.logViewStage = null;
         this.detailTab = 'terminal';
@@ -1677,9 +1724,12 @@ export function kontoraDetail() {
       if (!this.selectedTicket || this.selectedTicket.id !== ticketId || this.isSecondary(this.selectedTicket) || this.currentView !== 'board') return;
       const key = this.ticketKey(this.selectedTicket);
       const sequence = ++this._stageLogSeq;
-      const mine = () => sequence === this._stageLogSeq && !this._appDestroyed &&
-        this.currentView === 'board' && this.ticketKey(this.selectedTicket) === key;
       this._invalidateRawLog();
+      const epoch = this._rawLogEpoch;
+      const detail = this._ticketDetailSeq;
+      const mine = () => sequence === this._stageLogSeq && epoch === this._rawLogEpoch &&
+        detail === this._ticketDetailSeq && this.logViewStage === stage && !this._appDestroyed &&
+        this.currentView === 'board' && this.ticketKey(this.selectedTicket) === key;
       this.logViewStage = stage;
       this.logViewLoading = true;
       this.logViewContent = null;
@@ -1792,7 +1842,7 @@ export function kontoraDetail() {
       var generation = this._rawLogEpoch;
       var viewingActivity = this.outputTab() === 'activity';
       var content = this.selectedEpic || viewingActivity ? null : this.logViewContent;
-      if (content === null && this.activity && !this.activity.tape) content = this.activity.content;
+      if (content === null && this.activity && !this.activity.tape && !this.activity.content_truncated) content = this.activity.content;
       if (content === null || content === undefined) {
         try {
           var url = '/api/tickets/' + encodeURIComponent(subject.id) + '/logs';
@@ -1955,6 +2005,12 @@ export function kontoraDetail() {
       if (scroller) scroller.scrollTop = savedScroll;
       // scrollHeight includes both paddings and excludes the border.
       return (parseFloat(cs.borderTopWidth) || 0) + height - padBottom - lineHeight;
+    },
+
+    setLogHTML(el, content) {
+      if (el._logContent === content) return;
+      el._logContent = content;
+      el.innerHTML = this.renderLogHTML(content);
     },
 
     // Lexical colorizer for the stage-log pane: "> tool …" lines get an accent

@@ -175,6 +175,7 @@ export function kontoraApp() {
     _editDebounce: null,
     // Queues and failed drafts outlive the overlay that submitted them.
     _editorSaves: Object.create(null),
+    _editorAckVersions: Object.create(null),
     _editorGeneration: 0,
     _editorTicketKey: null,
     // Project defaults for the edit path. Agent provenance is separate because
@@ -336,7 +337,10 @@ export function kontoraApp() {
       if (this._searchRaf !== null) cancelAnimationFrame(this._searchRaf);
       this._boardRaf = null;
       this._searchRaf = null;
+      this._invalidateStageLogs();
+      this._invalidateRawLog();
       this.destroyMobile();
+      this._destroyEditorRetirements();
       this.destroyAgentPicker();
       this.destroySettingsLifecycle?.();
       this.destroySettingsHistory?.();
@@ -350,9 +354,7 @@ export function kontoraApp() {
       clearTimeout(this._sseReconnect);
       clearInterval(this._nowTimer);
       if (this._eventSource) this._eventSource.close();
-      this._stopAssistantPoll();
-      this._stopAssistantTick();
-      this._assistantCloseStream();
+      this.assistantDestroy();
     },
 
     showToast(msg) {

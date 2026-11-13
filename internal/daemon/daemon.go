@@ -516,6 +516,8 @@ type Daemon struct {
 	// ticket id. Guarded by mu.
 	scheduleRetry map[string]scheduleBackoff
 
+	transcripts transcriptCache
+
 	// assistant holds the dashboard assistant's in-flight turns and the tool
 	// calls parked on a person. It keeps its own lock: a parked write blocks
 	// the agent's tool boundary for as long as the person takes, and d.mu is

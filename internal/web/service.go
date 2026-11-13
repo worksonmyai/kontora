@@ -380,15 +380,19 @@ type PipelineInfo struct {
 	DefaultAgent string `json:"default_agent,omitempty"`
 }
 
+const MaxLogTailBytes = 1 << 20
+
 // ActivityQuery addresses one stage run. After is the number of events the
 // caller already holds, and only a live response honours it. IfNoneMatch is the
-// validator the caller last saw.
+// validator the caller last saw. LogTailBytes limits plaintext suffixes;
+// zero returns the full content.
 type ActivityQuery struct {
-	ID          string
-	Stage       string
-	Run         int
-	After       int
-	IfNoneMatch string
+	LogTailBytes int
+	ID           string
+	Stage        string
+	Run          int
+	After        int
+	IfNoneMatch  string
 }
 
 // ActivityInfo is one stage run's transcript. Source is "events" when the tape
@@ -399,14 +403,17 @@ type ActivityQuery struct {
 // will grow. Stale means a plaintext fallback whose bytes may describe another
 // run of the same stage; a live run reading that shared file is both.
 type ActivityInfo struct {
-	Source  string       `json:"source"`
-	Stage   string       `json:"stage"`
-	Run     int          `json:"run"`
-	Stale   bool         `json:"stale,omitempty"`
-	Live    bool         `json:"live,omitempty"`
-	Offset  int          `json:"offset,omitempty"` // index of the first event in Tape.Events
-	Content string       `json:"content,omitempty"`
-	Tape    *logfmt.Tape `json:"tape,omitempty"`
+	Source           string       `json:"source"`
+	Stage            string       `json:"stage"`
+	Run              int          `json:"run"`
+	Stale            bool         `json:"stale,omitempty"`
+	Live             bool         `json:"live,omitempty"`
+	Offset           int          `json:"offset,omitempty"` // index of the first event in Tape.Events
+	ContentStart     int64        `json:"content_start,omitempty"`
+	ContentSize      int64        `json:"content_size,omitempty"`
+	ContentTruncated bool         `json:"content_truncated,omitempty"`
+	Content          string       `json:"content,omitempty"`
+	Tape             *logfmt.Tape `json:"tape,omitempty"`
 
 	// ETag and NotModified drive HTTP revalidation and are not part of the
 	// payload the client parses.

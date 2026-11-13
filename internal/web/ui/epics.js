@@ -465,6 +465,8 @@ export function kontoraEpics() {
         this.terminalRW = false;
         this._resetActivity();
         this.selectedEpic = null;
+        this._releaseEditorBody();
+        this._retireEditorState(id);
         ++this._editorGeneration;
         this._epicDetailSeq++;
         this._epicDetail = null;
@@ -641,21 +643,21 @@ export function kontoraEpics() {
       var generation = this._editorGeneration;
       var state = this._editorSaves[id];
       if (!state) return true;
-      if (this._epicBriefLead + this.editForm.body === state.ack.description) return true;
+      if (!state.failed && this._epicBriefLead + this.editForm.body === state.ack.description) return true;
       this.epicBriefSaving = true;
       this.epicBriefSaved = false;
       // A second PUT must not overtake the first or let navigation drop a newer draft.
       this._epicBriefSave = (async () => {
         while (this.selectedEpic?.id === id) {
           var body = this._epicBriefLead + this.editForm.body;
-          if (body === state.ack.description) return true;
+          if (!state.failed && body === state.ack.description) return true;
           if (!await this._queueEditorSave(id, { description: body }, generation)) return false;
         }
         return true;
       })().finally(() => {
         this._epicBriefSave = null;
         this.epicBriefSaving = false;
-        this.epicBriefSaved = this.selectedEpic?.id === id &&
+        this.epicBriefSaved = !state.failed && this.selectedEpic?.id === id &&
           this._epicBriefLead + this.editForm.body === state.ack.description;
       });
       return this._epicBriefSave;

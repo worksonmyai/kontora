@@ -549,6 +549,7 @@ export function kontoraBoard() {
     _onBreakpointChange() {
       this.mobileBreakpointChanged();
       this._invalidateStageLogs();
+      this._invalidateRawLog();
       this.closeAgentPicker(false);
       // The palette has no phone layout, so a window narrowed while it is open
       // would leave it floating over the phone board.

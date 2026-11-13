@@ -493,20 +493,12 @@ func (d *Daemon) AssistantActivity(q web.AssistantActivityQuery) (web.AssistantA
 	// into the validator: the parked call, the turn records and whether a turn
 	// is still running. Without them a turn that ends without writing the
 	// session file again answers 304 for ever, and the pane sticks on "working".
-	info.ETag = assistantETag(path, thread.Turns, info)
-	if info.ETag != "" && info.ETag == q.IfNoneMatch {
-		return web.AssistantActivityInfo{NotModified: true, ETag: info.ETag}, nil
-	}
-
-	tape, err := sessionTape(path, thread.Kind == config.AgentKindPi)
+	tape, version, err := d.transcripts.read(path, thread.Kind == config.AgentKindPi)
 	if err != nil {
 		empty := emptyTape(thread.Kind == config.AgentKindPi)
 		info.Tape = &empty
 		return info, nil //nolint:nilerr // a session file that will not read is an empty tape, not a failed request.
 	}
-	info.Tape = &tape
-	info.Offset = tape.SliceAt(q.After)
-
 	if info.Partial != "" && assistantPartialLanded(tape, info.Partial, partial.Sealed, partial.Truncated) {
 		// Removal and arrival ride one response, so the pane swaps typed text
 		// for settled in a single update: no duplicate, no frame with neither.
@@ -515,13 +507,13 @@ func (d *Daemon) AssistantActivity(q web.AssistantActivityQuery) (web.AssistantA
 		}
 		info.Partial = ""
 		info.PartialTool = ""
-		info.ETag = assistantETag(path, thread.Turns, info)
-		// The validator compared above still had the partial folded in, so an
-		// unsealed block that keeps landing would re-send this body every poll.
-		if info.ETag != "" && info.ETag == q.IfNoneMatch {
-			return web.AssistantActivityInfo{NotModified: true, ETag: info.ETag}, nil
-		}
 	}
+	info.ETag = assistantETag(version, thread.Turns, info)
+	if info.ETag != "" && info.ETag == q.IfNoneMatch {
+		return web.AssistantActivityInfo{NotModified: true, ETag: info.ETag}, nil
+	}
+	info.Tape = &tape
+	info.Offset = tape.SliceAt(q.After)
 	return info, nil
 }
 
@@ -573,31 +565,16 @@ func (d *Daemon) AssistantPartial(id string) (web.AssistantPartialInfo, error) {
 	}, nil
 }
 
-// assistantETag is the validator one poll answers with. fileETag alone would
-// miss everything the response carries that is not in the session file.
-func assistantETag(path string, turns int, info web.AssistantActivityInfo) string {
-	base := fileETag(path, turns)
+func assistantETag(base string, turns int, info web.AssistantActivityInfo) string {
 	if base == "" {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString(base)
-	if len(info.Evidence) > 0 {
-		data, _ := json.Marshal(info.Evidence)
-		b.Write(data)
-	}
-	fmt.Fprintf(&b, "|running=%t|messages=%d", info.Running, len(info.Messages))
-	if n := len(info.Messages); n > 0 {
-		last := info.Messages[n-1]
-		fmt.Fprintf(&b, "|%d|%s", last.At.UnixNano(), last.Error)
-	}
-	if info.Gate != nil {
-		b.WriteString("|" + info.Gate.ID)
-	}
-	// Length, not content: within a generation the text only grows. Without it
-	// the poll answers 304 for a whole message that produces no tape rows.
-	fmt.Fprintf(&b, "|partial=%d,%d,%s", info.PartialGen, len(info.Partial), info.PartialTool)
-	return web.ContentETag([]byte(b.String()), "")
+	info.Tape = nil
+	info.Offset = 0
+	info.ETag = ""
+	info.NotModified = false
+	data, _ := json.Marshal(info)
+	return web.ContentETag(fmt.Appendf(data, "|%s|turns=%d", base, turns), "")
 }
 
 // assistantSessionPath locates the JSONL this thread's agent writes to. A

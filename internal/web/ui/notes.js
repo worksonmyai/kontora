@@ -279,7 +279,7 @@ export function kontoraNotes() {
       if (!this.ticketCanEdit(t)) return false;
       var id = this.ticketKey(t);
       var update = this._selectedTicketUpdateSeq;
-      var acknowledged = this._editorSaves[id]?.ackSequence || 0;
+      var acknowledged = this._editorAckVersion(id);
       try {
         var init = { method: method };
         if (body) {
@@ -304,13 +304,16 @@ export function kontoraNotes() {
 
     _noteApplyTicket(id, full, update, acknowledged) {
       var stale = (update !== undefined && update !== this._selectedTicketUpdateSeq) ||
-        (acknowledged !== undefined && acknowledged !== (this._editorSaves[id]?.ackSequence || 0));
+        (acknowledged !== undefined && acknowledged !== this._editorAckVersion(id));
       if (this.ticketKey(this.selectedTicket) === id) {
         if (this.editing || stale) {
           var description = this.descriptionText(this.selectedTicket);
           var tail = this.descriptionTail(full);
+          // Claim must use the revision of the description the user reviewed.
+          var revision = this.isSecondary(this.selectedTicket) && description !== this.descriptionText(full)
+            ? this.selectedTicket.revision : full.revision;
           this.selectedTicket = { ...this.selectedTicket, notes: full.notes,
-            description: description, description_tail: tail, body: description + tail, revision: full.revision,
+            description: description, description_tail: tail, body: description + tail, revision: revision,
             can_edit: full.can_edit, can_claim: full.can_claim, refusal_reason: full.refusal_reason, claim_warnings: full.claim_warnings };
         } else {
           this.selectedTicket = full;

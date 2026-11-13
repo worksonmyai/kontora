@@ -123,8 +123,7 @@ export function kontoraCompanion() {
         if (seq !== this.companionSeq) return;
         this._companionAdoptSnapshot(snapshot);
         if (this.companionThread() && this.assistantOpen) {
-          this._assistantETag = '';
-          this._loadAssistantActivity();
+          this._loadAssistantActivity({ fresh: true });
         }
         this.companionDisconnected = false;
         this.companionError = '';
@@ -192,7 +191,11 @@ export function kontoraCompanion() {
     },
     companionOpenInbox() {
       if (!this.companionEnabled()) return;
-      if (this.assistantView !== 'inbox') this._assistantSelectionSeq++;
+      if (this.assistantView !== 'inbox') {
+        this._assistantSelectionSeq++;
+        this._assistantRetireActivity();
+        this._assistantResume();
+      }
       this.assistantView = 'inbox';
       this.companionRefresh();
     },
@@ -200,7 +203,10 @@ export function kontoraCompanion() {
       if (!item.ticket_id) return;
       const ticket = this.tickets.find(t => t.id === item.ticket_id) || { id: item.ticket_id };
       if (await this._paletteOpenTicket(ticket)) {
-        if (this.isMobile) this.closeSheet();
+        if (this.isMobile) {
+          this.closeAssistant();
+          this.closeSheet();
+        }
       }
     },
     async companionPatch(path, body) {
@@ -233,10 +239,12 @@ export function kontoraCompanion() {
       if (!this.companionCanAsk() || !text?.trim()) return;
       this.companionBusy = true;
       const requestedAt = new Date().toISOString();
+      const context = this._assistantContextToken();
+      let completionContext = context;
       const selectionSeq = this._assistantSelectionSeq;
       const threadID = this.assistantThread?.id;
       const draft = this.assistantDraft;
-      const stillSelected = () => !this.companionDestroyed && this._assistantSelectionSeq === selectionSeq &&
+      const stillSelected = () => !this.companionDestroyed && this._assistantContextCurrent(context) && this._assistantSelectionSeq === selectionSeq &&
         this.assistantThread?.id === threadID;
       this.assistantError = null;
       this.companionError = '';
@@ -245,38 +253,37 @@ export function kontoraCompanion() {
         if (kind === 'followup' && this.companionThread()) body.thread_id = this.assistantThread.id;
         const res = await this._assistantFetch('/api/assistant/companion/messages', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        });
+        }, stillSelected);
         const thread = await res.json();
-        this.assistantLoadThreads();
-        if (!stillSelected()) return;
-        this._assistantCloseStream();
-        this._assistantClearPartial();
-        this._stopAssistantPoll();
-        this.assistantEvents = [];
-        this._assistantCursor = 0;
-        this._assistantETag = '';
-        this._assistantLoadSeq++;
-        this._assistantSetStreaming(false);
+        if (!stillSelected()) {
+          this.assistantLoadThreads();
+          return;
+        }
+        if (this.assistantThread?.id !== thread.id) this.assistantEvents = [];
         const messages = thread.messages || [];
         const turn = thread.turns || ((messages[messages.length - 1]?.n || 0) + 1);
         const pending = messages.some(m => m.n === turn) ? messages : messages.concat([
           { n: turn, text: text.trim(), at: requestedAt },
         ]);
         this._assistantAdopt(thread, pending);
+        completionContext = this._assistantContextToken();
+        this.assistantLoadThreads();
         if (kind === 'followup' && this.assistantDraft === draft && draft.trim() === text.trim()) {
           this.assistantDraft = '';
           this.assistantMenu = null;
         }
         this.assistantView = 'thread';
         this.assistantAutonomyOpen = false;
-        await this._loadAssistantActivity();
-        this._assistantScrollToEnd(true);
+        await this._assistantResume();
+        if (this._assistantContextCurrent(completionContext)) this._assistantScrollToEnd(true);
       } catch (e) {
         const error = String(e.message || e);
-        if (stillSelected()) this.assistantError = error;
-        if (!this.companionDestroyed) this.companionError = 'The explanation could not start. ' + error;
+        if (stillSelected()) {
+          this.assistantError = error;
+          this.companionError = 'The explanation could not start. ' + error;
+        }
       } finally {
-        this.companionBusy = false;
+        if (this._assistantContextCurrent(completionContext)) this.companionBusy = false;
       }
     },
   };

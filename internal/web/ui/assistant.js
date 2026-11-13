@@ -7,6 +7,19 @@
 // sharing state with the ticket detail view.
 
 const ASSISTANT_POLL_MS = 1500;
+const ASSISTANT_WINDOW = 200;
+
+function assistantRaw(value) {
+  return globalThis.Alpine?.raw ? globalThis.Alpine.raw(value) : value;
+}
+
+function assistantEqual(a, b) {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length &&
+    keys.every(key => Object.hasOwn(b, key) && assistantEqual(a[key], b[key]));
+}
 // The wait before each reconnect, and the cap: four entries, so a turn gets
 // five connections and the fifth failure opens nothing more.
 const ASSISTANT_STREAM_BACKOFF = [800, 1600, 3200, 5000];
@@ -82,6 +95,9 @@ function assistantClampWidth(px) {
 }
 
 export function kontoraAssistant() {
+  // Native request handles must not pass through Alpine's deep proxy.
+  const lane = { epoch: 0, owner: {}, send: null, flight: null, again: false, destroyed: false, resolved: new Map() };
+  let history = { events: null, messages: null, rows: [], visible: null, start: -1 };
   return {
     assistantOpen: assistantStored('kontora-assistant-open', '0') === '1',
     assistantRail: assistantStored('kontora-assistant-rail', '0') === '1',
@@ -120,11 +136,12 @@ export function kontoraAssistant() {
     // prototype: the keys come from the agent, and one called "constructor"
     // must not read a function where a boolean is expected.
     assistantExpanded: Object.create(null),
+    assistantWindow: ASSISTANT_WINDOW,
 
     _assistantPoll: null,
     _assistantCursor: 0,
+    _assistantActivityLoaded: false,
     _assistantETag: '',
-    _assistantLoadSeq: 0,
     _assistantSelectionSeq: 0,
     _assistantResize: null,
     _assistantTurnStart: null,
@@ -134,10 +151,10 @@ export function kontoraAssistant() {
     // A fetch that throws on a status the pane cannot use, so every caller can
     // catch one thing. 304 passes through: it is the poll's "nothing new",
     // which the ETag revalidation depends on.
-    async _assistantFetch(path, options) {
+    async _assistantFetch(path, options, current) {
       const res = await fetch(path, options);
       if (res.status === 401) {
-        this.needsAuth = true;
+        if (!current || current()) this.needsAuth = true;
         throw new Error('unauthorized');
       }
       if (res.status === 304 || res.ok) return res;
@@ -156,8 +173,10 @@ export function kontoraAssistant() {
       if (running && !this.assistantStreaming) {
         this._assistantTurnStart = startedAt || null;
         this.assistantElapsed = 0;
-        this._startAssistantTick();
-        this._assistantOpenStream();
+        if (this.assistantOpen && !lane.destroyed) {
+          this._startAssistantTick();
+          this._assistantOpenStream();
+        }
       }
       if (!running) {
         this._assistantTurnStart = null;
@@ -177,9 +196,11 @@ export function kontoraAssistant() {
 
     _startAssistantTick() {
       this._stopAssistantTick();
-      if (!this._assistantTurnStart) return;
+      if (!this._assistantTurnStart || !this.assistantOpen || lane.destroyed) return;
       const self = this;
+      const context = this._assistantContextToken();
       this._assistantTick = setInterval(function () {
+        if (!self._assistantContextCurrent(context)) return;
         if (!self._assistantTurnStart) { self._stopAssistantTick(); return; }
         self.assistantElapsed = Math.floor((Date.now() - self._assistantTurnStart) / 1000);
       }, 1000);
@@ -227,7 +248,9 @@ export function kontoraAssistant() {
     _assistantScrollToEnd(force) {
       if (!force && !this._assistantStick) return;
       const self = this;
+      const context = this._assistantContextToken();
       this.$nextTick(function () {
+        if (!self._assistantContextCurrent(context)) return;
         const el = self._assistantScrollEl();
         if (el) el.scrollTop = el.scrollHeight;
       });
@@ -238,7 +261,9 @@ export function kontoraAssistant() {
     // Fetch the assistant config and, when the pane was left open, the thread
     // it was left on. Called from the component's init.
     async initAssistant() {
+      const context = this._assistantContextToken();
       await this._assistantRefreshConfig();
+      if (!this._assistantContextCurrent(context)) return;
       const last = assistantStored('kontora-assistant-thread', '');
       if (last && (this.assistantEnabled() || last.startsWith('k'))) {
         await this.assistantSelectThread(last, { quiet: true });
@@ -252,12 +277,15 @@ export function kontoraAssistant() {
     // the cursor, not the poll — because a reload does not end a chat.
     async _assistantRefreshConfig() {
       try {
-        const res = await this._assistantFetch('/api/assistant');
-        this.assistantAgent = await res.json();
+        const res = await this._assistantFetch('/api/assistant', undefined, () => !lane.destroyed);
+        const agent = await res.json();
+        if (lane.destroyed) return;
+        this.assistantAgent = agent;
       } catch (e) {
         // Only the first fetch turns into the hint. A later one failing is a
         // blip in a pane that is already working, and replacing the composer
         // with the configure hint over it loses the draft in it.
+        if (lane.destroyed) return;
         if (!this.assistantAgent) {
           this.assistantAgent = { enabled: false, hint: 'The daemon did not answer.' };
         }
@@ -302,14 +330,55 @@ export function kontoraAssistant() {
         // One poll now rather than re-arming: opening onto a chat whose turn is
         // already running has nothing armed yet, and the payload is what says
         // it is running.
-        this._loadAssistantActivity();
-        // Opening onto a running turn never crosses the transition the setter
-        // opens the stream on.
-        if (this.assistantStreaming) this._assistantOpenStream();
+        this._assistantResume();
       }
     },
 
+    _assistantContextToken() {
+      return { epoch: lane.epoch, selection: this._assistantSelectionSeq, id: this.assistantThread?.id,
+        owner: lane.owner, thread: assistantRaw(this.assistantThread) };
+    },
+
+    _assistantContextCurrent(context) {
+      return !lane.destroyed && context.epoch === lane.epoch &&
+        context.selection === this._assistantSelectionSeq && context.id === this.assistantThread?.id;
+    },
+
+    // Dismissal retires resources, but failed writes still own the retained thread state.
+    _assistantRetainedContextCurrent(context) {
+      return !lane.destroyed && context.owner === lane.owner &&
+        context.thread === assistantRaw(this.assistantThread);
+    },
+
+    _assistantRetireActivity() {
+      lane.epoch++;
+      lane.again = false;
+      this.companionBusy = false;
+      const flight = lane.flight;
+      lane.flight = null;
+      if (flight) flight.controller.abort();
+      this._stopAssistantPoll();
+    },
+
+    _assistantResume() {
+      if (lane.destroyed) return;
+      if (this.assistantStreaming) {
+        this._startAssistantTick();
+        this._assistantOpenStream();
+      }
+      return this._loadAssistantActivity({ fresh: true });
+    },
+
+    assistantDestroy() {
+      this.closeAssistant();
+      lane.destroyed = true;
+      lane.resolved.clear();
+      history = { events: null, messages: null, rows: [], visible: null, start: -1 };
+    },
+
     closeAssistant() {
+      this._assistantSelectionSeq++;
+      this._assistantRetireActivity();
       this.assistantOpen = false;
       this.assistantMenu = null;
       this.assistantAutonomyOpen = false;
@@ -317,6 +386,11 @@ export function kontoraAssistant() {
       this._stopAssistantPoll();
       this._stopAssistantTick();
       this._assistantCloseStream();
+      if (this._assistantResize) {
+        window.removeEventListener('mousemove', this._assistantResize.move);
+        window.removeEventListener('mouseup', this._assistantResize.up);
+        this._assistantResize = null;
+      }
     },
 
     // The phone has no room for a docked pane, so the same chat opens in the
@@ -328,8 +402,7 @@ export function kontoraAssistant() {
       this.assistantRecomputeContext();
       this.assistantLoadThreads();
       if (this.assistantEnabled() || this.companionThread()) {
-        this._loadAssistantActivity();
-        if (this.assistantStreaming) this._assistantOpenStream();
+        this._assistantResume();
       }
     },
 
@@ -373,12 +446,15 @@ export function kontoraAssistant() {
     // --- threads ---------------------------------------------------------
 
     async assistantLoadThreads() {
+      if (lane.destroyed) return;
+      const context = this._assistantContextToken();
+      const current = () => this._assistantContextCurrent(context);
       try {
-        const res = await this._assistantFetch('/api/assistant/threads');
+        const res = await this._assistantFetch('/api/assistant/threads', undefined, current);
         const data = await res.json();
-        this.assistantThreads = (data && data.threads) || [];
+        if (current()) this.assistantThreads = (data && data.threads) || [];
       } catch (e) {
-        this.assistantThreads = [];
+        if (current()) this.assistantThreads = [];
       }
     },
 
@@ -392,16 +468,19 @@ export function kontoraAssistant() {
 
     assistantShowHistory() {
       this._assistantSelectionSeq++;
+      this._assistantRetireActivity();
       this.assistantView = 'history';
+      this._assistantResume();
       return this.assistantLoadThreads();
     },
 
     assistantShowChat() {
       if (this.assistantView !== 'thread' || !this.assistantThread || !this.assistantThreadVisible()) {
         this._assistantSelectionSeq++;
+        this._assistantRetireActivity();
       }
       if (!this.assistantThreadVisible()) {
-        this._assistantLoadSeq++;
+        lane.owner = {};
         this._assistantCloseStream();
         this._stopAssistantPoll();
         this._assistantClearPartial();
@@ -414,58 +493,76 @@ export function kontoraAssistant() {
         assistantStore('kontora-assistant-thread', '');
       }
       this.assistantView = 'thread';
+      this._assistantResume();
     },
 
     async assistantNewThread() {
-      if (!this.assistantEnabled()) return null;
+      if (!this.assistantEnabled() || lane.destroyed) return null;
       this._assistantSelectionSeq++;
+      this._assistantRetireActivity();
+      this._stopAssistantTick();
+      this._assistantCloseStream();
+      const context = this._assistantContextToken();
+      const current = () => this._assistantContextCurrent(context);
       this.assistantError = null;
       try {
         const res = await this._assistantFetch('/api/assistant/threads', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ autonomy: this.assistantAutonomy }),
-        });
+        }, current);
         const thread = await res.json();
+        if (!current()) return null;
         this._assistantAdopt(thread, []);
         this.assistantEvents = [];
         this.assistantView = 'thread';
         this.assistantLoadThreads();
         return thread;
       } catch (e) {
-        this.assistantError = String(e.message || e);
+        if (current()) {
+          this.assistantError = String(e.message || e);
+          if (this.assistantOpen) this._assistantResume();
+        }
         return null;
       }
     },
 
     async assistantSelectThread(id, opts) {
-      const selectionSeq = ++this._assistantSelectionSeq;
+      if (lane.destroyed) return false;
+      lane.owner = {};
+      this._assistantSelectionSeq++;
+      this._assistantRetireActivity();
+      this._stopAssistantTick();
+      const context = this._assistantContextToken();
+      const current = () => this._assistantContextCurrent(context);
       const quiet = !!(opts && opts.quiet);
       // Before the fetch: a frame in flight for the old thread must not paint
       // into the new one.
       this._assistantCloseStream();
       this._assistantClearPartial();
       try {
-        const res = await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(id));
+        const res = await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(id), undefined, current);
         const thread = await res.json();
         if (thread.purpose === 'companion') {
           if (!this.companionSnapshot) await this.companionRefresh();
           if (!this.companionEnabled()) return false;
         }
-        if (selectionSeq !== this._assistantSelectionSeq) return false;
+        if (!current()) return false;
         this._assistantAdopt(thread, thread.messages || []);
         this.assistantEvents = [];
         this._assistantCursor = 0;
+        this._assistantActivityLoaded = false;
         this._assistantETag = '';
         this.assistantView = 'thread';
-        await this._loadAssistantActivity();
-        if (this.assistantStreaming) this._assistantOpenStream();
+        const adopted = this._assistantContextToken();
+        await this._assistantResume();
+        if (!this._assistantContextCurrent(adopted)) return false;
         this._assistantScrollToEnd(true);
         return true;
       } catch (e) {
         // A thread the browser remembered but the daemon has dropped is not an
         // error worth showing: the pane simply opens empty.
-        if (selectionSeq !== this._assistantSelectionSeq) return false;
+        if (!current()) return false;
         if (!quiet) this.assistantError = String(e.message || e);
         this.assistantThread = null;
         assistantStore('kontora-assistant-thread', '');
@@ -474,14 +571,18 @@ export function kontoraAssistant() {
     },
 
     async assistantDeleteThread(id) {
+      const context = this._assistantContextToken();
+      const current = () => this._assistantContextCurrent(context);
       try {
-        await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(id), { method: 'DELETE' });
+        await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(id), { method: 'DELETE' }, current);
       } catch (e) {
-        this.assistantError = String(e.message || e);
+        if (current()) this.assistantError = String(e.message || e);
         return;
       }
+      if (!current()) return;
       if (this.assistantThread && this.assistantThread.id === id) {
         this._assistantSelectionSeq++;
+        this._assistantRetireActivity();
         // Through the setter, or the pane keeps counting for a chat that is
         // gone.
         this._assistantSetStreaming(false);
@@ -495,6 +596,18 @@ export function kontoraAssistant() {
     },
 
     _assistantAdopt(thread, messages) {
+      if (thread?.id !== this.assistantThread?.id) {
+        this._assistantRetireActivity();
+        this._assistantSetStreaming(false);
+        this._assistantClearPartial();
+        this.assistantWindow = ASSISTANT_WINDOW;
+        this._assistantActivityLoaded = false;
+        this.assistantExpanded = Object.create(null);
+        this.assistantGate = null;
+        this._assistantCursor = 0;
+        this._assistantETag = '';
+        lane.resolved.clear();
+      }
       this.assistantThread = thread;
       this.assistantMessages = messages || [];
       this._assistantSetStreaming(!!(thread && thread.running));
@@ -560,27 +673,39 @@ export function kontoraAssistant() {
       this.assistantMessages = this.assistantMessages.concat([{ n: this.assistantMessages.length + 1, text: text, at: new Date().toISOString() }]);
       this._assistantSetStreaming(true, Date.now());
       this._assistantScrollToEnd(true);
+      const context = this._assistantContextToken();
+      const current = () => this._assistantContextCurrent(context);
+      const sending = {};
+      lane.send = sending;
       try {
         await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(thread.id) + '/messages', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: text, autonomy: this.assistantAutonomy, context: this._assistantPageContext(), source: this.isSecondary(this.selectedTicket) ? this.selectedTicket.source : undefined }),
-        });
+        }, current);
       } catch (e) {
-        this._assistantSetStreaming(false);
+        if (lane.send !== sending) return;
+        lane.send = null;
+        if (!this._assistantRetainedContextCurrent(context)) return;
+        this._assistantSetStreaming(!!this.assistantThread?.running);
         this.assistantError = String(e.message || e);
+        this._armAssistantPoll();
         return;
       }
-      this._armAssistantPoll(0);
+      if (lane.send === sending) lane.send = null;
+      if (current()) await this._loadAssistantActivity({ fresh: true });
     },
 
     async stopAssistantTurn() {
       if (!this.assistantThread) return;
       this.assistantError = null;
+      const context = this._assistantContextToken();
+      const current = () => this._assistantContextCurrent(context);
       try {
-        await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(this.assistantThread.id) + '/stop', { method: 'POST' });
+        await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(context.id) + '/stop', { method: 'POST' }, current);
+        if (current()) await this._loadAssistantActivity({ fresh: true });
       } catch (e) {
-        this.assistantError = String(e.message || e);
+        if (current()) this.assistantError = String(e.message || e);
       }
     },
 
@@ -622,67 +747,108 @@ export function kontoraAssistant() {
       // Cleared first: the card must not stay on screen while the request is in
       // flight, or a second click sends a second answer for the same call.
       this.assistantGate = null;
+      const context = this._assistantContextToken();
+      const resolution = { gate, context };
+      lane.resolved.set(gate.id, resolution);
+      const current = () => this._assistantContextCurrent(context);
       try {
         await this._assistantFetch('/api/assistant/gate/' + encodeURIComponent(gate.id), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ decision: approve ? 'approve' : 'skip' }),
-        });
+        }, current);
       } catch (e) {
+        if (lane.resolved.get(gate.id) !== resolution) return;
+        lane.resolved.delete(gate.id);
+        if (!this.assistantGate && this._assistantRetainedContextCurrent(resolution.context)) {
+          this.assistantGate = resolution.gate;
+        }
+        if (!this._assistantRetainedContextCurrent(context)) return;
         this.assistantError = String(e.message || e);
+        this._armAssistantPoll();
+        return;
       }
-      this._armAssistantPoll(0);
+      delete resolution.gate;
+      delete resolution.context;
+      if (current()) await this._loadAssistantActivity({ fresh: true });
     },
 
     // --- the poll --------------------------------------------------------
 
-    async _loadAssistantActivity() {
-      const thread = this.assistantThread;
-      if (!thread) return;
-      const seq = ++this._assistantLoadSeq;
-      let res;
-      try {
-        const headers = {};
-        if (this._assistantETag) headers['If-None-Match'] = this._assistantETag;
-        res = await this._assistantFetch(
-          '/api/assistant/threads/' + encodeURIComponent(thread.id) + '/activity?after=' + this._assistantCursor,
-          { headers: headers },
-        );
-      } catch (e) {
-        this._armAssistantPoll();
-        return;
+    _loadAssistantActivity(options) {
+      if (!this.assistantThread || !this.assistantOpen || lane.destroyed) return Promise.resolve();
+      if (lane.flight) {
+        if (options?.fresh) lane.again = true;
+        return lane.flight.promise;
       }
-      if (seq !== this._assistantLoadSeq || !this.assistantThread || this.assistantThread.id !== thread.id) return;
-      if (res.status === 304) {
-        this._armAssistantPoll();
-        return;
-      }
-      const data = await res.json();
-      if (seq !== this._assistantLoadSeq || !this.assistantThread || this.assistantThread.id !== thread.id) return;
-      this._assistantETag = res.headers && res.headers.get ? (res.headers.get('ETag') || '') : '';
-      this._mergeAssistantActivity(data);
-      this._armAssistantPoll();
+      this._stopAssistantPoll();
+      const context = this._assistantContextToken();
+      const flight = { controller: new AbortController(), promise: null };
+      lane.flight = flight;
+      const current = () => lane.flight === flight && this._assistantContextCurrent(context) && this.assistantOpen;
+      flight.promise = (async () => {
+        try {
+          const headers = {};
+          if (this._assistantETag) headers['If-None-Match'] = this._assistantETag;
+          const res = await this._assistantFetch(
+            '/api/assistant/threads/' + encodeURIComponent(context.id) + '/activity?after=' + this._assistantCursor,
+            { headers, signal: flight.controller.signal }, current,
+          );
+          if (!current() || res.status === 304) return;
+          const data = await res.json();
+          if (!current()) return;
+          this._mergeAssistantActivity(data);
+          this._assistantETag = res.headers?.get?.('ETag') || '';
+        } catch (e) {
+          // Body decoding can fail too; the same finalizer must keep polling.
+        } finally {
+          if (current()) {
+            lane.flight = null;
+            if (lane.again) {
+              lane.again = false;
+              await this._loadAssistantActivity();
+            } else this._armAssistantPoll();
+          }
+        }
+      })();
+      return flight.promise;
     },
 
     // Splice the new suffix onto the events already held. The daemon sends its
     // own cursor, which walks back over tool rows whose results arrived late.
     _mergeAssistantActivity(data) {
+      const loaded = this._assistantActivityLoaded;
       this._assistantNoteScroll();
+      const previousCount = loaded && !this._assistantStick ? this._assistantHistoryRows().length : 0;
       const events = (data.tape && data.tape.events) || [];
       const offset = data.offset || 0;
-      this.assistantEvents = this.assistantEvents.slice(0, offset).concat(events);
+      // Partial-only responses can repeat the unchanged, unstable tool suffix.
+      const unchanged = offset + events.length === this.assistantEvents.length &&
+        events.every((event, i) => assistantEqual(event, this.assistantEvents[offset + i]));
+      if (!unchanged) this.assistantEvents = this.assistantEvents.slice(0, offset).concat(events);
       this._assistantCursor = offset + events.length;
       // After the splice, so the swap is one paint. Before the setter, which
       // stops the caret once the turn is over.
       this._assistantAdoptPartial(data);
       this._assistantSetStreaming(!!data.running);
-      this.assistantGate = data.gate || null;
+      // A hidden gate can share an accepted validator. A 304 cannot restore it after a failed decision.
+      for (const [id, resolution] of lane.resolved) {
+        if (Object.hasOwn(resolution, 'gate')) {
+          resolution.gate = data.gate?.id === id ? data.gate : null;
+          resolution.context = this._assistantContextToken();
+        }
+      }
+      this.assistantGate = data.gate && !lane.resolved.has(data.gate.id) ? data.gate : null;
       if (data.messages) this.assistantMessages = this._assistantMergeMessages(data.messages);
       if (data.autonomy && !this.companionThread()) this.assistantAutonomy = data.autonomy;
       if (this.assistantThread) {
         this.assistantThread.running = !!data.running;
         if (Object.hasOwn(data, 'evidence')) this.assistantThread.evidence = data.evidence;
       }
+      if (loaded && !this._assistantStick) {
+        this.assistantWindow += Math.max(0, this._assistantHistoryRows().length - previousCount);
+      }
+      this._assistantActivityLoaded = true;
       this._assistantScrollToEnd();
     },
 
@@ -692,7 +858,12 @@ export function kontoraAssistant() {
     _assistantMergeMessages(recorded) {
       const highest = recorded.length ? recorded[recorded.length - 1].n : 0;
       const pending = this.assistantMessages.filter((m) => m.n > highest);
-      return recorded.concat(pending);
+      const merged = recorded.concat(pending);
+      const previous = this.assistantMessages;
+      if (merged.length === previous.length && merged.every((m, i) =>
+        m.n === previous[i].n && m.text === previous[i].text && m.at === previous[i].at &&
+        m.error === previous[i].error)) return previous;
+      return merged;
     },
 
     _assistantAdoptPartial(data) {
@@ -731,7 +902,7 @@ export function kontoraAssistant() {
     _assistantOpenStream() {
       if (typeof EventSource !== 'function') return;
       const thread = this.assistantThread;
-      if (!thread || !this.assistantOpen) return;
+      if (!thread || !this.assistantOpen || lane.destroyed) return;
       if (assistantStream.es && assistantStream.threadID === thread.id) return;
       this._assistantCloseStream({ keepTries: true });
 
@@ -801,8 +972,8 @@ export function kontoraAssistant() {
         if (wait === undefined) return;
         assistantStream.tries++;
         assistantStream.retry = setTimeout(function () {
-          assistantStream.retry = null;
           if (seq !== assistantStream.seq) return;
+          assistantStream.retry = null;
           if (!self.assistantOpen || !self.assistantStreaming) return;
           self._assistantOpenStream();
         }, wait);
@@ -816,6 +987,7 @@ export function kontoraAssistant() {
       assistantStream.queued = true;
       const self = this;
       assistantStream.raf = requestAnimationFrame(function () {
+        if (seq !== assistantStream.seq) return;
         assistantStream.queued = false;
         self._assistantFlushFrame(seq);
       });
@@ -824,10 +996,7 @@ export function kontoraAssistant() {
     // A no-op when nothing is buffered, so end and done can call it without
     // cancelling the frame already queued.
     _assistantFlushFrame(seq) {
-      if (seq !== undefined && seq !== assistantStream.seq) {
-        assistantStream.buf = '';
-        return;
-      }
+      if (seq !== undefined && seq !== assistantStream.seq) return;
       if (!assistantStream.buf) return;
       this.assistantPartial += assistantStream.buf;
       assistantStream.buf = '';
@@ -863,10 +1032,12 @@ export function kontoraAssistant() {
     // timeout, not an interval: it cannot stack requests on a slow daemon.
     _armAssistantPoll(delay) {
       this._stopAssistantPoll();
-      if (!this.assistantOpen || !this.assistantThread) return;
+      if (!this.assistantOpen || !this.assistantThread || lane.destroyed) return;
       if (!this.assistantStreaming && !this.assistantGate && delay === undefined) return;
       const self = this;
+      const context = this._assistantContextToken();
       this._assistantPoll = setTimeout(function () {
+        if (!self._assistantContextCurrent(context)) return;
         self._assistantPoll = null;
         self._loadAssistantActivity();
       }, delay === undefined ? ASSISTANT_POLL_MS : delay);
@@ -890,10 +1061,14 @@ export function kontoraAssistant() {
     // A tape with no readable timestamps keeps the messages ahead of the
     // events: nothing orders them, and dropping the first message to the bottom
     // would be the worse guess.
-    assistantThreadRows() {
-      const events = this.assistantEvents || [];
-      const messages = this.assistantMessages || [];
+    _assistantHistoryRows() {
+      const events = this.assistantEvents;
+      const messages = this.assistantMessages;
+      const rawEvents = assistantRaw(events);
+      const rawMessages = assistantRaw(messages);
+      if (history.events === rawEvents && history.messages === rawMessages) return history.rows;
       const rows = [];
+      history = { events: rawEvents, messages: rawMessages, rows, visible: null, start: -1 };
       const message = (m, i) => ({ key: 'm' + m.n + '-' + i, msg: m });
       const event = (e, i) => ({ key: 'e' + i, index: i, event: e });
       let mi = 0;
@@ -920,6 +1095,33 @@ export function kontoraAssistant() {
       // The message just sent, whose turn has written nothing yet.
       for (; mi < messages.length; mi++) rows.push(message(messages[mi], mi));
       return rows;
+    },
+
+    assistantThreadRows() {
+      const rows = this._assistantHistoryRows();
+      const start = Math.max(0, rows.length - this.assistantWindow);
+      if (history.start !== start || !history.visible) {
+        history.start = start;
+        history.visible = rows.slice(start);
+      }
+      return history.visible;
+    },
+
+    assistantHiddenRows() {
+      return Math.max(0, this._assistantHistoryRows().length - this.assistantWindow);
+    },
+
+    assistantLoadEarlier() {
+      const el = this._assistantScrollEl();
+      const height = el?.scrollHeight || 0;
+      const top = el?.scrollTop || 0;
+      const context = this._assistantContextToken();
+      this.assistantWindow = Math.min(this._assistantHistoryRows().length, this.assistantWindow + ASSISTANT_WINDOW);
+      this.$nextTick(() => {
+        if (el && this.assistantOpen && this._assistantContextCurrent(context)) {
+          el.scrollTop = top + el.scrollHeight - height;
+        }
+      });
     },
 
     // --- tool rows -------------------------------------------------------
@@ -1037,7 +1239,6 @@ export function kontoraAssistant() {
     assistantEscape() {
       if (this.assistantMenu) { this.assistantMenu = null; return true; }
       if (this.assistantAutonomyOpen) { this.assistantAutonomyOpen = false; return true; }
-      if (this.assistantGate) { this.resolveAssistantGate(false); return true; }
       if (this.assistantView === 'history') { this.assistantShowChat(); return true; }
       if (this.assistantOpen) { this.closeAssistant(); return true; }
       return false;

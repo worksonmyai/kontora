@@ -41,7 +41,8 @@ When the web server is enabled, the following endpoints are exposed:
 | `GET /api/config` | Available pipelines, agents, and projects (JSON). `agents` remains the sorted agent-name list; `agent_infos` adds sorted `{name, model, effort}` metadata for each agent. The top-level `default_pipeline` exposes the global pipeline default. Projects are sorted by name and carry `name`, `path`, `resolved_path` (`~` expanded), `pipeline`, `epic_child_pipeline`, `agent`, and `notify_channels`. `channels` and `default_channels` are the configured notification channel names and `notifications.default`; names only, never a chat id or a webhook URL. |
 | `GET /api/config/raw` | Read the full on-disk YAML configuration as JSON `content`, without redaction. See [Raw configuration](#raw-configuration). |
 | `PUT /api/config/raw` | Validate, replace, and reload the configuration using `content` and optional `expected_content`. See [Raw configuration](#raw-configuration). |
-| `GET /api/tickets/{id}/logs` | Get agent logs for a ticket (optional `?stage=` query param). |
+| `GET /api/tickets/{id}/logs` | Get uncapped agent logs for a ticket (optional `?stage=` query param). |
+| `GET /api/tickets/{id}/activity` | Get structured stage activity or plaintext fallback. Supports `stage`, `run`, `after`, and `log_tail_bytes`. |
 | `POST /api/tickets/{id}/summary` | Set the ticket's `summary` field (`{"text": "..."}` body). |
 | `GET /api/tickets/{id}/changes` | Commits and changed files on the ticket's branch relative to its `base_branch`, or the repo's default branch when unset. Empty payload when the ticket has no branch or the branch was deleted. |
 | `GET /api/tickets/{id}/chain` | The dependency chain through the ticket: everything it transitively waits on, itself, and everything that transitively waits on it. |
@@ -422,6 +423,45 @@ readiness depends on combined execution, recovery, client and accounting
 verification. No endpoint promises exactly-once arbitrary shell effects or
 containment of arbitrary detached processes. A missing terminal window is not
 proof of termination.
+
+### Activity previews and export
+
+`GET /api/tickets/{id}/activity?stage=review&run=0&log_tail_bytes=262144`
+returns structured activity when available. Otherwise, it returns a plaintext
+suffix of at most 262,144 bytes. The suffix starts at a complete UTF-8 character.
+
+`log_tail_bytes` is optional. Omitted or zero returns the full plaintext content.
+The maximum is 1,048,576 bytes (1 MiB). Invalid, negative, empty, or over-limit
+values return 400. The limit does not change structured tapes or event cursors.
+
+Plaintext responses include these metadata fields when their values are nonzero:
+
+- `content_start`: byte offset of `content` within the full log.
+- `content_size`: full log size in bytes.
+- `content_truncated`: `true` when the response omits earlier bytes.
+
+Treat omitted metadata fields as zero or `false`. A suffix can contain fewer
+bytes than requested when the byte boundary splits a UTF-8 character.
+
+Activity responses carry an `ETag` when the selected artifact can be validated.
+An unchanged `If-None-Match` request returns 304. Validators distinguish runs,
+representations, preview limits, live/stale state, and file replacements.
+Unchanged plaintext previews validate without reading the full log.
+Full plaintext reads also fingerprint content for evidence capture.
+
+A sidecar or live session takes priority over plaintext, even when the plaintext
+file has not changed. A missing named stage never returns another stage's activity.
+Imported runs have no local activity and return 404.
+
+`GET /api/tickets/{id}/logs` and CLI log output remain uncapped. Export clients
+must fetch `/logs` rather than reuse an activity response with `content_truncated`.
+Without `stage`, log reads keep the newest-log and ticket-history fallback.
+
+The daemon reuses parsed live session files across response-only changes.
+The cache retains at most 32 entries and 32 MiB of accounted content. Oversized
+tapes bypass the cache. These limits do not bound process heap or change parser
+capture limits. Each response receives detached events, timestamps, usage, and
+`Partial` slices before cursor slicing.
 
 ### Stage changes
 

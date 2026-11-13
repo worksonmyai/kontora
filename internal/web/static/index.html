@@ -2227,9 +2227,10 @@
                 </template>
 
                 <!-- Plaintext fallback: no structured record exists for this run -->
+                <p x-show="activity?.content_truncated" class="text-xs text-tx-faint">Showing the end of the log. Open raw log for the full output.</p>
                 <template x-if="!activityLoading && activity && !activity.tape && activity.content">
                   <pre id="stage-log-pre"
-                       class="m-0 font-mono text-[12px] leading-[1.85] text-tx-log whitespace-pre-wrap break-words" x-html="renderLogHTML(activity.content)"></pre>
+                       class="m-0 font-mono text-[12px] leading-[1.85] text-tx-log whitespace-pre-wrap break-words" x-effect="setLogHTML($el, activity.content)"></pre>
                 </template>
               </div>
             </div>
@@ -3422,8 +3423,9 @@
                       </template>
                     </div>
                   </template>
+                  <p x-show="activity?.content_truncated" class="text-xs text-tx-faint">Showing the end of the log. Open raw log for the full output.</p>
                   <template x-if="!activityLoading && activity && !activity.tape && activity.content">
-                    <pre class="m-0 font-mono text-[12px] leading-[1.85] text-tx-log whitespace-pre-wrap break-words" x-html="renderLogHTML(activity.content)"></pre>
+                    <pre class="m-0 font-mono text-[12px] leading-[1.85] text-tx-log whitespace-pre-wrap break-words" x-effect="setLogHTML($el, activity.content)"></pre>
                   </template>
                 </div>
               </div>
@@ -4442,9 +4444,10 @@
                 </div>
                 <div x-show="activityLoading" class="font-mono text-[11.5px] text-surface-600">loading…</div>
                 <div x-show="activityError" class="font-mono text-[11.5px] text-err" x-text="activityError"></div>
+                <p x-show="activity?.content_truncated" class="text-xs text-tx-faint">Showing the end of the log.</p>
                 <template x-if="activity && activity.content">
                   <pre class="m-0 px-[18px] py-3.5 rounded-[10px] bg-surface-deep border border-surface-700 font-mono text-[11.5px] leading-[1.7] text-tx-log whitespace-pre-wrap break-words overflow-x-auto"
-                       x-html="renderLogHTML(activity.content)"></pre>
+                       x-effect="setLogHTML($el, activity.content)"></pre>
                 </template>
                 <span x-show="!activityLoading && !activityError && !(activity && activity.content)"
                       class="font-mono text-[11.5px] text-surface-600">No log was retained for this ticket's last run.</span>
@@ -5840,6 +5843,7 @@
 
         <!-- One thread: the messages and the tape a ticket run's activity tab
              also reads, interleaved on the clock. -->
+        <button type="button" x-show="assistantHiddenRows()" @click="assistantLoadEarlier()" class="font-mono text-[11px] text-tx-3">Load earlier messages and events</button>
         <template x-for="row in assistantThreadRows()" :key="row.key">
           <div :class="row.msg ? 'self-end max-w-[85%] rounded-[10px] px-2.5 py-1.5 bg-surface-850 border border-edge-input' : 'min-w-0'">
             <template x-if="row.msg">
@@ -5867,9 +5871,11 @@
                       <span class="font-mono text-[11px] text-surface-600 truncate min-w-0" x-text="row.event.arg"></span>
                       <span class="font-mono text-[10px] text-tx-faint shrink-0 ml-auto" x-text="assistantEventTime(row.event)"></span>
                     </button>
-                    <div x-show="assistantToolExpanded(row.event, row.index)" x-cloak class="px-2 pb-1.5">
-                      <pre class="font-mono text-[10.5px] leading-[1.5] text-tx-3 whitespace-pre-wrap m-0 max-h-[240px] overflow-y-auto" x-text="row.event.result || row.event.summary"></pre>
-                    </div>
+                    <template x-if="assistantToolExpanded(row.event, row.index)">
+                      <div class="px-2 pb-1.5">
+                        <pre class="font-mono text-[10.5px] leading-[1.5] text-tx-3 whitespace-pre-wrap m-0 max-h-[240px] overflow-y-auto" x-text="row.event.result || row.event.summary"></pre>
+                      </div>
+                    </template>
                   </div>
                 </template>
               </div>
@@ -6353,8 +6359,9 @@
                     </template>
                   </div>
                 </template>
+                <p x-show="activity?.content_truncated" class="text-xs text-tx-faint">Showing the end of the log. Open raw log for the full output.</p>
                 <template x-if="!activityLoading && activity && !activity.tape && activity.content">
-                  <pre class="m-0 font-mono text-xs leading-[1.85] text-tx-log whitespace-pre-wrap break-words" x-html="renderLogHTML(activity.content)"></pre>
+                  <pre class="m-0 font-mono text-xs leading-[1.85] text-tx-log whitespace-pre-wrap break-words" x-effect="setLogHTML($el, activity.content)"></pre>
                 </template>
               </div>
             </div>
@@ -6880,6 +6887,7 @@
                 <template x-if="!assistantMessages.length && !assistantEvents.length">
                   <p class="mobile-prose text-tx-3" style="margin:auto 0;text-align:center;" x-text="companionThread() ? 'Ask about the captured records. The companion cannot run commands or change tickets.' : 'Ask about the board. It drives Kontora with the same verbs the CLI uses.'"></p>
                 </template>
+                <button type="button" x-show="assistantHiddenRows()" @click="assistantLoadEarlier()" class="companion-note">Load earlier messages and events</button>
                 <template x-for="row in assistantThreadRows()" :key="'s' + row.key">
                   <div :style="row.msg ? 'align-self:flex-end;max-width:85%;border-radius:12px;padding:8px 11px;background:rgba(var(--surface-850),1);border:1px solid rgba(var(--surface-700),.6);' : 'min-width:0;'">
                     <template x-if="row.msg">

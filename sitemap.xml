@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://worksonmyai.github.io/kontora/api/</loc>
+         <lastmod>2026-11-13</lastmod>
+    </url>
+    <url>
+         <loc>https://worksonmyai.github.io/kontora/automations/</loc>
+         <lastmod>2026-11-13</lastmod>
+    </url>
+    <url>
+         <loc>https://worksonmyai.github.io/kontora/cli/</loc>
+         <lastmod>2026-11-13</lastmod>
+    </url>
+    <url>
+         <loc>https://worksonmyai.github.io/kontora/configuration/</loc>
+         <lastmod>2026-11-13</lastmod>
+    </url>
+    <url>
+         <loc>https://worksonmyai.github.io/kontora/getting-started/</loc>
+         <lastmod>2026-11-13</lastmod>
+    </url>
+    <url>
+         <loc>https://worksonmyai.github.io/kontora/remote/</loc>
+         <lastmod>2026-11-13</lastmod>
+    </url>
+    <url>
+         <loc>https://worksonmyai.github.io/kontora/tickets/</loc>
+         <lastmod>2026-11-13</lastmod>
+    </url>
+</urlset>

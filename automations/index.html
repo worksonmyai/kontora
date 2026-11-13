@@ -1,0 +1,1196 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Run AI coding agents on tickets and review their changes from a web or terminal board.">
+      
+      
+      
+        <link rel="canonical" href="https://worksonmyai.github.io/kontora/automations/">
+      
+      
+        <link rel="prev" href="../remote/">
+      
+      
+        <link rel="next" href="../cli/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+    
+    
+      
+        <title>Automations - Kontora</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=DM+Sans:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"DM Sans";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#automations" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Kontora" class="md-header__button md-logo" aria-label="Kontora" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Kontora
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Automations
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/worksonmyai/kontora" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    worksonmyai/kontora
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Kontora" class="md-nav__button md-logo" aria-label="Kontora" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Kontora
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/worksonmyai/kontora" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    worksonmyai/kontora
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../remote/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Remote access
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Automations
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Automations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#creating-and-controlling-an-automation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Creating and controlling an automation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cli-workflows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI workflows
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#schedules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Schedules
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#overlap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overlap
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workspaces-prompts-and-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workspaces, prompts, and results
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#history-logs-and-recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        History, logs, and recovery
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#storage-and-backup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage and backup
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tickets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tickets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Development
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../orchestrator.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Orchestrator components (disabled)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#creating-and-controlling-an-automation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Creating and controlling an automation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cli-workflows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI workflows
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#schedules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Schedules
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#overlap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overlap
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workspaces-prompts-and-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workspaces, prompts, and results
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#history-logs-and-recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        History, logs, and recovery
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#storage-and-backup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage and backup
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="automations">Automations<a class="headerlink" href="#automations" title="Permanent link">&para;</a></h1>
+<p>An automation runs an agent with a saved prompt, repository, and schedule. Each run has its own identity, terminal, and log.
+Automations do not create tickets or inherit ticket pipelines. They share the daemon's agent capacity with tickets.
+Enabled schedules and manual runs work with <code>auto_pick_up: false</code>.</p>
+<h2 id="creating-and-controlling-an-automation">Creating and controlling an automation<a class="headerlink" href="#creating-and-controlling-an-automation" title="Permanent link">&para;</a></h2>
+<p>Open Automations in the dashboard, use <code>kontora automation</code>, or edit <code>automations:</code> in the daemon's YAML configuration.
+The CLI, dashboard, and <a href="../api/#automations">HTTP API</a> write the same configuration file through the daemon.
+Omitting <code>enabled</code> in YAML or API requests leaves scheduling disabled. The CLI also defaults to disabled.
+Review the dashboard's Enabled setting, schedule preview, and agent permissions before saving unattended runs.</p>
+<p>The dashboard list (<code>#/automations</code>) supports state and text filters.
+Detail (<code>#/automations/&lt;id&gt;</code>) shows run history, the prompt, and the current terminal.
+Use <code>#/automations/new</code> to create a definition or <code>#/automations/&lt;id&gt;/edit</code> to edit one.
+Duplicate creates a separate definition. Delete removes the configuration entry and stops unfinished work; historical runs and logs remain.</p>
+<p>Pause disables future scheduled runs. It does not cancel accepted runs.
+Run now also works while paused. Stop targets a specific run, including a queued run.
+Resume selects a future schedule slot instead of replaying paused time.
+Use <code>kontora attach &lt;automation-id&gt;</code> for the current terminal. Attachment is read-only unless you select read-write mode.</p>
+<p>Prompts do not enforce permissions. For example, “do not edit files” does not make an agent read-only.
+Configure the agent's permissions for the task.</p>
+<h2 id="cli-workflows">CLI workflows<a class="headerlink" href="#cli-workflows" title="Permanent link">&para;</a></h2>
+<p>All <code>kontora automation</code> commands use the daemon API, including local reads and schedule preview. There is no offline storage fallback.
+Use <code>--url URL</code> to select a remote daemon without local configuration. <code>--path</code> names a repository on the daemon host.
+Each child accepts <code>--config</code>, <code>--url</code>, <code>--token</code>, and <code>--operator-token</code>.
+Credentials default to <code>KONTORA_TOKEN</code> and <code>KONTORA_OPERATOR_TOKEN</code>; HTTP and terminal connections send both independently.
+Parent and child help work without configuration or a daemon.</p>
+<p>References accept full automation IDs or exact configuration keys only. Display names and abbreviated IDs are not accepted.
+Keys resolve from active definitions. After deletion, use the original full ID to read retained history and logs.
+A new definition with the same key has a different ID.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>kontora<span class="w"> </span>automation<span class="w"> </span>preview<span class="w"> </span>--schedule<span class="w"> </span><span class="s1">'0 9 * * 1-5'</span><span class="w"> </span>--timezone<span class="w"> </span>Europe/Berlin
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>kontora<span class="w"> </span>automation<span class="w"> </span>new<span class="w"> </span>--name<span class="w"> </span><span class="s1">'Morning report'</span><span class="w"> </span>--key<span class="w"> </span>morning-report<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>--prompt-file<span class="w"> </span>./report.md<span class="w"> </span>--path<span class="w"> </span>/srv/projects/app<span class="w"> </span>--agent<span class="w"> </span>claude<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span>--schedule<span class="w"> </span><span class="s1">'0 9 * * 1-5'</span><span class="w"> </span>--timezone<span class="w"> </span>Europe/Berlin
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>kontora<span class="w"> </span>automation<span class="w"> </span>ls<span class="w"> </span>--state<span class="w"> </span>paused<span class="w"> </span>--query<span class="w"> </span>report
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>kontora<span class="w"> </span>automation<span class="w"> </span>view<span class="w"> </span>morning-report
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>kontora<span class="w"> </span>automation<span class="w"> </span>update<span class="w"> </span>morning-report<span class="w"> </span>--model<span class="w"> </span><span class="s1">''</span><span class="w"> </span>--enabled<span class="o">=</span><span class="nb">false</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>kontora<span class="w"> </span>automation<span class="w"> </span>duplicate<span class="w"> </span>morning-report<span class="w"> </span>--name<span class="w"> </span><span class="s1">'Report experiment'</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>kontora<span class="w"> </span>automation<span class="w"> </span>resume<span class="w"> </span>morning-report
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>kontora<span class="w"> </span>automation<span class="w"> </span>pause<span class="w"> </span>morning-report
+</code></pre></div>
+<p>Creation and duplication default to disabled scheduling. <code>--enabled</code> enables scheduling; <code>--enabled=false</code> sets false explicitly.
+<code>--prompt-file -</code> reads stdin. Updates preserve omitted fields and accept every specification field except the immutable key.
+Update, delete, pause, and resume use revision checks. <code>--revision N</code> supplies a positive expected revision; otherwise the CLI uses the fetched revision.
+A conflict fails without an automatic retry. Inspect the current definition before repeating a mutation.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>kontora<span class="w"> </span>automation<span class="w"> </span>run<span class="w"> </span>morning-report
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>kontora<span class="w"> </span>automation<span class="w"> </span>runs<span class="w"> </span>morning-report<span class="w"> </span>--offset<span class="w"> </span><span class="m">0</span><span class="w"> </span>--limit<span class="w"> </span><span class="m">20</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>kontora<span class="w"> </span>automation<span class="w"> </span>logs<span class="w"> </span>morning-report<span class="w"> </span>--run<span class="w"> </span><span class="m">1</span><span class="w"> </span>--raw
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>kontora<span class="w"> </span>automation<span class="w"> </span>terminal<span class="w"> </span>morning-report<span class="w"> </span>--run<span class="w"> </span><span class="m">1</span><span class="w"> </span>--json
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>kontora<span class="w"> </span>automation<span class="w"> </span>attach<span class="w"> </span>morning-report<span class="w"> </span>--run<span class="w"> </span><span class="m">1</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>kontora<span class="w"> </span>automation<span class="w"> </span>stop<span class="w"> </span>morning-report<span class="w"> </span>--run<span class="w"> </span><span class="m">1</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>kontora<span class="w"> </span>automation<span class="w"> </span>delete<span class="w"> </span>morning-report<span class="w"> </span>--yes
+</code></pre></div>
+<p>Stop, logs, and terminal inspection require an exact positive run number. Attach selects the current run unless <code>--run N</code> is supplied.
+Attachment is read-only unless <code>--rw</code> is supplied. The daemon verifies terminal identity and eligibility; the CLI does not build local tmux targets.
+Stop reports the returned phase and outcome. Acceptance does not prove that termination finished.
+Delete requires <code>--yes</code> or <code>-f</code> and retains history and logs.</p>
+<p>Creation, duplication, and manual runs accept <code>--request-id ID</code>. If omitted, the CLI generates one identity and prints it to stderr before sending.
+Manual runs also print the resolved full automation ID. Keep both values after an uncertain response; mutations do not retry automatically.
+To retry a manual run, use the original full ID and request ID together. An explicit request ID is rejected with a key.
+For duplicate retries, keep the source inputs unchanged. Changed inputs with the same request ID remain a conflict.</p>
+<p>Every noninteractive child accepts <code>--json</code>, with API objects on stdout and diagnostics on stderr.
+List and history output keep availability and pagination envelopes. Unavailable storage produces a nonzero exit, even when HTTP returns success.
+Unknown costs and statistics remain <code>null</code>, rather than zero; empty collections remain <code>[]</code>.
+History defaults to offset <code>0</code> and limit <code>20</code>, with limits from <code>1</code> through <code>200</code>. New runs can shift later pages.
+<code>logs --raw</code> prints unchanged composed text, not original terminal capture. It cannot be combined with <code>--json</code>.
+See the <a href="../cli/#automations">CLI reference</a> for each command's flags and output.</p>
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">automations</span><span class="p">:</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">morning-report</span><span class="p">:</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Morning repository report</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">prompt</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">      </span><span class="no">Inspect recent changes in {{ .Automation.Path }}.</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">      </span><span class="no">Write a report for run {{ .Run.Number }}.</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">      </span><span class="no">{{ if .LastRun.Number }}Previous result: {{ .LastRun.Result }}{{ end }}</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/projects/app</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">agent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">""</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">schedule</span><span class="p">:</span><span class="w"> </span><span class="s">"0</span><span class="nv"> </span><span class="s">9</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">1-5"</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="nt">timezone</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Europe/Berlin</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="nt">workspace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">worktree</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="nt">overlap</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">skip</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">    </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30m</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+</code></pre></div>
+<p>The map key is a lowercase kebab-case name, such as <code>morning-report</code>. The server assigns a separate ID: <code>aut-</code> followed by 32 lowercase hexadecimal characters.
+Required fields are <code>name</code>, <code>prompt</code>, <code>path</code>, and <code>schedule</code>. <code>agent</code> defaults to <code>default_agent</code> when loading YAML.
+A model override requires an agent that supports model selection.
+Defaults are <code>timezone: UTC</code>, <code>workspace: worktree</code>, <code>overlap: skip</code>, and <code>timeout: 30m</code>.
+The timeout must be a positive duration.</p>
+<p>Configuration reloads validate the complete file before applying changes.
+Dashboard edits preserve unrelated YAML comments and follow a configuration symlink without replacing the link.
+Entries with anchors, aliases, or merge keys require a direct configuration edit.
+Revision checks and conditional writes refuse stale edits rather than overwrite an external change.</p>
+<h2 id="schedules">Schedules<a class="headerlink" href="#schedules" title="Permanent link">&para;</a></h2>
+<p><code>schedule</code> accepts numeric five-field cron or a positive whole-minute duration:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">schedule</span><span class="p">:</span><span class="w"> </span><span class="s">"0</span><span class="nv"> </span><span class="s">9</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">1-5"</span><span class="w">  </span><span class="c1"># 09:00, Monday through Friday</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="nt">timezone</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Europe/Berlin</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">schedule</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">90m</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nt">timezone</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">UTC</span>
+</code></pre></div>
+<p>The minimum interval is one minute. <code>1m</code>, <code>90m</code>, and <code>2h</code> are valid; <code>30s</code> and <code>90s</code> are invalid.
+Cron uses minute, hour, day of month, month, and day of week. Named fields, seconds fields, and descriptors such as <code>@daily</code> are invalid.
+Use an IANA timezone such as <code>Europe/Berlin</code>, <code>America/New_York</code>, or <code>UTC</code>. <code>Local</code> is invalid.
+Cron follows timezone clock changes. A nonexistent local time has no run; repeated local times can produce two distinct instants.
+Intervals use elapsed time rather than local wall time.
+Preview returns four future timestamps without changing configuration.</p>
+<p>Creating, enabling, or rescheduling a definition selects a future slot.
+Other edits preserve the schedule cursor. Cursor advancement does not change the definition's editable revision.
+Recorded schedule receipts prevent the same slot from running twice after a retry or restart.
+A slot more than one minute late is recorded as skipped. The daemon advances to a future slot without replaying every missed interval.
+The schedule controls acceptance, not the exact launch time: a run can wait for agent capacity.</p>
+<p>For a one-time ticket delay, use <a href="../tickets/#scheduled-pickup"><code>scheduled_at</code></a> instead. It promotes an existing ticket to <code>todo</code>.</p>
+<h2 id="overlap">Overlap<a class="headerlink" href="#overlap" title="Permanent link">&para;</a></h2>
+<p>The overlap policy applies to unfinished runs from the same automation. It covers manual and scheduled requests.
+Only one run executes at a time:</p>
+<table>
+<thead>
+<tr>
+<th>Policy</th>
+<th>New request while a run is unfinished</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>skip</code></td>
+<td>Record the new run as skipped.</td>
+</tr>
+<tr>
+<td><code>queue</code></td>
+<td>Keep one pending run. Record further requests as skipped while that pending slot is occupied.</td>
+</tr>
+<tr>
+<td><code>replace</code></td>
+<td>Stop the current run, skip older pending replacements, and keep the newest request.</td>
+</tr>
+</tbody>
+</table>
+<p>A replacement waits until termination of the previous run is confirmed.
+Uncertain termination blocks another launch, even after an overlap policy change.</p>
+<h2 id="workspaces-prompts-and-results">Workspaces, prompts, and results<a class="headerlink" href="#workspaces-prompts-and-results" title="Permanent link">&para;</a></h2>
+<p><code>workspace: worktree</code> creates a fresh worktree at the repository's current commit.
+The branch is <code>auto/&lt;key&gt;-&lt;n&gt;</code>. Kontora removes a clean, unchanged worktree after the run.
+Worktrees with commits or uncommitted changes remain available for inspection.
+<code>workspace: repo</code> runs directly in the repository checkout. Its changes remain there.
+Automation hooks receive automation and run identities without a synthetic ticket identity.</p>
+<p>Prompts use Go templates with these contexts:</p>
+<table>
+<thead>
+<tr>
+<th>Context</th>
+<th>Available fields</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.Automation</code></td>
+<td><code>ID</code>, <code>Key</code>, <code>Name</code>, <code>Path</code>, <code>Agent</code>, <code>Model</code>, <code>Schedule</code>, <code>Timezone</code>, <code>Workspace</code>, <code>Overlap</code>, <code>Timeout</code>, <code>Enabled</code></td>
+</tr>
+<tr>
+<td><code>.Run</code></td>
+<td><code>Number</code> (also <code>N</code>), <code>InvocationID</code>, <code>Branch</code>, <code>Date</code>, <code>Trigger</code>, <code>ScheduledFor</code>, <code>AcceptedAt</code>, <code>StartedAt</code>, <code>CompletedAt</code>, <code>Outcome</code>, <code>Result</code>, <code>ExitCode</code>, <code>Cost</code></td>
+</tr>
+<tr>
+<td><code>.LastRun</code></td>
+<td>The same run fields for the previous executed terminal run, excluding skipped runs. Zero values before the first execution.</td>
+</tr>
+</tbody>
+</table>
+<p><code>{{ file "context.md" }}</code> reads from the run's working directory.
+Ticket and epic template contexts are not available.
+A run freezes its definition, agent command, environment, hooks, timeout, and workspace paths when accepted.
+Later configuration changes apply to new runs.</p>
+<p>The agent must publish an explicit result with <code>kontora result --input-file &lt;absolute-json-file&gt; &lt;automation-id&gt;</code>.
+The JSON contains <code>outcome</code> (<code>complete</code> or <code>blocked</code>), <code>summary</code>, and <code>next_step</code> when blocked.
+A zero process exit alone is not completion. Missing or invalid results, blocked results, nonzero exits, and timeouts produce failed runs.
+Cancellation before a queued run starts produces <code>skipped</code>. Cancellation after execution starts, including during preparation, produces <code>failed</code> once termination is confirmed.</p>
+<h2 id="history-logs-and-recovery">History, logs, and recovery<a class="headerlink" href="#history-logs-and-recovery" title="Permanent link">&para;</a></h2>
+<p>Runs have a per-key number, an invocation identity, and a revision.
+Numbers continue after deletion and recreation of the same key.
+Phases are <code>queued</code>, <code>preparing</code>, <code>running</code>, <code>stopping</code>, <code>terminal</code>, and <code>recovery_required</code>.
+Only terminal runs have an outcome: <code>complete</code>, <code>failed</code>, or <code>skipped</code>.
+Stopping is a request, not proof that the process stopped.</p>
+<p>History shows manual or scheduled triggers, timestamps, logical and observed exit codes, result text, and estimated cost.
+Cost is nullable. Missing usage or pricing is unknown, not zero.
+Definition statistics report priced and tracked runs so partial spend coverage remains visible.</p>
+<p>Structured logs combine Kontora lifecycle events with agent text and tool activity.
+Download raw logs from run history or use <code>kontora automation logs REF --run N --raw</code>.
+The server resolves the live terminal target; clients cannot select arbitrary sessions.</p>
+<p>At restart, Kontora inspects unfinished runs and their saved terminal identities.
+Interrupted execution is not automatically launched again. Uncertain termination remains <code>recovery_required</code> and blocks overlap.
+Inspect the run and use Stop to request recovery. Do not remove state files to bypass that block.
+Hook termination is recorded separately from the agent's tmux window. If a crash leaves hook termination unconfirmed, recovery retains the reservation.
+Inspect those hook processes on the daemon host. An absent tmux window does not prove that the hooks stopped.
+Automations cannot guarantee exactly-once external effects.</p>
+<h2 id="storage-and-backup">Storage and backup<a class="headerlink" href="#storage-and-backup" title="Permanent link">&para;</a></h2>
+<p>Definitions live in the daemon's YAML configuration. Runtime state is machine-local and scoped to that configuration path:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>~/.kontora/automations/&lt;scope-hash&gt;/state.json
+</code></pre></div>
+<p><code>KONTORA_AUTOMATIONS_ROOT</code> overrides the state root. Keep it stable across restarts.
+A daemon without a configuration path falls back to its primary ticket directory as the scope.
+One local daemon owns a scope's lock. A separate lock protects the automation log namespace from another owner.
+Lock contention or invalid snapshots makes Automations unavailable without disabling ordinary tickets.
+State directories use <code>0700</code>; snapshots, lock files, and run artifacts use private file permissions.
+Frozen prompts remain plaintext inside private state and artifacts.</p>
+<p>Run artifacts are under <code>&lt;logs_dir&gt;/automations/&lt;key&gt;/&lt;n&gt;/</code>.
+The composed log is <code>&lt;logs_dir&gt;/automations/&lt;key&gt;/&lt;n&gt;.log</code>.
+History is retained without automatic pruning. Pagination does not reduce state size.</p>
+<p>Before backup, finish or stop active agents, then stop the daemon.
+Copy the configuration, automation state, logs, and retained worktrees together. Preserve their private permissions.
+Restoring YAML alone does not restore run numbers, receipts, or recovery evidence.
+Local locks do not coordinate separate machines or copied state roots.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.sections", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -87,10 +87,6 @@ func (d *Daemon) initializeWorkflow(cfg *config.Config, t *ticket.Ticket, graph 
 		_ = t.SetField("last_error", reason)
 		return errWorkflowNoSpawn
 	}
-	// Normal pickup stays disabled until combined verification passes.
-	if !d.graphWorkflowsReady {
-		return pause("graph workflow execution is disabled pending combined verification")
-	}
 	if t.AnnotationReturnStatus != "" || t.IsAgentEpic() {
 		return pause("graph workflows do not support annotation runs or epic supervisors")
 	}

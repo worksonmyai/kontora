@@ -54,7 +54,7 @@ func TestInitializeWorkflowDisplayEvidence(t *testing.T) {
 			if tc.change != nil {
 				tc.change(cfg, graph)
 			}
-			d := &Daemon{graphWorkflowsReady: true}
+			d := &Daemon{}
 			err = d.initializeWorkflow(cfg, tk, graph)
 			if tc.change != nil {
 				require.ErrorIs(t, err, errWorkflowNoSpawn)

@@ -399,7 +399,6 @@ type windowOps struct {
 var defaultWindowOps = windowOps{list: tmux.ListWindows, kill: tmux.KillWindow}
 
 type Daemon struct {
-	graphWorkflowsReady       bool
 	cfg                       atomic.Pointer[config.Config]
 	worktrees                 *worktree.Manager
 	runner                    RunnerFunc

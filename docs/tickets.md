@@ -468,9 +468,8 @@ use retry separately when the current executable visit is eligible.
 See [CLI controls](cli.md#kontora-workflow-recover-ticket_id) for the operator procedure.
 
 Graph annotations and Plannotator rework are deferred and refused. Upgrade all
-clients and daemons sharing config or ticket storage together. Graph production
-readiness requires combined verification of execution, recovery, controls,
-clients and accounting. Neither recovery nor restart guarantees exactly-once
+clients and daemons sharing config or ticket storage together.
+Neither recovery nor restart guarantees exactly-once
 shell effects or containment of arbitrary detached processes.
 
 ## Dependency-aware scheduling

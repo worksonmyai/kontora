@@ -85,7 +85,6 @@ func TestWorkflowUncertainAgentRecoveryWithoutRestart(t *testing.T) {
 		require.NoError(t, err)
 		return process.Result{StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone}, nil
 	}))
-	d.graphWorkflowsReady = true
 	path := h.writeTicket("tst-uncertain.md", h.taskMD("tst-uncertain", "todo", "graph"))
 	d.tickets["tst-uncertain"] = newTicketState(h.readTask("tst-uncertain.md"), path)
 	d.runTicket(context.Background(), "tst-uncertain")

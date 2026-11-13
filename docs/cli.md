@@ -315,9 +315,7 @@ creates a new execution identity. Neither operation erases old history.
 
 `skip` and `set-stage` are refused for graphs, including stopped graphs.
 Graph annotations and Plannotator rework are deferred and refused. Upgrade all
-CLI and daemon binaries sharing config or tickets together. Graph execution
-remains disabled until combined verification passes. Focused tests alone do
-not establish production readiness. Recovery
+CLI and daemon binaries sharing config or tickets together. Recovery
 does not promise exactly-once shell or hook effects, host-power-loss durability,
 or containment of arbitrary detached processes.
 

@@ -29,6 +29,7 @@ const DefaultServiceName = "kontora"
 
 // Outcome values for a finished stage run.
 const (
+	OutcomeWaiting   = "waiting"
 	OutcomeSuccess   = "success"
 	OutcomeFailure   = "failure"
 	OutcomeCancelled = "cancelled"

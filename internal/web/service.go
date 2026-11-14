@@ -2,7 +2,9 @@ package web
 
 import (
 	"errors"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/worksonmyai/kontora/internal/assistant"
 	"github.com/worksonmyai/kontora/internal/logfmt"
@@ -128,6 +130,57 @@ type TicketService interface {
 	ReadCompanionItem(id string, revision uint64, read bool) (CompanionInfo, error)
 	CatchUpCompanion(revision uint64) (CompanionInfo, error)
 	PostCompanionMessage(req CompanionMessageRequest) (AssistantThreadInfo, error)
+}
+
+// WorkflowReleaseService is the daemon-only durable release API. A successful
+// call acknowledges persisted acceptance, not necessarily a queued continuation.
+type WorkflowReleaseService interface {
+	WorkflowRelease(id string, req WorkflowReleaseRequest) (*ticket.WorkflowReceipt, error)
+	DeploymentRelease(req DeploymentReleaseRequest) (*ticket.WorkflowReceipt, error)
+}
+
+type WorkflowReleaseRequest struct {
+	ExecutionID string `json:"execution_id"`
+	WaitID      string `json:"wait_id"`
+	Revision    uint64 `json:"revision"`
+	RequestID   string `json:"request_id"`
+	Reason      string `json:"reason"`
+	// Operator is transport-established evidence, never a caller-supplied name.
+	Operator string `json:"-"`
+}
+
+func (r WorkflowReleaseRequest) Validate() error {
+	for _, value := range []string{r.ExecutionID, r.WaitID, r.RequestID, r.Reason} {
+		if strings.TrimSpace(value) == "" || strings.ContainsRune(value, 0) || !utf8.ValidString(value) {
+			return errors.New("execution_id, wait_id, revision, request_id and reason are required")
+		}
+	}
+	return nil
+}
+
+type DeploymentReleaseRequest struct {
+	Repository  string `json:"repository"`
+	Environment string `json:"environment"`
+	Commit      string `json:"commit"`
+	EventID     string `json:"event_id"`
+	Operator    string `json:"-"`
+}
+
+func (r DeploymentReleaseRequest) Validate() error {
+	for _, value := range []string{r.Repository, r.Environment, r.EventID} {
+		if strings.TrimSpace(value) == "" || strings.ContainsRune(value, 0) || !utf8.ValidString(value) {
+			return errors.New("repository, environment, commit and event_id are required")
+		}
+	}
+	if len(r.Commit) != 40 && len(r.Commit) != 64 {
+		return errors.New("deployment requires a full lowercase commit ID")
+	}
+	for _, c := range r.Commit {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return errors.New("deployment requires a full lowercase commit ID")
+		}
+	}
+	return nil
 }
 
 // AssistantConfigInfo tells the pane whether assistant model turns are configured.
@@ -720,17 +773,22 @@ const (
 )
 
 type HistoryInfo struct {
-	WorkflowExecutionID   string `json:"workflow_execution_id,omitempty"`
-	NodeVisitID           string `json:"node_visit_id,omitempty"`
-	DefinitionFingerprint string `json:"definition_fingerprint,omitempty"`
-	Template              string `json:"template,omitempty"`
-	VisitAttempt          int    `json:"visit_attempt,omitempty"`
-	Imported              bool   `json:"imported,omitempty"`
-	RunOutcome            string `json:"run_outcome,omitempty"`
-	OutcomeReason         string `json:"outcome_reason,omitempty"`
-	InvocationID          string `json:"invocation_id,omitempty"`
-	Stage                 string `json:"stage"`
-	Agent                 string `json:"agent,omitempty"`
+	Verdict               string               `json:"verdict,omitempty"`
+	NextStep              string               `json:"next_step,omitempty"`
+	Wake                  *ticket.WakeContext  `json:"wake,omitempty"`
+	Wait                  *ticket.WorkflowWait `json:"wait,omitempty"`
+	Continuation          bool                 `json:"continuation,omitempty"`
+	WorkflowExecutionID   string               `json:"workflow_execution_id,omitempty"`
+	NodeVisitID           string               `json:"node_visit_id,omitempty"`
+	DefinitionFingerprint string               `json:"definition_fingerprint,omitempty"`
+	Template              string               `json:"template,omitempty"`
+	VisitAttempt          int                  `json:"visit_attempt,omitempty"`
+	Imported              bool                 `json:"imported,omitempty"`
+	RunOutcome            string               `json:"run_outcome,omitempty"`
+	OutcomeReason         string               `json:"outcome_reason,omitempty"`
+	InvocationID          string               `json:"invocation_id,omitempty"`
+	Stage                 string               `json:"stage"`
+	Agent                 string               `json:"agent,omitempty"`
 	// Model and Effort are what Kontora passed the agent, not what the agent
 	// reported running as. Absent means Kontora passed no flag.
 	Model       string     `json:"model,omitempty"`
@@ -956,6 +1014,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		info.History = make([]HistoryInfo, len(v.History))
 		for i, h := range v.History {
 			info.History[i] = HistoryInfo{
+				Verdict: h.Verdict, NextStep: h.NextStep, Wake: h.Wake.Clone(), Wait: h.Wait.Clone(), Continuation: h.Continuation,
 				WorkflowExecutionID:   h.WorkflowExecutionID,
 				NodeVisitID:           h.NodeVisitID,
 				DefinitionFingerprint: h.DefinitionFingerprint,

@@ -114,7 +114,12 @@ func (d *Daemon) renderTicketPrompt(cfg *config.Config, tmpl string, t *ticket.T
 		ReviewsDir: expandTilde(cfg.Plannotator.ReviewsDir),
 		Logger:     d.log,
 	}
+	var wake *ticket.WakeContext
+	if t.GraphState != nil {
+		wake = t.GraphState.Wake
+	}
 	rendered, err := prompt.RenderWithOptions(tmpl, prompt.Data{
+		Wake: wake,
 		Ticket: prompt.TicketData{
 			ID:          t.ID,
 			Title:       t.Title(),
@@ -509,7 +514,12 @@ type Daemon struct {
 	// scheduleWake asks the schedule loop to recompute its next deadline. It is
 	// buffered so every path that can change a schedule can signal it without
 	// blocking and without caring whether the loop is awake.
-	scheduleWake chan struct{}
+	scheduleWake        chan struct{}
+	workflowWaitWake    chan struct{}
+	workflowProbes      map[string]*workflowProbe
+	workflowProbeJobs   []*workflowProbeJob
+	preferWorkflowProbe bool
+	workflowClock       WorkflowWaitClock
 
 	// scheduleRetry holds the backoff of a promotion that failed, keyed by
 	// ticket id. Guarded by mu.
@@ -629,6 +639,9 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		plannotator:     make(map[string]context.CancelFunc),
 
 		scheduleWake:        make(chan struct{}, 1),
+		workflowWaitWake:    make(chan struct{}, 1),
+		workflowProbes:      make(map[string]*workflowProbe),
+		workflowClock:       realWorkflowWaitClock{},
 		scheduleRetry:       make(map[string]scheduleBackoff),
 		plannotatorDeferred: make(map[string]bool),
 		selfWrites:          make(map[string]selfWrite),
@@ -778,6 +791,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("initial scan: %w", err)
 	}
 
+	d.recoverWorkflowProbes()
+
 	// Cleanup sits between the scan and the scheduler: it needs the ticket set
 	// the scan populates to tell its own windows from another daemon's, and it
 	// must finish before the scheduler starts creating windows of its own.
@@ -864,6 +879,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	})
 
 	wg.Go(func() { d.automationLoop(ctx) })
+	wg.Go(func() { d.workflowWaitLoop(ctx) })
 
 	// Scheduler goroutine.
 	wg.Go(func() {
@@ -1181,6 +1197,7 @@ func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.
 	// The edit can also add, move or remove a schedule, so the timer's next
 	// deadline is recomputed whether or not this ticket is the nearest one.
 	defer d.signalSchedule()
+	defer d.signalWorkflowWait()
 	// An external edit to a child, or to the epic's own kind or children list,
 	// is a reason to derive the epic again. A hand-edited parent field moves the
 	// ticket between two epics, so both ends are derived.
@@ -1362,6 +1379,10 @@ func ticketBase(t *ticket.Ticket) string {
 // propagate errors — a failed cleanup should not block ticket completion.
 // Dirty worktrees are preserved (branch and directory kept intact).
 func (d *Daemon) removeWorktreeAt(log *slog.Logger, repoPath, wtPath string) {
+	if d.workflowWorktreeReserved(repoPath, wtPath) {
+		log.Warn("worktree cleanup refused while a workflow wait reserves it")
+		return
+	}
 	d.logRemoveResult(log, d.worktrees.RemoveAt(repoPath, wtPath))
 }
 
@@ -1484,7 +1505,9 @@ func (d *Daemon) reconcileDependenciesLocked(id string) {
 			continue
 		}
 		if len(d.blockersLocked(t)) == 0 {
-			if autoPickUp {
+			if t.GraphState != nil && t.GraphState.Continuation {
+				d.enqueue(t)
+			} else if autoPickUp {
 				d.enqueueAutomatic(t)
 			}
 			continue
@@ -2482,6 +2505,9 @@ type agentRun struct {
 	Reported      bool
 	ForcePause    bool
 	Verdict       string
+	WaitRequest   *session.WaitRequest
+	WaitState     *ticket.WorkflowWait
+	NextStep      string
 }
 
 // agentAttempt is the outcome of one runAgentOnce call.
@@ -3334,6 +3360,7 @@ func (d *Daemon) refreshTicketModTimeLocked(ticketID string, modTime time.Time) 
 // dependents. Must be called with d.mu held, on a path that just wrote the file
 // (so the cached modtime is current).
 func (d *Daemon) setTicketState(id string, t *ticket.Ticket, path string) {
+	defer d.signalWorkflowWait()
 	var modTime time.Time
 	if ts, ok := d.tickets[id]; ok {
 		modTime = ts.modTime

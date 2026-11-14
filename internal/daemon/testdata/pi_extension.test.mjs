@@ -140,7 +140,8 @@ function loadExtension(source, ticketID, resultEnv = {}) {
   const factory = new Function(fullSource + "\nreturn __factory;")();
   const env = { ...resultEnv, KONTORA_TICKET_ID: ticketID };
   const keys = [...RESULT_ENV_KEYS, "KONTORA_RESULT_AUTOMATION", "KONTORA_RESULT_RUN_NUMBER", "KONTORA_TICKET_ID",
-    "KONTORA_RESULT_VERDICTS", "KONTORA_WORKFLOW_EXECUTION_ID", "KONTORA_NODE_VISIT_ID", "KONTORA_DEFINITION_FINGERPRINT"];
+    "KONTORA_RESULT_VERDICTS", "KONTORA_WORKFLOW_EXECUTION_ID", "KONTORA_NODE_VISIT_ID", "KONTORA_DEFINITION_FINGERPRINT",
+    "KONTORA_WAKE_MAX", "KONTORA_CHECK_TIMEOUT"];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   try {
     for (const key of keys) {
@@ -420,12 +421,14 @@ for (const [key, value] of [
   });
 }
 
+for (const version of ["2", "3"]) {
 for (const verdicts of [[], ["approve", "changes"]]) {
   for (const outcome of ["complete", "blocked"]) {
-    test(`graph result schema, context and literal submission: ${JSON.stringify(verdicts)} ${outcome}`, async (t) => {
+    test(`graph v${version} result schema, context and literal submission: ${JSON.stringify(verdicts)} ${outcome}`, async (t) => {
       const { api, ctx, env, submit } = resultFixture(t, DISABLED_SOURCE, {
-        KONTORA_RESULT_VERSION: "2", KONTORA_RESULT_VERDICTS: JSON.stringify(verdicts),
+        KONTORA_RESULT_VERSION: version, KONTORA_RESULT_VERDICTS: JSON.stringify(verdicts),
         KONTORA_WORKFLOW_EXECUTION_ID: "workflow-1", KONTORA_NODE_VISIT_ID: "visit-2",
+        ...(version === "3" ? { KONTORA_WAKE_MAX: "3", KONTORA_CHECK_TIMEOUT: "1m", KONTORA_DEFINITION_FINGERPRINT: "abc123" } : {}),
       });
       const properties = api.tools.kontora_result.parameters.properties;
       if (verdicts.length) assert.deepEqual(properties.verdict.enum, verdicts);
@@ -449,6 +452,8 @@ for (const verdicts of [[], ["approve", "changes"]]) {
       assert.equal(api.execCalls.length, 1);
     });
   }
+}
+
 }
 
 for (const [name, verdicts, payload] of [
@@ -489,9 +494,136 @@ for (const ackVerdict of [undefined, "approve"]) {
   });
 }
 
+function waitFixture(t, overrides = {}, source = ENABLED_SOURCE) {
+  const fixture = resultFixture(t, source, {
+    KONTORA_RESULT_VERSION: "3", KONTORA_RESULT_VERDICTS: "[]",
+    KONTORA_WORKFLOW_EXECUTION_ID: "workflow-1", KONTORA_NODE_VISIT_ID: "visit-2",
+    KONTORA_DEFINITION_FINGERPRINT: "abc123", KONTORA_WAKE_MAX: "3", KONTORA_CHECK_TIMEOUT: "1m",
+    ...overrides,
+  });
+  return { ...fixture, wait: (params, signal) => fixture.api.tools.kontora_wait.execute("wait-call", params, signal, undefined, fixture.ctx) };
+}
+
+for (const source of [ENABLED_SOURCE, DISABLED_SOURCE]) {
+  for (const params of [
+    { until: "2099-01-01T00:00:00Z", next: "Repeat production checks." },
+    { check: "test -f 'DONE'; echo '$HOME 雪'", poll: "10m", deadline: "2099-01-01T00:00:00Z", next: "Read data.\nReport result.", summary: "Collecting data." },
+  ]) {
+    test(`wait submits literal flags and shares terminal latch: ${JSON.stringify(params)} enabled=${source === ENABLED_SOURCE}`, async (t) => {
+      const { api, ctx, env, wait, submit } = waitFixture(t, {}, source);
+      assert.equal(api.tools.kontora_wait.executionMode, "sequential");
+      assert.equal(api.tools.kontora_wait.parameters.additionalProperties, false);
+      api.execHandler = async (command, args, options) => {
+        assert.equal(command, "kontora");
+        assert.equal(args[0], "wait");
+        const actual = Object.fromEntries(Array.from({ length: (args.length - 1) / 2 }, (_, i) => [args[i * 2 + 1].slice(2), args[i * 2 + 2]]));
+        assert.deepEqual(actual, params);
+        assert.equal(args.includes(env.KONTORA_RESULT_TICKET), false);
+        assert.equal(options.cwd, ctx.cwd);
+        assert.equal(options.maxBuffer, 32768);
+        return { code: 0, stdout: JSON.stringify({ accepted: true, invocation_id: env.KONTORA_INVOCATION_ID, outcome: "waiting" }) };
+      };
+      const result = await wait(params);
+      assert.equal(result.details.outcome, "waiting");
+      await assert.rejects(() => submit(), /terminal.*blocked/i);
+      await assert.rejects(() => wait(params), /terminal.*blocked/i);
+      const blocked = await api.fire("tool_call", { toolName: "bash" }, ctx);
+      assert.equal(blocked.block, true);
+      assert.equal(blocked.terminate, true);
+      await api.fire("agent_settled", {}, ctx);
+      assert.equal(ctx.shutdownCalled(), 1);
+      assert.equal(api.execCalls.length, 1);
+    });
+  }
+}
+
+test("result publication blocks wait and checkpoints", async (t) => {
+  const { api, ctx, wait, submit, checkpoint } = waitFixture(t);
+  await submit();
+  await assert.rejects(() => wait({ until: "2099-01-01T00:00:00Z", next: "Resume." }), /terminal.*blocked/i);
+  checkpoint();
+  await api.fire("turn_end", {}, ctx);
+  assert.equal(ctx.compactCalls().length, 0);
+  assert.equal(api.execCalls.length, 1);
+});
+
+test("wait in flight excludes a concurrent result", async (t) => {
+  const { api, env, wait, submit } = waitFixture(t);
+  let finish;
+  api.execHandler = () => new Promise((resolve) => { finish = resolve; });
+  const pending = wait({ until: "2099-01-01T00:00:00Z", next: "Resume." });
+  await assert.rejects(() => submit(), /terminal.*blocked/i);
+  finish({ code: 0, stdout: JSON.stringify({ accepted: true, invocation_id: env.KONTORA_INVOCATION_ID, outcome: "waiting" }) });
+  await pending;
+  assert.equal(api.execCalls.length, 1);
+});
+
+for (const params of [
+  undefined, {}, { next: "Resume." }, { check: "test", until: "2099-01-01T00:00:00Z", next: "Resume." },
+  { check: "test", poll: "10m", next: "Resume." }, { check: "test", deadline: "2099-01-01T00:00:00Z", next: "Resume." },
+  { until: "2099-01-01T00:00:00Z", poll: "10m", next: "Resume." },
+  { until: "2099-01-01T00:00:00Z", deadline: "2099-01-02T00:00:00Z", next: "Resume." },
+  ...["", " ", "nul\0", "\ud800", 1, null].map((next) => ({ until: "2099-01-01T00:00:00Z", next })),
+  { until: "2099-01-01T00:00:00Z", next: "Resume.", summary: " " },
+  { until: "2099-01-01T00:00:00Z", next: "Resume.", verdict: "approve" },
+  { until: "2099-01-01T00:00:00Z", next: "Resume.", invocation_id: "fake" },
+  { until: "2099-01-01T00:00:00Z", next: "雪".repeat(32768) },
+]) {
+  test(`wait rejects invalid parameters: ${JSON.stringify(params)?.slice(0, 150)}`, async (t) => {
+    const { api, wait } = waitFixture(t);
+    await assert.rejects(() => wait(params));
+    assert.equal(api.execCalls.length, 0);
+  });
+}
+
+for (const override of [
+  { code: 1, stderr: "invalid duration" }, { killed: true }, { truncated: true },
+  { stdout: "not json" }, { stdout: JSON.stringify({ accepted: true, invocation_id: "stale", outcome: "waiting" }) },
+  { stdout: JSON.stringify({ accepted: true, invocation_id: "invocation-123", outcome: "complete" }) },
+  { stdout: JSON.stringify({ accepted: true, invocation_id: "invocation-123", outcome: "waiting", verdict: "approve" }) },
+]) {
+  test(`wait refuses uncertain or invalid acknowledgement: ${JSON.stringify(override)}`, async (t) => {
+    const { api, ctx, wait } = waitFixture(t);
+    api.execResult = { code: 0, stdout: JSON.stringify({ accepted: true, invocation_id: "invocation-123", outcome: "waiting" }), ...override };
+    await assert.rejects(() => wait({ until: "2099-01-01T00:00:00Z", next: "Resume." }), /unknown.*Inspect/s);
+    assert.equal(await api.fire("tool_call", {}, ctx), undefined);
+  });
+}
+
+test("uncertain wait with a published artifact still blocks tools", async (t) => {
+  const { api, ctx, env, wait } = waitFixture(t);
+  api.execHandler = async () => {
+    writeFileSync(env.KONTORA_RESULT_FILE, JSON.stringify({ outcome: "waiting", summary: "Waiting for timer.", next_step: "Resume.", wait: { kind: "timer", until: "2099-01-01T00:00:00Z" } }));
+    return { code: 0, killed: true, stdout: "" };
+  };
+  await assert.rejects(() => wait({ until: "2099-01-01T00:00:00Z", next: "Resume." }), /unknown/);
+  assert.equal((await api.fire("tool_call", {}, ctx)).block, true);
+});
+
+test("aborted wait does not execute", async (t) => {
+  const { api, wait } = waitFixture(t);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(() => wait({ until: "2099-01-01T00:00:00Z", next: "Resume." }, controller.signal), /cancelled/);
+  assert.equal(api.execCalls.length, 0);
+});
+
+for (const key of ["KONTORA_WAKE_MAX", "KONTORA_CHECK_TIMEOUT", "KONTORA_WORKFLOW_EXECUTION_ID", "KONTORA_NODE_VISIT_ID", "KONTORA_DEFINITION_FINGERPRINT"]) {
+  test(`wait requires captured capability: ${key}`, (t) => {
+    assert.throws(() => waitFixture(t, { [key]: "" }), new RegExp(key));
+  });
+}
+
+for (const version of ["1", "2"]) {
+  test(`wait not registered for v${version}`, (t) => {
+    const { api } = resultFixture(t, DISABLED_SOURCE, { KONTORA_RESULT_VERSION: version, KONTORA_RESULT_VERDICTS: "[]" });
+    assert.equal(api.tools.kontora_wait, undefined);
+  });
+}
+
 test("unsupported result context version errors", (t) => {
   const { env } = resultFixture(t);
-  assert.throws(() => loadExtension(DISABLED_SOURCE, undefined, { ...env, KONTORA_RESULT_VERSION: "3" }), /version/i);
+  assert.throws(() => loadExtension(DISABLED_SOURCE, undefined, { ...env, KONTORA_RESULT_VERSION: "4" }), /version/i);
 });
 
 for (const outcome of ["complete", "blocked"]) {

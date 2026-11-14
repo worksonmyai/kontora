@@ -15,6 +15,55 @@ import (
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
+func TestWorkflowReleaseTransport(t *testing.T) {
+	for _, deployment := range []bool{false, true} {
+		t.Run(map[bool]string{false: "human", true: "deployment"}[deployment], func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				assert.Equal(t, http.MethodPost, r.Method)
+				assert.Equal(t, "Bearer secret", r.Header.Get("Authorization"))
+				var body map[string]any
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+				assert.NotContains(t, body, "Operator")
+				assert.NotContains(t, body, "operator")
+				if deployment {
+					assert.Equal(t, "/api/workflow-events/deployment", r.URL.Path)
+					assert.Equal(t, map[string]any{"repository": "/repo", "environment": "production", "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "event_id": "deploy-1"}, body)
+				} else {
+					assert.Equal(t, "/api/tickets/t-001/workflow-release", r.URL.Path)
+					assert.Equal(t, map[string]any{"execution_id": "exec-1", "wait_id": "wait-1", "revision": float64(7), "request_id": "request-1", "reason": "Approved"}, body)
+				}
+				_, _ = w.Write([]byte(`{"id":"receipt-1","request_id":"stable-id","accepted_at":"2026-11-13T07:00:00Z"}`))
+			}))
+			defer srv.Close()
+			client := New(srv.URL, "secret")
+			if deployment {
+				receipt, err := client.DeploymentRelease(web.DeploymentReleaseRequest{Repository: "/repo", Environment: "production", Commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", EventID: "deploy-1", Operator: "spoofed"})
+				require.NoError(t, err)
+				assert.Equal(t, "receipt-1", receipt.ID)
+			} else {
+				receipt, err := client.WorkflowRelease("t-001", web.WorkflowReleaseRequest{ExecutionID: "exec-1", WaitID: "wait-1", Revision: 7, RequestID: "request-1", Reason: "Approved", Operator: "spoofed"})
+				require.NoError(t, err)
+				assert.Equal(t, "receipt-1", receipt.ID)
+			}
+			assert.Equal(t, 1, calls)
+		})
+	}
+}
+
+func TestWorkflowReleaseTransportErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"request identity conflict"}`))
+	}))
+	defer srv.Close()
+	_, err := New(srv.URL, "").WorkflowRelease("t-001", web.WorkflowReleaseRequest{})
+	assert.ErrorContains(t, err, "request identity conflict")
+	_, err = New(srv.URL, "").DeploymentRelease(web.DeploymentReleaseRequest{})
+	assert.ErrorContains(t, err, "request identity conflict")
+}
+
 func encodeList(w http.ResponseWriter, tickets []web.TicketInfo) {
 	_ = json.NewEncoder(w).Encode(struct {
 		Tickets       []web.TicketInfo `json:"tickets"`

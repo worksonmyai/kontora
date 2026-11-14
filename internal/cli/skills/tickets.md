@@ -100,7 +100,8 @@ Written by the daemon as a ticket progresses. Never set them by hand.
 | Field | Description |
 |-------|-------------|
 | `kontora` | `true` makes ordinary tickets and activated agent epics eligible to run. Set by `kontora new` or `kontora init`. |
-| `stage` | Current pipeline stage. Set to the first stage on pickup. |
+| `stage` | Legacy stage name or current graph node ID. Graphs start at `entry`. |
+| `graph_state` | Daemon-owned execution ID, revision, fingerprint, visits, loops and trace. Version 2 also retains waits, wakes, wait history and continuation intent. |
 | `attempt` | Retry counter for the current stage. Reset on advance or back. |
 | `started_at` | When the current stage started. |
 | `running_status` | Internal snapshot for a custom-active stage, matching its actual `status`. Empty for default execution and parked work. |
@@ -129,7 +130,7 @@ open -> todo -> in_progress -> done ------> archived
 | `open` | Drafted, not ready for the daemon to pick up. A `scheduled_at` stamp moves it to `todo` at a set time. |
 | `todo` | Ready. The scheduler takes it in creation order once its deps are closed. |
 | `in_progress` | An agent is working on it now. |
-| `paused` | Stopped by a failure policy or by a person. `kontora retry` resumes it. |
+| `paused` | Stopped by policy/person, or a durable graph wait displayed as Waiting. Retry requires inspection and any required recovery. |
 | `human_review` | Parked for a person to look at. Reached by a stage policy or `kontora move`. Releases the tickets that depend on it. |
 | `done` | Every pipeline stage completed. |
 | `cancelled` | Cancelled by a person. |
@@ -164,6 +165,62 @@ activated or migrated.
 
 The daemon picks up ordinary tickets and agent epics with `kontora: true` and
 `status: todo`. A passive epic is never picked up, even if its file says `todo`.
+
+## Durable workflow waits
+
+Waits work only in version 2 graphs. Legacy lists, automations and epic supervisors cannot use them.
+Agent nodes opt in with positive `wake.max`; per-probe `check_timeout` defaults to `60s`.
+Declared `type: wait` nodes use `mode: human` or `deployment` and optional timeout.
+See `kontora skills show pipelines 'Durable waits'` for configuration and probe outcomes.
+
+A wait stores `status: paused` plus `graph_state.wait`, shown as Waiting.
+It does not use `waiting_for_input`, which remains for live agent questions.
+Notifications remain status-based `paused` subscriptions, enriched with eligible wait context.
+The `waiting` subscription remains for Pi questions; same-status changes and every wake may be silent.
+The API exposes wait kind, phase, deadline, next poll, wake allowance and diagnostics.
+Probe output keeps a UTF-8-safe excerpt up to 16 KiB, a truncation flag and log reference.
+The dashboard and TUI also show release instructions.
+
+Idle waits release worker capacity but retain the branch reservation.
+A wake resumes the same executable visit with a fresh invocation, not a failure retry or loop traversal.
+Queued continuation intent survives restarts and dependency blocking, even with `auto_pick_up: false`.
+Dependencies and workspace ownership still apply. Missing or changed worktrees block progress.
+Commands must be trusted and safe to repeat; daemon permissions apply without a sandbox.
+
+| Control | Active-wait behavior |
+|---------|----------------------|
+| Pause | Disarm progress without changing identity or deadline. |
+| Retry | Re-arm the same wait after required recovery; preserve deadline. |
+| Run, move, schedule, init, done | Cannot bypass the wait. |
+| Cancel | Invalidate wake authority and stop the probe. |
+| Workflow restart | New execution/wait IDs; retain history and worktree. |
+| Delete or transfer | Refuse until cancellation. |
+| Upload | Strip resumable graph/wait authority; import an open draft. |
+
+For uncertain probe termination, inspect processes, worktree, results and journals.
+Use `kontora workflow-recover --execution-id EXECUTION_ID --revision N TICKET_ID` for the inspected state.
+Acknowledgement does not start work. If the wait survives, retry separately to re-arm it;
+a cancelled workflow remains cancelled and needs no re-arming. Deadlines cannot bypass recovery.
+Changed effective configuration blocks progress without resetting saved times.
+
+Human release needs inspected ticket/execution/wait identity, revision, request ID and reason.
+Deployment release records repository, exact environment, full commit actually deployed and event ID.
+Both require the daemon; see `kontora skills show cli 'kontora release'`.
+Historical deployment receipts can satisfy later waits and multiple tickets.
+They prove a deployment occurred, not current environment state after a rollback.
+Matching uses local equal/descendant commit evidence, without fetch, deployment or cherry-pick equivalence.
+Identical retries return stored receipts; conflicts and new stale requests fail.
+Acceptance does not promise immediate continuation. Existing access controls apply;
+shared-token/unauthenticated access is not verified named approval.
+
+Keep ticket wait/wake state, invocation/finalization journals and `<logs_dir>/<ticket>/workflow-probe.json` for recovery.
+`<logs_dir>/<ticket>/workflow-control.json` freezes a released or timed-out control wait before the ticket update.
+Probe output is `<logs_dir>/<ticket>/waits/<wait-id>/<poll-id>.log`.
+Receipts/application journals are `<tickets_dir>/.workflow-events/`, outside logs and reserved `.kontora`.
+Receipts have no automatic expiry. Do not discard journals needed for recovery.
+Upgrade all sharing clients and daemons before wait config, result v3 or graph-state v2.
+Unchanged no-wait fingerprints and existing v1 state/v1-v2 result/recovery contracts remain compatible.
+Recovery covers daemon-process restart, not exactly-once shell effects or host-power-loss durability.
 
 ## Relations
 
@@ -459,6 +516,13 @@ checks; blocked with exit zero is not completed delivery. Legacy entries without
 exit codes or prose. Summaries, statistics, metrics, and CLI/browser views must
 preserve that distinction. A standalone supervised child's real history is not
 also counted as a synthetic legacy run.
+
+Graph rows retain execution, visit, fingerprint and template provenance.
+A suspended agent records `run_outcome: waiting`, with `next_step`, `wait`, `wake`,
+and `continuation` evidence when applicable. Waiting contributes run totals, time and tokens,
+but not success, failure, unverified counts or first-pass judgments.
+Intentional continuation is not a failure retry. Declared waits and probes create no agent rows.
+Graph logs retain `<node>.<visit-id>.<invocation-id>.log`, with fallback for older visit logs.
 
 `model` and `effort` are what the run resolved to, not what the agent reported
 running as. `session_kind` and `session_ref` name the agent's own session file;

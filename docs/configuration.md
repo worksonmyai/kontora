@@ -534,8 +534,8 @@ invocation-bound results. Scope is snapshotted from actual membership for each
 invocation and retained for recovery, not inferred from display order or whether
 the supervisor is running. Non-graph passive-epic children, unrelated non-graph
 tickets, annotations, and assistant-only executions keep their existing result
-requirements. Graph agent nodes independently require version 2 results. The
-shared local-authority, result, and escalation instructions are delivered on
+requirements. Graph agent nodes require version 2 results, or version 3 with `wake`.
+The shared local-authority, result, and escalation instructions are delivered on
 fresh, resumed, and rework runs independently of the replaceable `system_prompt`.
 This does not rewrite stored pipelines or bypass review stages.
 
@@ -641,10 +641,20 @@ Prompts are Go [text/template](https://pkg.go.dev/text/template) strings with th
 | `{{ .Ticket.Description }}` | Full ticket body (markdown after frontmatter). |
 | `{{ .Ticket.FilePath }}` | Absolute path to the ticket's markdown file. |
 | `{{ file "PLAN.md" }}` | Contents of a file relative to the ticket's worktree. |
+| `{{ fileOptional "RESULTS.md" }}` | Like `file`, but returns empty text if the file is absent. Other read errors still fail rendering. |
+| `{{ .Wake.Reason }}` | Wake reason, guarded with `{{ if .Wake }}` when no continuation exists. |
+| `{{ .Wake.Output }}` | Saved probe output excerpt. |
+| `{{ .Wake.Count }}` | Wake count for the executable visit. |
+| `{{ .Wake.Next }}` | Saved continuation instructions. |
+| `{{ .Wake.WaitID }}` / `{{ .Wake.Receipt }}` | Wait identity and optional release receipt, including deployment evidence. |
 | `{{ plannotatorReview }}` | Feedback from the last Plannotator code review. Reading it deletes the file, so only the built-in `rework` stage uses it. |
 | `{{ plannotatorAnnotations }}` | Pending Plannotator annotations on the ticket. Reading it leaves the file in place (see [plannotator](#plannotator)). |
 
 The `file` function is how stages communicate — an earlier stage writes a file (e.g., `PLAN.md`) and a later stage reads it via the template.
+
+Kontora also appends a wake handoff automatically. Existing prompts receive the
+reason, output, count, instructions, and any release receipt without template changes.
+Wake context stays frozen for the continuation and its retries; unrelated later nodes do not inherit it.
 
 ### Stage handoffs
 
@@ -747,7 +757,8 @@ pipelines:
 
 | Node `type` | Fields | Required outgoing ports |
 |-------------|--------|-------------------------|
-| `agent` | `stage` names a prompt template; `agent` names a configured agent. Optional `verdicts` declares allowed result strings. | `complete`, `failed` |
+| `agent` | `stage` names a prompt template; `agent` names a configured agent. Optional `verdicts` declares allowed result strings; `wake` permits suspension. | `complete`, `failed` |
+| `wait` | `mode: human` or `deployment`; deployment requires `environment`. Optional positive `timeout`. | `released`; also `timeout` when a timeout is configured |
 | `check` | `command` runs in the worktree; `timeout` must be positive. | `pass` (exit zero), `fail` (nonzero) |
 | `condition` | `when: {field: verdict, equals: approved}` or `when: {field: exit_code, equals: 0}`. | `true`, `false` |
 | `loop` | Positive `max`, the total allowance of `repeat` transitions for this loop in one execution. | `repeat`, `exhausted` |
@@ -769,8 +780,9 @@ Every cycle must cross a `loop.repeat` edge and include an executable node;
 control-only cycles are invalid. Loop allowances accumulate across visits, not
 per nesting level, and ordinary retry does not reset them.
 
-Graph agent nodes require invocation-bound version 2 results, even outside an
-epic. A complete result must include one of the node's `verdicts` when declared.
+Graph agent nodes require invocation-bound version 2 results, or version 3 when
+`wake` is configured, even outside an epic.
+A complete result must include one of the node's `verdicts` when declared.
 For example, `{"outcome":"complete","summary":"Changes required","verdict":"changes_requested"}`
 reports a completed review, not a runner failure. `blocked` requires `next_step`
 and pauses the same visit. Missing or malformed reports, timeout, interruption,
@@ -797,6 +809,74 @@ and clients cannot interpret graph definitions or cursor state.
 Recovery does not promise exactly-once shell or hook
 effects, host-power-loss durability, or containment of arbitrary detached
 processes. A missing tmux window alone does not prove termination.
+
+### Durable waits
+
+Waits are available only in version 2 graphs, not legacy lists, automations, or epic supervisors.
+An agent node opts into suspension with `wake`:
+
+```yaml
+- id: research
+  type: agent
+  stage: research
+  agent: claude
+  wake:
+    max: 12
+    check_timeout: 60s
+```
+
+`wake.max` is required and positive. It limits wakes within one executable visit,
+not condition polls. `check_timeout` limits each probe; omission or zero uses `60s`.
+Negative values are invalid. Another wait is refused after the visit exhausts its wake allowance.
+Use [kontora wait](cli.md#kontora-wait) or Pi's `kontora_wait` to publish an invocation-bound request.
+The daemon commits suspension only after successful execution, confirmed termination, and required `stage_end` hooks.
+Publication alone does not confirm suspension.
+
+A declared wait stops between executable nodes. Merge these nodes and edges into your graph:
+
+```yaml
+nodes:
+  - {id: approval, type: wait, mode: human, timeout: 24h}
+  - {id: deploy, type: wait, mode: deployment, environment: production, timeout: 168h}
+  - {id: finished, type: end, status: done}
+  - {id: inspect, type: end, status: paused}
+edges:
+  - {from: {node: approval, port: released}, to: deploy}
+  - {from: {node: approval, port: timeout}, to: inspect}
+  - {from: {node: deploy, port: released}, to: finished}
+  - {from: {node: deploy, port: timeout}, to: inspect}
+```
+
+Add one `released` edge per wait and one `timeout` edge when a positive timeout is configured. Omitted or zero timeout means no deadline and no `timeout` edge.
+Human waits cannot set `environment`. Durations use Go units; use `168h`, not `7d`.
+Release or timeout follows the corresponding edge and preserves the preceding executable result for conditions.
+Declared waits create no executable visit or agent history row. They can register without an execution slot.
+A deployment wait requires an existing worktree and freezes its repository identity and HEAD commit at entry.
+
+Idle waits consume no worker slot. Condition probes run `/bin/sh -c` in the
+retained worktree and share ordinary worker capacity. Exit `0` wakes with `ready`;
+exit `1` schedules another poll from completion time. Other exits, confirmed probe
+timeout, or runner failure wake with `error`. Timer waits wake with `timer`;
+overall check expiry wakes with `deadline`. The deadline wins over late probe results.
+Uncertain termination requires recovery before replacement. Missed polls are not replayed.
+Capacity can delay probes, but timer and deadline reconciliation does not need a worker slot.
+
+Commands must be trusted and safe to repeat. They run with daemon subprocess permissions;
+a worktree is not a sandbox. Waiting retains branch ownership within this daemon.
+Missing or changed worktrees stop progress rather than being silently recreated.
+
+Waits use `paused` plus graph metadata, presented as Waiting, not a new status.
+Subscribe to `paused` for parking notifications. The `waiting` notification subscription remains for live Pi questions.
+Same-status changes and every wake do not necessarily send notifications.
+See [wait controls and storage](tickets.md#durable-workflow-waits) and [release commands](cli.md#kontora-release).
+
+Upgrade all daemons and clients sharing configuration or tickets before adding wait configuration,
+version 3 results, or graph-state version 2. Existing no-wait graph fingerprints remain unchanged;
+version 1 state and version 1/2 result and recovery contracts remain supported.
+Graph definition version stays `2`; result and persisted-state versions are separate.
+Changed effective configuration stops probes and continuation without resetting saved times.
+Restore the matching configuration, or inspect and explicitly restart the workflow.
+Recovery covers daemon-process interruption, not exactly-once shell effects or host-power-loss durability.
 
 ### Stage fields
 

@@ -116,6 +116,7 @@ func (r *daemonMutationRepository) Save(st *app.StoredTicket) error {
 	}
 	r.d.tickets[t.ID] = &ticketState{ticket: t, filePath: st.FilePath, modTime: modTime}
 	r.d.reconcileDependenciesLocked(t.ID)
+	r.d.signalWorkflowWait()
 	if t.Kind == ticket.KindEpic {
 		r.d.rederiveEpicLocked(t.ID, "")
 	} else {

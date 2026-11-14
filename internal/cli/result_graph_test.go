@@ -13,58 +13,60 @@ import (
 )
 
 func TestReportGraphResult(t *testing.T) {
-	for _, tt := range []struct {
-		name, outcome, jsonVerdict string
-		flag, declarations         []string
-		valid                      bool
-	}{
-		{"JSON verdict", "complete", "changes", nil, []string{"approve", "changes"}, true},
-		{"flag verdict", "complete", "", []string{"changes"}, []string{"approve", "changes"}, true},
-		{"matching flag", "complete", "changes", []string{"changes"}, []string{"changes"}, true},
-		{"conflicting flag", "complete", "changes", []string{"approve"}, []string{"approve", "changes"}, false},
-		{"missing verdict", "complete", "", nil, []string{"approve"}, false},
-		{"undeclared verdict", "complete", "changes", nil, []string{"approve"}, false},
-		{"undeclared flag", "complete", "", []string{"changes"}, []string{"approve"}, false},
-		{"blank flag", "complete", "", []string{" "}, []string{"approve"}, false},
-		{"multiple flags", "complete", "", []string{"approve", "changes"}, []string{"approve"}, false},
-		{"no declarations", "complete", "", nil, nil, true},
-		{"no declarations with verdict", "complete", "changes", nil, nil, false},
-		{"blocked without verdict", "blocked", "", nil, []string{"approve"}, true},
-		{"blocked with verdict", "blocked", "changes", nil, []string{"changes"}, true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			inv := session.Invocation{Version: session.GraphResultVersion, ID: "inv-2", TicketID: "kon-test", Stage: "review",
-				ResultPath: filepath.Join(t.TempDir(), "result.json"), Verdicts: tt.declarations}
-			env := inv.Env()
-			payload := `{"outcome":"` + tt.outcome + `","summary":"Review finished","next_step":"Provide access"`
-			if tt.jsonVerdict != "" {
-				payload += `,"verdict":"` + tt.jsonVerdict + `"`
-			}
-			payload += `}`
-			var out bytes.Buffer
-			for range 2 {
-				out.Reset()
-				err := ReportResult(inv.TicketID, "", strings.NewReader(payload), &out, func(k string) string { return env[k] }, tt.flag...)
-				if !tt.valid {
-					require.Error(t, err)
-					assert.Empty(t, out.String())
-					assert.NoFileExists(t, inv.ResultPath)
-					return
+	for _, version := range []int{session.GraphResultVersion, session.WaitResultVersion} {
+		for _, tt := range []struct {
+			name, outcome, jsonVerdict string
+			flag, declarations         []string
+			valid                      bool
+		}{
+			{"JSON verdict", "complete", "changes", nil, []string{"approve", "changes"}, true},
+			{"flag verdict", "complete", "", []string{"changes"}, []string{"approve", "changes"}, true},
+			{"matching flag", "complete", "changes", []string{"changes"}, []string{"changes"}, true},
+			{"conflicting flag", "complete", "changes", []string{"approve"}, []string{"approve", "changes"}, false},
+			{"missing verdict", "complete", "", nil, []string{"approve"}, false},
+			{"undeclared verdict", "complete", "changes", nil, []string{"approve"}, false},
+			{"undeclared flag", "complete", "", []string{"changes"}, []string{"approve"}, false},
+			{"blank flag", "complete", "", []string{" "}, []string{"approve"}, false},
+			{"multiple flags", "complete", "", []string{"approve", "changes"}, []string{"approve"}, false},
+			{"no declarations", "complete", "", nil, nil, true},
+			{"no declarations with verdict", "complete", "changes", nil, nil, false},
+			{"blocked without verdict", "blocked", "", nil, []string{"approve"}, true},
+			{"blocked with verdict", "blocked", "changes", nil, []string{"changes"}, true},
+		} {
+			t.Run(tt.name+"/v"+string(rune('0'+version)), func(t *testing.T) {
+				inv := waitInvocation(t)
+				inv.Version, inv.ID, inv.Stage, inv.Verdicts = version, "inv-2", "review", tt.declarations
+				env := inv.Env()
+				payload := `{"outcome":"` + tt.outcome + `","summary":"Review finished","next_step":"Provide access"`
+				if tt.jsonVerdict != "" {
+					payload += `,"verdict":"` + tt.jsonVerdict + `"`
 				}
+				payload += `}`
+				var out bytes.Buffer
+				for range 2 {
+					out.Reset()
+					err := ReportResult(inv.TicketID, "", strings.NewReader(payload), &out, func(k string) string { return env[k] }, tt.flag...)
+					if !tt.valid {
+						require.Error(t, err)
+						assert.Empty(t, out.String())
+						assert.NoFileExists(t, inv.ResultPath)
+						return
+					}
+					require.NoError(t, err)
+				}
+				result, err := session.ReadResult(inv.ResultPath, inv.Version)
 				require.NoError(t, err)
-			}
-			result, err := session.ReadResult(inv.ResultPath, inv.Version)
-			require.NoError(t, err)
-			verdict := tt.jsonVerdict
-			if len(tt.flag) != 0 {
-				verdict = tt.flag[0]
-			}
-			assert.Equal(t, verdict, result.Verdict)
-			assert.Contains(t, out.String(), `"invocation_id":"inv-2"`)
-			if verdict != "" {
-				assert.Contains(t, out.String(), `"verdict":"`+verdict+`"`)
-			}
-		})
+				verdict := tt.jsonVerdict
+				if len(tt.flag) != 0 {
+					verdict = tt.flag[0]
+				}
+				assert.Equal(t, verdict, result.Verdict)
+				assert.Contains(t, out.String(), `"invocation_id":"inv-2"`)
+				if verdict != "" {
+					assert.Contains(t, out.String(), `"verdict":"`+verdict+`"`)
+				}
+			})
+		}
 	}
 }
 

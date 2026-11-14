@@ -3,6 +3,7 @@ package ticket
 import (
 	"maps"
 	"slices"
+	"time"
 )
 
 // Ticket.Stage is the cursor.
@@ -19,6 +20,16 @@ type GraphState struct {
 	LastResult            *GraphResult      `yaml:"last_result,omitempty" json:"last_result,omitempty"`
 	Transitions           []GraphTransition `yaml:"transitions,omitempty" json:"transitions,omitempty"`
 	PreviousExecutions    []GraphEvidence   `yaml:"previous_executions,omitempty" json:"previous_executions,omitempty"`
+	Wait                  *WorkflowWait     `yaml:"wait,omitempty" json:"wait,omitempty"`
+	Wake                  *WakeContext      `yaml:"wake,omitempty" json:"wake,omitempty"`
+	WakeCount             int               `yaml:"wake_count,omitempty" json:"wake_count,omitempty"`
+	WaitHistory           []WorkflowWait    `yaml:"wait_history,omitempty" json:"wait_history,omitempty"`
+	Continuation          bool              `yaml:"continuation,omitempty" json:"continuation,omitempty"`
+}
+
+func (t *Ticket) HasWorkflowWaitAuthority() bool {
+	s := t.GraphState
+	return s != nil && (s.Wait != nil || s.Continuation && len(s.WaitHistory) > 0)
 }
 
 type GraphEvidence struct {
@@ -28,6 +39,98 @@ type GraphEvidence struct {
 	LoopLimits            map[string]int    `yaml:"loop_limits,omitempty" json:"loop_limits,omitempty"`
 	LoopCounts            map[string]int    `yaml:"loop_counts,omitempty" json:"loop_counts,omitempty"`
 	Transitions           []GraphTransition `yaml:"transitions,omitempty" json:"transitions,omitempty"`
+	Wait                  *WorkflowWait     `yaml:"wait,omitempty" json:"wait,omitempty"`
+	Wake                  *WakeContext      `yaml:"wake,omitempty" json:"wake,omitempty"`
+	WakeCount             int               `yaml:"wake_count,omitempty" json:"wake_count,omitempty"`
+	WaitHistory           []WorkflowWait    `yaml:"wait_history,omitempty" json:"wait_history,omitempty"`
+	Continuation          bool              `yaml:"continuation,omitempty" json:"continuation,omitempty"`
+}
+
+// WorkflowWait is durable authority for one suspension, including its frozen
+// workspace identity and diagnostic evidence. It is not an agent invocation.
+type WorkflowWait struct {
+	ID              string           `yaml:"id,omitempty" json:"id,omitempty"`
+	Kind            string           `yaml:"kind,omitempty" json:"kind,omitempty"`
+	Phase           string           `yaml:"phase,omitempty" json:"phase,omitempty"`
+	ExecutionID     string           `yaml:"execution_id,omitempty" json:"execution_id,omitempty"`
+	NodeID          string           `yaml:"node_id,omitempty" json:"node_id,omitempty"`
+	VisitID         string           `yaml:"visit_id,omitempty" json:"visit_id,omitempty"`
+	InvocationID    string           `yaml:"invocation_id,omitempty" json:"invocation_id,omitempty"`
+	RequestedAt     time.Time        `yaml:"requested_at,omitempty" json:"requested_at,omitzero"`
+	Until           time.Time        `yaml:"until,omitempty" json:"until,omitzero"`
+	Deadline        time.Time        `yaml:"deadline,omitempty" json:"deadline,omitzero"`
+	NextPoll        time.Time        `yaml:"next_poll,omitempty" json:"next_poll,omitzero"`
+	Command         string           `yaml:"command,omitempty" json:"command,omitempty"`
+	Poll            time.Duration    `yaml:"poll,omitempty" json:"poll,omitempty"`
+	PollID          string           `yaml:"poll_id,omitempty" json:"poll_id,omitempty"`
+	PollCount       int              `yaml:"poll_count,omitempty" json:"poll_count,omitempty"`
+	Output          string           `yaml:"output,omitempty" json:"output,omitempty"`
+	OutputTruncated bool             `yaml:"output_truncated,omitempty" json:"output_truncated,omitempty"`
+	LogPath         string           `yaml:"log_path,omitempty" json:"log_path,omitempty"`
+	Next            string           `yaml:"next,omitempty" json:"next,omitempty"`
+	Worktree        string           `yaml:"worktree,omitempty" json:"worktree,omitempty"`
+	Repository      string           `yaml:"repository,omitempty" json:"repository,omitempty"`
+	Branch          string           `yaml:"branch,omitempty" json:"branch,omitempty"`
+	RequiredCommit  string           `yaml:"required_commit,omitempty" json:"required_commit,omitempty"`
+	Environment     string           `yaml:"environment,omitempty" json:"environment,omitempty"`
+	Disarmed        bool             `yaml:"disarmed,omitempty" json:"disarmed,omitempty"`
+	Receipt         *WorkflowReceipt `yaml:"receipt,omitempty" json:"receipt,omitempty"`
+}
+
+// WakeContext is frozen for a continuation and its failure retries.
+type WakeContext struct {
+	Reason  string           `yaml:"reason,omitempty" json:"reason,omitempty"`
+	Output  string           `yaml:"output,omitempty" json:"output,omitempty"`
+	Count   int              `yaml:"count,omitempty" json:"count,omitempty"`
+	Next    string           `yaml:"next,omitempty" json:"next,omitempty"`
+	WaitID  string           `yaml:"wait_id,omitempty" json:"wait_id,omitempty"`
+	Receipt *WorkflowReceipt `yaml:"receipt,omitempty" json:"receipt,omitempty"`
+}
+
+// WorkflowReceipt records accepted release evidence, not inferred live state.
+type WorkflowReceipt struct {
+	ID          string    `yaml:"id,omitempty" json:"id,omitempty"`
+	RequestID   string    `yaml:"request_id,omitempty" json:"request_id,omitempty"`
+	Reason      string    `yaml:"reason,omitempty" json:"reason,omitempty"`
+	Operator    string    `yaml:"operator,omitempty" json:"operator,omitempty"`
+	Commit      string    `yaml:"commit,omitempty" json:"commit,omitempty"`
+	Repository  string    `yaml:"repository,omitempty" json:"repository,omitempty"`
+	Environment string    `yaml:"environment,omitempty" json:"environment,omitempty"`
+	AcceptedAt  time.Time `yaml:"accepted_at,omitempty" json:"accepted_at,omitzero"`
+}
+
+func (r *WorkflowReceipt) Clone() *WorkflowReceipt {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	return &out
+}
+
+func (w *WorkflowWait) Clone() *WorkflowWait {
+	if w == nil {
+		return nil
+	}
+	out := *w
+	out.Receipt = w.Receipt.Clone()
+	return &out
+}
+
+func (w *WakeContext) Clone() *WakeContext {
+	if w == nil {
+		return nil
+	}
+	out := *w
+	out.Receipt = w.Receipt.Clone()
+	return &out
+}
+
+func cloneWaitHistory(history []WorkflowWait) []WorkflowWait {
+	out := slices.Clone(history)
+	for i := range out {
+		out[i].Receipt = history[i].Receipt.Clone()
+	}
+	return out
 }
 
 func (s *GraphState) RetainExecution(previous *GraphState) {
@@ -40,6 +143,8 @@ func (s *GraphState) RetainExecution(previous *GraphState) {
 		ExecutionID: cloned.ExecutionID, DefinitionFingerprint: cloned.DefinitionFingerprint,
 		NodeTemplates: cloned.NodeTemplates, LoopLimits: cloned.LoopLimits,
 		LoopCounts: cloned.LoopCounts, Transitions: cloned.Transitions,
+		Wait: cloned.Wait, Wake: cloned.Wake, WakeCount: cloned.WakeCount,
+		WaitHistory: cloned.WaitHistory, Continuation: cloned.Continuation,
 	})
 }
 
@@ -69,12 +174,18 @@ func (s *GraphState) Clone() *GraphState {
 	out.LoopLimits = maps.Clone(s.LoopLimits)
 	out.LoopCounts = maps.Clone(s.LoopCounts)
 	out.Transitions = slices.Clone(s.Transitions)
+	out.Wait = s.Wait.Clone()
+	out.Wake = s.Wake.Clone()
+	out.WaitHistory = cloneWaitHistory(s.WaitHistory)
 	out.PreviousExecutions = slices.Clone(s.PreviousExecutions)
 	for i := range out.PreviousExecutions {
 		out.PreviousExecutions[i].NodeTemplates = maps.Clone(s.PreviousExecutions[i].NodeTemplates)
 		out.PreviousExecutions[i].LoopLimits = maps.Clone(s.PreviousExecutions[i].LoopLimits)
 		out.PreviousExecutions[i].LoopCounts = maps.Clone(s.PreviousExecutions[i].LoopCounts)
 		out.PreviousExecutions[i].Transitions = slices.Clone(s.PreviousExecutions[i].Transitions)
+		out.PreviousExecutions[i].Wait = s.PreviousExecutions[i].Wait.Clone()
+		out.PreviousExecutions[i].Wake = s.PreviousExecutions[i].Wake.Clone()
+		out.PreviousExecutions[i].WaitHistory = cloneWaitHistory(s.PreviousExecutions[i].WaitHistory)
 	}
 	if s.LastResult != nil {
 		result := *s.LastResult

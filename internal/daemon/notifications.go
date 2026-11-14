@@ -64,6 +64,21 @@ func (d *Daemon) notifyTarget(t *ticket.Ticket) notifyTarget {
 	cfg := d.config()
 	repoPath := config.ExpandTilde(t.Path)
 	project, _, _ := cfg.ProjectFor(repoPath)
+	question := ""
+	if t.Status == ticket.StatusPaused && t.GraphState != nil && t.GraphState.Wait != nil {
+		w := t.GraphState.Wait
+		question = fmt.Sprintf("Waiting: %s (%s), wait %s", w.Kind, w.Phase, w.ID)
+		if w.Next != "" {
+			question += " — " + w.Next
+		}
+		if w.Disarmed {
+			question += "; wait is disarmed: inspect diagnostics, then explicitly retry to rearm"
+		} else if w.Kind == "human" {
+			question += fmt.Sprintf("; release with kontora release %s --execution-id %s --wait-id %s --revision %d --request-id <unique-id> --reason <reason>", t.ID, t.GraphState.ExecutionID, w.ID, t.GraphState.Revision)
+		} else if w.Kind == "deployment" {
+			question += fmt.Sprintf("; report the actual deployed commit with kontora release --repo %q --environment %q --rev <full-commit> --event-id <unique-id>; required commit %s", w.Worktree, w.Environment, w.RequiredCommit)
+		}
+	}
 	return notifyTarget{
 		want:     t.Notify.Statuses,
 		channels: cfg.NotifyChannelsFor(repoPath, t.NotifyChannels),
@@ -78,6 +93,7 @@ func (d *Daemon) notifyTarget(t *ticket.Ticket) notifyTarget {
 			// a separate agent pass. Moving this to storeFinalSummary would
 			// lose every notification for a ticket with too few recorded runs,
 			// and every one whose ticket a stage_end hook paused.
+			Question:  question,
 			Summary:   t.Summary,
 			LastError: t.LastError,
 		},
@@ -89,8 +105,9 @@ func (d *Daemon) notifyTarget(t *ticket.Ticket) notifyTarget {
 // reported: the dispatcher has to remember the status either way, or the next
 // transition would diff against a status nobody recorded.
 func (d *Daemon) observe(t *ticket.Ticket, origin notify.Origin) {
+	status := string(t.Status)
 	if !d.notifier.Live() {
-		d.notifier.Observe(notify.Observation{Origin: notify.OriginObserved, ID: t.ID, Status: string(t.Status)})
+		d.notifier.Observe(notify.Observation{Origin: notify.OriginObserved, ID: t.ID, Status: status})
 		return
 	}
 	target := d.notifyTarget(t)
@@ -98,7 +115,7 @@ func (d *Daemon) observe(t *ticket.Ticket, origin notify.Origin) {
 		AllChanges: d.config().Notifications.AllChanges,
 		Origin:     origin,
 		ID:         t.ID,
-		Status:     string(t.Status),
+		Status:     status,
 		Want:       target.want,
 		Channels:   target.channels,
 		Fields:     target.fields,

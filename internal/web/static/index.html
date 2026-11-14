@@ -1962,7 +1962,7 @@
       <!-- Identity block. The breadcrumb and the actions live in the app header. -->
       <div class="shrink-0 px-6 pt-[15px] pb-[11px] flex flex-col gap-2 min-w-0">
         <div class="flex items-center gap-2.5 flex-wrap min-w-0">
-          <span class="status-chip shrink-0" :data-status="selectedTicket?.status" x-text="statusLabel(selectedTicket?.status)"></span>
+          <span class="status-chip shrink-0" :data-status="selectedTicket?.status" x-text="workflowStatusLabel(selectedTicket)"></span>
           <span x-show="selectedTicket?.waiting_for_input" class="waiting-chip"
                 :title="'Waiting for input — ' + waitingLabel(selectedTicket)">
             <span class="waiting-dot pulse-dot"></span>needs input
@@ -2934,6 +2934,7 @@
                       <span x-show="h.imported" class="text-tx-faint">imported</span>
                       <span x-show="isSecondary(selectedTicket) || h.imported" class="w-full text-tx-faint" x-text="[h.started_at, h.completed_at].filter(Boolean).map(at => formatAbsDate(at)).join(' / ')"></span>
                       <span x-show="(isSecondary(selectedTicket) || h.imported) && h.summary" class="w-full whitespace-pre-wrap text-tx-3" x-text="h.summary"></span>
+                      <span x-show="historyProvenance(h)" class="w-full whitespace-pre-wrap text-tx-3" x-text="historyProvenance(h)"></span>
                     </button>
                   </template>
                 </div>
@@ -4082,11 +4083,11 @@
                 <div class="flex items-center gap-[7px]">
                   <div class="flex-1 h-[5px] rounded-full bg-surface-700 overflow-hidden">
                     <div class="h-full rounded-full"
-                         :class="a.tone === 'ok' ? 'bg-ok' : a.tone === 'warn' ? 'bg-warn' : 'bg-err'"
+                         :class="a.tone === 'ok' ? 'bg-ok' : a.tone === 'warn' ? 'bg-warn' : a.tone === 'neutral' ? 'bg-surface-600' : 'bg-err'"
                          :style="'width:' + a.pctWidth + '%'"></div>
                   </div>
                   <span class="num font-mono text-[11px] w-[30px] text-right"
-                        :class="a.tone === 'ok' ? 'text-ok' : a.tone === 'warn' ? 'text-warn' : 'text-err'"
+                        :class="a.tone === 'ok' ? 'text-ok' : a.tone === 'warn' ? 'text-warn' : a.tone === 'neutral' ? 'text-tx-4' : 'text-err'"
                         x-text="a.pct"></span>
                 </div>
                 <span class="num font-mono text-[12px] text-tx-2 text-right" x-text="a.median"></span>
@@ -4505,6 +4506,7 @@
                               x-text="'runner exit ' + h.exit_code + (formatElapsed(h.started_at, h.completed_at) ? ' · ' + formatElapsed(h.started_at, h.completed_at) : '')"></span>
                         <span x-show="h.imported" class="text-tx-faint">imported</span>
                         <span x-show="h.imported" class="w-full text-tx-faint" x-text="[h.started_at, h.completed_at].filter(Boolean).map(at => formatAbsDate(at)).join(' / ')"></span>
+                        <span x-show="historyProvenance(h)" class="w-full whitespace-pre-wrap text-tx-3" x-text="historyProvenance(h)"></span>
                         <span x-show="h.imported && h.summary" class="w-full whitespace-pre-wrap text-tx-3" x-text="h.summary"></span>
                       </div>
                     </template>
@@ -6397,7 +6399,7 @@
         </div>
         <div class="mobile-detail-secondary" style="align-items:center;gap:8px;padding:0 16px 10px;flex-wrap:wrap;">
           <span class="pipe-tag" :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'" x-text="selectedTicket ? mobileTagLabel(selectedTicket) : ''"></span>
-          <span class="status-chip" :data-status="selectedTicket?.status" x-text="statusLabel(selectedTicket?.status)"></span>
+          <span class="status-chip" :data-status="selectedTicket?.status" x-text="workflowStatusLabel(selectedTicket)"></span>
           <span x-show="selectedTicket?.agent" class="mobile-label text-tx-3" x-text="selectedTicket?.agent"></span>
           <span x-show="selectedTicket?.branch" class="mobile-technical text-tx-3" x-text="selectedTicket?.branch"></span>
           <span class="mobile-technical text-tx-3 break-all" x-text="sourceLabel(selectedTicket)"></span>
@@ -6749,6 +6751,7 @@
                   <span x-show="h.imported" class="text-tx-faint"> (imported)</span>
                   <p x-text="[h.started_at, h.completed_at].filter(Boolean).map(at => formatAbsDate(at)).join(' / ')"></p>
                   <p x-show="h.summary" class="whitespace-pre-wrap" x-text="h.summary"></p>
+                  <p x-show="historyProvenance(h)" class="whitespace-pre-wrap" x-text="historyProvenance(h)"></p>
                 </div>
               </template>
             </section>

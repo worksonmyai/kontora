@@ -32,7 +32,9 @@ Commands that take a `TICKET_ID` accept a unique prefix, except for `result`, wh
 | `KONTORA_AGENT` | `kontora note` | The configured name of the agent the run belongs to. The daemon exports it to the agents it spawns, so an agent's own note is signed with the name it runs as. `--author` outranks it. |
 | `KONTORA_STAGE` | agents and hooks | The stage the run belongs to. |
 | `KONTORA_TICKET_ID` | stage agents and lifecycle commands | Current ticket; prevents an agent from changing its own lifecycle. |
-| `KONTORA_RESULT_VERSION` | `result` | Bound result protocol version: `1` for legacy supervised runs, `2` for graph agent nodes. |
+| `KONTORA_RESULT_VERSION` | `result`, `wait` | Bound protocol: `1` for legacy supervised runs, `2` for graph agents, `3` for wake-enabled graph agents. |
+| `KONTORA_WAKE_MAX` | `result`, `wait` | Captured positive wake allowance for version 3. |
+| `KONTORA_CHECK_TIMEOUT` | `result`, `wait` | Captured positive probe timeout as a Go duration for version 3. |
 | `KONTORA_WORKFLOW_EXECUTION_ID` | graph results | Current workflow execution identity. |
 | `KONTORA_NODE_VISIT_ID` | graph results | Current executable visit identity, retained on retry. |
 | `KONTORA_DEFINITION_FINGERPRINT` | graph results | Bound effective workflow definition fingerprint. |
@@ -262,7 +264,10 @@ Exactly one of the three is required. Scheduling a `todo` ticket returns it to `
 
 ### `kontora pause TICKET_ID`
 
-Stops a running ticket and parks it in `paused`. A ticket that already closed cannot be paused; use `retry` to reopen it. On an agent epic, pause stops only the supervisor. Running children continue.
+Stops a running ticket and parks it in `paused`.
+On a durable graph wait, disarms automatic progress without resetting its deadline.
+A ticket that already closed cannot be paused; use `retry` to reopen it.
+On an agent epic, pause stops only the supervisor. Running children continue.
 
 ### `kontora retry TICKET_ID`
 
@@ -271,7 +276,12 @@ For a graph, repeats the same executable visit with a fresh invocation, preservi
 execution identity, visit identity and loop counts. Graph retry at an `end` node
 is refused; use workflow restart for a new traversal. Refused for tickets in `in_progress`, `todo`, or `archived`, and for passive epics.
 
-Local mode only updates the ticket file. With `auto_pick_up: false`, follow retry with `kontora run TICKET_ID`. Remote mode and dashboard/API retry queue dependency-ready work even with automatic pickup off.
+For a durable graph wait, retry re-arms the same wait after required recovery,
+without resetting its deadline. It does not bypass release conditions.
+
+For other work, local mode only updates the ticket file. With `auto_pick_up: false`,
+follow retry with `kontora run TICKET_ID`. Remote mode and dashboard/API retry
+queue dependency-ready work even with automatic pickup off.
 
 Queueing does not mean the run has started. Before preparing a replacement workspace, the daemon checks for leftover tmux windows. Duplicate windows or uncertain cleanup prevent replacement and preserve execution reservations. Inspect `last_error` and the prior window before retrying again.
 
@@ -319,9 +329,57 @@ CLI and daemon binaries sharing config or tickets together. Recovery
 does not promise exactly-once shell or hook effects, host-power-loss durability,
 or containment of arbitrary detached processes.
 
+### `kontora release`
+
+Both forms require a running daemon, locally or through `--url`. No offline fallback exists.
+They print the accepted receipt ID. Use stable request/event IDs when retrying uncertain responses.
+
+For a declared human wait, inspect current detail through `GET /api/tickets/{id}` or the TUI.
+Copy `graph_execution.execution_id`, `graph_execution.wait.id` and `graph_execution.revision` from the inspected state:
+
+```sh
+kontora release --execution-id EXECUTION_ID --wait-id WAIT_ID --revision N \
+  --request-id APPROVAL_ID --reason "Approved" TICKET_ID
+```
+
+All five flags are required. Use the original full ticket ID for retries.
+Identical retries return the stored receipt; changed payloads under the same request ID conflict.
+A new request with stale wait identity or revision fails. Refetch and inspect before deciding what to do.
+A stage agent cannot release its own ticket.
+
+For deployment evidence, supply no ticket or human-release flags:
+
+```sh
+kontora release --repo /srv/projects/app --environment production \
+  --rev "$DEPLOYED_COMMIT" --event-id "$DEPLOYMENT_ID"
+```
+
+All four flags are required. `--repo` must name a checkout on the daemon host,
+not its `.git` or Git common directory. Use the ticket's captured worktree path.
+`--rev` must be the full lowercase commit ID actually deployed (40 or 64 hexadecimal characters),
+not `HEAD`, a branch, tag, or abbreviated hash. Capture that commit in the deployment process;
+do not resolve a possibly changed `HEAD` afterward. Deployment release is refused from stage-agent context.
+
+Kontora freezes the required worktree commit when a deployment wait begins.
+Receipts match repository identity, exact environment, and equal/descendant deployed commits using local history.
+Kontora does not fetch, merge or deploy. Unsupported Git options, missing objects,
+and uncertain ancestry fail closed. Non-equal commits require complete, non-shallow history.
+Historical receipts can satisfy waits registered later and multiple matching tickets.
+They prove a deployment occurred, not what is currently deployed after a rollback.
+
+Acceptance is persisted before acknowledgement. It does not promise an immediate agent start;
+dependencies, capacity, ownership and recovery still apply. Existing daemon access controls apply;
+shared-token or unauthenticated access is not verified named approval.
+See [wait controls and persistence](tickets.md#durable-workflow-waits).
+
 ### `kontora cancel TICKET_ID` / `kontora done TICKET_ID`
 
 Move the ticket to `cancelled` or `done`. The daemon stops any running agent and removes a clean worktree, but preserves uncommitted changes. The branch remains. Neither command commits or merges changes.
+
+For an active graph wait, cancel invalidates wake authority and stops the probe.
+`done`, ordinary moves, run, schedule and init cannot bypass the wait.
+Delete and transfer require cancellation first. Workflow restart invalidates old wait IDs;
+recovery requirements still apply.
 
 ### `kontora move TICKET_ID STATUS`
 
@@ -437,6 +495,10 @@ Each ticket the sweep archives records `archived_from` (the closed status it hel
 
 Prints the agent's log. Without `--stage` it shows the most recent one, falling back to the ticket's run history when there are no log files. Goes through the [pager](#environment-variables) when one is set and stdout is a terminal.
 
+Graph logs retain each invocation at `<node>.<visit-id>.<invocation-id>.log`,
+with fallback to older visit logs. Probe diagnostics use `waits/<wait-id>/<poll-id>.log`
+under the ticket's log directory; the wait projection includes the log reference and a truncated output excerpt.
+
 ### `kontora activity [--stage NAME] [--run N] TICKET_ID`
 
 Prints one stage run's structured transcript: the agent's messages and tool calls, one per line. Falls back to the plaintext log for agents that write no session record. Needs a running daemon. Goes through the [pager](#environment-variables) when one is set and stdout is a terminal.
@@ -486,8 +548,9 @@ Three things worth knowing about the rows:
 - **A run is never dropped.** A row with no path prints the reason instead,
   because a missing row reads as "this stage never ran".
 
-`--logs` prints one row per stage, not per run: every run of a stage overwrites
-`<stage>.log`, so it only ever holds the newest one. `--events` is per run.
+For legacy runs, `--logs` prints one row per stage: each run overwrites `<stage>.log`.
+Graph log lookup retains invocation-qualified logs, with older visit-log fallback.
+`--events` is per run.
 
 Local only. Every path names a file on the machine that runs the command. In
 remote mode the daemon's path either does not exist here or, if the caller runs
@@ -706,7 +769,7 @@ The daemon binds result variables after configured agent environment merging.
 ```
 
 Version 1 accepts only `outcome`, `summary`, and optional `next_step`.
-Graph agent nodes use version 2 and additionally accept `verdict`. A complete
+Graph agent nodes use version 2, or version 3 when `wake` is configured, and additionally accept `verdict`. A complete
 result must include a declared verdict when the node defines `verdicts`;
 undeclared verdicts are refused. For example:
 
@@ -721,10 +784,12 @@ use observed process exit codes rather than agent result submission. Invocation,
 workflow execution, visit and fingerprint identity come from daemon-bound
 context, never user payload fields.
 
-For both versions, `outcome` is
-`complete` or `blocked`; `summary` must be nonblank, and `blocked` requires a
-nonblank `next_step`. All fields are strings. Payloads must be valid UTF-8 JSON,
-at most 32 KiB, with no NULs, duplicate or unknown fields, or trailing content.
+Versions 1 and 2 accept outcomes `complete` and `blocked`. Version 3 also accepts
+`waiting`, with a typed `wait` object. `summary` must be nonblank;
+`blocked` and `waiting` require nonblank `next_step`. Waiting forbids `verdict`,
+and other outcomes forbid `wait`. All fields except `wait` are strings.
+Payloads must be valid UTF-8 JSON, at most 32 KiB, with no NULs, duplicate or
+unknown fields, invalid Unicode, or trailing content. Field names are case-sensitive.
 Incompatible context versions are rejected. Invocation identity is not a payload
 field. Use a file-writing tool to create a unique scratch file outside the repo,
 then submit it; do not interpolate generated JSON into shell commands.
@@ -753,6 +818,68 @@ for interrupted runs and [local authority](tickets.md#epics) for escalation.
 Upgrade the CLI and daemon together. Verify effective Pi/Claude instructions
 before enabling autonomous local commits. Do not use rollout to restart live
 epics or migrate existing ticket state.
+
+### `kontora wait`
+
+Publish a terminal waiting result for a wake-enabled graph invocation:
+
+```sh
+kontora wait --check 'test -f DONE' --poll 10m \
+  --deadline "$DEADLINE" --next "Read the collected data and report the result."
+kontora wait --until "$VERIFY_AT" --next "Repeat the production checks."
+```
+
+No ticket argument is accepted. The command derives ticket, invocation, result path,
+workflow execution, visit, fingerprint, and wake policy from daemon-bound environment.
+It needs no ticket lookup, config, daemon connection, or lifecycle write permission.
+Do not set invocation variables yourself. `KONTORA_RESULT_VERSION` must be `3`.
+
+- Exactly one of `--check COMMAND` and `--until TIME` is required.
+- Checks require positive `--poll DURATION` and absolute `--deadline TIME`.
+- Timers reject `--poll` and `--deadline`.
+- `--next TEXT` is required and nonblank.
+- Optional `--summary TEXT` replaces the default timer/check summary.
+
+Poll intervals use Go durations, such as `10m`, not `d` or `w` units.
+Times use RFC 3339 with a timezone; fractional seconds are supported.
+Expired times remain valid requests; the daemon applies timer/deadline precedence.
+
+The equivalent version 3 payload for `kontora result` is:
+
+```json
+{
+  "outcome": "waiting",
+  "summary": "Waiting for data.",
+  "next_step": "Read the collected data and report the result.",
+  "wait": {
+    "kind": "check",
+    "command": "test -f DONE",
+    "poll": 600000000000,
+    "deadline": "2099-09-01T07:00:00Z"
+  }
+}
+```
+
+`wait.kind` is `check` or `timer`. A check requires only `kind`, `command`,
+positive `poll`, and `deadline`; a timer requires only `kind` and `until`.
+JSON `poll` is a Go `time.Duration`: integer nanoseconds, not a string, fraction,
+or exponent. Times are RFC 3339 strings. Unknown, duplicate, null, wrong-kind,
+and incorrectly typed fields are rejected.
+
+Pi exposes `kontora_wait({check?, poll?, deadline?, until?, next, summary?})` only for version 3.
+Its `poll` and time parameters are strings in CLI format. It shares terminal-publication
+exclusion with `kontora_result`; successful publication prevents later tool calls.
+Publication acknowledges the immutable result, not a committed suspension.
+The daemon must confirm successful execution and required hooks before parking.
+A conflicting terminal result cannot replace the accepted one.
+
+After commitment, an agent stays at the same executable visit. Timer, readiness,
+error or deadline starts a fresh invocation with frozen wake context and continuation instructions.
+This consumes neither failure retry nor loop allowance. Condition commands must be trusted
+and safe to repeat; daemon subprocess permissions apply, without a sandbox.
+See [configuration and probe outcomes](configuration.md#durable-waits).
+Upgrade sharing clients and daemons before wait configuration, result v3, or state v2.
+Existing no-wait fingerprints and v1/v2 result contracts remain compatible.
 
 ## Analysis
 
@@ -848,10 +975,10 @@ Prints the version.
 
 Setting `--url` or `KONTORA_URL` points every client command at a daemon over HTTP instead of the local files. See [Remote access](remote.md) for daemon-side setup.
 
-Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `schedule`, `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`, `dep`, `undep`, `link`, `unlink`, `logs`, `activity`, `changes`, `stats`, all `automation` children, `review`, `annotate`, `config`, `attach`.
+Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `schedule`, `pause`, `retry`, `workflow-restart`, `workflow-recover`, `release`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`, `dep`, `undep`, `link`, `unlink`, `logs`, `activity`, `changes`, `stats`, all `automation` children, `review`, `annotate`, `config`, `attach`.
 
 Rejected, because they act on local files: `edit`, `search`, `archive`, `estimate-compaction`, `sessions`, `doctor`, `start`, `setup`.
 
-Unaffected, because they touch neither the daemon nor a config file: `fmt`, `skills`, `completion`, `version`, `help`, `phase-complete`.
+Unaffected, because they touch neither the daemon nor a config file: `fmt`, `skills`, `completion`, `version`, `help`, `phase-complete`, invocation-bound `result` and `wait`.
 
 Paths passed to `--path` name locations on the daemon host, not on the caller's machine.

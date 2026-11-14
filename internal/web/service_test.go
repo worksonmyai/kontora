@@ -86,7 +86,7 @@ func TestTicketInfoFromView_HistoryRun(t *testing.T) {
 		InvocationID: "active",
 		History: []app.HistoryView{
 			{Stage: "review", Run: 0},
-			{Stage: "review", Run: 1, Model: "haiku", Effort: "low", RunOutcome: "blocked", OutcomeReason: "needs input", InvocationID: "previous"},
+			{Stage: "review", Run: 1, Model: "haiku", Effort: "low", RunOutcome: "blocked", OutcomeReason: "needs input", InvocationID: "previous", Verdict: "repair", NextStep: "Read evidence", Wake: &ticket.WakeContext{Reason: "ready", Count: 1}, Wait: &ticket.WorkflowWait{ID: "wait"}, Continuation: true},
 		},
 	})
 	require.Len(t, info.History, 2)
@@ -99,6 +99,13 @@ func TestTicketInfoFromView_HistoryRun(t *testing.T) {
 	assert.Equal(t, "blocked", info.History[1].RunOutcome)
 	assert.Equal(t, "needs input", info.History[1].OutcomeReason)
 	assert.Equal(t, "previous", info.History[1].InvocationID)
+	assert.Equal(t, "repair", info.History[1].Verdict)
+	assert.Equal(t, "Read evidence", info.History[1].NextStep)
+	require.NotNil(t, info.History[1].Wake)
+	assert.Equal(t, "ready", info.History[1].Wake.Reason)
+	require.NotNil(t, info.History[1].Wait)
+	assert.Equal(t, "wait", info.History[1].Wait.ID)
+	assert.True(t, info.History[1].Continuation)
 	assert.Zero(t, info.History[1].ExitCode)
 	payload, err := json.Marshal(info)
 	require.NoError(t, err)

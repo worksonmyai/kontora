@@ -22,6 +22,8 @@ func (t *Ticket) Clone() *Ticket {
 	for i := range out.History {
 		out.History[i].StartedAt = cloneTime(t.History[i].StartedAt)
 		out.History[i].CompletedAt = cloneTime(t.History[i].CompletedAt)
+		out.History[i].Wake = t.History[i].Wake.Clone()
+		out.History[i].Wait = t.History[i].Wait.Clone()
 	}
 	out.Deps = slices.Clone(t.Deps)
 	out.Links = slices.Clone(t.Links)

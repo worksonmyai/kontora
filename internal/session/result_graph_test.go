@@ -43,7 +43,7 @@ func TestDecodeGraphResult(t *testing.T) {
 			assert.Equal(t, tt.extra != "", err != nil)
 		})
 	}
-	for _, version := range []int{0, -1, 3} {
+	for _, version := range []int{0, -1, 4} {
 		_, err := DecodeResult([]byte(`{"outcome":"complete","summary":"Done"}`), version)
 		require.Error(t, err)
 	}

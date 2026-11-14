@@ -104,6 +104,8 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token stri
 	mux.HandleFunc("POST /api/tickets/{id}/retry", s.handleRetry)
 	mux.HandleFunc("POST /api/tickets/{id}/workflow-restart", s.handleWorkflowRestart)
 	mux.HandleFunc("POST /api/tickets/{id}/workflow-recover", s.handleWorkflowRecover)
+	mux.HandleFunc("POST /api/tickets/{id}/workflow-release", s.handleWorkflowRelease)
+	mux.HandleFunc("POST /api/workflow-events/deployment", s.handleDeploymentRelease)
 	mux.HandleFunc("POST /api/tickets/{id}/run", s.handleRun)
 	mux.HandleFunc("POST /api/tickets/{id}/skip", s.handleSkip)
 	mux.HandleFunc("POST /api/tickets/{id}/set-stage", s.handleSetStage)

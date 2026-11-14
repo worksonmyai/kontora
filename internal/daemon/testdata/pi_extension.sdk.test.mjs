@@ -30,15 +30,16 @@ const usage = { input: 200, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const checkpointArgs = { completed_phase: "one", next_phase: "two" };
 
-function fixture(t, automation = false, graph = false) {
+function fixture(t, automation = false, graph = false, wait = false) {
   const cwd = mkdtempSync(path.join(tmpdir(), "kontora-pi-sdk-"));
   const resultFile = path.join(cwd, "result artifact 雪.json");
-  const env = { KONTORA_RESULT_VERSION: graph ? "2" : "1", KONTORA_INVOCATION_ID: "sdk-invocation",
+  const env = { KONTORA_RESULT_VERSION: wait ? "3" : graph ? "2" : "1", KONTORA_INVOCATION_ID: "sdk-invocation",
     KONTORA_RESULT_TICKET: automation ? "" : "sdk-ticket", KONTORA_RESULT_STAGE: automation ? "" : "review", KONTORA_RESULT_FILE: resultFile,
     KONTORA_RESULT_AUTOMATION: automation ? "sdk-automation" : "", KONTORA_RESULT_RUN_NUMBER: automation ? "7" : "",
     KONTORA_RESULT_VERDICTS: graph ? '["approve","changes"]' : "",
     KONTORA_WORKFLOW_EXECUTION_ID: graph ? "workflow-1" : "", KONTORA_NODE_VISIT_ID: graph ? "visit-2" : "",
-    KONTORA_DEFINITION_FINGERPRINT: graph ? "abc123" : "" };
+    KONTORA_DEFINITION_FINGERPRINT: graph ? "abc123" : "",
+    KONTORA_WAKE_MAX: wait ? "3" : "", KONTORA_CHECK_TIMEOUT: wait ? "1m" : "" };
   const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   Object.assign(process.env, env);
   const originalFetch = globalThis.fetch;
@@ -283,12 +284,15 @@ for (const callback of ["onComplete", "onError"]) {
 }
 
 for (const callback of ["onComplete", "onError"]) {
-  for (const transport of ["tool", "automation tool", "graph tool", "file", "none", "tool malicious", "file malicious"]) {
+  for (const transport of ["tool", "automation tool", "graph tool", "graph v3 tool", "wait tool", "file", "none", "tool malicious", "file malicious"]) {
     test(`installed Agent ${sdkVersion}: busy ${callback}, terminal=${transport}`, { timeout: 5000 }, async (t) => {
       const automation = transport === "automation tool";
-      const graph = transport === "graph tool";
-      const { cwd, resultFile, env } = fixture(t, automation, graph);
+      const waiting = transport === "wait tool";
+      const version3 = waiting || transport === "graph v3 tool";
+      const graph = transport === "graph tool" || version3;
+      const { cwd, resultFile, env } = fixture(t, automation, graph, version3);
       const mode = automation || graph ? "tool" : transport.split(" ")[0];
+      const terminalTool = waiting ? "kontora_wait" : "kontora_result";
       const malicious = transport.endsWith("malicious");
       const handlers = {}, tools = {}, sent = [];
       let compaction, agent, requests = 0, sentinelExecutions = 0, finalResponses = 0, shutdowns = 0;
@@ -305,14 +309,20 @@ for (const callback of ["onComplete", "onError"]) {
           agent.followUp({ role: "custom", ...message, timestamp: Date.now() });
         },
         exec: async (_command, args) => {
-          assert.equal(args[3], automation ? "sdk-automation" : "sdk-ticket");
-          const payload = JSON.parse(readFileSync(args[2], "utf8"));
-          if (graph) assert.equal(payload.verdict, "changes");
+          let payload;
+          if (waiting) {
+            assert.deepEqual(args, ["wait", "--until", "2099-01-01T00:00:00Z", "--next", "Resume checks."]);
+            payload = { outcome: "waiting", summary: "Waiting for timer.", next_step: "Resume checks.", wait: { kind: "timer", until: args[2] } };
+          } else {
+            assert.equal(args[3], automation ? "sdk-automation" : "sdk-ticket");
+            payload = JSON.parse(readFileSync(args[2], "utf8"));
+            if (graph) assert.equal(payload.verdict, "changes");
+          }
           writeFileSync(resultFile, JSON.stringify(payload), { flag: "wx" });
           trace.push("terminal publication");
           return { code: 0, killed: false, truncated: false, stderr: "",
             stdout: JSON.stringify({ accepted: true, invocation_id: env.KONTORA_INVOCATION_ID, outcome: payload.outcome,
-              ...(graph ? { verdict: payload.verdict } : {}) }) };
+              ...(graph && !waiting ? { verdict: payload.verdict } : {}) }) };
         },
       };
       factory(api);
@@ -322,7 +332,7 @@ for (const callback of ["onComplete", "onError"]) {
       };
       const model = { id: "fake", provider: "offline-test", api: "offline-test" };
       agent = new Agent({ initialState: { model, tools: [
-        { ...tools.kontora_result, execute: (...args) => tools.kontora_result.execute(...args, ctx) },
+        { ...tools[terminalTool], execute: (...args) => tools[terminalTool].execute(...args, ctx) },
         { name: "sentinel", description: "In-memory counter", parameters: { type: "object", properties: {} },
           execute: async () => { sentinelExecutions++; return { content: [{ type: "text", text: "ran" }], details: undefined }; } },
       ] }, convertToLlm, beforeToolCall: async ({ toolCall, args }) => {
@@ -339,8 +349,9 @@ for (const callback of ["onComplete", "onError"]) {
         if (requests === 1) {
           compaction[callback](new Error("Offline compaction failure"));
           if (mode === "tool") return streamMessage(assistant(model,
-            [{ type: "toolCall", id: "result", name: "kontora_result", arguments: { outcome: "complete", summary: "Done",
-              ...(graph ? { verdict: "changes" } : {}) } }], "toolUse"));
+            [{ type: "toolCall", id: "result", name: terminalTool, arguments: waiting
+              ? { until: "2099-01-01T00:00:00Z", next: "Resume checks." }
+              : { outcome: "complete", summary: "Done", ...(graph ? { verdict: "changes" } : {}) } }], "toolUse"));
           if (mode === "file") {
             writeFileSync(resultFile, "{}");
             trace.push("terminal publication");

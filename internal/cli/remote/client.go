@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/store"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -423,6 +424,18 @@ func (c *Client) Pause(id string) error { return c.postAction("/api/tickets/" + 
 
 // Retry re-queues a non-running ticket.
 func (c *Client) Retry(id string) error { return c.postAction("/api/tickets/" + id + "/retry") }
+
+func (c *Client) WorkflowRelease(id string, req web.WorkflowReleaseRequest) (*ticket.WorkflowReceipt, error) {
+	var receipt ticket.WorkflowReceipt
+	err := c.doJSON(http.MethodPost, "/api/tickets/"+url.PathEscape(id)+"/workflow-release", req, &receipt)
+	return &receipt, err
+}
+
+func (c *Client) DeploymentRelease(req web.DeploymentReleaseRequest) (*ticket.WorkflowReceipt, error) {
+	var receipt ticket.WorkflowReceipt
+	err := c.doJSON(http.MethodPost, "/api/workflow-events/deployment", req, &receipt)
+	return &receipt, err
+}
 
 func (c *Client) WorkflowRestart(id string) error {
 	return c.postAction("/api/tickets/" + url.PathEscape(id) + "/workflow-restart")

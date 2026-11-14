@@ -171,6 +171,9 @@ func prepareTransferTicket(req TransferRequest, md []byte, destination string) (
 	if t.ID != req.ID {
 		return nil, nil, fmt.Errorf("ticket id does not match source filename")
 	}
+	if t.HasWorkflowWaitAuthority() {
+		return nil, nil, fmt.Errorf("ticket %s has an active workflow wait; cancel it before transfer", req.ID)
+	}
 	if t.IsRunning() || t.InvocationID != "" || t.AnnotationReturnStatus != "" {
 		return nil, nil, fmt.Errorf("ticket %s has running, invocation, or annotation state", req.ID)
 	}

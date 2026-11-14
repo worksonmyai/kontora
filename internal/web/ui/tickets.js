@@ -719,6 +719,39 @@ export function kontoraTickets() {
       return !!(t?.graph_definition || t?.graph_execution);
     },
 
+    workflowWaiting(t) {
+      return t?.status === 'paused' && !!t.graph_execution?.wait;
+    },
+
+    workflowStatusLabel(t) {
+      return this.workflowWaiting(t) ? 'Waiting' : this.statusLabel(t?.status);
+    },
+
+    workflowWaitText(w, label = 'Waiting') {
+      if (!w) return '';
+      const lines = [label + ': ' + w.kind + ' · ' + w.id + ' · phase ' + w.phase + (w.disarmed ? ' · disarmed' : ''),
+        'visit: ' + (w.visit_id || '') + ' · invocation: ' + (w.invocation_id || '') + ' · polls: ' + (w.poll_count || 0)];
+      for (const key of ['until', 'deadline', 'next_poll']) {
+        if (w[key] && !w[key].startsWith('0001-')) lines.push(key + ': ' + w[key]);
+      }
+      if (w.poll) lines.push('poll interval: ' + (w.poll / 1e9) + 's');
+      for (const key of ['command', 'next', 'output', 'log_path', 'repository', 'branch', 'environment', 'required_commit']) {
+        if (w[key]) lines.push(key + ': ' + w[key]);
+      }
+      if (w.output_truncated) lines.push('output truncated');
+      if (w.receipt) lines.push('receipt: ' + w.receipt.id + ' · request ' + w.receipt.request_id + ' · ' + w.receipt.reason + ' · commit ' + (w.receipt.commit || '') + ' · accepted ' + w.receipt.accepted_at);
+      return lines.join('\n');
+    },
+
+    workflowReleaseInstructions(t) {
+      const x = t?.graph_execution, w = x?.wait;
+      if (!this.workflowWaiting(t)) return '';
+      if (w.disarmed) return 'Wait is disarmed. Inspect diagnostics, then explicitly retry to rearm; retry does not release the wait.';
+      if (w.kind === 'human') return 'kontora release ' + t.id + ' --execution-id ' + x.execution_id + ' --wait-id ' + w.id + ' --revision ' + x.revision + ' --request-id <unique-id> --reason <reason>';
+      if (w.kind === 'deployment') return 'Report the actual full deployed commit (required: ' + w.required_commit + '): kontora release --repo ' + JSON.stringify(w.worktree) + ' --environment ' + JSON.stringify(w.environment) + ' --rev <full-deployed-commit> --event-id <unique-id>';
+      return 'The daemon resumes this visit automatically when the timer or check is satisfied, or its deadline expires.';
+    },
+
     graphText(t) {
       if (!this.isGraphTicket(t)) return '';
       const d = t.graph_definition;
@@ -729,9 +762,13 @@ export function kontoraTickets() {
         lines.push('current: ' + x.current_node + (x.current_template ? ' · template ' + x.current_template : ''));
         lines.push('execution: ' + x.execution_id + ' · revision ' + x.revision + ' · visit ' + x.visit + ' · attempt ' + ((x.attempt || 0) + 1));
         if (x.last_result) lines.push('result: ' + x.last_result.node_id + ' · visit ' + x.last_result.visit_id + ' · ' + x.last_result.outcome + (x.last_result.verdict ? ' · verdict ' + x.last_result.verdict : '') + (x.last_result.exit_code !== undefined ? ' · exit ' + x.last_result.exit_code : ''));
+        lines.push('wake count: ' + (x.wake_count || 0) + (x.continuation ? ' · continuation (not a retry)' : ''));
+        if (x.wake) lines.push('wake: ' + x.wake.reason + ' · wait ' + x.wake.wait_id + ' · count ' + x.wake.count + '\n' + (x.wake.output || '') + '\nnext: ' + (x.wake.next || ''));
+        if (x.wait) lines.push(this.workflowWaitText(x.wait), this.workflowReleaseInstructions(t));
+        for (const w of x.wait_history || []) lines.push(this.workflowWaitText(w, 'historical wait'));
         for (const loop of x.loops || []) lines.push('loop ' + loop.node_id + ': ' + loop.used + ' / ' + (loop.max > 0 ? loop.max : 'unknown') + (loop.exhausted ? ' · exhausted' : ''));
       }
-      for (const n of d?.nodes || []) lines.push(n.id + ' [' + n.type + ']' + (n.template ? ' · template ' + n.template : '') + (n.command ? ' · ' + n.command : '') + (n.when ? ' · ' + n.when.field + ' = ' + JSON.stringify(n.when.equals) : '') + (n.type === 'loop' ? ' · max ' + n.max : '') + (n.status ? ' · ' + n.status : ''));
+      for (const n of d?.nodes || []) lines.push(n.id + ' [' + n.type + ']' + (n.template ? ' · template ' + n.template : '') + (n.command ? ' · ' + n.command : '') + (n.when ? ' · ' + n.when.field + ' = ' + JSON.stringify(n.when.equals) : '') + (n.type === 'loop' ? ' · max ' + n.max : '') + (n.mode ? ' · mode ' + n.mode : '') + (n.environment ? ' · environment ' + n.environment : '') + (n.timeout ? ' · timeout ' + n.timeout : '') + (n.wake ? ' · wake max ' + n.wake.max + ' · check timeout ' + n.wake.check_timeout : '') + (n.status ? ' · ' + n.status : ''));
       for (const e of d?.edges || []) {
         const selected = (x?.selected_edges || []).some(s => s.from === e.from.node && s.port === e.from.port && s.to === e.to);
         lines.push((selected ? '[selected] ' : '') + e.from.node + '.' + e.from.port + ' -> ' + e.to);
@@ -739,6 +776,8 @@ export function kontoraTickets() {
       for (const e of x?.transitions || []) lines.push('r' + e.revision + ': ' + e.from + '.' + e.port + ' -> ' + e.to);
       for (const previous of x?.previous_executions || []) {
         lines.push('previous execution: ' + previous.execution_id);
+        if (previous.wait) lines.push(this.workflowWaitText(previous.wait, 'retained wait'));
+        for (const w of previous.wait_history || []) lines.push(this.workflowWaitText(w, 'historical wait'));
         for (const e of previous.transitions || []) lines.push('r' + e.revision + ': ' + e.from + '.' + e.port + ' -> ' + e.to);
       }
       return lines.join('\n');
@@ -762,9 +801,23 @@ export function kontoraTickets() {
 
     historyLabel(h) {
       if (!h) return '';
-      if (h.node_visit_id) return h.stage + (h.template ? ' · ' + h.template : '') + ' · visit ' + h.node_visit_id + ' · attempt ' + (h.visit_attempt || 1);
+      if (h.node_visit_id) return h.stage + (h.template ? ' · ' + h.template : '') + ' · visit ' + h.node_visit_id + ' · attempt ' + (h.visit_attempt || 1) + (h.continuation ? ' · continuation' : '') + (h.run_outcome === 'waiting' ? ' · Waiting' : '');
       if (h.kind !== 'annotation') return h.stage;
       return h.stage + ' · annotation (' + (h.session_reused ? 'resumed' : 'fresh') + ')';
+    },
+
+    historyProvenance(h) {
+      const lines = [];
+      if (h?.verdict) lines.push('verdict: ' + h.verdict);
+      if (h?.next_step) lines.push('next: ' + h.next_step);
+      if (h?.continuation) lines.push('continuation (not a retry)');
+      if (h?.wake) {
+        lines.push('wake: ' + h.wake.reason + ' · wait ' + h.wake.wait_id + ' · count ' + h.wake.count);
+        if (h.wake.output) lines.push(h.wake.output);
+        if (h.wake.receipt) lines.push('wake receipt: ' + h.wake.receipt.id + ' · ' + h.wake.receipt.reason);
+      }
+      if (h?.wait) lines.push(this.workflowWaitText(h.wait, 'historical wait'));
+      return lines.join('\n');
     },
 
     // What Kontora passed the agent for a run, as one chip. Either half can be

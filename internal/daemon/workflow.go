@@ -108,7 +108,7 @@ func (d *Daemon) initializeWorkflow(cfg *config.Config, t *ticket.Ticket, graph 
 		if stage != "" && stage != graph.Entry {
 			return pause("a new graph workflow must start at its entry")
 		}
-		state = &ticket.GraphState{Version: 1, ExecutionID: newSessionID(), DefinitionFingerprint: fingerprint}
+		state = &ticket.GraphState{Version: workflowStateVersion(graph), ExecutionID: newSessionID(), DefinitionFingerprint: fingerprint}
 		stage = ""
 	} else {
 		if state.DefinitionFingerprint != fingerprint {
@@ -122,9 +122,24 @@ func (d *Daemon) initializeWorkflow(cfg *config.Config, t *ticket.Ticket, graph 
 		}
 	}
 	state = state.Clone()
+	if reservation := workflowReservation(t); reservation != nil {
+		if err := d.validateWaitProgress(t, reservation); err != nil {
+			return pause(err.Error())
+		}
+	}
+	var ready *ticket.WorkflowWait
+	if state.Wait != nil {
+		if state.Wait.Phase != "ready" || state.Wait.Disarmed || !state.Continuation {
+			return pause("workflow wait must be released before continuation")
+		}
+		ready, state.Wait = state.Wait, nil
+	}
 	populateWorkflowDisplay(state, graph)
 	after := pipeline.AdvanceGraph(graph, stage, state, nil)
-	if err := installGraphAdvance(t, after); err != nil {
+	if ready != nil {
+		after.State.Wait = ready
+	}
+	if err := d.finishControlAdvance(t, after); err != nil {
 		return err
 	}
 	if after.Next == nil {
@@ -209,7 +224,7 @@ func classifyGraphLaunch(p spawnAgentParams, run *agentRun) {
 }
 
 func graphLogPath(cfg *config.Config, t *ticket.Ticket) string {
-	return session.GraphLogPath(expandTilde(cfg.LogsDir), t.ID, t.Stage, t.GraphState.VisitID)
+	return session.GraphLogPath(expandTilde(cfg.LogsDir), t.ID, t.Stage, t.GraphState.VisitID, t.InvocationID)
 }
 
 func (d *Daemon) runGraphTicket(root, task context.Context, cfg *config.Config, log *slog.Logger, t *ticket.Ticket, path string) {
@@ -325,7 +340,14 @@ func (d *Daemon) runGraphTicket(root, task context.Context, cfg *config.Config, 
 }
 
 func graphResultInstructions(node config.WorkflowNode) string {
-	text := "\n\n## Workflow result\nPublish an invocation-bound version 2 result with kontora_result or kontora result before ending. Use complete for finished node work, or blocked with next_step when work cannot continue. Workflow participation grants no Git or publication permissions.\n"
+	version := 2
+	if node.Wake != nil {
+		version = 3
+	}
+	text := fmt.Sprintf("\n\n## Workflow result\nPublish an invocation-bound version %d result with kontora_result or kontora result before ending. Use complete for finished node work, or blocked with next_step when work cannot continue. Workflow participation grants no Git or publication permissions.\n", version)
+	if node.Wake != nil {
+		text += "Use kontora wait or kontora_wait to suspend until a timer or condition is ready. Include continuation instructions. Publication is not confirmation that suspension committed.\n"
+	}
 	if len(node.Verdicts) != 0 {
 		verdicts, _ := json.Marshal(node.Verdicts)
 		text += fmt.Sprintf("A complete result must include one declared verdict: %s. A request for changes is complete with the matching verdict.\n", verdicts)
@@ -393,7 +415,15 @@ func (d *Daemon) finishGraphTicket(root, task context.Context, cfg *config.Confi
 	completion := &pipeline.GraphCompletion{NodeID: node.ID, VisitID: t.GraphState.VisitID,
 		InvocationID: rec.Invocation.ID, Outcome: run.Outcome, Verdict: run.Verdict, ExitCode: run.Result.ExitCode,
 		InfrastructureError: run.ForcePause, Interrupted: run.Result.Interruption != nil || task.Err() != nil}
-	after := pipeline.AdvanceGraph(cfg.Pipelines[t.Pipeline].Graph, t.Stage, t.GraphState, completion)
+	var after pipeline.GraphAdvance
+	if run.Outcome == "waiting" && !run.ForcePause {
+		after = d.agentWaitAdvance(t, rec, run)
+		run.WaitState = after.State.Wait.Clone()
+	} else {
+		state := t.GraphState.Clone()
+		retainFinishedWait(state)
+		after = pipeline.AdvanceGraph(cfg.Pipelines[t.Pipeline].Graph, t.Stage, state, completion)
+	}
 	if after.Reason != "" && run.OutcomeReason != "" && (run.Outcome != "complete" || run.ForcePause) {
 		after.Reason += ": " + run.OutcomeReason
 	}
@@ -404,7 +434,7 @@ func (d *Daemon) finishGraphTicket(root, task context.Context, cfg *config.Confi
 	}
 	saved, err := d.patchFinalExecution(context.WithoutCancel(task), t, path, rec, func(current *ticket.Ticket) error {
 		appendRunHistory(current, run, p.agentName, node.ID, p.run)
-		if err := installGraphAdvance(current, after); err != nil {
+		if err := d.finishControlAdvance(current, after); err != nil {
 			return err
 		}
 		_ = current.SetField("attempt", 0)

@@ -297,7 +297,7 @@ func (d *Daemon) claimExecution(ctx context.Context, cfg *config.Config, id stri
 		}
 		if t.AnnotationReturnStatus == "" {
 			branchKey = identity + "\x00" + t.Branch
-			if holder, exists := d.branchHolderLocked(branchKey); exists {
+			if holder, exists := d.branchHolderLocked(branchKey); exists && holder != id {
 				return fmt.Errorf("branch %s in use by ticket %s", t.Branch, holder)
 			}
 		}

@@ -94,6 +94,7 @@ var handlers = map[string]func(){
 	"summary":             cmdSummary,
 	"pause":               func() { cmdAction("pause") },
 	"retry":               func() { cmdAction("retry") },
+	"release":             cmdRelease,
 	"workflow-restart":    func() { cmdWorkflow("workflow-restart") },
 	"workflow-recover":    func() { cmdWorkflow("workflow-recover") },
 	"skip":                cmdSkip,
@@ -112,6 +113,7 @@ var handlers = map[string]func(){
 	"estimate-compaction": cmdEstimateCompaction,
 	"phase-complete":      cmdPhaseComplete,
 	"result":              cmdResult,
+	"wait":                cmdWait,
 	"review":              func() { cmdPlannotator("review") },
 	"annotate":            func() { cmdPlannotator("annotate") },
 	"attach":              cmdAttach,
@@ -1229,6 +1231,26 @@ func cmdPhaseComplete() {
 	}
 
 	if err := cli.PhaseComplete(os.Getenv(cli.CheckpointFileEnvVar), *completed, *next, time.Now(), os.Stdout); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func cmdWait() {
+	fs := flag.NewFlagSet("wait", flag.ExitOnError)
+	var opts cli.WaitOptions
+	fs.StringVar(&opts.Check, "check", "", "repeatable condition command")
+	fs.StringVar(&opts.Poll, "poll", "", "positive Go polling duration")
+	fs.StringVar(&opts.Deadline, "deadline", "", "absolute RFC 3339 deadline")
+	fs.StringVar(&opts.Until, "until", "", "absolute RFC 3339 timer time")
+	fs.StringVar(&opts.Next, "next", "", "continuation instructions")
+	fs.StringVar(&opts.Summary, "summary", "", "wait summary (default: concise timer/check summary)")
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		log.Fatal(err)
+	}
+	if fs.NArg() != 0 {
+		log.Fatal("wait takes no positional arguments; the invocation comes from the environment")
+	}
+	if err := cli.ReportWait(opts, os.Stdout, os.Getenv); err != nil {
 		log.Fatal(err)
 	}
 }

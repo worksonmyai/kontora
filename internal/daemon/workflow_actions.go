@@ -11,6 +11,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/pipeline"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
+	"github.com/worksonmyai/kontora/internal/ticket/store"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -32,10 +33,52 @@ func (d *Daemon) workflowActionTicket(repo app.MutationRepository, id string, re
 	_, live := d.liveRuns[id]
 	_, reviewing := d.plannotator[id]
 	// Uncertain termination retains live-run metadata after the runner returns.
-	if reviewing || (live || running) && (!recovery || !retained || reservation.finishing) {
+	if reviewing || (!recovery && d.workflowProbeActiveLocked(id)) || (live || running) && (!recovery || !retained || reservation.finishing) {
 		return nil, fmt.Errorf("%w: wait for execution and review to stop", web.ErrInvalidState)
 	}
 	return st, nil
+}
+
+// workflowRetryService checks probe termination under the same lock as re-arming.
+// A move to todo is not an explicit authorization to re-arm a wait.
+func (d *Daemon) workflowRetryService(id string, rearmWait bool) *app.Service {
+	repo := store.NewDaemonRepo(store.DaemonRepoCallbacks{
+		PathLookup: func(id string) (string, error) {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			if ts := d.tickets[id]; ts != nil {
+				return ts.filePath, nil
+			}
+			return "", app.ErrNotFound
+		},
+		ListTickets: func() []*app.StoredTicket {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			out := make([]*app.StoredTicket, 0, len(d.tickets))
+			for _, ts := range d.tickets {
+				out = append(out, &app.StoredTicket{Ticket: ts.ticket.Clone(), FilePath: ts.filePath})
+			}
+			return out
+		},
+		WithMutation: func(fn func(app.MutationRepository) error) error {
+			return d.withTicketMutation(func(scoped app.MutationRepository) error {
+				st, err := scoped.Get(id)
+				if err != nil {
+					return err
+				}
+				if d.workflowProbeActiveLocked(id) {
+					return fmt.Errorf("%w: wait for the workflow probe to stop before retry", app.ErrInvalidState)
+				}
+				if state := st.Ticket.GraphState; state != nil && state.Wait != nil {
+					if !rearmWait {
+						return fmt.Errorf("%w: use retry to re-arm the workflow wait", app.ErrInvalidState)
+					}
+				}
+				return fn(scoped)
+			})
+		},
+	})
+	return app.New(d.config, repo, &daemonRuntime{d: d})
 }
 
 func (d *Daemon) WorkflowRestart(id string) error {
@@ -51,6 +94,9 @@ func (d *Daemon) WorkflowRestart(id string) error {
 			return err
 		}
 		t := st.Ticket
+		if state := t.GraphState; state != nil && state.Wait != nil && state.Wait.Phase != "pending" && state.Wait.Phase != "ready" {
+			return fmt.Errorf("%w: acknowledge workflow probe recovery before restart", web.ErrInvalidState)
+		}
 		cfg := d.config()
 		if _, err := loadExecution(cfg, id); !errors.Is(err, os.ErrNotExist) || t.InvocationID != "" {
 			return fmt.Errorf("%w: acknowledge interrupted workflow recovery before restart", web.ErrInvalidState)
@@ -60,11 +106,18 @@ func (d *Daemon) WorkflowRestart(id string) error {
 		if err != nil {
 			return err
 		}
-		state := &ticket.GraphState{Version: 1, ExecutionID: newSessionID(), DefinitionFingerprint: fingerprint}
+		version := 1
+		for _, node := range graph.Nodes {
+			if node.Type == "wait" || node.Wake != nil {
+				version = 2
+				break
+			}
+		}
+		state := &ticket.GraphState{Version: version, ExecutionID: newSessionID(), DefinitionFingerprint: fingerprint}
 		populateWorkflowDisplay(state, graph)
 		state.RetainExecution(t.GraphState)
 		after := pipeline.AdvanceGraph(graph, "", state, nil)
-		if err := installGraphAdvance(t, after); err != nil {
+		if err := d.finishControlAdvance(t, after); err != nil {
 			return err
 		}
 		for _, field := range []string{"invocation_id", "started_at", "completed_at", "summary", "final_summary", "last_log", "scheduled_at"} {
@@ -83,6 +136,8 @@ func (d *Daemon) WorkflowRestart(id string) error {
 		if err := repo.Save(st); err != nil {
 			return err
 		}
+		d.cancelWorkflowProbeLocked(id)
+		d.signalWorkflowWait()
 		saved = t.Clone()
 		return nil
 	})
@@ -118,6 +173,9 @@ func (d *Daemon) WorkflowRecover(id, executionID string, revision uint64) error 
 		if err != nil || fingerprint != state.DefinitionFingerprint {
 			return fmt.Errorf("%w: workflow definition changed; restore the execution configuration before recovery", web.ErrInvalidState)
 		}
+		if handled, err := d.recoverWorkflowProbeLocked(t, st.FilePath, executionID, revision); handled || err != nil {
+			return err
+		}
 		rec, err := loadExecution(cfg, id)
 		if err != nil {
 			return fmt.Errorf("%w: read workflow recovery journal: %v", web.ErrInvalidState, err)
@@ -130,6 +188,12 @@ func (d *Daemon) WorkflowRecover(id, executionID string, revision uint64) error 
 		after := state.Clone()
 		after.Revision++
 		after.LastResult = nil
+		if after.Wait != nil && after.Wait.Phase == "ready" {
+			// Binding consumed pending continuation intent. Restore admission for
+			// the retained wait so Retry resumes the same visit, rather than parking it.
+			// Failed recovery history distinguishes that retry from an intentional wake.
+			after.Continuation = true
+		}
 		rec.RecoveryState = after
 		rec.Phase = "acknowledged"
 		if err := saveExecution(cfg, rec); err != nil {
@@ -149,6 +213,7 @@ func (d *Daemon) WorkflowRecover(id, executionID string, revision uint64) error 
 		return nil
 	})
 	if err == nil {
+		d.signalWorkflowWait()
 		d.broadcastTicketUpdateLocking(id)
 	}
 	return mapAppError(err)
@@ -171,7 +236,7 @@ func installRecoveryAcknowledgement(t *ticket.Ticket, rec *executionRecord) erro
 }
 
 func preserveWorkflowRecoveryHistory(t *ticket.Ticket, rec *executionRecord) error {
-	if rec.PendingHistory == nil {
+	if rec.PendingHistory == nil && (rec.GraphBefore == nil || rec.GraphBefore.Wait == nil || rec.GraphBefore.Wait.Phase != "ready") {
 		return nil
 	}
 	for _, h := range t.History {
@@ -179,8 +244,14 @@ func preserveWorkflowRecoveryHistory(t *ticket.Ticket, rec *executionRecord) err
 			return nil
 		}
 	}
-	// The runner finished, but recovery must not record a successful node transition.
-	h := *rec.PendingHistory
+	// Recovery must not record a successful node transition. A retained ready
+	// wait may have no pending result after cancellation or a crash; keep an
+	// unknown-exit row so Retry cannot mistake the older waiting predecessor.
+	h := ticket.HistoryEntry{Stage: rec.Invocation.Stage, Agent: rec.Agent, Run: rec.Run,
+		InvocationID: rec.Invocation.ID, ExitCode: -1}
+	if rec.PendingHistory != nil {
+		h = *rec.PendingHistory
+	}
 	h.RunOutcome = ticket.RunOutcomeFailed
 	h.OutcomeReason = "workflow recovery acknowledged without a committed node transition"
 	setGraphHistoryProvenance(&h, rec)

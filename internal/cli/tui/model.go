@@ -295,6 +295,10 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case isKey(msg, "r"):
 		if sel := m.list.selected(); sel != nil {
+			if isWaiting(*sel) && !sel.GraphExecution.Wait.Disarmed {
+				m.list.err = errors.New("workflow is waiting; open detail for diagnostics and release instructions")
+				return m, nil
+			}
 			return m, actionCmd(func() error { return m.source.RetryTicket(sel.ID) })
 		}
 	case isKey(msg, "s"):
@@ -371,6 +375,10 @@ func (m model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case isKey(msg, "p"):
 		return m, actionCmd(func() error { return m.source.PauseTicket(m.detail.ticket.ID) })
 	case isKey(msg, "r"):
+		if isWaiting(m.detail.ticket) && !m.detail.ticket.GraphExecution.Wait.Disarmed {
+			m.detail.err = errors.New("workflow is waiting; inspect diagnostics and release instructions in the ticket tab")
+			return m, nil
+		}
 		return m, actionCmd(func() error { return m.source.RetryTicket(m.detail.ticket.ID) })
 	case isKey(msg, "s"):
 		if isGraph(m.detail.ticket) {

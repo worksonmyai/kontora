@@ -128,7 +128,7 @@ func (s *apiSource) FetchRunLogs(id, stage string, run int) (string, error) {
 		return "", err
 	}
 	if info.Stale {
-		return "No exact transcript for this attempt; the visit log was overwritten by a later retry.", nil
+		return "No exact transcript for this attempt; the visit log was overwritten by a later continuation or retry.", nil
 	}
 	if info.Tape != nil {
 		return renderRunTape(info.Tape), nil
@@ -258,7 +258,7 @@ func (s *fileSource) FetchRunLogs(id, stage string, run int) (string, error) {
 	}
 	_, stale, graph := cli.GraphRunLog(tk, config.ExpandTilde(s.cfg.LogsDir), stage, run)
 	if !graph || stale {
-		return "No exact transcript for this attempt; the visit log may belong to a later retry.", nil
+		return "No exact transcript for this attempt; the visit log may belong to a later continuation or retry.", nil
 	}
 	return content, nil
 }

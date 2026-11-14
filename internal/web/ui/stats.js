@@ -224,11 +224,9 @@ function statsKpis(payload) {
       label: 'median cycle', value: statsDuration(t.median_cycle_ms), unit: 'open → done',
       delta: cycleDelta.text, tone: cycleDelta.tone,
     },
-    // Every stage run keys a first-pass pair, so no runs means the rate is
-    // unmeasured. Reporting the zero as a percentage would assert that nothing
-    // passed first time, which is the opposite of what an empty window says.
-    (t.runs || 0) === 0
-      ? { label: 'first-pass', value: '—', unit: '', delta: 'no stage runs', tone: 'neutral' }
+    // Waiting invocations spend resources but do not judge first-pass quality.
+    (t.first_pass_visits ?? t.runs ?? 0) === 0
+      ? { label: 'first-pass', value: '—', unit: '', delta: t.runs ? 'no judged visits' : 'no stage runs', tone: 'neutral' }
       : {
           label: 'first-pass', value: String(Math.round(t.first_pass_pct || 0)), unit: '%',
           delta: Math.round(100 - (t.first_pass_pct || 0)) + '% not verified first-pass',
@@ -300,6 +298,7 @@ export function statsDerive(payload) {
     // Semantic outcomes partition the runs; runner failures are independent.
     // Unknown includes legacy zero exits, not verified completions.
     const outcomes = [
+      ['waiting', 'waiting'],
       ['complete', 'complete'],
       ['blocked', 'blocked'],
       ['protocol_error', 'protocol error', 'protocol errors'],
@@ -356,18 +355,20 @@ export function statsDerive(payload) {
   const busy = live.busy || [];
   const agents = agentsRaw.map(function(a) {
     const perRun = a.tokens_per_run == null ? '—' : statsCompact(a.tokens_per_run);
+    const judged = (a.first_pass_visits ?? a.runs ?? 0) > 0;
+    const firstPass = judged ? statsPctLabel(a.first_pass_pct) : '—';
     const sub = [a.model, (a.retries_per_ticket || 0).toFixed(1) + ' retries/ticket'].filter(Boolean).join(' · ');
     return {
       name: a.name,
       sub: sub,
       running: busy.indexOf(a.name) >= 0,
       runs: statsCompact(a.runs || 0),
-      pct: statsPctLabel(a.first_pass_pct),
+      pct: firstPass,
       pctWidth: Math.max(0, Math.min(100, a.first_pass_pct || 0)),
-      tone: statsFirstPassColor(a.first_pass_pct),
+      tone: judged ? statsFirstPassColor(a.first_pass_pct) : 'neutral',
       median: statsDuration(a.median_ms),
       perRun: perRun,
-      tip: a.name + ' · ' + (a.runs || 0) + ' runs · ' + statsPctLabel(a.first_pass_pct) + ' first-pass · ' +
+      tip: a.name + ' · ' + (a.runs || 0) + ' runs · ' + (judged ? firstPass + ' first-pass' : 'no judged visits') + ' · ' +
         (a.tokens_per_run == null ? 'no token counts recorded' : perRun + ' tokens per run'),
     };
   });

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
@@ -16,12 +17,16 @@ type GraphCompletion struct {
 }
 
 type GraphAdvance struct {
-	Stage  string
-	State  *ticket.GraphState
-	Next   *config.WorkflowNode
-	Status ticket.Status
-	Reason string
-	Edges  []ticket.GraphTransition
+	Stage string
+	State *ticket.GraphState
+	Next  *config.WorkflowNode
+	// Wait is a declared control wait for the daemon to register. Traversal does
+	// not assign a wait identity or any timing or workspace evidence.
+	Wait     *config.WorkflowNode
+	Status   ticket.Status
+	Reason   string
+	Rejected bool `json:"rejected,omitempty"`
+	Edges    []ticket.GraphTransition
 }
 
 func AdvanceGraph(graph *config.WorkflowGraph, stage string, state *ticket.GraphState, completion *GraphCompletion) GraphAdvance {
@@ -33,6 +38,9 @@ func AdvanceGraph(graph *config.WorkflowGraph, stage string, state *ticket.Graph
 	node, reason := a.prepareCursor(graph, completion)
 	if reason != "" {
 		return a.pause(reason)
+	}
+	if a.State.Wait != nil {
+		return a.pause("graph has an active wait; release or wake it before advancing")
 	}
 	if completion != nil {
 		if reason := a.complete(graph, node, completion, entering); reason != "" {
@@ -48,8 +56,57 @@ func AdvanceGraph(graph *config.WorkflowGraph, stage string, state *ticket.Graph
 	return a.traverse(graph)
 }
 
+// ReleaseGraphWait follows an explicitly accepted release or timeout of a
+// registered declared wait. The caller owns release authority, timing and
+// evidence; this interpreter only validates identity and chooses graph edges.
+func ReleaseGraphWait(graph *config.WorkflowGraph, stage string, state *ticket.GraphState, port string) GraphAdvance {
+	a := GraphAdvance{Stage: stage, State: state.Clone(), Status: ticket.StatusTodo}
+	if reason := a.validateInput(graph); reason != "" {
+		return a.pause(reason)
+	}
+	node, ok := graph.Node(stage)
+	if !ok || node.Type != "wait" {
+		return a.pause("release requires a declared wait cursor")
+	}
+	if reason := validateDeclaredWait(graph, node); reason != "" {
+		return a.pause(reason)
+	}
+	s := a.State
+	w := s.Wait
+	if w == nil || w.ID == "" || w.ExecutionID != s.ExecutionID || w.NodeID != node.ID || w.VisitID != s.VisitID || w.Kind != node.Mode || w.InvocationID != "" || w.Environment != node.Environment {
+		return a.pause("release does not match the current declared wait")
+	}
+	if port != "released" && (port != "timeout" || node.Timeout.Duration <= 0) {
+		return a.pause("invalid declared wait release port")
+	}
+	if !a.follow(graph, node.ID, port, 0) {
+		return a.pause("missing declared wait transition")
+	}
+	s.WaitHistory = append(s.WaitHistory, *w)
+	s.Wait = nil
+	return a.traverse(graph)
+}
+
+func validateDeclaredWait(graph *config.WorkflowGraph, node config.WorkflowNode) string {
+	if (node.Mode != "human" && node.Mode != "deployment") || node.Timeout.Duration < 0 ||
+		(node.Mode == "human" && node.Environment != "") ||
+		(node.Mode == "deployment" && strings.TrimSpace(node.Environment) == "") {
+		return "invalid declared wait configuration"
+	}
+	if _, ok := graph.Target(node.ID, "released"); !ok {
+		return "missing declared wait release transition"
+	}
+	_, timeout := graph.Target(node.ID, "timeout")
+	if timeout != (node.Timeout.Duration > 0) {
+		return "invalid declared wait timeout transition"
+	}
+	return ""
+}
+
 func (a GraphAdvance) pause(reason string) GraphAdvance {
+	a.Rejected = true
 	a.Next = nil
+	a.Wait = nil
 	a.Status = ticket.StatusPaused
 	a.Reason = reason
 	return a
@@ -70,11 +127,13 @@ func (a *GraphAdvance) validateInput(graph *config.WorkflowGraph) string {
 	if s.ExecutionID == "" || s.DefinitionFingerprint == "" {
 		return "missing graph execution identity"
 	}
-	// Version 1 is the persisted state schema, not the definition version.
+	// Persisted state versions are independent of the definition version.
+	// The daemon selects version 2 for wait-enabled executions; unchanged
+	// executions continue to initialize as version 1.
 	if s.Version == 0 && a.Stage == "" {
 		s.Version = 1
 	}
-	if s.Version != 1 {
+	if s.Version != 1 && s.Version != 2 {
 		return "unsupported graph state version"
 	}
 	if reason := validateGraphStructure(graph); reason != "" {
@@ -105,6 +164,12 @@ func validateGraphStructure(graph *config.WorkflowGraph) string {
 }
 
 func validateGraphState(graph *config.WorkflowGraph, s *ticket.GraphState) string {
+	if s.WakeCount < 0 {
+		return "invalid graph wake count"
+	}
+	if s.Version == 1 && (s.Wait != nil || s.Wake != nil || s.WakeCount != 0 || len(s.WaitHistory) != 0 || s.Continuation) {
+		return "wait metadata requires graph state version 2"
+	}
 	for id, count := range s.LoopCounts {
 		node, ok := graph.Node(id)
 		if !ok || node.Type != "loop" || count < 0 || count > node.Max {
@@ -123,7 +188,7 @@ func validateGraphState(graph *config.WorkflowGraph, s *ticket.GraphState) strin
 func (a *GraphAdvance) prepareCursor(graph *config.WorkflowGraph, completion *GraphCompletion) (config.WorkflowNode, string) {
 	if a.Stage == "" {
 		s := a.State
-		if s.Visit != 0 || s.LastResult != nil || len(s.LoopCounts) != 0 || len(s.Transitions) != 0 || completion != nil {
+		if s.Visit != 0 || s.LastResult != nil || len(s.LoopCounts) != 0 || len(s.Transitions) != 0 || completion != nil || s.Wait != nil || s.Wake != nil || s.WakeCount != 0 || len(s.WaitHistory) != 0 || s.Continuation {
 			return config.WorkflowNode{}, "empty cursor with existing execution evidence"
 		}
 		a.Stage = graph.Entry
@@ -204,7 +269,20 @@ func (a GraphAdvance) traverse(graph *config.WorkflowGraph) GraphAdvance {
 			s.Visit++
 			s.VisitID = graphVisitID(s)
 			s.LastResult = nil
+			s.Wake = nil
+			s.WakeCount = 0
+			s.Continuation = false
 			a.Next = cloneWorkflowNode(node)
+			return a
+		case "wait":
+			if s.Version != 2 {
+				return a.pause("declared wait requires graph state version 2")
+			}
+			if reason := validateDeclaredWait(graph, node); reason != "" {
+				return a.pause(reason)
+			}
+			a.Status = ticket.StatusPaused
+			a.Wait = cloneWorkflowNode(node)
 			return a
 		case "condition":
 			port, reason := graphCondition(graph, node, s)
@@ -278,6 +356,10 @@ func graphExecutable(node config.WorkflowNode) bool {
 
 func cloneWorkflowNode(node config.WorkflowNode) *config.WorkflowNode {
 	node.Verdicts = slices.Clone(node.Verdicts)
+	if node.Wake != nil {
+		wake := *node.Wake
+		node.Wake = &wake
+	}
 	return &node
 }
 

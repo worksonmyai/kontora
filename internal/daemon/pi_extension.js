@@ -20,9 +20,12 @@ export default function (pi) {
     KONTORA_WORKFLOW_EXECUTION_ID: process.env.KONTORA_WORKFLOW_EXECUTION_ID,
     KONTORA_NODE_VISIT_ID: process.env.KONTORA_NODE_VISIT_ID,
     KONTORA_DEFINITION_FINGERPRINT: process.env.KONTORA_DEFINITION_FINGERPRINT,
+    KONTORA_WAKE_MAX: process.env.KONTORA_WAKE_MAX,
+    KONTORA_CHECK_TIMEOUT: process.env.KONTORA_CHECK_TIMEOUT,
   };
   const RESULT_ENABLED = Object.values(RESULT_CONTEXT).some((v) => v !== undefined && v !== "");
-  const GRAPH_RESULT = RESULT_CONTEXT.KONTORA_RESULT_VERSION === "2";
+  const WAIT_RESULT = RESULT_CONTEXT.KONTORA_RESULT_VERSION === "3";
+  const GRAPH_RESULT = RESULT_CONTEXT.KONTORA_RESULT_VERSION === "2" || WAIT_RESULT;
   let declaredVerdicts = [];
   if (RESULT_ENABLED) {
     var automationContext = !!(RESULT_CONTEXT.KONTORA_RESULT_AUTOMATION || RESULT_CONTEXT.KONTORA_RESULT_RUN_NUMBER);
@@ -42,6 +45,16 @@ export default function (pi) {
     }
     if (RESULT_CONTEXT.KONTORA_RESULT_VERSION !== "1" && !GRAPH_RESULT) {
       throw new Error("Unsupported KONTORA_RESULT_VERSION.");
+    }
+    if (WAIT_RESULT) {
+      if (automationContext) throw new Error("Wait results require a graph ticket invocation.");
+      required = ["KONTORA_WORKFLOW_EXECUTION_ID", "KONTORA_NODE_VISIT_ID", "KONTORA_DEFINITION_FINGERPRINT", "KONTORA_WAKE_MAX", "KONTORA_CHECK_TIMEOUT"];
+      for (var key of required) {
+        if (!RESULT_CONTEXT[key] || !RESULT_CONTEXT[key].trim()) throw new Error("Missing wait execution context: " + key);
+      }
+      if (!/^[1-9][0-9]*$/.test(RESULT_CONTEXT.KONTORA_WAKE_MAX)) throw new Error("Invalid KONTORA_WAKE_MAX.");
+    } else if (RESULT_CONTEXT.KONTORA_WAKE_MAX || RESULT_CONTEXT.KONTORA_CHECK_TIMEOUT) {
+      throw new Error("Wait capabilities require result version 3.");
     }
     if (GRAPH_RESULT) {
       try {
@@ -88,6 +101,7 @@ export default function (pi) {
   let consumedCheckpoints = {};
   let pendingCheckpoint = null;
   let terminalReported = false;
+  let terminalPublishing = false;
   let terminalAtTurnStart = false;
 
   function terminalResultPresent() {
@@ -397,6 +411,7 @@ export default function (pi) {
           contract += "This node declares no verdicts; omit verdict. ";
         }
         contract += "A blocked result requires next_step and may omit verdict.";
+        if (WAIT_RESULT) contract += " Use kontora_wait to request a timer or condition wait with continuation instructions. Publication does not confirm daemon suspension.";
         return { systemPrompt: event.systemPrompt + "\n\n" + contract };
       });
     }
@@ -449,6 +464,12 @@ export default function (pi) {
             (payload.next_step !== undefined && payload.next_step.includes("\0"))) {
           throw new Error("Result text must not contain NUL.");
         }
+        return publishTerminal(payload, signal, ctx);
+      },
+    });
+
+    async function publishTerminal(payload, signal, ctx, waitArgs) {
+        var outcome = payload.outcome;
         var json = JSON.stringify(payload);
         if (Buffer.byteLength(json, "utf8") > 32768) {
           throw new Error("Result payload must not exceed 32,768 UTF-8 bytes.");
@@ -456,19 +477,23 @@ export default function (pi) {
         if (signal && signal.aborted) {
           throw new Error("Submission cancelled; result was not submitted.");
         }
+        if (terminalResultPresent() || terminalPublishing) {
+          throw new Error("A terminal Kontora result was published or is being submitted; further submissions are blocked.");
+        }
         var fs = nodeModule("node:fs");
         var os = nodeModule("node:os");
         var path = nodeModule("node:path");
         if (!fs || !os || !path) throw new Error("Result submission requires Node filesystem support.");
-        var dir = fs.mkdtempSync(path.join(os.tmpdir(), "kontora-result-"));
-        var inputFile = path.join(dir, "payload.json");
+        var dir = waitArgs ? null : fs.mkdtempSync(path.join(os.tmpdir(), "kontora-result-"));
+        var inputFile = dir && path.join(dir, "payload.json");
         var uncertain = "The result outcome may be unknown. Inspect " +
           JSON.stringify(RESULT_CONTEXT.KONTORA_RESULT_FILE) + " before resubmitting. Do not retry automatically.";
+        terminalPublishing = true;
         try {
-          fs.writeFileSync(inputFile, json, { mode: 0o600, flag: "wx" });
+          if (!waitArgs) fs.writeFileSync(inputFile, json, { mode: 0o600, flag: "wx" });
           var result;
           try {
-            result = await pi.exec("kontora", [
+            result = await pi.exec("kontora", waitArgs || [
               "result", "--input-file", inputFile, RESULT_SUBJECT,
             ], { cwd: ctx.cwd, signal: signal, timeout: 30_000, maxBuffer: 32768 });
           } catch (error) {
@@ -499,10 +524,60 @@ export default function (pi) {
             details: ack,
           };
         } finally {
-          fs.rmSync(dir, { recursive: true, force: true });
+          terminalPublishing = false;
+          if (dir) fs.rmSync(dir, { recursive: true, force: true });
         }
-      },
-    });
+    }
+
+    if (WAIT_RESULT) {
+      pi.registerTool({
+        name: "kontora_wait",
+        label: "Workflow Wait",
+        description: "Request durable suspension of this graph invocation. Supply exactly one of check or until, and next continuation instructions. " +
+          "Checks require a positive Go poll duration and an absolute RFC 3339 deadline; timers require an absolute RFC 3339 until. " +
+          "Summary defaults to a concise timer/check summary. The CLI validates and publishes a strict version-3 result without a shell. " +
+          "Text appears in process arguments. Acceptance confirms publication, not daemon commitment. Further tools are blocked after publication. " +
+          "Do not retry automatically on uncertain submission.",
+        parameters: {
+          type: "object",
+          properties: {
+            check: { type: "string", description: "Trusted repeatable shell condition command." },
+            poll: { type: "string", description: "Positive Go duration, e.g. 10m." },
+            deadline: { type: "string", description: "Absolute RFC 3339 check deadline." },
+            until: { type: "string", description: "Absolute RFC 3339 timer time." },
+            next: { type: "string", minLength: 1, description: "Instructions for the resumed agent." },
+            summary: { type: "string", minLength: 1 },
+          },
+          required: ["next"],
+          additionalProperties: false,
+        },
+        executionMode: "sequential",
+        execute: async function (_toolCallId, params, signal, _onUpdate, ctx) {
+          if (!params || typeof params !== "object" || Array.isArray(params)) throw new Error("Wait parameters must be an object.");
+          var allowed = ["check", "poll", "deadline", "until", "next", "summary"];
+          for (var key of Object.keys(params)) {
+            if (!allowed.includes(key)) throw new Error("Unknown wait field: " + key);
+            var value = params[key];
+            if (typeof value !== "string" || !value.trim() || value.includes("\0") || !value.isWellFormed()) {
+              throw new Error("Wait " + key + " must be nonblank Unicode text without NUL.");
+            }
+          }
+          if (params.next === undefined) throw new Error("Wait requires next continuation instructions.");
+          if ((params.check === undefined) === (params.until === undefined)) throw new Error("Exactly one of check and until is required.");
+          if (params.check !== undefined) {
+            if (params.poll === undefined || params.deadline === undefined) throw new Error("Check waits require poll and deadline.");
+          } else if (params.poll !== undefined || params.deadline !== undefined) {
+            throw new Error("poll and deadline are only valid with check.");
+          }
+          if (Buffer.byteLength(JSON.stringify(params), "utf8") > 32768) throw new Error("Wait payload must not exceed 32,768 UTF-8 bytes.");
+          var args = ["wait"];
+          for (var key of allowed) {
+            if (params[key] !== undefined) args.push("--" + key, params[key]);
+          }
+          return publishTerminal({ outcome: "waiting" }, signal, ctx, args);
+        },
+      });
+    }
   }
 
   if (ENABLED && THRESHOLD > 0) {

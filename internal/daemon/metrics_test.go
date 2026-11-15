@@ -24,6 +24,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/metrics"
+	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/stats"
 	"github.com/worksonmyai/kontora/internal/ticket"
@@ -641,41 +642,89 @@ func TestMetricsAgentErrorsRecordTheDetectionLayer(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			h := newHarness(t)
-			runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
-				tt.run(t, p)
-				now := time.Now()
-				return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil
-			}
+		for _, shutdownOnPause := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/shutdown_on_pause=%t", tt.name, shutdownOnPause), func(t *testing.T) {
+				h := newHarness(t)
+				runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+					tt.run(t, p)
+					now := time.Now()
+					return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil
+				}
 
-			cfg := h.defaultConfig(tt.agent.Binary, tt.agent.Binary)
-			cfg.Agents["agent1"] = tt.agent
-			d, collect := h.newMetricsDaemon(cfg, WithRunner(runner))
+				cfg := h.defaultConfig(tt.agent.Binary, tt.agent.Binary)
+				cfg.Agents["agent1"] = tt.agent
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				var opts []Option
+				if shutdownOnPause {
+					opts = append(opts, WithNotifier(metricsCancelOnPause{cancel: cancel}))
+				}
+				d, collect := h.newMetricsDaemon(cfg, append(opts, WithRunner(runner))...)
+				errCh := make(chan error, 1)
+				go func() { errCh <- d.Run(ctx) }()
+				time.Sleep(200 * time.Millisecond)
 
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			errCh := make(chan error, 1)
-			go func() { errCh <- d.Run(ctx) }()
-			time.Sleep(200 * time.Millisecond)
+				h.writeTicket("tst-aerr.md", h.taskMD("tst-aerr", "todo", "one-stage"))
+				h.waitForStatus("tst-aerr.md", ticket.StatusPaused, 10*time.Second)
 
-			h.writeTicket("tst-aerr.md", h.taskMD("tst-aerr", "todo", "one-stage"))
-			h.waitForStatus("tst-aerr.md", ticket.StatusPaused, 10*time.Second)
+				cancel()
+				require.NoError(t, <-errCh)
 
-			cancel()
-			require.NoError(t, <-errCh)
+				got := collect()
+				agentErrs, ok := got["kontora.agent.errors"]
+				require.True(t, ok, "kontora.agent.errors must be exported")
+				assert.Equal(t, map[string]int64{tt.wantKind: 1}, sumByAttr(t, agentErrs, "kind"))
+				assert.Equal(t, map[string]int64{"agent1": 1}, sumByAttr(t, agentErrs, "agent"))
+				assert.Equal(t, map[string]int64{"step1": 1}, sumByAttr(t, agentErrs, "stage"))
 
-			got := collect()
-			agentErrs, ok := got["kontora.agent.errors"]
-			require.True(t, ok, "kontora.agent.errors must be exported")
-			assert.Equal(t, map[string]int64{tt.wantKind: 1}, sumByAttr(t, agentErrs, "kind"))
-			assert.Equal(t, map[string]int64{"agent1": 1}, sumByAttr(t, agentErrs, "agent"))
-			assert.Equal(t, map[string]int64{"step1": 1}, sumByAttr(t, agentErrs, "stage"))
-
-			assert.Equal(t, map[string]int64{"failure": 1}, sumByAttr(t, got["kontora.stage.runs"], "outcome"),
-				"a run paused by a detected error is a failed run")
-		})
+				assert.Equal(t, map[string]int64{"failure": 1}, sumByAttr(t, got["kontora.stage.runs"], "outcome"),
+					"a run paused by a detected error is a failed run")
+			})
+		}
 	}
+}
+
+// metricsCancelOnPause starts shutdown after the pause is saved, before the
+// agent goroutine returns and records its stage outcome.
+type metricsCancelOnPause struct {
+	noopNotifier
+	cancel context.CancelFunc
+}
+
+func (n metricsCancelOnPause) Observe(obs notify.Observation) {
+	if obs.Status == string(ticket.StatusPaused) {
+		n.cancel()
+	}
+}
+
+func TestMetricsInterruptedStageRunIsCancelled(t *testing.T) {
+	h := newHarness(t)
+	started := make(chan struct{})
+	runner := func(ctx context.Context, _ RunnerParams) (process.Result, error) {
+		now := time.Now()
+		close(started)
+		<-ctx.Done()
+		return process.Result{ExitCode: -1, StartedAt: now, ExitedAt: time.Now()}, ctx.Err()
+	}
+	d, collect := h.newMetricsDaemon(h.cfg, WithRunner(runner))
+	h.writeTicket("tst-cancel.md", h.taskMD("tst-cancel", "todo", "one-stage"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("the stage agent did not start")
+	}
+	cancel()
+	require.NoError(t, <-errCh)
+
+	got := collect()
+	assert.Equal(t, map[string]int64{metrics.OutcomeCancelled: 1},
+		sumByAttr(t, got["kontora.stage.runs"], "outcome"))
+	assert.NotContains(t, got, "kontora.agent.errors")
 }
 
 // TestMetricsReworkOutcomes covers the built-in rework stage's own record,

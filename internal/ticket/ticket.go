@@ -163,6 +163,7 @@ func (t *Ticket) validateEpicExecution() error {
 type RunOutcome string
 
 const (
+	RunOutcomeWaiting       RunOutcome = "waiting"
 	RunOutcomeComplete      RunOutcome = "complete"
 	RunOutcomeBlocked       RunOutcome = "blocked"
 	RunOutcomeProtocolError RunOutcome = "protocol_error"
@@ -174,6 +175,12 @@ type HistoryEntry struct {
 	NodeVisitID           string `yaml:"node_visit_id,omitempty" json:"node_visit_id,omitempty"`
 	DefinitionFingerprint string `yaml:"definition_fingerprint,omitempty" json:"definition_fingerprint,omitempty"`
 	Template              string `yaml:"template,omitempty" json:"template,omitempty"`
+
+	Verdict      string        `yaml:"verdict,omitempty" json:"verdict,omitempty"`
+	NextStep     string        `yaml:"next_step,omitempty" json:"next_step,omitempty"`
+	Wake         *WakeContext  `yaml:"wake,omitempty" json:"wake,omitempty"`
+	Wait         *WorkflowWait `yaml:"wait,omitempty" json:"wait,omitempty"`
+	Continuation bool          `yaml:"continuation,omitempty" json:"continuation,omitempty"`
 
 	RunOutcome    RunOutcome `yaml:"run_outcome,omitempty" json:"run_outcome,omitempty"`
 	OutcomeReason string     `yaml:"outcome_reason,omitempty" json:"outcome_reason,omitempty"`

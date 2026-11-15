@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -90,16 +91,25 @@ type WorkflowGraph struct {
 }
 
 type WorkflowNode struct {
-	ID       string             `yaml:"id"`
-	Type     string             `yaml:"type"`
-	Stage    string             `yaml:"stage,omitempty"`
-	Agent    string             `yaml:"agent,omitempty"`
-	Verdicts []string           `yaml:"verdicts,omitempty"`
-	Command  string             `yaml:"command,omitempty"`
-	Timeout  Duration           `yaml:"timeout,omitempty"`
-	When     *WorkflowCondition `yaml:"when,omitempty"`
-	Max      int                `yaml:"max,omitempty"`
-	Status   string             `yaml:"status,omitempty"`
+	ID          string             `yaml:"id"`
+	Type        string             `yaml:"type"`
+	Stage       string             `yaml:"stage,omitempty"`
+	Agent       string             `yaml:"agent,omitempty"`
+	Verdicts    []string           `yaml:"verdicts,omitempty"`
+	Command     string             `yaml:"command,omitempty"`
+	Timeout     Duration           `yaml:"timeout,omitempty"`
+	When        *WorkflowCondition `yaml:"when,omitempty"`
+	Max         int                `yaml:"max,omitempty"`
+	Status      string             `yaml:"status,omitempty"`
+	Wake        *WorkflowWake      `yaml:"wake,omitempty" json:"wake,omitempty"`
+	Mode        string             `yaml:"mode,omitempty" json:"mode,omitempty"`
+	Environment string             `yaml:"environment,omitempty" json:"environment,omitempty"`
+}
+
+// WorkflowWake opts an agent visit into durable suspension.
+type WorkflowWake struct {
+	Max          int      `yaml:"max" json:"max"`
+	CheckTimeout Duration `yaml:"check_timeout,omitempty" json:"check_timeout,omitzero"`
 }
 
 type WorkflowCondition struct {
@@ -134,7 +144,9 @@ func (n *WorkflowNode) UnmarshalYAML(value *yaml.Node) error {
 	var fields []string
 	switch n.Type {
 	case "agent":
-		fields = []string{"stage", "agent", "verdicts"}
+		fields = []string{"stage", "agent", "verdicts", "wake"}
+	case "wait":
+		fields = []string{"mode", "environment", "timeout"}
 	case "check":
 		fields = []string{"command", "timeout"}
 	case "condition":
@@ -315,6 +327,8 @@ func workflowPorts(kind string) []string {
 	switch kind {
 	case "agent":
 		return []string{"complete", "failed"}
+	case "wait":
+		return []string{"released", "timeout"}
 	case "check":
 		return []string{"pass", "fail"}
 	case "condition":
@@ -332,6 +346,11 @@ func (c *Config) validateWorkflow(g *WorkflowGraph) error {
 	}
 	if len(g.Nodes) == 0 {
 		return fmt.Errorf("workflow must have at least one node")
+	}
+	for i := range g.Nodes {
+		if wake := g.Nodes[i].Wake; wake != nil && wake.CheckTimeout.Duration == 0 {
+			wake.CheckTimeout.Duration = time.Minute
+		}
 	}
 	nodes, err := c.validateWorkflowNodes(g)
 	if err != nil {
@@ -375,7 +394,7 @@ func validateWorkflowEdges(g *WorkflowGraph, nodes map[string]WorkflowNode) (map
 		if !ok {
 			return nil, fmt.Errorf("edge source %q: unknown node", edge.From.Node)
 		}
-		if !slices.Contains(workflowPorts(from.Type), edge.From.Port) {
+		if !slices.Contains(workflowNodePorts(from), edge.From.Port) {
 			return nil, fmt.Errorf("node %q: unknown port %q", from.ID, edge.From.Port)
 		}
 		if _, ok := nodes[edge.To]; !ok {
@@ -388,13 +407,20 @@ func validateWorkflowEdges(g *WorkflowGraph, nodes map[string]WorkflowNode) (map
 		adjacent[from.ID] = append(adjacent[from.ID], edge)
 	}
 	for _, node := range g.Nodes {
-		for _, port := range workflowPorts(node.Type) {
+		for _, port := range workflowNodePorts(node) {
 			if _, ok := edges[WorkflowPort{Node: node.ID, Port: port}]; !ok {
 				return nil, fmt.Errorf("node %q port %q: missing destination", node.ID, port)
 			}
 		}
 	}
 	return adjacent, nil
+}
+
+func workflowNodePorts(node WorkflowNode) []string {
+	if node.Type == "wait" && node.Timeout.Duration == 0 {
+		return []string{"released"}
+	}
+	return workflowPorts(node.Type)
 }
 
 func validateWorkflowReachability(g *WorkflowGraph, adjacent map[string][]WorkflowEdge) error {
@@ -463,8 +489,10 @@ func executableWorkflowNode(node WorkflowNode) bool {
 
 func validateWorkflowNodeFields(node WorkflowNode) error {
 	// In-memory definitions need the same kind restrictions as decoded YAML.
-	if node.Type != "agent" && (node.Stage != "" || node.Agent != "" || len(node.Verdicts) != 0) ||
-		node.Type != "check" && (node.Command != "" || node.Timeout.Duration != 0) ||
+	if node.Type != "agent" && (node.Stage != "" || node.Agent != "" || len(node.Verdicts) != 0 || node.Wake != nil) ||
+		node.Type != "check" && node.Command != "" ||
+		node.Type != "check" && node.Type != "wait" && node.Timeout.Duration != 0 ||
+		node.Type != "wait" && (node.Mode != "" || node.Environment != "") ||
 		node.Type != "condition" && node.When != nil || node.Type != "loop" && node.Max != 0 ||
 		node.Type != "end" && node.Status != "" {
 		return fmt.Errorf("fields are not supported for type %q", node.Type)
@@ -478,7 +506,31 @@ func (c *Config) validateWorkflowNode(node WorkflowNode) error {
 	}
 	switch node.Type {
 	case "agent":
+		if node.Wake != nil {
+			if node.Wake.Max <= 0 {
+				return fmt.Errorf("wake.max must be positive")
+			}
+			if node.Wake.CheckTimeout.Duration < 0 {
+				return fmt.Errorf("wake.check_timeout must be positive")
+			}
+		}
 		return c.validateWorkflowAgent(node)
+	case "wait":
+		if node.Mode != "human" && node.Mode != "deployment" {
+			return fmt.Errorf("wait mode must be human or deployment")
+		}
+		if node.Mode == "deployment" && strings.TrimSpace(node.Environment) == "" {
+			return fmt.Errorf("deployment wait requires environment")
+		}
+		if node.Mode == "human" && node.Environment != "" {
+			return fmt.Errorf("human wait cannot specify environment")
+		}
+		if strings.ContainsRune(node.Environment, '\x00') {
+			return fmt.Errorf("environment contains NUL")
+		}
+		if node.Timeout.Duration < 0 {
+			return fmt.Errorf("wait timeout must be positive when configured")
+		}
 	case "check":
 		if strings.TrimSpace(node.Command) == "" {
 			return fmt.Errorf("command is required")

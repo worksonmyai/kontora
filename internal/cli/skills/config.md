@@ -89,7 +89,7 @@ With `on_failure: retry` and no retry budget, the first failure pauses the ticke
 
 Graphs declare `version: 2`, `entry`, `nodes`, and `edges`. Each edge uses
 `from: {node: NODE_ID, port: PORT}` and `to: NODE_ID`. Node types are `agent`,
-`check`, `condition`, `loop`, and `end`. Execution is sequential and follows
+`check`, `condition`, `loop`, `wait`, and `end`. Execution is sequential and follows
 edges, never the YAML node list order. Distinct agent nodes can share one stage
 template. A condition compares the latest executable verdict or check exit code;
 a loop's positive `max` bounds its repeat transitions for the whole execution.
@@ -98,8 +98,8 @@ include an executable. Graph aliases, merge keys and unknown fields are refused.
 See `kontora skills show pipelines 'Workflow graphs'` for complete YAML and
 node fields. Do not use a legacy stage-list editor to author graphs.
 
-Graph agent nodes require version 2 invocation-bound results, including a
-declared verdict when configured. The ticket's `stage` is a node ID; daemon-owned
+Graph agent nodes require version 2 invocation-bound results, or version 3 with
+`wake`, including a declared verdict on completion when configured. The ticket's `stage` is a node ID; daemon-owned
 `graph_state` holds the execution, revision, fingerprint, visits and loop counts.
 Changed effective definitions pause rather than silently changing live traversal.
 `retry` preserves executable identity and loop counts and is refused at `end`.
@@ -116,6 +116,42 @@ Upgrade every CLI and daemon sharing config or tickets together before enabling
 graphs. Recovery does not promise exactly-once shell
 effects or arbitrary detached-process containment. A missing tmux window alone
 does not prove termination.
+
+## Durable waits
+
+Waits work only in version 2 graphs, not legacy lists, automations or epic supervisors.
+Agent nodes opt in with `wake: {max: 12, check_timeout: 60s}`.
+`wake.max` is required and positive; it bounds wakes within one executable visit, not polls.
+Omitted or zero `check_timeout` uses `60s`; negative values are invalid.
+Wake-enabled invocations require result version 3. Use `kontora wait` or Pi's `kontora_wait`,
+not lifecycle writes. Publication alone does not confirm committed suspension.
+
+Declared nodes use `type: wait`, `mode: human` or `deployment`, and optional `timeout`.
+Deployment requires `environment`; human waits cannot set it.
+Every wait needs a `released` edge. A positive timeout also requires a `timeout` edge;
+omitted or zero timeout has no deadline or timeout edge. Negative timeouts are invalid.
+Durations use Go units: `168h`, not `7d`.
+Deployment entry freezes the existing worktree's repository identity and HEAD commit.
+
+Idle waits release worker capacity but retain branch ownership. Probes share worker capacity.
+Commands run through `/bin/sh -c` with daemon permissions; trust them and make them safe to repeat.
+A worktree is not a sandbox. Missing or changed worktrees block progress.
+Waits use `paused` plus graph metadata, shown as Waiting. Notifications remain `paused` subscriptions;
+`waiting` remains for live Pi questions. Same-status changes and every wake may be silent.
+
+Templates can use `{{ with .Wake }}` … `{{ end }}` to read `.Reason`, `.Output`,
+`.Count`, `.Next`, `.WaitID`, and `.Receipt`. Kontora appends the wake handoff automatically.
+Context stays frozen for the continuation and its retries, not unrelated later nodes.
+`{{ fileOptional "RESULTS.md" }}` returns empty text only for an absent file;
+other read errors fail rendering, as with `file`.
+
+Upgrade all sharing clients and daemons before wait configuration, result v3 or graph-state v2.
+Unchanged no-wait fingerprints and existing v1 state/v1-v2 result/recovery contracts remain compatible.
+Changed effective configuration blocks probes and continuation without resetting saved times.
+Restore matching configuration or inspect and explicitly restart.
+See `kontora skills show pipelines 'Durable waits'` for outcomes and storage,
+and `kontora skills show cli 'kontora release'` for daemon-only releases.
+Recovery does not promise exactly-once shell effects or host-power-loss durability.
 
 ## projects
 
@@ -191,7 +227,8 @@ The daemon claims from `todo`, then writes the actual custom status and a ticket
 `running_status` snapshot together. An ordinary status assignment clears the
 snapshot, including same-name parking. The active agent keeps its slot and branch
 reservation. `timeout: 0s` disables only Kontora's stage timeout. The agent owns
-polling; there is no daemon-managed readiness check.
+polling in a legacy custom-active step. For daemon-managed probes without an idle
+agent, use graph durable waits instead.
 
 Active runs keep their captured status after reload. Removed declarations leave
 only display-only fallback columns; they do not authorize new move destinations.

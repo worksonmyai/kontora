@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
@@ -118,6 +119,12 @@ func (d *Daemon) readyManagedJobLocked() int {
 type dispatchPoolKey struct{}
 type dispatchExplicitKey struct{}
 
+type dispatchReservation struct {
+	epic          bool
+	controlConfig *config.Config
+	daemon        *Daemon
+}
+
 func pickupExplicit(ctx context.Context) bool {
 	explicit, dispatched := ctx.Value(dispatchExplicitKey{}).(bool)
 	return !dispatched || explicit
@@ -126,8 +133,22 @@ func pickupExplicit(ctx context.Context) bool {
 // dispatchPoolMatches checks the reservation again after dispatch releases the
 // mutex. A ticket can change execution mode before runTicket claims it.
 func dispatchPoolMatches(ctx context.Context, t *ticket.Ticket) bool {
-	epic, reserved := ctx.Value(dispatchPoolKey{}).(bool)
-	return !reserved || epic == t.IsAgentEpic()
+	switch reservation := ctx.Value(dispatchPoolKey{}).(type) {
+	case dispatchReservation:
+		if reservation.epic != t.IsAgentEpic() {
+			return false
+		}
+		if reservation.controlConfig != nil {
+			// runTicket captures its config before claiming. Reject any reload so
+			// both that snapshot and the current definition authorize zero slots.
+			return reservation.controlConfig == reservation.daemon.config() && reservation.daemon.workflowControlOnlyLocked(t)
+		}
+		return true
+	case bool:
+		return reservation == t.IsAgentEpic()
+	default:
+		return true
+	}
 }
 
 func (d *Daemon) ticketPool(t *ticket.Ticket) *slotPool {
@@ -156,11 +177,15 @@ func (d *Daemon) readyOrdinaryJobLocked() int {
 	first := -1
 	for i, item := range d.queue {
 		pool := d.ticketPool(d.tickets[item.ticketID].ticket)
-		if d.availablePoolSlotsLocked(pool) > 0 && (first < 0 || d.queue.Less(i, first)) {
+		if (d.workflowControlOnlyLocked(d.tickets[item.ticketID].ticket) || d.availablePoolSlotsLocked(pool) > 0) && (first < 0 || d.queue.Less(i, first)) {
 			first = i
 		}
 	}
 	return first
+}
+
+func (d *Daemon) workflowProbeTurnLocked(hasPrimary bool) bool {
+	return d.preferWorkflowProbe || (!hasPrimary && (len(d.automationJobs) == 0 || !d.preferAutomation))
 }
 
 func (d *Daemon) dispatch(ctx context.Context, wg *sync.WaitGroup) {
@@ -180,7 +205,27 @@ func (d *Daemon) dispatch(ctx context.Context, wg *sync.WaitGroup) {
 			managedIndex := d.readyManagedJobLocked()
 			ordinaryIndex := d.readyOrdinaryJobLocked()
 			hasOrdinary := ordinaryIndex >= 0
-			if len(d.automationJobs) > 0 && d.availablePoolSlotsLocked(d.sem) > 0 && (d.preferAutomation || (!hasOrdinary && managedIndex < 0)) {
+			hasPrimary := hasOrdinary || managedIndex >= 0
+			probeTurn := d.workflowProbeTurnLocked(hasPrimary)
+			if len(d.workflowProbeJobs) > 0 && d.availablePoolSlotsLocked(d.sem) > 0 && probeTurn {
+				job := d.workflowProbeJobs[0]
+				d.workflowProbeJobs = d.workflowProbeJobs[1:]
+				d.sem.used++
+				d.preferWorkflowProbe = false
+				d.preferAutomation = true
+				d.mu.Unlock()
+				wg.Go(func() {
+					stopped := d.runWorkflowProbe(ctx, job)
+					d.mu.Lock()
+					defer d.mu.Unlock()
+					if stopped {
+						d.sem.used--
+					}
+					d.queueCond.Broadcast()
+				})
+				break
+			}
+			if len(d.automationJobs) > 0 && d.availablePoolSlotsLocked(d.sem) > 0 && (d.preferAutomation || !hasPrimary) {
 				job := d.automationJobs[0]
 				d.automationJobs = d.automationJobs[1:]
 				d.sem.used++
@@ -199,20 +244,25 @@ func (d *Daemon) dispatch(ctx context.Context, wg *sync.WaitGroup) {
 				})
 				break
 			}
-			if !hasOrdinary && managedIndex < 0 {
+			if !hasPrimary {
 				d.queueCond.Wait()
 				continue
 			}
 			d.preferAutomation = true
+			d.preferWorkflowProbe = true
 			managed := managedIndex >= 0 && (!hasOrdinary || d.managedDispatch.preferManaged)
 			slots := 1
 			pool := d.sem
 			if managed {
 				slots = d.managedDispatch.queue[managedIndex].slotCount()
 			} else {
-				pool = d.ticketPool(d.tickets[d.queue[ordinaryIndex].ticketID].ticket)
+				t := d.tickets[d.queue[ordinaryIndex].ticketID].ticket
+				pool = d.ticketPool(t)
+				if d.workflowControlOnlyLocked(t) {
+					slots = 0
+				}
 			}
-			if slots > d.availablePoolSlotsLocked(pool) {
+			if slots > 0 && slots > d.availablePoolSlotsLocked(pool) {
 				d.queueCond.Wait()
 				continue
 			}
@@ -246,7 +296,10 @@ func (d *Daemon) dispatch(ctx context.Context, wg *sync.WaitGroup) {
 				})
 			} else {
 				item := heap.Remove(&d.queue, ordinaryIndex).(*queueItem)
-				epic := d.tickets[item.ticketID].ticket.IsAgentEpic()
+				reservation := dispatchReservation{epic: d.tickets[item.ticketID].ticket.IsAgentEpic(), daemon: d}
+				if slots == 0 {
+					reservation.controlConfig = d.config()
+				}
 				delete(d.queued, item.ticketID)
 				d.syncQueueDepthLocked()
 				if d.managedDispatch != nil {
@@ -256,13 +309,13 @@ func (d *Daemon) dispatch(ctx context.Context, wg *sync.WaitGroup) {
 				d.metrics.QueueWait(ctx, time.Since(item.enqueuedAt))
 				wg.Go(func() {
 					runCtx := context.WithValue(ctx, ordinaryReservationKey{}, &atomic.Bool{})
-					runCtx = context.WithValue(runCtx, dispatchPoolKey{}, epic)
+					runCtx = context.WithValue(runCtx, dispatchPoolKey{}, reservation)
 					runCtx = context.WithValue(runCtx, dispatchExplicitKey{}, item.explicit)
 					defer func() {
 						d.mu.Lock()
 						defer d.mu.Unlock()
 						if !ordinaryReservationRetained(runCtx) {
-							pool.used--
+							pool.used -= slots
 						} else {
 							d.log.Error("ordinary attempt termination unconfirmed; reservation retained", "ticket", item.ticketID)
 						}

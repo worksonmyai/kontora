@@ -1,8 +1,11 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
+	"log"
+	"os"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -11,6 +14,57 @@ import (
 	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/web"
 )
+
+// cmdRelease has no offline mode. Deployment receipts deliberately take no
+// ticket: one accepted event may release multiple present or future waits.
+func cmdRelease() {
+	fs := flag.NewFlagSet("release", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	executionID := fs.String("execution-id", "", "inspected execution ID")
+	waitID := fs.String("wait-id", "", "inspected wait ID")
+	revision := fs.String("revision", "", "inspected state revision")
+	requestID := fs.String("request-id", "", "stable human release request ID")
+	reason := fs.String("reason", "", "human release reason")
+	repo := fs.String("repo", "", "repository path on the daemon host")
+	environment := fs.String("environment", "", "deployment environment")
+	commit := fs.String("rev", "", "full commit ID actually deployed")
+	eventID := fs.String("event-id", "", "stable deployment event ID")
+	id := parseTicketFlags(fs, os.Args[2:])
+	deployment := *repo != "" || *environment != "" || *commit != "" || *eventID != ""
+	if deployment {
+		if id != "" || *executionID != "" || *waitID != "" || *revision != "" || *requestID != "" || *reason != "" {
+			log.Fatal("deployment release takes no ticket or human-release flags")
+		}
+		rejectBulkFromStage("release")
+		req := web.DeploymentReleaseRequest{Repository: *repo, Environment: *environment, Commit: *commit, EventID: *eventID}
+		if err := req.Validate(); err != nil {
+			log.Fatal(err)
+		}
+		receipt, err := daemonClient(*configPath, *urlFlag, *tokenFlag).DeploymentRelease(req)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Fprintln(os.Stdout, receipt.ID)
+		return
+	}
+	if id == "" {
+		log.Fatal("usage: kontora release TICKET --execution-id ID --wait-id ID --revision N --request-id ID --reason TEXT")
+	}
+	rejectSelfMove("release", id)
+	req, err := cli.ParseWorkflowRelease(*executionID, *waitID, *revision, *requestID, *reason)
+	if err != nil {
+		log.Fatal(err)
+	}
+	rc := daemonClient(*configPath, *urlFlag, *tokenFlag)
+	// Resolve prefixes through the daemon, including archived tickets.
+	resolved := mustResolveRemote(rc, id)
+	receipt, err := rc.WorkflowRelease(resolved, req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Fprintln(os.Stdout, receipt.ID)
+}
 
 // printRemoteList renders `kontora ls` in remote mode. It asks for the complete
 // ticket set and then runs the same filter, sort and render path as local mode,

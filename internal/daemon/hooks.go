@@ -125,7 +125,12 @@ func (d *Daemon) runWorktreeCreatedHooks(taskCtx context.Context, cfg *config.Co
 		return false
 	}
 	reason := hookErr.Error()
-	err := d.worktrees.RemoveAt(hc.RepoPath, hc.Worktree)
+	var err error
+	if d.workflowWorktreeReserved(hc.RepoPath, hc.Worktree) {
+		err = fmt.Errorf("worktree is reserved by a workflow wait")
+	} else {
+		err = d.worktrees.RemoveAt(hc.RepoPath, hc.Worktree)
+	}
 	d.logRemoveResult(log, err)
 	if err == nil {
 		d.clearWorktreeUnprepared(cfg, log, hc.TicketID)

@@ -30,6 +30,8 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/tickets/{id}/retry` | Retry eligible stopped work. Graph retry keeps the executable visit and loop counts; refused at an `end` node. |
 | `POST /api/tickets/{id}/workflow-restart` | Start a new graph execution at entry (`{}` body), retaining history and worktree. |
 | `POST /api/tickets/{id}/workflow-recover` | Acknowledge inspected termination for graph state (`{"execution_id":"ID","revision":N}` body). |
+| `POST /api/tickets/{id}/workflow-release` | Release a declared human wait using inspected execution/wait identity and revision. See [durable releases](#durable-wait-releases). |
+| `POST /api/workflow-events/deployment` | Record immutable deployment evidence for matching present or future waits. See [durable releases](#durable-wait-releases). |
 | `POST /api/tickets/{id}/skip` | Skip the current pipeline stage. |
 | `POST /api/tickets/{id}/set-stage` | Move ticket to a specific pipeline stage (`{"stage": "..."}` body). |
 | `POST /api/tickets/{id}/schedule` | Set or clear the ticket's future pickup time (`{"scheduled_at": "<RFC 3339>"}` or `{"clear": true}` body). A `scheduled_at` that is malformed or already past answers 400. Clearing is refused only while the ticket is running. Answers the updated ticket. See [scheduled pickup](tickets.md#scheduled-pickup). |
@@ -388,6 +390,16 @@ transition trace. These are projections of daemon-owned `graph_state`, not
 editable update fields. Do not derive ordinal progress from definition arrays.
 Graph history adds `workflow_execution_id`,
 `node_visit_id`, `definition_fingerprint`, and agent `template` provenance.
+Wait-capable `graph_execution` also exposes `wait`, `wake`, `wake_count`, and
+`continuation`. Detail includes `wait_history` and retained evidence from previous executions.
+The wait includes its ID, kind, phase, absolute times, poll count, output,
+`output_truncated`, `log_path`, continuation instructions, workspace identity, and any receipt.
+These fields are read-only projections, not accepted mutation fields.
+
+Durable waits use `status: "paused"`, presented as Waiting from graph metadata.
+They are distinct from `waiting_for_input`, which describes live agent questions.
+Parking notifications remain status-based `paused` subscriptions; `waiting` is for Pi questions.
+Same-status changes and every wake do not necessarily send notifications.
 
 `POST /api/tickets/{id}/workflow-restart` accepts `{}`. It creates a new execution
 at entry with fresh visit and loop counters. History, sidecar indexes and the
@@ -411,15 +423,99 @@ invocation, preserving execution ID, visit ID and loop counts. Retry at an `end`
 node is refused. `skip` and `set-stage` are refused for graphs even when stopped.
 Graph annotations and Plannotator rework are deferred and refused.
 
+On a pending wait, pause disarms automatic progress and retry re-arms the same wait.
+Neither resets its absolute deadline. Run, move, schedule, init and done cannot bypass it.
+Cancel invalidates wake authority and stops the probe; restart invalidates old wait IDs.
+Deletion and transfer require cancellation first. Upload strips resumable graph/wait authority.
+Uncertain probe termination requires inspected `workflow-recover`, then a separate retry.
+An elapsed deadline cannot bypass recovery. Ready continuations retain enqueue intent across
+restarts and dependency blocking, even with `auto_pick_up: false`.
+
 Statistics distinguish intentional graph visits from retries by execution and
 visit provenance, not `run > 0`. First-pass denominators use graph visits;
 legacy rows retain ticket/stage accounting. Unknown semantic outcomes are never
 verified completions, and failed runs still contribute measured spend.
+`run_outcome: "waiting"` contributes run totals, time and token spend, but not
+success, failure, unverified counts or first-pass judgments. `continuation` distinguishes
+an intentional wake from a failure retry. History can retain `verdict`, `next_step`,
+`wait`, and `wake` evidence. Declared waits and probes do not create agent run rows.
+Graph logs retain invocation identity, with fallback for older visit logs.
 
-Upgrade CLI, daemon and other clients sharing config or ticket storage together.
+Upgrade all sharing clients and daemons before wait configuration, result v3, or graph-state v2.
+Unchanged no-wait fingerprints, v1 state and v1/v2 result/recovery contracts remain compatible.
 No endpoint promises exactly-once arbitrary shell effects or
 containment of arbitrary detached processes. A missing terminal window is not
 proof of termination.
+
+### Durable wait releases
+
+Releases require the daemon. Agent waits use invocation-bound result v3 through
+`kontora wait` or Pi's `kontora_wait`, not an HTTP wait-submission endpoint.
+See [result schema](cli.md#kontora-wait) and [wait configuration](configuration.md#durable-waits).
+
+`POST /api/tickets/{id}/workflow-release` accepts all five fields:
+
+```json
+{
+  "execution_id": "EXECUTION_ID",
+  "wait_id": "WAIT_ID",
+  "revision": 7,
+  "request_id": "approval-1",
+  "reason": "Approved"
+}
+```
+
+Read ticket detail first. Send the exact execution ID, wait ID, and numeric revision inspected.
+Only a pending, armed declared human wait is eligible. Expired deadlines,
+changed definitions, unresolved journals or recovery prevent a new release.
+An identical retry with the same ticket and request ID returns the stored receipt.
+Conflicting request-ID reuse or a new stale request returns `409`.
+Do not automatically replace a stale revision with the newest one.
+
+`POST /api/workflow-events/deployment` takes no ticket and requires all four fields:
+
+```json
+{
+  "repository": "/srv/projects/app",
+  "environment": "production",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "event_id": "deployment-1"
+}
+```
+
+Replace the sample commit with the full lowercase commit ID actually deployed.
+`repository` is a repository path on the daemon host; `commit` is 40 or 64 hexadecimal characters.
+Refs, `HEAD`, tags and abbreviated hashes are invalid. An identical event-ID retry
+returns the stored receipt; changed payloads under that ID return `409`.
+
+At deployment-wait entry, Kontora freezes repository identity and the worktree HEAD commit.
+A receipt matches the same repository, exact environment, and an equal/descendant deployed commit.
+Git reads use `--no-lazy-fetch` and `--no-replace-objects`. Kontora does not fetch,
+merge, deploy, or infer equivalence from cherry-picked content. Unsupported options,
+missing objects and uncertain ancestry fail closed. Non-equal commits require complete, non-shallow history.
+Historical receipts can satisfy waits created later, including several tickets.
+They prove a deployment occurred, not the environment's current state after a rollback.
+
+Both routes accept one flat JSON object, at most 64 KiB. Field names are case-sensitive.
+Unknown, duplicate, null, missing or incorrectly typed fields and trailing JSON are rejected.
+Success returns `200` with a receipt: `id`, `request_id`, `accepted_at`, and
+applicable `reason`, `operator`, `repository`, `environment`, and `commit` fields.
+Malformed input returns `400`; missing tickets return `404`; state/evidence conflicts return `409`.
+An unavailable daemon release service returns `503`.
+
+The daemon persists acceptance before acknowledgement and each ticket's release evidence before enqueueing.
+Success does not guarantee immediate continuation. Dependencies, ownership, capacity and recovery still apply.
+Receipts and application journals live under `<tickets_dir>/.workflow-events/`, outside
+logs and the reserved `.kontora` directory. They have no automatic expiry.
+Wait state, invocation/finalization journals and `<logs_dir>/<ticket>/workflow-probe.json`
+are also needed for recovery. Probe output uses `waits/<wait-id>/<poll-id>.log` in that log directory.
+Do not discard recovery journals as ordinary disposable output.
+
+Existing daemon authentication and access controls apply; there is no new approval identity model.
+The server records `OperatorIdentity` when available. Clients cannot supply `operator`.
+Shared-token or unauthenticated access must not be presented as verified named approval.
+Condition commands must be trusted and idempotent; daemon subprocess permissions apply without a sandbox.
+Recovery covers daemon-process interruption, not exactly-once shell effects or host-power-loss durability.
 
 ### Stage changes
 
@@ -518,7 +614,7 @@ HTTP lifecycle endpoint: agents use Pi's `kontora_result` or `kontora result`
 with daemon-bound execution context. See [schema, environment, and CLI transport](cli.md#supervised-results).
 Non-graph unrelated tickets and passive-epic children, annotations, and
 assistant-only runs retain their existing result requirements. Graph agent nodes
-independently require version 2 results. Completing a stage is not whole-ticket
+independently require version 2 results, or version 3 with `wake`. Completing a stage is not whole-ticket
 completion or human acceptance.
 
 Blocked results and missing/invalid results after a clean supervised run pause

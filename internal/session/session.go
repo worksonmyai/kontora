@@ -45,8 +45,14 @@ func LogPath(logsDir, ticketID, stage string) string {
 	return filepath.Join(logsDir, ticketID, stage+".log")
 }
 
-func GraphLogPath(logsDir, ticketID, nodeID, visitID string) string {
-	return filepath.Join(logsDir, ticketID, nodeID+"."+visitID+".log")
+// GraphLogPath optionally qualifies a visit log by invocation, preserving each
+// continuation and retry. Without an invocation it names the legacy visit log.
+func GraphLogPath(logsDir, ticketID, nodeID, visitID string, invocationIDs ...string) string {
+	identity := nodeID + "." + visitID
+	if len(invocationIDs) > 0 && invocationIDs[0] != "" {
+		identity += "." + invocationIDs[0]
+	}
+	return filepath.Join(logsDir, ticketID, identity+".log")
 }
 
 // EventsPath is the structured activity sidecar for one run of a stage. It sits

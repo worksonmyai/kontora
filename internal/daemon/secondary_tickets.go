@@ -654,6 +654,8 @@ func secondaryClaimRefusal(t *ticket.Ticket) error {
 	switch {
 	case t.IsRunning():
 		return fmt.Errorf("ticket is running (status %s)", t.Status)
+	case t.HasWorkflowWaitAuthority():
+		return fmt.Errorf("ticket has an active workflow wait")
 	case t.InvocationID != "":
 		return fmt.Errorf("ticket has an invocation marker")
 	case t.AnnotationReturnStatus != "":
@@ -676,7 +678,7 @@ func (d *Daemon) claimDestinationAllowed(id string) error {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.tickets[id] != nil || d.executions[id] != nil || d.running[id] != nil || d.queued[id] || d.transferBlocked[id] {
+	if d.tickets[id] != nil || d.executions[id] != nil || d.running[id] != nil || d.queued[id] || d.transferBlocked[id] || d.workflowProbeActiveLocked(id) {
 		return fmt.Errorf("primary ticket identity %s is reserved", id)
 	}
 	if _, ok := d.recoveredReservations[id]; ok {

@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -169,7 +170,11 @@ func (m detailModel) View() string {
 	var b strings.Builder
 
 	// Header: ID + status + back hint
-	header := fmt.Sprintf(" %s · %s", m.ticket.ID, styledStatus(m.ticket.Status))
+	status := styledStatus(m.ticket.Status)
+	if isWaiting(m.ticket) {
+		status = "Waiting"
+	}
+	header := fmt.Sprintf(" %s · %s", m.ticket.ID, status)
 	if !m.ticket.Kontora {
 		header += styleFaint.Render(" · not a kontora ticket")
 	}
@@ -300,7 +305,9 @@ func (m detailModel) hints() []string {
 		if m.ticket.IsRunning() {
 			parts = append(parts, "p pause first to change stages")
 		}
-		if st == ticket.StatusPaused || st == ticket.StatusDone {
+		if isWaiting(m.ticket) && m.ticket.GraphExecution.Wait.Disarmed {
+			parts = append(parts, "r rearm wait")
+		} else if (st == ticket.StatusPaused || st == ticket.StatusDone) && !isWaiting(m.ticket) {
 			parts = append(parts, "r retry")
 		}
 		if isGraph(m.ticket) && !m.ticket.IsRunning() {
@@ -326,6 +333,10 @@ func canSkipStage(t web.TicketInfo) bool {
 
 func isGraph(t web.TicketInfo) bool { return t.GraphDefinition != nil || t.GraphExecution != nil }
 
+func isWaiting(t web.TicketInfo) bool {
+	return t.Status == string(ticket.StatusPaused) && t.GraphExecution != nil && t.GraphExecution.Wait != nil
+}
+
 func (m *detailModel) setLogTargets(info web.TicketInfo) {
 	m.logTargets = nil
 	if !isGraph(info) {
@@ -334,13 +345,23 @@ func (m *detailModel) setLogTargets(info web.TicketInfo) {
 		}
 		return
 	}
+	visitAttempts := make(map[string]int)
 	for _, h := range info.History {
 		if h.Imported {
 			continue
 		}
+		label := fmt.Sprintf("%s · visit %s · attempt %d", h.Stage, h.NodeVisitID, max(h.VisitAttempt, 1))
+		key := h.WorkflowExecutionID + "/" + h.NodeVisitID
+		if h.VisitAttempt > 0 && visitAttempts[key] == h.VisitAttempt {
+			label += " · continuation"
+		}
+		visitAttempts[key] = h.VisitAttempt
+		if h.RunOutcome == string(ticket.RunOutcomeWaiting) {
+			label += " · Waiting"
+		}
 		m.logTargets = append(m.logTargets, logTarget{
 			stage: h.Stage, run: h.Run, visit: h.NodeVisitID, attempt: max(h.VisitAttempt, 1), graph: true,
-			label: fmt.Sprintf("%s · visit %s · attempt %d", h.Stage, h.NodeVisitID, max(h.VisitAttempt, 1)),
+			label: label,
 		})
 	}
 	if info.IsRunning() && info.Stage != "" {
@@ -358,9 +379,13 @@ func (m *detailModel) setLogTargets(info web.TicketInfo) {
 		if info.GraphExecution != nil {
 			attempt = info.GraphExecution.Attempt
 		}
+		label := fmt.Sprintf("%s · visit %s · attempt %d", info.Stage, visit, attempt+1)
+		if info.GraphExecution != nil && info.GraphExecution.Continuation {
+			label += " · continuation"
+		}
 		m.logTargets = append(m.logTargets, logTarget{
 			stage: info.Stage, run: run, visit: visit, attempt: attempt + 1, graph: true,
-			label: fmt.Sprintf("%s · visit %s · attempt %d · live", info.Stage, visit, attempt+1),
+			label: label + " · live",
 		})
 	}
 }
@@ -381,7 +406,17 @@ func (m detailModel) ticketContent() string {
 	if d := m.ticket.GraphDefinition; d != nil {
 		fmt.Fprintf(&b, "entry: %s\n", d.Entry)
 		for _, n := range d.Nodes {
-			fmt.Fprintf(&b, "%s [%s] template=%s\n", n.ID, n.Type, n.Template)
+			fmt.Fprintf(&b, "%s [%s] template=%s", n.ID, n.Type, n.Template)
+			if n.Mode != "" {
+				fmt.Fprintf(&b, " · mode %s · environment %s", n.Mode, n.Environment)
+			}
+			if n.Timeout != "" {
+				fmt.Fprintf(&b, " · timeout %s", n.Timeout)
+			}
+			if n.Wake != nil {
+				fmt.Fprintf(&b, " · wake max %d · check timeout %s", n.Wake.Max, n.Wake.CheckTimeout)
+			}
+			b.WriteByte('\n')
 		}
 		for _, e := range d.Edges {
 			fmt.Fprintf(&b, "%s.%s -> %s\n", e.From.Node, e.From.Port, e.To)
@@ -391,6 +426,23 @@ func (m detailModel) ticketContent() string {
 		fmt.Fprintf(&b, "execution: %s · revision %d · visit %s\n", x.ExecutionID, x.Revision, x.VisitID)
 		if r := x.LastResult; r != nil {
 			fmt.Fprintf(&b, "result: %s · visit %s · %s · verdict %s\n", r.NodeID, r.VisitID, r.Outcome, r.Verdict)
+		}
+		fmt.Fprintf(&b, "wake count: %d · continuation=%t\n", x.WakeCount, x.Continuation)
+		if x.Wake != nil {
+			fmt.Fprintf(&b, "wake: %s · wait %s · count %d\n%s\nnext: %s\n", x.Wake.Reason, x.Wake.WaitID, x.Wake.Count, x.Wake.Output, x.Wake.Next)
+		}
+		if x.Wait != nil {
+			writeWait(&b, "Waiting", x.Wait)
+			if x.Wait.Disarmed {
+				b.WriteString("Wait is disarmed; inspect diagnostics before explicit kontora retry.\n")
+			} else if x.Wait.Kind == "human" {
+				fmt.Fprintf(&b, "release: kontora release %s --execution-id %s --wait-id %s --revision %d --request-id <unique-id> --reason <reason>\n", m.ticket.ID, x.ExecutionID, x.Wait.ID, x.Revision)
+			} else if x.Wait.Kind == "deployment" {
+				fmt.Fprintf(&b, "release: kontora release --repo %s --environment %s --rev <actual-full-deployed-commit> --event-id <unique-id>\n", cli.QuoteShellArg(x.Wait.Worktree), cli.QuoteShellArg(x.Wait.Environment))
+			}
+		}
+		for i := range x.WaitHistory {
+			writeWait(&b, "historical wait", &x.WaitHistory[i])
 		}
 		for _, l := range x.Loops {
 			limit := "unknown"
@@ -404,12 +456,34 @@ func (m detailModel) ticketContent() string {
 		}
 		for _, previous := range x.PreviousExecutions {
 			fmt.Fprintf(&b, "previous execution: %s\n", previous.ExecutionID)
+			if previous.Wait != nil {
+				writeWait(&b, "retained wait", previous.Wait)
+			}
+			for i := range previous.WaitHistory {
+				writeWait(&b, "historical wait", &previous.WaitHistory[i])
+			}
 			for _, e := range previous.Transitions {
 				fmt.Fprintf(&b, "r%d: %s.%s -> %s\n", e.Revision, e.From, e.Port, e.To)
 			}
 		}
 	}
 	return b.String()
+}
+
+func writeWait(b *strings.Builder, label string, w *ticket.WorkflowWait) {
+	fmt.Fprintf(b, "%s: %s · %s · phase %s · visit %s · invocation %s · polls %d · disarmed=%t\n", label, w.ID, w.Kind, w.Phase, w.VisitID, w.InvocationID, w.PollCount, w.Disarmed)
+	for _, item := range []struct {
+		label string
+		at    time.Time
+	}{{"until", w.Until}, {"deadline", w.Deadline}, {"next poll", w.NextPoll}} {
+		if !item.at.IsZero() {
+			fmt.Fprintf(b, "%s: %s\n", item.label, item.at.Format(time.RFC3339))
+		}
+	}
+	fmt.Fprintf(b, "command: %s · poll interval: %s\nnext: %s\noutput: %s · truncated=%t\nlog: %s\nrepository: %s · environment: %s · required commit: %s\n", w.Command, w.Poll, w.Next, w.Output, w.OutputTruncated, w.LogPath, w.Repository, w.Environment, w.RequiredCommit)
+	if w.Receipt != nil {
+		fmt.Fprintf(b, "receipt: %s · request %s · %s · commit %s · accepted %s\n", w.Receipt.ID, w.Receipt.RequestID, w.Receipt.Reason, w.Receipt.Commit, w.Receipt.AcceptedAt.Format(time.RFC3339))
+	}
 }
 
 func writeMeta(b *strings.Builder, key, value string) {

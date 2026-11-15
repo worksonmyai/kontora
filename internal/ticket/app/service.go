@@ -110,6 +110,34 @@ func (s *Service) SetStatus(id string, status ticket.Status) (Result, error) {
 	return mutate(s, func(scoped *Service) (Result, error) { return scoped.setStatus(id, status) })
 }
 
+func validateStatusMove(t *ticket.Ticket, resolved string, status ticket.Status) error {
+	if err := refuseEpic(t, resolved, "move"); err != nil {
+		return err
+	}
+
+	hasWait := t.HasWorkflowWaitAuthority()
+	if hasWait && status != ticket.StatusPaused && status != ticket.StatusCancelled {
+		return fmt.Errorf("%w: workflow wait owns the next transition; use pause, retry, cancel, or workflow-restart", ErrInvalidState)
+	}
+	if t.Status == status && (!hasWait || status != ticket.StatusPaused || t.GraphState.Wait == nil || t.GraphState.Wait.Disarmed) {
+		return fmt.Errorf("%w: ticket %s is already %s", ErrInvalidState, resolved, status)
+	}
+
+	// Archived is terminal: the archive sweep and a direct file edit are the only
+	// ways in, and there is no way back out through a move.
+	if t.Status == ticket.StatusArchived {
+		return fmt.Errorf("%w: ticket %s is archived", ErrInvalidState, resolved)
+	}
+
+	// Paused means "a run was stopped and parked". A ticket that already closed
+	// has no run to stop, so the move would write a status the daemon never
+	// produces; retry is the way back from done or cancelled.
+	if status == ticket.StatusPaused && closedStatuses[t.Status] {
+		return fmt.Errorf("%w: cannot pause ticket %s in status %s (use retry to reopen it)", ErrInvalidState, resolved, t.Status)
+	}
+	return nil
+}
+
 func (s *Service) setStatus(id string, status ticket.Status) (Result, error) {
 	if !s.isValidSetStatus(status) {
 		return Result{}, fmt.Errorf("invalid status %q", status)
@@ -124,27 +152,20 @@ func (s *Service) setStatus(id string, status ticket.Status) (Result, error) {
 		return Result{}, err
 	}
 
-	if err := refuseEpic(st.Ticket, resolved, "move"); err != nil {
+	if err := validateStatusMove(st.Ticket, resolved, status); err != nil {
 		return Result{}, err
 	}
 
-	if st.Ticket.Status == status {
-		return Result{}, fmt.Errorf("%w: ticket %s is already %s", ErrInvalidState, resolved, status)
+	switch string(status) {
+	case string(ticket.StatusPaused):
+		if _, err := PauseWorkflowWait(st.Ticket); err != nil {
+			return Result{}, err
+		}
+	case string(ticket.StatusCancelled):
+		if err := cancelWorkflowWait(st.Ticket); err != nil {
+			return Result{}, err
+		}
 	}
-
-	// Archived is terminal: the archive sweep and a direct file edit are the only
-	// ways in, and there is no way back out through a move.
-	if st.Ticket.Status == ticket.StatusArchived {
-		return Result{}, fmt.Errorf("%w: ticket %s is archived", ErrInvalidState, resolved)
-	}
-
-	// Paused means "a run was stopped and parked". A ticket that already closed
-	// has no run to stop, so the move would write a status the daemon never
-	// produces; retry is the way back from done or cancelled.
-	if status == ticket.StatusPaused && closedStatuses[st.Ticket.Status] {
-		return Result{}, fmt.Errorf("%w: cannot pause ticket %s in status %s (use retry to reopen it)", ErrInvalidState, resolved, st.Ticket.Status)
-	}
-
 	if status == ticket.StatusTodo {
 		if err := ValidateWorkflowReentry(s.cfg(), st.Ticket); err != nil {
 			return Result{}, err
@@ -258,7 +279,12 @@ func (s *Service) retry(id string) (Result, error) {
 	if err := st.Ticket.SetField("attempt", 0); err != nil {
 		return Result{}, fmt.Errorf("setting attempt: %w", err)
 	}
-	if err := st.Ticket.SetField("status", string(ticket.StatusTodo)); err != nil {
+	status := ticket.StatusTodo
+	if state := st.Ticket.GraphState; state != nil && state.Wait != nil && (!state.Continuation || state.Wait.Phase != "ready") {
+		// A re-armed wait is still parked; only its scheduler may release it.
+		status = ticket.StatusPaused
+	}
+	if err := st.Ticket.SetField("status", string(status)); err != nil {
 		return Result{}, fmt.Errorf("setting status: %w", err)
 	}
 	if err := st.Ticket.SetField("last_error", ""); err != nil {
@@ -275,7 +301,7 @@ func (s *Service) retry(id string) (Result, error) {
 	s.runtime.Enqueue(st.Ticket)
 	s.runtime.ReconcileDependencies(resolved)
 	s.runtime.BroadcastUpdated(resolved)
-	return Result{ID: resolved, Status: string(ticket.StatusTodo)}, nil
+	return Result{ID: resolved, Status: string(status)}, nil
 }
 
 // Skip advances a ticket to the next pipeline stage, or marks it done
@@ -550,6 +576,9 @@ func (s *Service) init(id string, req InitRequest) (Result, error) {
 	}
 
 	t := st.Ticket
+	if t.HasWorkflowWaitAuthority() {
+		return Result{}, fmt.Errorf("%w: cannot initialize a ticket with an active workflow wait", ErrInvalidState)
+	}
 	if t.Kind == ticket.KindEpic {
 		return s.initEpic(st, req)
 	}

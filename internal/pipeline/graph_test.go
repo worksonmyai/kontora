@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -484,6 +485,333 @@ func TestAdvanceGraphVisitOverflow(t *testing.T) {
 	require.Equal(t, "graph visit overflow", result.Reason)
 	require.Equal(t, uint64(math.MaxUint64), result.State.Visit)
 	require.Nil(t, result.Next)
+}
+
+func declaredWaitGraph(mode string) *config.WorkflowGraph {
+	node := config.WorkflowNode{ID: "wait", Type: "wait", Mode: mode}
+	if mode == "deployment" {
+		node.Environment = "production"
+	}
+	return &config.WorkflowGraph{Version: 2, Entry: "wait", Nodes: []config.WorkflowNode{
+		node, {ID: "done", Type: "end", Status: "done"}, {ID: "expired", Type: "end", Status: "human_review"},
+	}, Edges: []config.WorkflowEdge{graphEdge("wait", "released", "done")}}
+}
+
+// The daemon supplies identity, timing and release evidence, not traversal.
+func registerGraphWait(a GraphAdvance) *ticket.GraphState {
+	s := a.State.Clone()
+	s.Wait = &ticket.WorkflowWait{
+		ID: "wait-id", Kind: a.Wait.Mode, Phase: "pending", ExecutionID: s.ExecutionID,
+		NodeID: a.Stage, VisitID: s.VisitID, Environment: a.Wait.Environment,
+		Receipt: &ticket.WorkflowReceipt{ID: "receipt"},
+	}
+	return s
+}
+
+func TestAdvanceGraphEntryWait(t *testing.T) {
+	for _, mode := range []string{"human", "deployment"} {
+		t.Run(mode, func(t *testing.T) {
+			graph, state := declaredWaitGraph(mode), freshGraphState()
+			state.Version = 2
+			before := state.Clone()
+			graphBefore := graphBytes(t, graph)
+			parked := AdvanceGraph(graph, "", state, nil)
+			require.Equal(t, ticket.StatusPaused, parked.Status)
+			require.Empty(t, parked.Reason)
+			require.Equal(t, "wait", parked.Stage)
+			require.Equal(t, &graph.Nodes[0], parked.Wait)
+			require.Nil(t, parked.Next)
+			require.Nil(t, parked.State.Wait)
+			require.Nil(t, parked.State.LastResult)
+			require.Zero(t, parked.State.Visit)
+			require.Empty(t, parked.State.VisitID)
+			require.Empty(t, parked.State.Transitions)
+			require.Empty(t, parked.State.WaitHistory)
+			require.Equal(t, uint64(1), parked.State.Revision)
+			require.Equal(t, before, state)
+			require.Equal(t, graphBefore, graphBytes(t, graph))
+
+			registered := registerGraphWait(parked)
+			registeredBefore := registered.Clone()
+			blocked := AdvanceGraph(graph, parked.Stage, registered, nil)
+			require.Equal(t, ticket.StatusPaused, blocked.Status)
+			require.NotEmpty(t, blocked.Reason)
+			require.Nil(t, blocked.Next)
+			require.Nil(t, blocked.Wait)
+			require.Empty(t, blocked.Edges)
+			require.Equal(t, registered.Wait, blocked.State.Wait)
+
+			done := ReleaseGraphWait(graph, parked.Stage, registered, "released")
+			require.Equal(t, ticket.StatusDone, done.Status)
+			require.Equal(t, "done", done.Stage)
+			require.Nil(t, done.Next)
+			require.Nil(t, done.Wait)
+			require.Nil(t, done.State.Wait)
+			require.Zero(t, done.State.Visit)
+			require.Nil(t, done.State.LastResult)
+			require.Equal(t, []ticket.WorkflowWait{*registered.Wait}, done.State.WaitHistory)
+			require.Equal(t, uint64(2), done.State.Revision)
+			require.Equal(t, []ticket.GraphTransition{{From: "wait", Port: "released", To: "done", Revision: 2}}, done.Edges)
+			require.Equal(t, done.Edges, done.State.Transitions)
+			require.Equal(t, registeredBefore, registered)
+			done.State.WaitHistory[0].Receipt.ID = "changed"
+			require.Equal(t, "receipt", registered.Wait.Receipt.ID)
+			parked.Wait.Environment = "changed"
+			require.Equal(t, graphBefore, graphBytes(t, graph))
+		})
+	}
+}
+
+func TestReleaseGraphWaitRouting(t *testing.T) {
+	for _, tc := range []struct {
+		name, port, target string
+		status             ticket.Status
+	}{
+		{"release", "released", "done", ticket.StatusDone},
+		{"timeout", "timeout", "expired", ticket.StatusHumanReview},
+		{"release through loop", "released", "loop", ticket.StatusDone},
+		{"release to another wait", "released", "second", ticket.StatusPaused},
+		{"release to executable", "released", "run", ticket.StatusTodo},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			graph := declaredWaitGraph("human")
+			graph.Nodes[0].Timeout = config.Duration{Duration: time.Hour}
+			graph.Nodes = append(graph.Nodes, config.WorkflowNode{ID: "loop", Type: "loop"}, config.WorkflowNode{ID: "second", Type: "wait", Mode: "human"}, config.WorkflowNode{ID: "run", Type: "agent"})
+			graph.Edges[0].To = tc.target
+			graph.Edges = append(graph.Edges, graphEdge("wait", "timeout", "expired"), graphEdge("loop", "exhausted", "done"), graphEdge("second", "released", "done"))
+			state := freshGraphState()
+			state.Version = 2
+			parked := AdvanceGraph(graph, "", state, nil)
+			require.NotNil(t, parked.Wait)
+			result := ReleaseGraphWait(graph, parked.Stage, registerGraphWait(parked), tc.port)
+			require.False(t, result.Rejected)
+			require.Equal(t, tc.status, result.Status)
+			if tc.target == "loop" {
+				require.Equal(t, "loop loop exhausted", result.Reason)
+			} else {
+				require.Empty(t, result.Reason)
+			}
+			if tc.target == "run" {
+				require.Equal(t, "run", result.Next.ID)
+				require.Equal(t, uint64(1), result.State.Visit)
+			} else {
+				require.Nil(t, result.Next)
+				require.Zero(t, result.State.Visit)
+			}
+			require.Len(t, result.State.WaitHistory, 1)
+			require.Nil(t, result.State.Wait)
+			require.Equal(t, tc.port, result.Edges[0].Port)
+			if tc.target == "second" {
+				require.Equal(t, "second", result.Wait.ID)
+			} else {
+				require.Nil(t, result.Wait)
+			}
+		})
+	}
+}
+
+func TestAdvanceGraphWaitPreservesResult(t *testing.T) {
+	for _, verdict := range []string{"approve", "changes"} {
+		t.Run(verdict, func(t *testing.T) {
+			graph := conditionGraph("verdict", "approve")
+			graph.Nodes = append(graph.Nodes, config.WorkflowNode{ID: "wait", Type: "wait", Mode: "human"})
+			graph.Edges[0].To = "wait"
+			graph.Edges = append(graph.Edges, graphEdge("wait", "released", "condition"))
+			state := freshGraphState()
+			state.Version = 2
+			start := AdvanceGraph(graph, "", state, nil)
+			completion := completeGraphNode(start)
+			completion.Verdict = verdict
+			parked := AdvanceGraph(graph, start.Stage, start.State, completion)
+			require.Equal(t, ticket.StatusPaused, parked.Status)
+			require.Equal(t, "wait", parked.Stage)
+			require.Nil(t, parked.Next)
+			require.NotNil(t, parked.Wait)
+			require.Equal(t, start.State.VisitID, parked.State.VisitID)
+			require.Equal(t, verdict, parked.State.LastResult.Verdict)
+			require.Len(t, parked.Edges, 1)
+			registered := registerGraphWait(parked)
+			result := ReleaseGraphWait(graph, parked.Stage, registered, "released")
+			require.Equal(t, registered.LastResult, result.State.LastResult)
+			require.Equal(t, start.State.Visit, result.State.Visit)
+			require.Len(t, result.Edges, 2)
+			if verdict == "approve" {
+				require.Equal(t, ticket.StatusDone, result.Status)
+				require.Equal(t, "true", result.Edges[1].Port)
+			} else {
+				require.Equal(t, ticket.StatusPaused, result.Status)
+				require.Equal(t, "false", result.Edges[1].Port)
+			}
+		})
+	}
+}
+
+func TestReleaseGraphWaitInvalidState(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*config.WorkflowGraph, *string, *ticket.GraphState, *string)
+	}{
+		{"missing wait", func(_ *config.WorkflowGraph, _ *string, s *ticket.GraphState, _ *string) { s.Wait = nil }},
+		{"missing wait ID", func(_ *config.WorkflowGraph, _ *string, s *ticket.GraphState, _ *string) { s.Wait.ID = "" }},
+		{"wrong execution", func(_ *config.WorkflowGraph, _ *string, s *ticket.GraphState, _ *string) { s.Wait.ExecutionID = "old" }},
+		{"wrong node", func(_ *config.WorkflowGraph, _ *string, s *ticket.GraphState, _ *string) { s.Wait.NodeID = "other" }},
+		{"wrong visit", func(_ *config.WorkflowGraph, _ *string, s *ticket.GraphState, _ *string) {
+			s.Wait.VisitID = "execution.1"
+		}},
+		{"wrong kind", func(_ *config.WorkflowGraph, _ *string, s *ticket.GraphState, _ *string) { s.Wait.Kind = "timer" }},
+		{"agent invocation", func(_ *config.WorkflowGraph, _ *string, s *ticket.GraphState, _ *string) {
+			s.Wait.InvocationID = "invocation"
+		}},
+		{"wrong environment", func(_ *config.WorkflowGraph, _ *string, s *ticket.GraphState, _ *string) {
+			s.Wait.Environment = "other"
+		}},
+		{"wrong cursor", func(_ *config.WorkflowGraph, stage *string, _ *ticket.GraphState, _ *string) { *stage = "done" }},
+		{"empty cursor", func(_ *config.WorkflowGraph, stage *string, _ *ticket.GraphState, _ *string) { *stage = "" }},
+		{"unknown cursor", func(_ *config.WorkflowGraph, stage *string, _ *ticket.GraphState, _ *string) { *stage = "unknown" }},
+		{"legacy state", func(_ *config.WorkflowGraph, _ *string, s *ticket.GraphState, _ *string) { s.Version = 1 }},
+		{"unsupported state", func(_ *config.WorkflowGraph, _ *string, s *ticket.GraphState, _ *string) { s.Version = 3 }},
+		{"revision overflow", func(_ *config.WorkflowGraph, _ *string, s *ticket.GraphState, _ *string) { s.Revision = math.MaxUint64 }},
+		{"missing execution", func(_ *config.WorkflowGraph, _ *string, s *ticket.GraphState, _ *string) { s.ExecutionID = "" }},
+		{"invalid port", func(_ *config.WorkflowGraph, _ *string, _ *ticket.GraphState, port *string) { *port = "complete" }},
+		{"timeout disabled", func(_ *config.WorkflowGraph, _ *string, _ *ticket.GraphState, port *string) { *port = "timeout" }},
+		{"missing release edge", func(g *config.WorkflowGraph, _ *string, _ *ticket.GraphState, _ *string) { g.Edges = nil }},
+		{"missing timeout edge", func(g *config.WorkflowGraph, _ *string, _ *ticket.GraphState, _ *string) {
+			g.Nodes[0].Timeout.Duration = time.Hour
+		}},
+		{"unexpected timeout edge", func(g *config.WorkflowGraph, _ *string, _ *ticket.GraphState, _ *string) {
+			g.Edges = append(g.Edges, graphEdge("wait", "timeout", "expired"))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			graph, state := declaredWaitGraph("human"), freshGraphState()
+			state.Version = 2
+			parked := AdvanceGraph(graph, "", state, nil)
+			state, stage, port := registerGraphWait(parked), parked.Stage, "released"
+			tc.change(graph, &stage, state, &port)
+			before := state.Clone()
+			result := ReleaseGraphWait(graph, stage, state, port)
+			require.True(t, result.Rejected)
+			require.Equal(t, ticket.StatusPaused, result.Status)
+			require.NotEmpty(t, result.Reason)
+			require.Nil(t, result.Next)
+			require.Nil(t, result.Wait)
+			require.Empty(t, result.Edges)
+			require.Empty(t, result.State.WaitHistory)
+			require.Equal(t, before.Wait, result.State.Wait)
+			require.Equal(t, before, state)
+		})
+	}
+}
+
+func TestAdvanceGraphWaitSafety(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*config.WorkflowGraph, *ticket.GraphState)
+	}{
+		{"legacy state", func(_ *config.WorkflowGraph, s *ticket.GraphState) { s.Version = 1 }},
+		{"unknown mode", func(g *config.WorkflowGraph, _ *ticket.GraphState) { g.Nodes[0].Mode = "timer" }},
+		{"human environment", func(g *config.WorkflowGraph, _ *ticket.GraphState) { g.Nodes[0].Environment = "production" }},
+		{"deployment environment missing", func(g *config.WorkflowGraph, _ *ticket.GraphState) { g.Nodes[0].Mode = "deployment" }},
+		{"negative timeout", func(g *config.WorkflowGraph, _ *ticket.GraphState) { g.Nodes[0].Timeout.Duration = -time.Second }},
+		{"missing release edge", func(g *config.WorkflowGraph, _ *ticket.GraphState) { g.Edges = nil }},
+		{"missing timeout edge", func(g *config.WorkflowGraph, _ *ticket.GraphState) { g.Nodes[0].Timeout.Duration = time.Hour }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			graph, state := declaredWaitGraph("human"), freshGraphState()
+			state.Version = 2
+			tc.change(graph, state)
+			result := AdvanceGraph(graph, "", state, nil)
+			require.Equal(t, ticket.StatusPaused, result.Status)
+			require.NotEmpty(t, result.Reason)
+			require.Nil(t, result.Next)
+			require.Nil(t, result.Wait)
+			require.Empty(t, result.Edges)
+			require.Zero(t, result.State.Visit)
+		})
+	}
+	for _, kind := range []string{"agent", "check"} {
+		for _, completion := range []bool{false, true} {
+			t.Run(fmt.Sprintf("active wait cannot bypass/%s/completion=%t", kind, completion), func(t *testing.T) {
+				graph, state := executableGraph(kind), freshGraphState()
+				state.Version = 2
+				start := AdvanceGraph(graph, "", state, nil)
+				// Even malformed wait metadata must never permit normal pickup.
+				start.State.Wait = &ticket.WorkflowWait{}
+				var c *GraphCompletion
+				if completion {
+					c = completeGraphNode(start)
+				}
+				result := AdvanceGraph(graph, start.Stage, start.State, c)
+				require.Equal(t, ticket.StatusPaused, result.Status)
+				require.NotEmpty(t, result.Reason)
+				require.Nil(t, result.Next)
+				require.Empty(t, result.Edges)
+				require.Nil(t, result.State.LastResult)
+			})
+		}
+	}
+}
+
+func TestAdvanceGraphContinuation(t *testing.T) {
+	for _, kind := range []string{"agent", "check"} {
+		t.Run(kind, func(t *testing.T) {
+			graph, state := executableGraph(kind), freshGraphState()
+			graph.Nodes = append(graph.Nodes, config.WorkflowNode{ID: "other", Type: kind})
+			if kind == "agent" {
+				graph.Nodes[0].Wake = &config.WorkflowWake{Max: 3}
+			}
+			graph.Edges[0].To = "other"
+			state.Version = 2
+			start := AdvanceGraph(graph, "", state, nil)
+			start.State.Wake = &ticket.WakeContext{Reason: "ready", Count: 2, WaitID: "wait-id", Next: "Continue"}
+			start.State.WakeCount = 2
+			start.State.Continuation = true
+			start.State.WaitHistory = []ticket.WorkflowWait{{ID: "previous-wait"}}
+			before := start.State.Clone()
+			resumed := AdvanceGraph(graph, start.Stage, start.State, nil)
+			require.Equal(t, ticket.StatusTodo, resumed.Status)
+			require.Equal(t, start.Next, resumed.Next)
+			require.Equal(t, start.State.Visit, resumed.State.Visit)
+			require.Equal(t, start.State.VisitID, resumed.State.VisitID)
+			require.Equal(t, start.State.Wake, resumed.State.Wake)
+			require.Equal(t, 2, resumed.State.WakeCount)
+			require.True(t, resumed.State.Continuation)
+			require.Equal(t, before, start.State)
+			if kind == "agent" {
+				resumed.Next.Wake.Max = 99
+				require.Equal(t, 3, graph.Nodes[0].Wake.Max)
+			}
+			next := AdvanceGraph(graph, resumed.Stage, resumed.State, completeGraphNode(resumed))
+			require.Equal(t, "other", next.Stage)
+			require.NotNil(t, next.Next)
+			require.Equal(t, start.State.Visit+1, next.State.Visit)
+			require.Nil(t, next.State.Wake)
+			require.Zero(t, next.State.WakeCount)
+			require.False(t, next.State.Continuation)
+			require.Equal(t, start.State.WaitHistory, next.State.WaitHistory)
+		})
+	}
+}
+
+func TestAdvanceGraphStateVersionCompatibility(t *testing.T) {
+	for _, version := range []int{0, 1, 2} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			graph, state := executableGraph("agent"), freshGraphState()
+			state.Version = version
+			start := AdvanceGraph(graph, "", state, nil)
+			want := max(version, 1)
+			require.Equal(t, want, start.State.Version)
+			require.Equal(t, ticket.StatusTodo, start.Status)
+			result := AdvanceGraph(graph, start.Stage, start.State, completeGraphNode(start))
+			require.Equal(t, want, result.State.Version)
+			require.Equal(t, ticket.StatusDone, result.Status)
+			require.Nil(t, result.State.Wait)
+			require.Nil(t, result.State.Wake)
+			require.Zero(t, result.State.WakeCount)
+			require.False(t, result.State.Continuation)
+			require.Empty(t, result.State.WaitHistory)
+		})
+	}
 }
 
 func TestAdvanceGraphRuntimeControlCycle(t *testing.T) {

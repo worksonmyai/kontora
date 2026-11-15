@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,6 +22,8 @@ type TicketData struct {
 
 type Data struct {
 	Ticket TicketData
+	// Wake is the frozen continuation context; nil leaves the prompt unchanged.
+	Wake *ticket.WakeContext
 }
 
 // Options controls optional data plumbed into template helpers.
@@ -54,7 +57,8 @@ func RenderWithOptions(tmpl string, data Data, workDir string, opts Options) (st
 	}
 
 	funcMap := template.FuncMap{
-		"file": fileHelper(workDir),
+		"file":         fileHelper(workDir),
+		"fileOptional": fileOptionalHelper(workDir),
 		"plannotatorReview": func() string {
 			path, ok := feedbackPath(opts, data, logger, "plannotatorReview", ".md")
 			if !ok {
@@ -101,6 +105,25 @@ func RenderWithOptions(tmpl string, data Data, workDir string, opts Options) (st
 	var buf strings.Builder
 	if err := t.Execute(&buf, data); err != nil {
 		return "", err
+	}
+	if data.Wake != nil {
+		fmt.Fprintf(&buf, "\n\n## Workflow wake handoff\nWait ID: %s\nReason: %s\n", data.Wake.WaitID, data.Wake.Reason)
+		if data.Wake.Count > 0 {
+			fmt.Fprintf(&buf, "Wake count: %d\n", data.Wake.Count)
+		}
+		if data.Wake.Output != "" {
+			fmt.Fprintf(&buf, "\nOutput:\n%s\n", data.Wake.Output)
+		}
+		if data.Wake.Receipt != nil {
+			receipt, err := json.Marshal(data.Wake.Receipt)
+			if err != nil {
+				return "", fmt.Errorf("rendering wake receipt: %w", err)
+			}
+			fmt.Fprintf(&buf, "\nRelease receipt:\n%s\n", receipt)
+		}
+		if data.Wake.Next != "" {
+			fmt.Fprintf(&buf, "\nContinuation instructions:\n%s\n", data.Wake.Next)
+		}
 	}
 	return buf.String(), nil
 }

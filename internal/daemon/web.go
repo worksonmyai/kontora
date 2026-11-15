@@ -3,7 +3,6 @@ package daemon
 import (
 	"bytes"
 	"container/heap"
-	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -456,6 +455,19 @@ func (d *Daemon) DeleteTicket(id string) error {
 		return web.ErrTicketNotFound
 	}
 	filePath := ts.filePath
+	if ts.ticket.HasWorkflowWaitAuthority() || d.workflowProbeActiveLocked(id) {
+		d.mu.Unlock()
+		return fmt.Errorf("%w: cancel the active workflow wait before deleting ticket %s", web.ErrInvalidState, id)
+	}
+	fresh, err := ticket.ParseFile(filePath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		d.mu.Unlock()
+		return err
+	}
+	if fresh != nil && fresh.HasWorkflowWaitAuthority() {
+		d.mu.Unlock()
+		return fmt.Errorf("%w: cancel the active workflow wait before deleting ticket %s", web.ErrInvalidState, id)
+	}
 	kind := ts.ticket.Kind
 	cancel, running := d.running[id]
 	d.mu.Unlock()
@@ -563,15 +575,24 @@ func (d *Daemon) PauseTicket(id string) error {
 		return admissionErr
 	}
 	defer release()
-	var cancel context.CancelFunc
 	if err := d.mutateTicket(id, func(t *ticket.Ticket) error {
 		if t.IsPassiveEpic() {
 			return fmt.Errorf("%w: %s is an epic, its status is derived from its children", web.ErrInvalidState, id)
 		}
-		if !t.IsRunning() {
-			return fmt.Errorf("%w: cannot pause ticket %s in status %s (only a running ticket can be paused)", web.ErrInvalidState, id, t.Status)
+		waiting := t.HasWorkflowWaitAuthority()
+		// The journal can precede the ticket binding. Preserve its revision even
+		// without invocation_id; an unreadable journal also requires recovery.
+		if waiting && t.InvocationID == "" {
+			rec, err := loadExecution(d.config(), id)
+			if errors.Is(err, os.ErrNotExist) || (err == nil && !executionLifecycleMatches(t, rec)) {
+				if _, err := app.PauseWorkflowWait(t); err != nil {
+					return err
+				}
+			}
 		}
-		cancel = d.running[id]
+		if !t.IsRunning() && !waiting {
+			return fmt.Errorf("%w: cannot pause ticket %s in status %s (only a running ticket or workflow wait can be paused)", web.ErrInvalidState, id, t.Status)
+		}
 		if err := t.SetField("status", "paused"); err != nil {
 			return err
 		}
@@ -579,9 +600,8 @@ func (d *Daemon) PauseTicket(id string) error {
 	}); err != nil {
 		return err
 	}
-	if cancel != nil {
-		cancel()
-	}
+	(&daemonRuntime{d: d}).Cancel(id)
+	d.signalWorkflowWait()
 	return nil
 }
 
@@ -592,7 +612,7 @@ func (d *Daemon) RetryTicket(id string) error {
 		return admissionErr
 	}
 	defer release()
-	_, err := d.svc.Retry(id)
+	_, err := d.workflowRetryService(id, true).Retry(id)
 	return mapAppError(err)
 }
 
@@ -616,6 +636,9 @@ func (d *Daemon) RunTicket(id string) error {
 			return err
 		}
 		t := st.Ticket
+		if t.HasWorkflowWaitAuthority() || d.workflowProbeActiveLocked(id) {
+			return fmt.Errorf("%w: workflow wait owns the next transition; use retry after its probe stops", web.ErrInvalidState)
+		}
 		if !t.Kontora {
 			return fmt.Errorf("%w: ticket is not initialized", web.ErrInvalidState)
 		}
@@ -730,7 +753,11 @@ func (d *Daemon) MoveTicket(id string, newStatus string) error {
 	d.mu.Lock()
 	ts, known := d.tickets[id]
 	isEpic := known && ts.ticket.IsPassiveEpic()
+	hasWait := known && ts.ticket.GraphState != nil && ts.ticket.GraphState.Wait != nil
 	d.mu.Unlock()
+	if hasWait && (newStatus == "todo" || newStatus == "in_progress") {
+		return fmt.Errorf("%w: use retry to re-arm the workflow wait", web.ErrInvalidState)
+	}
 	if isEpic {
 		return fmt.Errorf("%w: %s is an epic, its status is derived from its children", web.ErrInvalidState, id)
 	}
@@ -744,7 +771,8 @@ func (d *Daemon) MoveTicket(id string, newStatus string) error {
 		if err := d.RunTicket(id); err == nil {
 			return nil
 		}
-		return d.RetryTicket(id)
+		_, err := d.workflowRetryService(id, false).Retry(id)
+		return mapAppError(err)
 	default:
 		switch newStatus {
 		case "open", "done", "cancelled", "human_review":
@@ -1252,7 +1280,7 @@ func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 				newestRun = h.Run
 			}
 		}
-		_, graphStale, graphLog = cli.GraphRunLog(ts.ticket, "", q.Stage, q.Run)
+		_, graphStale, graphLog = cli.GraphRunLog(ts.ticket, expandTilde(d.config().LogsDir), q.Stage, q.Run)
 		stageRunning = ts.ticket.IsRunning() && ts.ticket.Stage == q.Stage
 		nextRun = stageRunIndex(ts.ticket, q.Stage)
 		lr, registered = d.liveRuns[q.ID]

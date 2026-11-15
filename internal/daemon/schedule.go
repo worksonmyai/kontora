@@ -8,6 +8,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -149,6 +150,12 @@ func (d *Daemon) scheduleWriteRefusalLocked(id string, t *ticket.Ticket) error {
 // nil when it can. It guards both ends: the action a person asks for, and the
 // promotion the timer would make. Must be called with d.mu held.
 func (d *Daemon) scheduleSetRefusalLocked(id string, t *ticket.Ticket) error {
+	if t.HasWorkflowWaitAuthority() || d.workflowProbeActiveLocked(id) {
+		return fmt.Errorf("%w: cannot schedule ticket %s with an active workflow wait", web.ErrInvalidState, id)
+	}
+	if err := app.ValidateWorkflowReentry(d.config(), t); err != nil {
+		return err
+	}
 	if !t.Kontora {
 		return fmt.Errorf("%w: ticket %s is not initialized", web.ErrInvalidState, id)
 	}

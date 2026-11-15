@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,10 +59,22 @@ func fileHelper(workDir string) func(string) (string, error) {
 	}
 }
 
+func fileOptionalHelper(workDir string) func(string) (string, error) {
+	read := fileHelper(workDir)
+	return func(name string) (string, error) {
+		body, err := read(name)
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return body, err
+	}
+}
+
 // CompileAutomation checks syntax without reading files or executing template actions.
 func CompileAutomation(tmpl string) (*template.Template, error) {
 	return template.New("automation").Option("missingkey=error").Funcs(template.FuncMap{
-		"file": func(string) (string, error) { return "", fmt.Errorf("file helper needs a working directory") },
+		"file":         func(string) (string, error) { return "", fmt.Errorf("file helper needs a working directory") },
+		"fileOptional": func(string) (string, error) { return "", fmt.Errorf("fileOptional helper needs a working directory") },
 	}).Parse(tmpl)
 }
 
@@ -70,7 +83,7 @@ func RenderAutomation(tmpl string, data AutomationData, workDir string) (string,
 	if err != nil {
 		return "", err
 	}
-	t.Funcs(template.FuncMap{"file": fileHelper(workDir)})
+	t.Funcs(template.FuncMap{"file": fileHelper(workDir), "fileOptional": fileOptionalHelper(workDir)})
 	var buf strings.Builder
 	if err := t.Execute(&buf, data); err != nil {
 		return "", err

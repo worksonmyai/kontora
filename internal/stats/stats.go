@@ -59,9 +59,11 @@ type Run struct {
 	OutcomeReason string
 	InvocationID  string
 	// Graph provenance identifies intentional visits independently of physical
-	// attempts. Repeated rows for the same execution and visit are retries.
+	// attempts. Repeated rows are retries unless explicitly marked Continuation.
 	WorkflowExecutionID string
 	NodeVisitID         string
+	// Continuation resumes the same visit after a wait, rather than retrying it.
+	Continuation bool
 	// Run is the zero-based legacy stage attempt index, counted by the caller
 	// from preceding stage rows. Graph retries use provenance instead. This is
 	// not the sidecar index, which counts annotation rows too.
@@ -162,7 +164,7 @@ type Bucket struct {
 // out of every token field here, exactly as they are out of the time figures,
 // so a window's stage tokens sum to at most its total.
 //
-// Complete, Blocked, ProtocolError, Failed and Unknown partition semantic
+// Waiting, Complete, Blocked, ProtocolError, Failed and Unknown partition semantic
 // outcomes. RunnerFailed independently counts non-zero runner exits; neither a
 // zero exit nor an unknown/legacy outcome is a verified semantic completion.
 type Stage struct {
@@ -171,6 +173,7 @@ type Stage struct {
 	P90MS         int64   `json:"p90_ms"`
 	Share         float64 `json:"share"`
 	Runs          int     `json:"runs"`
+	Waiting       int     `json:"waiting"`
 	Complete      int     `json:"complete"`
 	Blocked       int     `json:"blocked"`
 	ProtocolError int     `json:"protocol_error"`
@@ -197,6 +200,7 @@ type Agent struct {
 	Model            string  `json:"model,omitempty"`
 	Runs             int     `json:"runs"`
 	FirstPassPct     float64 `json:"first_pass_pct"`
+	FirstPassVisits  int     `json:"first_pass_visits"`
 	MedianMS         int64   `json:"median_ms"`
 	TokensPerRun     *int64  `json:"tokens_per_run"`
 	RetriesPerTicket float64 `json:"retries_per_ticket"`
@@ -230,6 +234,7 @@ type Totals struct {
 	MedianCycleMS      int64   `json:"median_cycle_ms"`
 	MedianCycleDeltaMS *int64  `json:"median_cycle_delta_ms"`
 	FirstPassPct       float64 `json:"first_pass_pct"`
+	FirstPassVisits    int     `json:"first_pass_visits"`
 	TokenCounts
 	TokensDeltaPct *float64 `json:"tokens_delta_pct"`
 	BusiestDay     string   `json:"busiest_day,omitempty"`
@@ -441,9 +446,13 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 		}
 
 		visits := map[runKey]bool{}
+		disqualified := map[runKey]bool{}
 		for _, r := range t.History {
 			key := qualityKey(t.ID, r)
 			retry := recordVisitAttempt(visits, key, r)
+			if r.Kind == "" && (retry || r.RunOutcome != "waiting" && (r.RunOutcome != "complete" || r.ExitCode != 0)) {
+				disqualified[key] = true
+			}
 			if !inRange(r.StartedAt, start, endExcl) {
 				continue
 			}
@@ -486,26 +495,12 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 					a.tokenRuns++
 				}
 				a.tickets[t.ID] = struct{}{}
-				recordFirstPass(a.pairs, key, r, retry)
+				recordFirstPass(a.pairs, key, r, retry || disqualified[key])
 			}
 
 			s := stageAccFor(stages, r.Stage)
 			s.runs++
-			switch r.RunOutcome {
-			case "complete":
-				s.complete++
-			case "blocked":
-				s.blocked++
-			case "protocol_error":
-				s.protocolError++
-			case "failed":
-				s.failed++
-			default:
-				s.unknown++
-			}
-			if r.ExitCode != 0 {
-				s.runnerFailed++
-			}
+			s.recordOutcome(r)
 			if retry {
 				s.retries++
 			}
@@ -519,7 +514,7 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 				s.tokenPerRun = append(s.tokenPerRun, n)
 				s.tokenRuns++
 			}
-			recordFirstPass(firstPassPairs, key, r, retry)
+			recordFirstPass(firstPassPairs, key, r, retry || disqualified[key])
 		}
 	}
 
@@ -539,6 +534,7 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 		agg.hasCycle = true
 		agg.totals.MedianCycleMS = percentile(cycles, 50)
 	}
+	agg.totals.FirstPassVisits = len(firstPassPairs)
 	if len(firstPassPairs) > 0 {
 		clean := 0
 		for _, verified := range firstPassPairs {
@@ -569,7 +565,7 @@ func recordVisitAttempt(visits map[runKey]bool, key runKey, r Run) bool {
 	if r.WorkflowExecutionID == "" || r.NodeVisitID == "" {
 		return r.Run > 0
 	}
-	retry := visits[key]
+	retry := visits[key] && !r.Continuation
 	if r.Kind == "" {
 		visits[key] = true
 	}
@@ -577,6 +573,9 @@ func recordVisitAttempt(visits map[runKey]bool, key runKey, r Run) bool {
 }
 
 func recordFirstPass(pairs map[runKey]bool, key runKey, r Run, retry bool) {
+	if r.RunOutcome == "waiting" {
+		return
+	}
 	verified := !retry && r.RunOutcome == "complete" && r.ExitCode == 0
 	previous, seen := pairs[key]
 	pairs[key] = verified && (!seen || previous)
@@ -589,6 +588,7 @@ type stageAcc struct {
 	tokenPerRun   []int64
 	tokenRuns     int
 	runs          int
+	waiting       int
 	complete      int
 	blocked       int
 	protocolError int
@@ -596,6 +596,26 @@ type stageAcc struct {
 	unknown       int
 	runnerFailed  int
 	retries       int
+}
+
+func (s *stageAcc) recordOutcome(r Run) {
+	switch r.RunOutcome {
+	case "waiting":
+		s.waiting++
+	case "complete":
+		s.complete++
+	case "blocked":
+		s.blocked++
+	case "protocol_error":
+		s.protocolError++
+	case "failed":
+		s.failed++
+	default:
+		s.unknown++
+	}
+	if r.ExitCode != 0 {
+		s.runnerFailed++
+	}
 }
 
 type agentAcc struct {
@@ -762,6 +782,7 @@ func stageSeries(m map[string]*stageAcc) []Stage {
 			P50MS:         percentile(a.durations, 50),
 			P90MS:         percentile(a.durations, 90),
 			Runs:          a.runs,
+			Waiting:       a.waiting,
 			Complete:      a.complete,
 			Blocked:       a.blocked,
 			ProtocolError: a.protocolError,
@@ -800,11 +821,12 @@ func agentSeries(m map[string]*agentAcc) []Agent {
 			}
 		}
 		ag := Agent{
-			Name:         name,
-			Model:        topKey(a.models),
-			Runs:         a.runs,
-			FirstPassPct: pct(clean, len(a.pairs)),
-			MedianMS:     percentile(a.durations, 50),
+			Name:            name,
+			Model:           topKey(a.models),
+			Runs:            a.runs,
+			FirstPassPct:    pct(clean, len(a.pairs)),
+			FirstPassVisits: len(a.pairs),
+			MedianMS:        percentile(a.durations, 50),
 		}
 		if a.tokenRuns > 0 {
 			perRun := a.tokens / int64(a.tokenRuns)

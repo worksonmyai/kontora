@@ -185,6 +185,7 @@ func (d *Daemon) statsTicketsLocked(cfg *config.Config, now time.Time) ([]statsT
 				InvocationID:        h.InvocationID,
 				WorkflowExecutionID: h.WorkflowExecutionID,
 				NodeVisitID:         h.NodeVisitID,
+				Continuation:        h.Continuation,
 				Run:                 attempt,
 				StartedAt:           cloneTime(h.StartedAt),
 				CompletedAt:         cloneTime(h.CompletedAt),

@@ -254,6 +254,8 @@ func TestStatsSnapshotGraphVisitQuality(t *testing.T) {
 		{WorkflowExecutionID: "exec-1", NodeVisitID: "visit-2", RunOutcome: ticket.RunOutcomeFailed},
 		{WorkflowExecutionID: "exec-1", NodeVisitID: "visit-2", RunOutcome: ticket.RunOutcomeComplete},
 		{WorkflowExecutionID: "exec-2", NodeVisitID: "visit-1", RunOutcome: ticket.RunOutcomeComplete},
+		{WorkflowExecutionID: "exec-2", NodeVisitID: "visit-2", RunOutcome: ticket.RunOutcomeWaiting},
+		{WorkflowExecutionID: "exec-2", NodeVisitID: "visit-2", RunOutcome: ticket.RunOutcomeComplete, Continuation: true},
 	}
 	for i := range history {
 		history[i].Stage = "review"
@@ -271,17 +273,18 @@ func TestStatsSnapshotGraphVisitQuality(t *testing.T) {
 	for i, run := range projected.History {
 		assert.Equal(t, history[i].WorkflowExecutionID, run.WorkflowExecutionID)
 		assert.Equal(t, history[i].NodeVisitID, run.NodeVisitID)
+		assert.Equal(t, history[i].Continuation, run.Continuation)
 		assert.Equal(t, i, run.Run, "stage counters increase across visits and executions")
 	}
 
 	result := stats.Compute([]stats.Ticket{projected}, stats.Options{Now: now, Days: 7})
-	assert.Equal(t, 4, result.Totals.Runs)
-	assert.InDelta(t, 200.0/3, result.Totals.FirstPassPct, 0.001, "two of three visits complete first pass")
+	assert.Equal(t, 6, result.Totals.Runs)
+	assert.Equal(t, 75.0, result.Totals.FirstPassPct)
 	require.Len(t, result.Stages, 1)
-	assert.Equal(t, 4, result.Stages[0].Runs)
-	assert.Equal(t, 25.0, result.Stages[0].RetryPct, "only one of four runs retries a visit")
+	assert.Equal(t, 6, result.Stages[0].Runs)
+	assert.InDelta(t, 100.0/6, result.Stages[0].RetryPct, 0.001)
 	require.Len(t, result.Agents, 1)
-	assert.InDelta(t, 200.0/3, result.Agents[0].FirstPassPct, 0.001)
+	assert.Equal(t, 75.0, result.Agents[0].FirstPassPct)
 	assert.Equal(t, 1.0, result.Agents[0].RetriesPerTicket)
 }
 

@@ -79,6 +79,7 @@ func TestInvocationEnv(t *testing.T) {
 	env := inv.Env()
 	assert.Equal(t, map[string]string{
 		"KONTORA_RESULT_AUTOMATION": "", "KONTORA_RESULT_RUN_NUMBER": "",
+		"KONTORA_WAKE_MAX": "", "KONTORA_CHECK_TIMEOUT": "",
 		"KONTORA_RESULT_VERDICTS": "", "KONTORA_WORKFLOW_EXECUTION_ID": "", "KONTORA_NODE_VISIT_ID": "", "KONTORA_DEFINITION_FINGERPRINT": "",
 		"KONTORA_RESULT_VERSION": "1", "KONTORA_INVOCATION_ID": "inv-123", "KONTORA_RESULT_TICKET": "kon-test", "KONTORA_RESULT_STAGE": "implement", "KONTORA_RESULT_FILE": inv.ResultPath,
 	}, env)

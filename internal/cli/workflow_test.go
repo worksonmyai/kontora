@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,6 +20,36 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/web"
 )
+
+func TestWorkflowReleaseFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name, execution, wait, revision, request, reason string
+		fail                                             bool
+	}{
+		{"complete", "exec", "wait", "7", "request", "Approved", false},
+		{"zero revision", "exec", "wait", "0", "request", "Approved", false},
+		{"missing execution", "", "wait", "7", "request", "Approved", true},
+		{"missing wait", "exec", "", "7", "request", "Approved", true},
+		{"missing revision", "exec", "wait", "", "request", "Approved", true},
+		{"negative revision", "exec", "wait", "-1", "request", "Approved", true},
+		{"overflow revision", "exec", "wait", "18446744073709551616", "request", "Approved", true},
+		{"missing request", "exec", "wait", "7", "", "Approved", true},
+		{"missing reason", "exec", "wait", "7", "request", " ", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := ParseWorkflowRelease(tc.execution, tc.wait, tc.revision, tc.request, tc.reason)
+			if tc.fail {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.execution, req.ExecutionID)
+			assert.Equal(t, tc.wait, req.WaitID)
+			assert.Equal(t, tc.request, req.RequestID)
+			assert.Equal(t, tc.reason, req.Reason)
+		})
+	}
+}
 
 func TestWorkflowRecoveryFlags(t *testing.T) {
 	for _, tc := range []struct {
@@ -113,6 +144,20 @@ func TestWorkflowDefinitionHasNoPositionalProgress(t *testing.T) {
 	assert.NotContains(t, out.String(), "0%")
 }
 
+func TestWorkflowWaitDisplay(t *testing.T) {
+	at := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct{ kind, want string }{{"check", "completed polls 2"}, {"human", "--wait-id wait --revision 7"}, {"deployment", "--environment 'production'\\''$HOME`exit 91`$(exit 92)' --rev DEPLOYED_FULL_COMMIT --event-id EVENT_ID"}} {
+		t.Run(tc.kind, func(t *testing.T) {
+			var out bytes.Buffer
+			PrintWorkflow(&out, nil, &app.GraphExecutionView{ExecutionID: "exec", Revision: 7, WakeCount: 1,
+				Wait: &ticket.WorkflowWait{ID: "wait", Kind: tc.kind, Environment: "production'$HOME`exit 91`$(exit 92)", Phase: "pending", Deadline: at, NextPoll: at, PollCount: 2, Next: "Read evidence", Output: "probe output", OutputTruncated: true}})
+			for _, want := range []string{"Waiting:", tc.want, "2030-01-01T00:00:00Z", "Read evidence", "probe output", "truncated", "wakes:     1"} {
+				assert.Contains(t, out.String(), want)
+			}
+		})
+	}
+}
+
 func TestWorkflowLoopLimitDisplay(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -144,6 +189,12 @@ func TestWorkflowControlsRequireDaemon(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, original, 0o600))
 	assert.ErrorContains(t, WorkflowRestart(cfg, "graph-1"), "daemon not reachable")
 	assert.ErrorContains(t, WorkflowRecover(cfg, "graph-1", "execution", 0), "daemon not reachable")
+	_, err = WorkflowRelease(cfg, "graph-1", web.WorkflowReleaseRequest{ExecutionID: "execution", WaitID: "wait", RequestID: "request", Reason: "Approved"})
+	assert.ErrorContains(t, err, "daemon not reachable")
+	_, err = DeploymentRelease(cfg, web.DeploymentReleaseRequest{Repository: "/repo", Environment: "production", Commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", EventID: "deployment"})
+	assert.ErrorContains(t, err, "daemon not reachable")
+	_, err = os.Stat(filepath.Join(cfg.TicketsDir, ".workflow-events"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
 	got, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, original, got)

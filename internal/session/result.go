@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -18,6 +19,7 @@ import (
 const (
 	ResultVersion      = 1
 	GraphResultVersion = 2
+	WaitResultVersion  = 3
 	MaxResultBytes     = 32 * 1024
 
 	ResultVersionEnvVar         = "KONTORA_RESULT_VERSION"
@@ -28,6 +30,8 @@ const (
 	ResultAutomationEnvVar      = "KONTORA_RESULT_AUTOMATION"
 	ResultRunNumberEnvVar       = "KONTORA_RESULT_RUN_NUMBER"
 	ResultVerdictsEnvVar        = "KONTORA_RESULT_VERDICTS"
+	WakeMaxEnvVar               = "KONTORA_WAKE_MAX"
+	CheckTimeoutEnvVar          = "KONTORA_CHECK_TIMEOUT"
 	WorkflowExecutionIDEnvVar   = "KONTORA_WORKFLOW_EXECUTION_ID"
 	NodeVisitIDEnvVar           = "KONTORA_NODE_VISIT_ID"
 	DefinitionFingerprintEnvVar = "KONTORA_DEFINITION_FINGERPRINT"
@@ -36,27 +40,30 @@ const (
 // Result describes only the assigned stage, not whole-ticket acceptance.
 // A blocked result requires a concrete next step; complete may omit it.
 type Result struct {
-	Outcome  string `json:"outcome"`
-	Summary  string `json:"summary"`
-	NextStep string `json:"next_step,omitempty"`
-	Verdict  string `json:"verdict,omitempty"`
+	Outcome  string       `json:"outcome"`
+	Summary  string       `json:"summary"`
+	NextStep string       `json:"next_step,omitempty"`
+	Verdict  string       `json:"verdict,omitempty"`
+	Wait     *WaitRequest `yaml:"wait,omitempty" json:"wait,omitempty"`
 }
 
 // Invocation is daemon-owned context for one physical launch. ResultPath must
 // be a fresh, absolute artifact path for that invocation, including on retries.
 // The result payload cannot override any of this context.
 type Invocation struct {
-	Version               int      `json:"version"`
-	ID                    string   `json:"id"`
-	TicketID              string   `json:"ticket_id,omitempty"`
-	Stage                 string   `json:"stage,omitempty"`
-	AutomationID          string   `json:"automation_id,omitempty"`
-	RunNumber             uint64   `json:"run_number,omitempty"`
-	ResultPath            string   `json:"result_path"`
-	Verdicts              []string `json:"verdicts,omitempty"`
-	WorkflowExecutionID   string   `json:"workflow_execution_id,omitempty"`
-	NodeVisitID           string   `json:"node_visit_id,omitempty"`
-	DefinitionFingerprint string   `json:"definition_fingerprint,omitempty"`
+	Version               int           `json:"version"`
+	ID                    string        `json:"id"`
+	TicketID              string        `json:"ticket_id,omitempty"`
+	Stage                 string        `json:"stage,omitempty"`
+	AutomationID          string        `json:"automation_id,omitempty"`
+	RunNumber             uint64        `json:"run_number,omitempty"`
+	ResultPath            string        `json:"result_path"`
+	Verdicts              []string      `json:"verdicts,omitempty"`
+	WorkflowExecutionID   string        `json:"workflow_execution_id,omitempty"`
+	NodeVisitID           string        `json:"node_visit_id,omitempty"`
+	DefinitionFingerprint string        `json:"definition_fingerprint,omitempty"`
+	WakeMax               int           `yaml:"wake_max,omitempty" json:"wake_max,omitempty"`
+	CheckTimeout          time.Duration `yaml:"check_timeout,omitempty" json:"check_timeout,omitempty"`
 }
 
 // SubjectID is the daemon-bound ticket or automation, never model input.
@@ -75,7 +82,7 @@ func (inv Invocation) Env() map[string]string {
 		runNumber = strconv.FormatUint(inv.RunNumber, 10)
 	}
 	verdicts, executionID, visitID, fingerprint := "", "", "", ""
-	if inv.Version == GraphResultVersion {
+	if inv.Version == GraphResultVersion || inv.Version == WaitResultVersion {
 		declared := inv.Verdicts
 		if declared == nil {
 			declared = []string{}
@@ -84,7 +91,14 @@ func (inv Invocation) Env() map[string]string {
 		verdicts = string(data)
 		executionID, visitID, fingerprint = inv.WorkflowExecutionID, inv.NodeVisitID, inv.DefinitionFingerprint
 	}
+	wakeMax, checkTimeout := "", ""
+	if inv.Version == WaitResultVersion {
+		wakeMax = strconv.Itoa(inv.WakeMax)
+		checkTimeout = inv.CheckTimeout.String()
+	}
 	return map[string]string{
+		WakeMaxEnvVar:               wakeMax,
+		CheckTimeoutEnvVar:          checkTimeout,
 		ResultVerdictsEnvVar:        verdicts,
 		WorkflowExecutionIDEnvVar:   executionID,
 		NodeVisitIDEnvVar:           visitID,
@@ -106,27 +120,22 @@ func InvocationFromEnv(getenv func(string) string) (Invocation, error) {
 		return Invocation{}, fmt.Errorf("result invocation environment is unavailable")
 	}
 	version := getenv(ResultVersionEnvVar)
-	if version != "1" && version != "2" {
-		return Invocation{}, fmt.Errorf("%s must be 1 or 2, got %q", ResultVersionEnvVar, version)
+	if version != "1" && version != "2" && version != "3" {
+		return Invocation{}, fmt.Errorf("%s must be 1, 2 or 3, got %q", ResultVersionEnvVar, version)
 	}
 	n, _ := strconv.Atoi(version)
 	inv := Invocation{Version: n, ID: getenv(InvocationIDEnvVar), TicketID: getenv(ResultTicketEnvVar), Stage: getenv(ResultStageEnvVar), AutomationID: getenv(ResultAutomationEnvVar), ResultPath: getenv(ResultFileEnvVar)}
-	if inv.Version == GraphResultVersion {
-		raw := getenv(ResultVerdictsEnvVar)
-		if !utf8.ValidString(raw) || json.Unmarshal([]byte(raw), &inv.Verdicts) != nil || inv.Verdicts == nil || !validJSONUnicode([]byte(raw)) {
-			return Invocation{}, fmt.Errorf("%s must be a JSON array of verdict strings", ResultVerdictsEnvVar)
+	if inv.Version == GraphResultVersion || inv.Version == WaitResultVersion {
+		if err := inv.loadGraphEnv(getenv); err != nil {
+			return Invocation{}, err
 		}
-		if err := validateVerdicts(inv.Verdicts); err != nil {
-			return Invocation{}, fmt.Errorf("%s: %w", ResultVerdictsEnvVar, err)
+	}
+	if inv.Version == WaitResultVersion {
+		if err := inv.loadWaitEnv(getenv); err != nil {
+			return Invocation{}, err
 		}
-		inv.WorkflowExecutionID = getenv(WorkflowExecutionIDEnvVar)
-		inv.NodeVisitID = getenv(NodeVisitIDEnvVar)
-		inv.DefinitionFingerprint = getenv(DefinitionFingerprintEnvVar)
-		for _, id := range []string{inv.WorkflowExecutionID, inv.NodeVisitID, inv.DefinitionFingerprint} {
-			if id != "" && !safeInvocationComponent(id) {
-				return Invocation{}, fmt.Errorf("graph execution identity must contain safe identifiers")
-			}
-		}
+	} else if getenv(WakeMaxEnvVar) != "" || getenv(CheckTimeoutEnvVar) != "" {
+		return Invocation{}, fmt.Errorf("wait capabilities require result version 3")
 	}
 	if !safeInvocationComponent(inv.ID) {
 		return Invocation{}, fmt.Errorf("%s must be a nonempty safe identifier", InvocationIDEnvVar)
@@ -158,6 +167,47 @@ func InvocationFromEnv(getenv func(string) string) (Invocation, error) {
 	return inv, nil
 }
 
+func (inv *Invocation) loadGraphEnv(getenv func(string) string) error {
+	raw := getenv(ResultVerdictsEnvVar)
+	if !utf8.ValidString(raw) || json.Unmarshal([]byte(raw), &inv.Verdicts) != nil || inv.Verdicts == nil || !validJSONUnicode([]byte(raw)) {
+		return fmt.Errorf("%s must be a JSON array of verdict strings", ResultVerdictsEnvVar)
+	}
+	if err := validateVerdicts(inv.Verdicts); err != nil {
+		return fmt.Errorf("%s: %w", ResultVerdictsEnvVar, err)
+	}
+	inv.WorkflowExecutionID = getenv(WorkflowExecutionIDEnvVar)
+	inv.NodeVisitID = getenv(NodeVisitIDEnvVar)
+	inv.DefinitionFingerprint = getenv(DefinitionFingerprintEnvVar)
+	for _, id := range []string{inv.WorkflowExecutionID, inv.NodeVisitID, inv.DefinitionFingerprint} {
+		if id != "" && !safeInvocationComponent(id) {
+			return fmt.Errorf("graph execution identity must contain safe identifiers")
+		}
+	}
+	return nil
+}
+
+func (inv *Invocation) loadWaitEnv(getenv func(string) string) error {
+	raw := getenv(WakeMaxEnvVar)
+	wakeMax, err := strconv.Atoi(raw)
+	if err != nil || wakeMax <= 0 || strconv.Itoa(wakeMax) != raw {
+		return fmt.Errorf("%s must be a positive canonical integer", WakeMaxEnvVar)
+	}
+	timeout, err := time.ParseDuration(getenv(CheckTimeoutEnvVar))
+	if err != nil || timeout <= 0 {
+		return fmt.Errorf("%s must be a positive duration", CheckTimeoutEnvVar)
+	}
+	inv.WakeMax, inv.CheckTimeout = wakeMax, timeout
+	if inv.AutomationID != "" || getenv(ResultRunNumberEnvVar) != "" {
+		return fmt.Errorf("wait capabilities require ticket graph context")
+	}
+	for _, id := range []string{inv.WorkflowExecutionID, inv.NodeVisitID, inv.DefinitionFingerprint} {
+		if !safeInvocationComponent(id) {
+			return fmt.Errorf("version 3 requires graph execution identity")
+		}
+	}
+	return nil
+}
+
 func safeInvocationComponent(s string) bool {
 	return validResultText(s) && SafeStage(s) && !strings.ContainsAny(s, `*?[]`) && !strings.ContainsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
 }
@@ -172,8 +222,8 @@ func validateResultPath(path string) error {
 func validResultText(s string) bool { return utf8.ValidString(s) && !strings.ContainsRune(s, '\x00') }
 
 func validateResult(result Result) error {
-	if result.Outcome != "complete" && result.Outcome != "blocked" {
-		return fmt.Errorf("outcome must be complete or blocked")
+	if result.Outcome != "complete" && result.Outcome != "blocked" && result.Outcome != "waiting" {
+		return fmt.Errorf("outcome must be complete, blocked or waiting")
 	}
 	if !validResultText(result.Summary) || strings.TrimSpace(result.Summary) == "" {
 		return fmt.Errorf("summary must be nonempty UTF-8 without NUL")
@@ -181,8 +231,18 @@ func validateResult(result Result) error {
 	if !validResultText(result.NextStep) {
 		return fmt.Errorf("next_step must be UTF-8 without NUL")
 	}
-	if result.Outcome == "blocked" && strings.TrimSpace(result.NextStep) == "" {
-		return fmt.Errorf("blocked result requires next_step")
+	if (result.Outcome == "blocked" || result.Outcome == "waiting") && strings.TrimSpace(result.NextStep) == "" {
+		return fmt.Errorf("%s result requires next_step", result.Outcome)
+	}
+	if result.Outcome == "waiting" {
+		if result.Wait == nil || result.Verdict != "" {
+			return fmt.Errorf("waiting result requires wait and forbids verdict")
+		}
+		if err := ValidateWaitRequest(*result.Wait); err != nil {
+			return err
+		}
+	} else if result.Wait != nil {
+		return fmt.Errorf("wait is only supported on waiting results")
 	}
 	if result.Verdict != "" && (!validResultText(result.Verdict) || strings.TrimSpace(result.Verdict) == "") {
 		return fmt.Errorf("verdict must be nonblank UTF-8 without NUL")
@@ -205,9 +265,13 @@ func validateVerdicts(verdicts []string) error {
 }
 
 func ValidateGraphResult(result Result, verdicts []string) error {
-	if err := validateResult(result); err != nil {
+	if err := validateVersionResult(result, GraphResultVersion); err != nil {
 		return err
 	}
+	return validateGraphVerdict(result, verdicts)
+}
+
+func validateGraphVerdict(result Result, verdicts []string) error {
 	if err := validateVerdicts(verdicts); err != nil {
 		return err
 	}
@@ -227,14 +291,15 @@ func resultVersion(versions []int) (int, error) {
 	if len(versions) == 0 {
 		return ResultVersion, nil
 	}
-	if len(versions) != 1 || (versions[0] != ResultVersion && versions[0] != GraphResultVersion) {
-		return 0, fmt.Errorf("result version must be 1 or 2")
+	if len(versions) != 1 || (versions[0] != ResultVersion && versions[0] != GraphResultVersion && versions[0] != WaitResultVersion) {
+		return 0, fmt.Errorf("result version must be 1, 2 or 3")
 	}
 	return versions[0], nil
 }
 
 // DecodeResult rejects fields that encoding/json would otherwise ignore or normalize.
-// The optional version defaults to version 1, which rejects verdict fields.
+// The optional version defaults to version 1, which rejects verdict and wait
+// fields. Version 2 adds verdicts; version 3 adds durable wait requests.
 func DecodeResult(data []byte, versions ...int) (Result, error) {
 	version, err := resultVersion(versions)
 	if err != nil {
@@ -254,14 +319,15 @@ func DecodeResult(data []byte, versions ...int) (Result, error) {
 	if token != json.Delim('{') {
 		return Result{}, fmt.Errorf("result must be a JSON object")
 	}
-	fields := make(map[string]string, 3)
+	fields := make(map[string]string, 5)
+	var wait *WaitRequest
 	for dec.More() {
 		token, err := dec.Token()
 		if err != nil {
 			return Result{}, fmt.Errorf("decoding result key: %w", err)
 		}
 		key, ok := token.(string)
-		if !ok || (key != "outcome" && key != "summary" && key != "next_step" && (version != GraphResultVersion || key != "verdict")) {
+		if !ok || (key != "outcome" && key != "summary" && key != "next_step" && ((version < GraphResultVersion || key != "verdict") && (version != WaitResultVersion || key != "wait"))) {
 			return Result{}, fmt.Errorf("unknown result field %q", token)
 		}
 		if _, exists := fields[key]; exists {
@@ -270,6 +336,15 @@ func DecodeResult(data []byte, versions ...int) (Result, error) {
 		var raw json.RawMessage
 		if err := dec.Decode(&raw); err != nil {
 			return Result{}, fmt.Errorf("decoding %s: %w", key, err)
+		}
+		if key == "wait" {
+			var request WaitRequest
+			if err := json.Unmarshal(raw, &request); err != nil {
+				return Result{}, fmt.Errorf("decoding wait: %w", err)
+			}
+			wait = &request
+			fields[key] = ""
+			continue
 		}
 		if len(raw) == 0 || raw[0] != '"' {
 			return Result{}, fmt.Errorf("%s must be a string", key)
@@ -292,8 +367,8 @@ func DecodeResult(data []byte, versions ...int) (Result, error) {
 	if verdict, present := fields["verdict"]; present && strings.TrimSpace(verdict) == "" {
 		return Result{}, fmt.Errorf("verdict must be nonblank when present")
 	}
-	result := Result{Outcome: fields["outcome"], Summary: fields["summary"], NextStep: fields["next_step"], Verdict: fields["verdict"]}
-	if err := validateResult(result); err != nil {
+	result := Result{Outcome: fields["outcome"], Summary: fields["summary"], NextStep: fields["next_step"], Verdict: fields["verdict"], Wait: wait}
+	if err := validateVersionResult(result, version); err != nil {
 		return Result{}, err
 	}
 	return result, nil
@@ -362,13 +437,10 @@ func PublishResult(path string, result Result, versions ...int) (duplicate bool,
 	if err != nil {
 		return false, err
 	}
-	if version == ResultVersion && result.Verdict != "" {
-		return false, fmt.Errorf("version 1 result cannot contain a verdict")
-	}
 	if err := validateResultPath(path); err != nil {
 		return false, err
 	}
-	if err := validateResult(result); err != nil {
+	if err := validateVersionResult(result, version); err != nil {
 		return false, err
 	}
 	var buf bytes.Buffer
@@ -410,7 +482,7 @@ func PublishResult(path string, result Result, versions ...int) (duplicate bool,
 		if err != nil {
 			return false, fmt.Errorf("reading existing result: %w", err)
 		}
-		if existing != result {
+		if !ResultsEqual(existing, result) {
 			return false, fmt.Errorf("conflicting result already published")
 		}
 		return true, nil

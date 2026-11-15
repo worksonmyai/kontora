@@ -5,9 +5,12 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 // WorkflowRestart requires the daemon: only it can inspect invocation journals
@@ -18,6 +21,32 @@ func WorkflowRestart(cfg *config.Config, id string) error {
 
 func WorkflowRecover(cfg *config.Config, id, executionID string, revision uint64) error {
 	return LocalClient(cfg).WorkflowRecover(id, executionID, revision)
+}
+
+// Releases never fall back to offline ticket writes: receipt acceptance and
+// per-wait replay belong to the daemon, even when it is on localhost.
+func WorkflowRelease(cfg *config.Config, id string, req web.WorkflowReleaseRequest) (*ticket.WorkflowReceipt, error) {
+	return LocalClient(cfg).WorkflowRelease(id, req)
+}
+
+func DeploymentRelease(cfg *config.Config, req web.DeploymentReleaseRequest) (*ticket.WorkflowReceipt, error) {
+	return LocalClient(cfg).DeploymentRelease(req)
+}
+
+func ParseWorkflowRelease(executionID, waitID, revision, requestID, reason string) (web.WorkflowReleaseRequest, error) {
+	req := web.WorkflowReleaseRequest{ExecutionID: executionID, WaitID: waitID, RequestID: requestID, Reason: reason}
+	if err := req.Validate(); err != nil {
+		return req, err
+	}
+	if revision == "" {
+		return req, fmt.Errorf("release requires --revision from the inspected wait")
+	}
+	n, err := strconv.ParseUint(revision, 10, 64)
+	if err != nil {
+		return req, fmt.Errorf("invalid workflow revision %q: expected an unsigned 64-bit integer", revision)
+	}
+	req.Revision = n
+	return req, nil
 }
 
 func ParseWorkflowRecovery(executionID, revision string) (uint64, error) {
@@ -54,6 +83,64 @@ func PrintWorkflow(w io.Writer, definition *app.GraphDefinitionView, execution *
 	}
 	fmt.Fprintf(w, "visit:     %d (%s)\n", execution.Visit, execution.VisitID)
 	fmt.Fprintf(w, "attempt:   %d (within this visit)\n", execution.Attempt+1)
+	printWorkflowWait(w, definition, execution)
+	printWorkflowTrace(w, execution)
+}
+
+// QuoteShellArg prevents expansion when an operator copies a generated command.
+func QuoteShellArg(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func printWorkflowWait(w io.Writer, definition *app.GraphDefinitionView, execution *app.GraphExecutionView) {
+	if wait := execution.Wait; wait != nil {
+		fmt.Fprintf(w, "Waiting:   %s (%s, wait %s)\n", wait.Kind, wait.Phase, wait.ID)
+		if wait.Disarmed {
+			fmt.Fprintln(w, "progress:  disarmed; use retry to re-arm after recovery")
+		}
+		if !wait.Deadline.IsZero() {
+			fmt.Fprintf(w, "deadline:  %s\n", wait.Deadline.Format(time.RFC3339Nano))
+		}
+		if !wait.Until.IsZero() {
+			fmt.Fprintf(w, "until:     %s\n", wait.Until.Format(time.RFC3339Nano))
+		}
+		if !wait.NextPoll.IsZero() {
+			fmt.Fprintf(w, "next poll: %s (completed polls %d)\n", wait.NextPoll.Format(time.RFC3339Nano), wait.PollCount)
+		}
+		fmt.Fprintf(w, "wakes:     %d", execution.WakeCount)
+		if definition != nil {
+			for _, node := range definition.Nodes {
+				if node.ID == execution.CurrentNode && node.Wake != nil {
+					fmt.Fprintf(w, "/%d", node.Wake.Max)
+				}
+			}
+		}
+		fmt.Fprintln(w)
+		if wait.Next != "" {
+			fmt.Fprintf(w, "next:      %s\n", wait.Next)
+		}
+		if wait.Output != "" {
+			fmt.Fprintf(w, "output:    %s\n", wait.Output)
+		}
+		if wait.OutputTruncated {
+			fmt.Fprintln(w, "output:    truncated; inspect the probe log")
+		}
+		if wait.LogPath != "" {
+			fmt.Fprintf(w, "probe log: %s\n", wait.LogPath)
+		}
+		if wait.Kind == "human" {
+			fmt.Fprintf(w, "release:   kontora release --execution-id %s --wait-id %s --revision %d --request-id REQUEST --reason REASON TICKET_ID\n", execution.ExecutionID, wait.ID, execution.Revision)
+		}
+		if wait.Kind == "deployment" {
+			fmt.Fprintf(w, "release:   kontora release --repo REPO --environment %s --rev DEPLOYED_FULL_COMMIT --event-id EVENT_ID (required commit %s)\n", QuoteShellArg(wait.Environment), wait.RequiredCommit)
+		}
+	}
+	if execution.Wake != nil {
+		fmt.Fprintf(w, "wake:      %s (count %d)\n", execution.Wake.Reason, execution.Wake.Count)
+	}
+}
+
+func printWorkflowTrace(w io.Writer, execution *app.GraphExecutionView) {
 	for _, loop := range execution.Loops {
 		note := ""
 		if loop.Exhausted {

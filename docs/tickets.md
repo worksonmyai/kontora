@@ -240,7 +240,7 @@ execution. The requirement is independent of a custom `system_prompt`. Missing
 or invalid results after a clean run pause the same stage; notes or exit zero do
 not substitute for a report. Non-graph unrelated tickets and passive-epic
 children, annotations, and assistant-only runs retain their existing
-requirements. Graph agent nodes independently require version 2 results.
+requirements. Graph agent nodes independently require version 2 results, or version 3 with `wake`.
 See [Supervised results](cli.md#supervised-results) for schema and transports.
 
 The supervisor must not publish or make off-machine writes, including through children, scripts, or tools. This prohibits pushes, pull requests, remote issues or comments, messages, uploads, and releases. Read-only external lookups are allowed. Results and progress notes stay local. These are agent instructions, not runtime enforcement.
@@ -289,6 +289,10 @@ By default, only a transition the daemon decided on its own sends. Set `notifica
 A ticket's first sighting is always silent. With the switch on, a later crash-recovery change to `todo` or a recovery pause can send if the ticket lists that status.
 
 A `done` notification carries the ticket's per-run `summary`. It fires from the write that ends the run, and `final_summary` is written up to two minutes later by a separate pass, so it cannot be in the message.
+
+Durable graph waits remain `paused`, displayed as Waiting from graph metadata.
+Their parking notifications use `notify: [paused]`, with wait context when eligible.
+They do not use the `waiting` subscription. Same-status changes and every wake are not guaranteed notifications.
 
 `waiting` fires when a running agent blocks on a question, once per question rather than once per poll. It works for `pi` agents only: the marker behind it is published by the pi extension Kontora injects, so `notify: [waiting]` on a claude ticket never fires. The marker is polled every two seconds, so a question answered faster than that is legitimately never seen.
 
@@ -356,7 +360,7 @@ These are set and updated by the daemon as the ticket progresses through its pip
 |-------|-------------|
 | `kontora` | Boolean. When `true`, the daemon may manage and execute this ticket. Tickets without `kontora: true` are still listed, but are not auto-picked up and cannot be run/retried/skipped until initialized. Set by `kontora init`. |
 | `stage` | Legacy pipeline stage name, or graph node ID. A new graph starts at its configured `entry`. |
-| `graph_state` | Graph execution identity, revision, definition fingerprint, executable visit identity and counter, loop counts, last result and transition trace. Daemon-managed; do not clear or edit it to restart work. |
+| `graph_state` | Graph execution identity, revision, fingerprint, visits, loop counts, last result and trace. Version 2 also retains waits, wake context, wait history and queued continuation intent. Do not edit it to restart work. |
 | `attempt` | Retry counter for the current stage. Reset to 0 on advance/back. |
 | `started_at` | When the current stage started. |
 | `running_status` | Snapshot of a custom-active stage's actual status. Written atomically with `status` on claim; absent or empty for default execution and parked tickets. |
@@ -403,7 +407,7 @@ open → todo → in_progress → done ──────→ archived
 | `open` | Drafted but not ready for the daemon to pick up. A [`scheduled_at`](#scheduled-pickup) stamp moves it to `todo` at a set time. |
 | `todo` | Ready for the daemon. The scheduler picks it up in creation order, once its `deps` are resolved. |
 | `in_progress` | An agent is currently working on it. |
-| `paused` | Stopped by a failure policy or by the user. Use explicit retry after inspection; graph recovery can require acknowledgement before work can resume. |
+| `paused` | Stopped by a policy or user, or parked in a durable graph wait shown as Waiting. Retry requires inspection; graph recovery can require acknowledgement first. |
 | `human_review` | Parked for a person to look at, by a stage policy or `kontora move`. The agent's work is finished, so this releases the tickets that depend on it. |
 | `done` | All pipeline stages completed successfully. |
 | `cancelled` | Manually cancelled by the user. |
@@ -471,6 +475,73 @@ Graph annotations and Plannotator rework are deferred and refused. Upgrade all
 clients and daemons sharing config or ticket storage together.
 Neither recovery nor restart guarantees exactly-once
 shell effects or containment of arbitrary detached processes.
+
+### Durable workflow waits
+
+[Wait-enabled graphs](configuration.md#durable-waits) can park an agent at the same
+node and executable visit, or stop at a declared human/deployment wait.
+Waiting uses `status: paused` with `graph_state.wait`, not a new status.
+`waiting_for_input` remains reserved for a running agent's live question.
+The API exposes wait kind, phase, deadline, next poll, wake allowance, and diagnostics.
+Probe output keeps a UTF-8-safe excerpt up to 16 KiB, a truncation flag and log reference.
+The dashboard and TUI also show release instructions. Idle waits use no execution slot.
+Active condition probes share worker capacity and do not call an agent.
+
+Wait state retains absolute times, poll identity/count, continuation instructions,
+workspace identity, and accepted receipts. A wake queues a fresh physical invocation;
+it does not take a completion edge, consume a failure retry, or traverse a loop.
+Queued continuation intent survives restarts and dependency blocking, including with `auto_pick_up: false`.
+Dependencies and workspace ownership still apply. The parked branch remains reserved;
+do not delete or change its worktree manually.
+
+| Control | Effect on an active wait |
+|---------|--------------------------|
+| Pause | Disarms automatic progress, preserving identity and absolute deadline. |
+| Retry | Re-arms the same wait after required recovery; does not reset its deadline. |
+| Run, move, schedule, init, done | Cannot bypass the wait. |
+| Cancel | Invalidates wake authority and stops an active probe. |
+| Workflow restart | Creates a new execution and invalidates old wait IDs; history and worktree remain. |
+| Delete or Claim/transfer | Refused until the active wait is cancelled. |
+| Upload | Strips resumable graph/wait authority; imports an open draft. |
+
+If probe termination is uncertain, inspect processes, the worktree, results, and
+journals before `workflow-recover` with the inspected execution ID and revision.
+Acknowledgement does not launch work. If the wait survives, retry separately to re-arm it;
+a cancelled workflow remains cancelled and needs no re-arming.
+Pause does not prove probe termination, and expired deadlines do not bypass recovery.
+Changed effective configuration blocks progress without resetting saved timestamps.
+
+Human release requires the inspected ticket, execution ID, wait ID, revision,
+a stable request ID, and a reason. Both [release forms](cli.md#kontora-release)
+require the daemon; there is no offline release fallback.
+Deployment release records the full commit actually deployed, repository, environment, and event ID.
+A receipt matches the same repository and exact environment when the required commit
+is equal to, or an ancestor of, the deployed commit. Kontora uses local Git history only.
+It does not fetch, deploy, merge, or treat cherry-picked content as equivalent.
+Missing objects, unsupported Git options, and uncertain ancestry fail closed.
+
+Deployment receipts are historical evidence. They can release matching waits registered later,
+and one receipt can release several waits. They do not prove current environment state after a rollback.
+Identical request retries return the stored receipt; conflicting reuse and new stale requests fail.
+A successful response acknowledges persisted acceptance, not necessarily immediate continuation.
+Existing access controls apply. Recorded operator identity is present only when available;
+shared-token or unauthenticated access does not identify a verified named approver.
+
+Keep these files together when backing up or diagnosing waits:
+
+- Ticket `graph_state`, including `wait`, `wake`, `wait_history`, and `continuation`.
+- Invocation/finalization journals and `<logs_dir>/<ticket>/workflow-probe.json`.
+- `<logs_dir>/<ticket>/workflow-control.json`, which freezes a released or timed-out control wait before the ticket update.
+- Probe output at `<logs_dir>/<ticket>/waits/<wait-id>/<poll-id>.log`.
+- Release receipts and application journals under `<tickets_dir>/.workflow-events/`.
+
+Do not remove logs or journals needed for recovery. `.workflow-events` is outside
+disposable logs and the reserved `.kontora` directory. Receipts have no automatic expiry.
+Recovery replays committed transitions rather than resetting wait timing.
+These guarantees cover daemon-process restarts, not exactly-once shell effects or host-power-loss durability.
+Commands must be trusted and idempotent; daemon subprocess permissions apply, without a sandbox.
+Upgrade all sharing daemons and clients before wait configuration, result v3, or graph-state v2.
+Unchanged no-wait fingerprints and existing v1 state/v1-v2 result contracts remain compatible.
 
 ## Dependency-aware scheduling
 
@@ -586,6 +657,14 @@ Graph history also records `workflow_execution_id`, `node_visit_id`,
 `last_result` retains the latest executable verdict and exit code. Check nodes
 record their observed runner outcome without pretending to be agent calls.
 Control-node transitions live in the graph trace rather than fake process rows.
+
+A suspended agent records `run_outcome: waiting`. History retains `verdict`,
+`next_step`, `wait`, `wake`, and `continuation` evidence when applicable.
+Waiting rows contribute run totals, time and token spend, but are neither success,
+failure nor unverified outcomes. They are excluded from first-pass judgments.
+Intentional continuation does not count as a failure retry. Declared waits and probes
+create no agent run rows. Graph logs use
+`<logs_dir>/<ticket>/<node>.<visit-id>.<invocation-id>.log`, with older visit-log fallback.
 
 An intentional loop revisit has a new `node_visit_id`. A workflow restart has a
 new `workflow_execution_id`. Repeated attempts of the same executable visit keep

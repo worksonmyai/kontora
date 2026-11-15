@@ -27,6 +27,77 @@ import (
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
+func TestReleaseCommands(t *testing.T) {
+	for _, deployment := range []bool{false, true} {
+		t.Run(map[bool]string{false: "human", true: "deployment"}[deployment], func(t *testing.T) {
+			var gotPath string
+			var gotBody map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "Bearer release-token", r.Header.Get("Authorization"))
+				if r.Method == http.MethodGet && r.URL.Path == "/api/tickets" {
+					_, _ = w.Write([]byte(`{"tickets":[{"id":"tst-release","status":"paused"}]}`))
+					return
+				}
+				if r.Method == http.MethodGet && r.URL.Path == "/api/tickets/archived" {
+					_, _ = w.Write([]byte(`[]`))
+					return
+				}
+				if r.Method == http.MethodGet {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				gotPath = r.URL.Path
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+				_, _ = w.Write([]byte(`{"id":"accepted-receipt","request_id":"stable-request"}`))
+			}))
+			defer srv.Close()
+			args := []string{"release", "--url", srv.URL, "--token", "release-token"}
+			if deployment {
+				args = append(args, "--repo", "/daemon/repo", "--environment", "production", "--rev", strings.Repeat("a", 40), "--event-id", "deploy-1")
+			} else {
+				args = append(args, "tst-rel", "--execution-id", "exec", "--wait-id", "wait", "--revision", "7", "--request-id", "approval", "--reason", "Approved")
+			}
+			out, err := runCLI(t, nil, args...)
+			require.NoError(t, err, out)
+			assert.Equal(t, "accepted-receipt", strings.TrimSpace(out))
+			if deployment {
+				assert.Equal(t, "/api/workflow-events/deployment", gotPath)
+				assert.Equal(t, map[string]any{"repository": "/daemon/repo", "environment": "production", "commit": strings.Repeat("a", 40), "event_id": "deploy-1"}, gotBody)
+			} else {
+				assert.Equal(t, "/api/tickets/tst-release/workflow-release", gotPath)
+				assert.Equal(t, map[string]any{"execution_id": "exec", "wait_id": "wait", "revision": float64(7), "request_id": "approval", "reason": "Approved"}, gotBody)
+			}
+		})
+	}
+}
+
+func TestReleaseFlagAndStageRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		args, env []string
+		message   string
+	}{
+		{"missing identity", []string{"release", "tst-release"}, nil, "execution_id"},
+		{"missing revision", []string{"release", "tst-release", "--execution-id", "exec", "--wait-id", "wait", "--request-id", "r", "--reason", "Approved"}, nil, "revision"},
+		{"abbreviated commit", []string{"release", "--repo", "/repo", "--environment", "prod", "--rev", "abc", "--event-id", "e"}, nil, "full lowercase commit ID"},
+		{"mixed forms", []string{"release", "tst-release", "--repo", "/repo"}, nil, "takes no ticket"},
+		{"own ticket", []string{"release", "tst-rel"}, []string{"KONTORA_TICKET_ID=tst-release", "KONTORA_STAGE=code"}, "stage's agent"},
+		{"deployment from agent", []string{"release", "--repo", "/repo"}, []string{"KONTORA_TICKET_ID=tst-release"}, "refused"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				t.Error("invalid release must not call the daemon")
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer srv.Close()
+			env := append([]string{"KONTORA_URL=" + srv.URL}, tc.env...)
+			out, err := runCLI(t, env, tc.args...)
+			require.Error(t, err, out)
+			assert.Contains(t, out, tc.message)
+		})
+	}
+}
+
 func TestRemoteListEpicMetadata(t *testing.T) {
 	for _, tc := range []struct {
 		status string

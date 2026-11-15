@@ -50,6 +50,7 @@ type executionRecord struct {
 	HookTermination      string                      `json:"hook_termination,omitempty"`
 	RunnerTermination    process.TerminationEvidence `json:"runner_termination,omitempty"`
 	RecoveryState        *ticket.GraphState          `json:"recovery_state,omitempty"`
+	Continuation         bool                        `json:"continuation,omitempty"`
 }
 
 type executionTransition struct {
@@ -94,10 +95,10 @@ func loadExecution(cfg *config.Config, id string) (*executionRecord, error) {
 	if _, err := session.InvocationFromEnv(func(key string) string { return rec.Invocation.Env()[key] }); err != nil {
 		return nil, err
 	}
-	if rec.Invocation.Version == session.GraphResultVersion && rec.GraphBefore == nil {
+	if rec.Invocation.Version >= session.GraphResultVersion && rec.GraphBefore == nil {
 		return nil, fmt.Errorf("graph invocation has no graph state")
 	}
-	if rec.GraphBefore != nil && (rec.Invocation.Version != session.GraphResultVersion ||
+	if rec.GraphBefore != nil && ((rec.Invocation.Version != session.GraphResultVersion && rec.Invocation.Version != session.WaitResultVersion) ||
 		rec.Invocation.WorkflowExecutionID != rec.GraphBefore.ExecutionID || rec.Invocation.NodeVisitID != rec.GraphBefore.VisitID ||
 		rec.Invocation.DefinitionFingerprint != rec.GraphBefore.DefinitionFingerprint) {
 		return nil, fmt.Errorf("invalid graph invocation identity")
@@ -212,7 +213,7 @@ func (d *Daemon) bindExecution(t *ticket.Ticket, p spawnAgentParams, params *Run
 		if err := saveExecution(p.cfg, rec); err != nil {
 			return err
 		}
-		if err := current.SetField("invocation_id", id); err != nil {
+		if err := commitInvocationBinding(current, rec); err != nil {
 			return err
 		}
 		if err := repo.Save(st); err != nil {
@@ -240,6 +241,20 @@ func (d *Daemon) bindExecution(t *ticket.Ticket, p spawnAgentParams, params *Run
 	return rec, nil
 }
 
+func commitInvocationBinding(current *ticket.Ticket, rec *executionRecord) error {
+	// Continuation is pending admission intent, not the bound invocation's provenance.
+	// Recovery restores ready-wait admission explicitly if this invocation is interrupted.
+	if rec.GraphBefore != nil && current.GraphState != nil && current.GraphState.Continuation {
+		state := current.GraphState.Clone()
+		state.Continuation = false
+		if err := current.SetField("graph_state", state); err != nil {
+			return err
+		}
+		rec.GraphBefore = state.Clone()
+	}
+	return current.SetField("invocation_id", rec.Invocation.ID)
+}
+
 func executionGraphNode(t *ticket.Ticket, p spawnAgentParams) (config.WorkflowNode, bool, error) {
 	definition := p.cfg.Pipelines[t.Pipeline]
 	if p.annotation || t.GraphState == nil || definition.Graph == nil {
@@ -257,8 +272,27 @@ func bindGraphInvocation(rec *executionRecord, t *ticket.Ticket, p spawnAgentPar
 	if p.graphState != nil {
 		rec.GraphBefore = p.graphState.Clone()
 	}
+	rec.Continuation = rec.GraphBefore.Continuation
+	if rec.Continuation && rec.GraphBefore.Wake != nil {
+		// A retained ready wait also authorizes recovery + Retry. Only a waiting
+		// predecessor makes this invocation an intentional wake, not a new attempt.
+		for _, h := range slices.Backward(t.History) {
+			if h.Kind == "" && h.WorkflowExecutionID == rec.GraphBefore.ExecutionID && h.NodeVisitID == rec.GraphBefore.VisitID {
+				rec.Continuation = h.RunOutcome == ticket.RunOutcomeWaiting && h.Wait != nil && h.Wait.ID == rec.GraphBefore.Wake.WaitID
+				break
+			}
+		}
+	}
 	rec.NodeKind, rec.Template, rec.Phase = node.Type, node.Stage, "bound"
 	rec.Invocation.Version = session.GraphResultVersion
+	if node.Wake != nil {
+		rec.Invocation.Version = session.WaitResultVersion
+		rec.Invocation.WakeMax = node.Wake.Max
+		rec.Invocation.CheckTimeout = node.Wake.CheckTimeout.Duration
+		if rec.Invocation.CheckTimeout == 0 {
+			rec.Invocation.CheckTimeout = time.Minute
+		}
+	}
 	rec.Invocation.Verdicts = slices.Clone(node.Verdicts)
 	rec.Invocation.WorkflowExecutionID = rec.GraphBefore.ExecutionID
 	rec.Invocation.NodeVisitID = rec.GraphBefore.VisitID
@@ -295,7 +329,7 @@ func classifyExecution(rec *executionRecord, run *agentRun, failure string) {
 	if rec.NodeKind == "check" {
 		return
 	}
-	if rec.Invocation.Version == session.GraphResultVersion {
+	if rec.Invocation.Version >= session.GraphResultVersion {
 		classifyGraphExecution(rec, run, failure)
 		return
 	}
@@ -324,9 +358,12 @@ func classifyGraphExecution(rec *executionRecord, run *agentRun, failure string)
 	report, err := session.ReadResult(rec.Invocation.ResultPath, rec.Invocation.Version)
 	run.Reported = !errors.Is(err, os.ErrNotExist)
 	if err == nil {
-		err = session.ValidateGraphResult(report, rec.Invocation.Verdicts)
+		err = session.ValidateInvocationResult(report, rec.Invocation)
 	}
 	run.Verdict = ""
+	if err == nil {
+		run.NextStep = report.NextStep
+	}
 	switch {
 	case err != nil:
 		run.Outcome = "protocol_error"
@@ -341,6 +378,12 @@ func classifyGraphExecution(rec *executionRecord, run *agentRun, failure string)
 		run.Outcome, run.OutcomeReason = "failed", failure
 	case run.Result.ExitCode != 0:
 		run.Outcome, run.OutcomeReason = "failed", fmt.Sprintf("agent exited with code %d", run.Result.ExitCode)
+	case report.Outcome == "waiting":
+		if rec.Invocation.Version != session.WaitResultVersion || rec.Invocation.WakeMax <= 0 || rec.GraphBefore.WakeCount >= rec.Invocation.WakeMax {
+			run.Outcome, run.OutcomeReason = "protocol_error", "wait permission or wake allowance exhausted"
+		} else {
+			run.Outcome, run.OutcomeReason, run.WaitRequest, run.NextStep = "waiting", report.Summary, report.Wait, report.NextStep
+		}
 	default:
 		run.Outcome, run.OutcomeReason, run.Verdict = "complete", report.Summary, report.Verdict
 	}
@@ -423,6 +466,7 @@ func (d *Daemon) beginFinalization(cfg *config.Config, rec *executionRecord, run
 			StartedAt: &started, CompletedAt: &ended, ExitCode: run.Result.ExitCode, Model: run.Model, Effort: run.Effort,
 			Summary: runSummary("", run.FinalMessage), SessionKind: run.SessionKind, SessionRef: run.SessionRef,
 			RunOutcome: ticket.RunOutcome(run.Outcome), OutcomeReason: run.OutcomeReason, InvocationID: rec.Invocation.ID}
+		rec.PendingHistory.Verdict, rec.PendingHistory.NextStep = run.Verdict, run.NextStep
 		setGraphHistoryProvenance(rec.PendingHistory, rec)
 	}
 	return saveExecution(cfg, rec)
@@ -484,6 +528,7 @@ func appendRunHistory(t *ticket.Ticket, run agentRun, agent, stage string, index
 		ExitCode: run.Result.ExitCode, StartedAt: &started, CompletedAt: &ended,
 		Summary: runSummary(t.Summary, run.FinalMessage), SessionKind: run.SessionKind, SessionRef: run.SessionRef,
 		RunOutcome: ticket.RunOutcome(run.Outcome), OutcomeReason: run.OutcomeReason, InvocationID: id}
+	h.Verdict, h.NextStep, h.Wait = run.Verdict, run.NextStep, run.WaitState.Clone()
 	setGraphHistoryProvenance(&h, run.Execution)
 	_ = t.SetField("history", append(t.History, h))
 }
@@ -496,6 +541,8 @@ func setGraphHistoryProvenance(h *ticket.HistoryEntry, rec *executionRecord) {
 	h.NodeVisitID = rec.Invocation.NodeVisitID
 	h.DefinitionFingerprint = rec.Invocation.DefinitionFingerprint
 	h.Template = rec.Template
+	h.Wake = rec.GraphBefore.Wake.Clone()
+	h.Continuation = rec.Continuation
 }
 
 func (d *Daemon) reconcileRetainedExecutionLocked(t *ticket.Ticket, path string) bool {
@@ -1038,7 +1085,7 @@ func (d *Daemon) retainFinalizationReservation(ctx context.Context, t *ticket.Ti
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.running, t.ID)
-	_, transferred := ctx.Value(dispatchPoolKey{}).(bool)
+	transferred := ctx.Value(dispatchPoolKey{}) != nil
 	d.reserveRecoveredExecutionLocked(t, transferred)
 }
 
@@ -1048,6 +1095,16 @@ func (d *Daemon) branchHolderLocked(key string) (string, bool) {
 	}
 	for id, reservation := range d.recoveredReservations {
 		if reservation.branchKey == key {
+			return id, true
+		}
+	}
+	for id, p := range d.workflowProbes {
+		if p.branchKey == key {
+			return id, true
+		}
+	}
+	for id, ts := range d.tickets {
+		if w := workflowReservation(ts.ticket); w != nil && w.Repository+"\x00"+w.Branch == key {
 			return id, true
 		}
 	}
@@ -1138,6 +1195,7 @@ func (d *Daemon) completeFinalization(rec *executionRecord, t *ticket.Ticket) {
 	d.mu.Lock()
 	retireExecution(d.config(), rec)
 	d.mu.Unlock()
+	d.signalWorkflowWait()
 }
 
 func (d *Daemon) recordValidatedRun(ctx context.Context, stage, agent, pipelineName string, run agentRun) {

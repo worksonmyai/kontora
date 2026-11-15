@@ -15,14 +15,24 @@ func (r *daemonRuntime) Enqueue(t *ticket.Ticket) {
 	}
 	r.d.mu.Lock()
 	defer r.d.mu.Unlock()
-	if current, ok := r.d.tickets[t.ID]; ok && current.ticket.Status == ticket.StatusTodo {
-		r.d.enqueue(current.ticket)
+	if current, ok := r.d.tickets[t.ID]; ok {
+		if state := current.ticket.GraphState; state != nil && state.Wait != nil {
+			r.d.signalWorkflowWait()
+			if state.Wait.Disarmed || state.Wait.Phase != "ready" || !state.Continuation {
+				return
+			}
+		}
+		if current.ticket.Status == ticket.StatusTodo {
+			r.d.enqueue(current.ticket)
+		}
 	}
 }
 
 func (r *daemonRuntime) Cancel(ticketID string) {
 	r.d.mu.Lock()
 	cancel, ok := r.d.running[ticketID]
+	r.d.cancelWorkflowProbeLocked(ticketID)
+	r.d.signalWorkflowWait()
 	r.d.mu.Unlock()
 	if ok {
 		cancel()
@@ -36,6 +46,7 @@ func (r *daemonRuntime) ReconcileDependencies(ticketID string) {
 }
 
 func (r *daemonRuntime) BroadcastUpdated(ticketID string) {
+	r.d.signalWorkflowWait()
 	r.d.broadcastTicketUpdateLocking(ticketID)
 }
 

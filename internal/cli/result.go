@@ -64,8 +64,8 @@ func ReportResult(subjectID, inputFile string, stdin io.Reader, out io.Writer, g
 		return fmt.Errorf("only one --verdict value is allowed")
 	}
 	if len(verdictFlag) == 1 {
-		if inv.Version != session.GraphResultVersion {
-			return fmt.Errorf("--verdict requires result version 2")
+		if inv.Version != session.GraphResultVersion && inv.Version != session.WaitResultVersion {
+			return fmt.Errorf("--verdict requires result version 2 or 3")
 		}
 		if strings.TrimSpace(verdictFlag[0]) == "" {
 			return fmt.Errorf("--verdict must be nonblank")
@@ -75,10 +75,15 @@ func ReportResult(subjectID, inputFile string, stdin io.Reader, out io.Writer, g
 		}
 		result.Verdict = verdictFlag[0]
 	}
-	if inv.Version == session.GraphResultVersion {
-		if err := session.ValidateGraphResult(result, inv.Verdicts); err != nil {
-			return err
-		}
+	return publishInvocationResult(inv, result, out)
+}
+
+func publishInvocationResult(inv session.Invocation, result session.Result, out io.Writer) error {
+	if out == nil {
+		return fmt.Errorf("result acknowledgement output is unavailable")
+	}
+	if err := session.ValidateInvocationResult(result, inv); err != nil {
+		return err
 	}
 	if _, err := session.PublishResult(inv.ResultPath, result, inv.Version); err != nil {
 		return err

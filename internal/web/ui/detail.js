@@ -196,7 +196,7 @@ export function kontoraDetail() {
 
     // Missing outcomes are legacy/unverified, regardless of runner exit code.
     runOutcomeLabel(h) {
-      return ['complete', 'blocked', 'protocol_error', 'failed'].includes(h?.run_outcome)
+      return ['complete', 'blocked', 'protocol_error', 'failed', 'waiting'].includes(h?.run_outcome)
         ? h.run_outcome : 'unknown/unverified';
     },
 
@@ -246,6 +246,11 @@ export function kontoraDetail() {
           summary: summary,
           failed: h.run_outcome === 'failed' || h.run_outcome === 'protocol_error',
           outcome: this.runOutcomeLabel(h),
+          verdict: h.verdict || '',
+          nextStep: h.next_step || '',
+          wake: h.wake,
+          wait: h.wait,
+          continuation: !!h.continuation,
           outcomeReason: h.outcome_reason || '',
           invocationID: h.invocation_id || '',
           exitCode: h.exit_code,
@@ -272,7 +277,7 @@ export function kontoraDetail() {
     stageHue(card, i) {
       if (card.failed) return '--st-error';
       if (i === 0 && card.outcome === 'complete') return '--st-done';
-      if (card.outcome === 'blocked') return '--st-paused';
+      if (card.outcome === 'blocked' || card.outcome === 'waiting') return '--st-paused';
       var stages = this.selectedTicket?.stages || [];
       var idx = stages.indexOf(card.stage);
       var cycle = ['--st-open', '--st-review', '--st-paused'];
@@ -294,6 +299,11 @@ export function kontoraDetail() {
       if (Number.isInteger(card.exitCode)) parts.push('runner exit ' + card.exitCode);
       if (card.outcomeReason) parts.push(card.outcomeReason);
       if (card.invocationID) parts.push('invocation ' + card.invocationID);
+      if (card.continuation) parts.push('continuation (not a retry)');
+      if (card.verdict) parts.push('verdict: ' + card.verdict);
+      if (card.nextStep) parts.push('next: ' + card.nextStep);
+      if (card.wake) parts.push('wake: ' + card.wake.reason + ' · wait ' + card.wake.wait_id + ' · count ' + card.wake.count);
+      if (card.wait) parts.push(this.workflowWaitText(card.wait, 'historical wait'));
       return parts.join(' · ');
     },
 
@@ -939,6 +949,7 @@ export function kontoraDetail() {
     // ticket that stopped mid-pipeline, restart for one that already finished.
     // Both queue the stage the ticket currently sits on; neither rewinds it.
     retryLabel() {
+      if (this.workflowWaiting?.(this.selectedTicket) && this.selectedTicket.graph_execution.wait.disarmed) return 'rearm wait';
       const restart = ['done', 'cancelled'].includes(this.selectedTicket?.status);
       if (this.actionLoading === 'retry') return restart ? 'restarting...' : 'retrying...';
       return restart ? 'restart' : 'retry';
@@ -946,6 +957,10 @@ export function kontoraDetail() {
 
     async action(type) {
       if (!this.ticketCanControl(this.selectedTicket) || this.actionLoading) return;
+      if (type === 'retry' && this.workflowWaiting?.(this.selectedTicket) && !this.selectedTicket.graph_execution.wait.disarmed) {
+        this.error = this.workflowReleaseInstructions(this.selectedTicket);
+        return;
+      }
       if (type === 'skip' && !this.canSkipStage()) {
         this.error = 'Pause first and wait for the agent and review to stop before changing stages.';
         return;

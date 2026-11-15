@@ -101,6 +101,11 @@ type HistoryView struct {
 	Template              string
 	VisitAttempt          int
 	Imported              bool
+	Verdict               string
+	NextStep              string
+	Wake                  *ticket.WakeContext
+	Wait                  *ticket.WorkflowWait
+	Continuation          bool
 	RunOutcome            string
 	OutcomeReason         string
 	InvocationID          string
@@ -126,16 +131,24 @@ type GraphDefinitionView struct {
 }
 
 type GraphNodeView struct {
-	ID       string              `json:"id"`
-	Type     string              `json:"type"`
-	Template string              `json:"template,omitempty"`
-	Agent    string              `json:"agent,omitempty"`
-	Verdicts []string            `json:"verdicts,omitempty"`
-	Command  string              `json:"command,omitempty"`
-	Timeout  string              `json:"timeout,omitempty"`
-	When     *GraphConditionView `json:"when,omitempty"`
-	Max      int                 `json:"max,omitempty"`
-	Status   string              `json:"status,omitempty"`
+	ID          string              `json:"id"`
+	Type        string              `json:"type"`
+	Template    string              `json:"template,omitempty"`
+	Agent       string              `json:"agent,omitempty"`
+	Verdicts    []string            `json:"verdicts,omitempty"`
+	Command     string              `json:"command,omitempty"`
+	Timeout     string              `json:"timeout,omitempty"`
+	When        *GraphConditionView `json:"when,omitempty"`
+	Max         int                 `json:"max,omitempty"`
+	Status      string              `json:"status,omitempty"`
+	Wake        *GraphWakeView      `json:"wake,omitempty"`
+	Mode        string              `json:"mode,omitempty"`
+	Environment string              `json:"environment,omitempty"`
+}
+
+type GraphWakeView struct {
+	Max          int    `json:"max"`
+	CheckTimeout string `json:"check_timeout"`
 }
 
 type GraphConditionView struct {
@@ -175,6 +188,11 @@ type GraphExecutionView struct {
 	SelectedEdges         []ticket.GraphTransition `json:"selected_edges,omitempty"`
 	Loops                 []GraphLoopView          `json:"loops,omitempty"`
 	// Full traces are detail-only; selected edges contain one row per port.
+	Wait               *ticket.WorkflowWait     `json:"wait,omitempty"`
+	Wake               *ticket.WakeContext      `json:"wake,omitempty"`
+	WakeCount          int                      `json:"wake_count,omitempty"`
+	WaitHistory        []ticket.WorkflowWait    `json:"wait_history,omitempty"`
+	Continuation       bool                     `json:"continuation,omitempty"`
 	Transitions        []ticket.GraphTransition `json:"transitions,omitempty"`
 	PreviousExecutions []ticket.GraphEvidence   `json:"previous_executions,omitempty"`
 }
@@ -187,7 +205,11 @@ func BuildGraphDefinition(graph *config.WorkflowGraph) *GraphDefinitionView {
 		Nodes: make([]GraphNodeView, 0, len(graph.Nodes)), Edges: make([]GraphEdgeView, 0, len(graph.Edges))}
 	for _, n := range graph.Nodes {
 		node := GraphNodeView{ID: n.ID, Type: n.Type, Template: n.Stage, Agent: n.Agent,
-			Verdicts: slices.Clone(n.Verdicts), Command: n.Command, Max: n.Max, Status: n.Status}
+			Verdicts: slices.Clone(n.Verdicts), Command: n.Command, Max: n.Max, Status: n.Status,
+			Mode: n.Mode, Environment: n.Environment}
+		if n.Wake != nil {
+			node.Wake = &GraphWakeView{Max: n.Wake.Max, CheckTimeout: n.Wake.CheckTimeout.String()}
+		}
 		if n.Timeout.Duration != 0 {
 			node.Timeout = n.Timeout.String()
 		}
@@ -209,7 +231,8 @@ func buildGraphExecution(t *ticket.Ticket, detail bool) *GraphExecutionView {
 	}
 	v := &GraphExecutionView{Version: s.Version, ExecutionID: s.ExecutionID, Revision: s.Revision,
 		DefinitionFingerprint: s.DefinitionFingerprint, CurrentNode: t.Stage, CurrentTemplate: s.NodeTemplates[t.Stage], VisitID: s.VisitID,
-		Visit: s.Visit, Attempt: graphVisitAttempt(t), LastResult: s.LastResult}
+		Visit: s.Visit, Attempt: graphVisitAttempt(t), LastResult: s.LastResult,
+		Wait: s.Wait, Wake: s.Wake, WakeCount: s.WakeCount, Continuation: graphVisitContinuation(t)}
 	selected := make(map[GraphPortView]int)
 	exhausted := make(map[string]bool)
 	for _, edge := range s.Transitions {
@@ -243,6 +266,7 @@ func buildGraphExecution(t *ticket.Ticket, detail bool) *GraphExecutionView {
 	}
 	slices.SortFunc(v.Loops, func(a, b GraphLoopView) int { return strings.Compare(a.NodeID, b.NodeID) })
 	if detail {
+		v.WaitHistory = s.WaitHistory
 		v.Transitions = s.Transitions
 		v.PreviousExecutions = s.PreviousExecutions
 	}
@@ -252,14 +276,32 @@ func buildGraphExecution(t *ticket.Ticket, detail bool) *GraphExecutionView {
 func graphVisitAttempt(t *ticket.Ticket) int {
 	attempt := 0
 	for _, row := range t.History {
-		if row.WorkflowExecutionID == t.GraphState.ExecutionID && row.NodeVisitID == t.GraphState.VisitID && row.Kind == "" {
+		if row.WorkflowExecutionID == t.GraphState.ExecutionID && row.NodeVisitID == t.GraphState.VisitID && row.Kind == "" && (!row.Continuation || attempt == 0) {
 			attempt++
 		}
 	}
-	if !t.IsRunning() && t.Status != ticket.StatusTodo && attempt > 0 {
+	if (!t.IsRunning() && t.Status != ticket.StatusTodo || graphVisitContinuation(t)) && attempt > 0 {
 		attempt--
 	}
 	return attempt
+}
+
+// A bound continuation consumes the pending flag before it runs. Its wake and
+// the most recent waiting row still identify it until that invocation finishes.
+func graphVisitContinuation(t *ticket.Ticket) bool {
+	s := t.GraphState
+	if !s.Continuation && !t.IsRunning() {
+		return false
+	}
+	if s.Wake == nil {
+		return s.Continuation
+	}
+	for _, row := range slices.Backward(t.History) {
+		if row.Kind == "" && row.WorkflowExecutionID == s.ExecutionID && row.NodeVisitID == s.VisitID {
+			return row.RunOutcome == ticket.RunOutcomeWaiting && row.Wait != nil && row.Wait.ID == s.Wake.WaitID
+		}
+	}
+	return s.Continuation
 }
 
 // ResolveViewAgent shares BuildView's agent rules without cloning preserved ticket YAML.
@@ -370,7 +412,9 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 				visitKey := h.WorkflowExecutionID + "/" + h.NodeVisitID
 				visitAttempt := 0
 				if h.NodeVisitID != "" && h.Kind == "" {
-					visitAttempts[visitKey]++
+					if !h.Continuation || visitAttempts[visitKey] == 0 {
+						visitAttempts[visitKey]++
+					}
 					visitAttempt = visitAttempts[visitKey]
 				}
 				v.History[i] = HistoryView{
@@ -385,6 +429,11 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 					Model:                 h.Model,
 					Effort:                h.Effort,
 					ExitCode:              h.ExitCode,
+					Verdict:               h.Verdict,
+					NextStep:              h.NextStep,
+					Wake:                  h.Wake,
+					Wait:                  h.Wait,
+					Continuation:          h.Continuation,
 					RunOutcome:            string(h.RunOutcome),
 					OutcomeReason:         h.OutcomeReason,
 					InvocationID:          h.InvocationID,

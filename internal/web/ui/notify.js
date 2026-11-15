@@ -32,6 +32,19 @@ function sameSet(a, b) {
 
 export function kontoraNotify() {
   return {
+    _notifySaves: Object.create(null),
+    _notifyEditorEpoch: 0,
+    _notifySubmission: 0,
+    _notifyDraftInitial: '',
+
+    _notifySignature(form) {
+      return JSON.stringify([form?.notify || [], form?.notifyChannels || []]);
+    },
+
+    _notifyOwns(owner) {
+      return owner.epoch === this._notifyEditorEpoch && owner.detail === this._ticketDetailSeq &&
+        owner.key === this.ticketKey(this.selectedTicket);
+    },
     notifyModes() {
       return NOTIFY_MODES;
     },
@@ -249,19 +262,26 @@ export function kontoraNotify() {
 
     openNotifyEditor() {
       if (!this.notifyCanEdit()) return;
+      this._notifyEditorEpoch++;
+      this.notifySaving = false;
+      this.notifySaved = false;
       this.notifyDraft = {
         notify: (this.selectedTicket.notify || []).slice(),
         notifyChannels: (this.selectedTicket.notify_channels || []).slice(),
         path: this.selectedTicket.path || '',
         autosave: true,
       };
+      this._notifyDraftInitial = this._notifySignature(this.notifyDraft);
       this.notifyError = null;
       this.notifyChips = false;
       this.notifyEditing = true;
     },
 
     closeNotifyEditor() {
+      this._notifyEditorEpoch++;
       this.notifyEditing = false;
+      this.notifySaving = false;
+      this.notifySaved = false;
       this.notifyError = null;
     },
 
@@ -271,43 +291,115 @@ export function kontoraNotify() {
     // compare against.
     async saveNotify() {
       var t = this.selectedTicket;
-      if (!this.notifyCanEdit() || !this.notifyDraft) return;
+      if (!this.notifyCanEdit() || !this.notifyDraft) return false;
       this.notifyError = null;
+      this.notifySaved = false;
       var routeError = this.notifyRouteError(this.notifyDraft);
       if (routeError) {
         this.notifyError = routeError;
-        return;
+        return false;
       }
+      var key = this.ticketKey(t);
+      var state = this._notifySaves[key] || (this._notifySaves[key] = { pending: null, promise: null, ok: true, ack: null, failed: null });
+      var owner = { key, epoch: this._notifyEditorEpoch, detail: this._ticketDetailSeq,
+        submission: ++this._notifySubmission, signature: this._notifySignature(this.notifyDraft) };
+      state.pending = { t, owner, payload: {
+        notify: (this.notifyDraft.notify || []).slice(),
+        notify_channels: (this.notifyDraft.notifyChannels || []).slice(),
+      } };
       this.notifySaving = true;
-      try {
-        const res = await fetch(this.ticketURL(t), {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            notify: this.notifyDraft.notify,
-            notify_channels: this.notifyDraft.notifyChannels,
-          }),
-        });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          this.notifyError = data.error || 'Failed to save notify';
-          return;
+      if (!state.promise) {
+        state.promise = this._notifyDrain(state).finally(() => { state.promise = null; });
+      }
+      return state.promise;
+    },
+
+    async _notifyDrain(state) {
+      while (state.pending) {
+        const request = state.pending;
+        state.pending = null;
+        const { t, owner, payload } = request;
+        const current = () => this._notifyOwns(owner) && owner.submission === this._notifySubmission &&
+          owner.signature === this._notifySignature(this.notifyDraft);
+        // Permission can be revoked while another notify write is pending.
+        if (this._notifyOwns(owner) && !this.notifyCanEdit()) {
+          state.ok = false;
+          state.failed = owner.signature;
+          state.pending = null;
+          if (current()) {
+            this.notifySaving = false;
+            this.notifyError = 'Notifications can no longer be edited.';
+          }
+          break;
         }
-        const updated = { ...await res.json(), source: t.source };
-        const entries = this.isSecondary(t) ? this.secondaryTickets : this.tickets;
-        const idx = entries.findIndex(x => this.sameTicket(x, t));
-        if (idx >= 0) entries[idx] = this.boardEntry(updated);
-        // The panel may have moved on while this was in flight, and an
-        // unguarded assignment would reopen the ticket it left.
-        if (this.sameTicket(this.selectedTicket, updated)) {
-          this.selectedTicket = updated;
-          this.notifySaved = true;
-          setTimeout(() => { this.notifySaved = false; }, 1500);
+        var before = this.sameTicket(this.selectedTicket, t) ? this.selectedTicket : t;
+        try {
+          var res = await fetch(this.ticketURL(t), {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+          });
+          if (!res.ok) {
+            var data = await res.json().catch(() => ({}));
+            throw new Error(data.error || 'Failed to save notify');
+          }
+          var updated = await res.json();
+          // The endpoint returns a whole snapshot. Only acknowledge our fields;
+          // even a fresh notification ack has no authority over notes or status.
+          var fields = { notify: updated.notify || [], notify_channels: updated.notify_channels || [] };
+          var entries = this.isSecondary(t) ? this.secondaryTickets : this.tickets;
+          var idx = entries.findIndex(x => this.sameTicket(x, t));
+          var unchanged = ticket => JSON.stringify([ticket?.notify || [], ticket?.notify_channels || []]) === JSON.stringify([before.notify || [], before.notify_channels || []]);
+          if (idx >= 0 && unchanged(entries[idx])) entries[idx] = { ...entries[idx], ...fields };
+          if (this.sameTicket(this.selectedTicket, t) && unchanged(this.selectedTicket)) {
+            // A secondary revision authorizes the displayed document. Keep it
+            // until a full, owned read rather than endorsing an unseen snapshot.
+            this.selectedTicket = { ...this.selectedTicket, ...fields };
+            this._selectedTicketUpdateSeq++;
+          }
+          state.ok = true;
+          state.ack = owner.signature;
+          state.failed = null;
+          if (current() && !state.pending) {
+            this.notifySaved = true;
+            this.notifyError = null;
+            setTimeout(() => { if (current() && state.ack === owner.signature) this.notifySaved = false; }, 1500);
+          }
+        } catch (e) {
+          state.ok = false;
+          const queued = state.pending;
+          state.failed = queued?.owner.signature || owner.signature;
+          if (current()) this.notifyError = e.message || 'Failed to save notify';
+          else if (queued && this._notifyOwns(queued.owner) && queued.owner.submission === this._notifySubmission &&
+              queued.owner.signature === this._notifySignature(this.notifyDraft)) {
+            this.notifyError = 'Notification save failed. The newer draft has not been sent; save again to retry.';
+          }
+          // Keep the draft. No automatic mutation retry, including queued writes
+          // after an uncertain network failure.
+          state.pending = null;
         }
-      } catch (e) {
-        this.notifyError = 'Failed to save notify: ' + e.message;
-      } finally {
-        this.notifySaving = false;
+        if (this._notifyOwns(owner) && !state.pending) this.notifySaving = false;
+      }
+      return state.ok;
+    },
+
+    // Lifecycle barrier: drain the latest draft, not just the current promise.
+    // A failed unchanged draft blocks execution without replaying a mutation.
+    async flushNotifySave(ticket = this.selectedTicket) {
+      var key = typeof ticket === 'string' ? ticket : this.ticketKey(ticket);
+      if (!key) return true;
+      for (;;) {
+        var state = this._notifySaves[key];
+        if (state?.promise) { await state.promise; continue; }
+        if (state?.ok === false) return false;
+        if (this.ticketKey(this.selectedTicket) === key && this.notifyEditing && this.notifyDraft) {
+          var signature = this._notifySignature(this.notifyDraft);
+          if (this.notifyRouteError(this.notifyDraft)) return false;
+          if (state?.failed === signature) return false;
+          if (signature !== (state?.ack ?? this._notifyDraftInitial)) {
+            if (!await this.saveNotify()) return false;
+            continue;
+          }
+        }
+        return state?.ok !== false;
       }
     },
   };

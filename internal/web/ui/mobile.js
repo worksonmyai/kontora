@@ -1,5 +1,5 @@
 // The phone-width layer, gated on isMobile: a status tab strip and card list
-// for the board, a full-screen tabbed detail (terminal / logs / activity / ticket), and
+// for the board, a full-screen tabbed detail, and
 // bottom sheets for actions and the new-ticket form. It reuses the desktop
 // board's ticket data and operations — only the layout and a few view-state
 // fields (activeColumn, detailTab, sheet) are its own.
@@ -66,6 +66,17 @@ export function kontoraMobile() {
           if (lifecycle === owner && !this._appDestroyed) this._syncMobileSheet();
         });
         if (typeof unwatch === 'function') owner.watches.push(unwatch);
+        for (const key of ['currentView', 'selectedTicket', 'selectedEpic']) {
+          const stop = this.$watch(key, () => {
+            if (lifecycle !== owner || this._appDestroyed) return;
+            this.$nextTick(() => {
+              if (lifecycle !== owner || this._appDestroyed) return;
+              this.syncDetailCoverage();
+              if (key === 'currentView' && this.currentView === 'board') this.restoreDetailScroll();
+            });
+          });
+          if (typeof stop === 'function') owner.watches.push(stop);
+        }
       }
       this.isMobile = window.innerWidth < 768;
       this._updateMobileViewport();
@@ -144,6 +155,7 @@ export function kontoraMobile() {
     // Navigation guards must run before this cleanup.
     mobileBeforeNavigate(view) {
       if (view === this.currentView) return;
+      this.rememberDetailView();
       this.mobileResetTerminalInput();
       ++columnScrollSequence;
       ++descriptionSequence;
@@ -356,6 +368,17 @@ export function kontoraMobile() {
     mobileFirstTabLabel() {
       return this.executionActive(this.selectedTicket) ? 'Terminal' : 'Logs';
     },
+
+    mobilePanel() {
+      if (['terminal', 'activity', 'logs'].includes(this.detailTab)) return 'output';
+      return this.detailTab === 'diff' ? 'changes' : this.detailTab;
+    },
+
+    mobileSwitchPanel(panel) {
+      const mode = panel === 'output' ? (this.isSecondary(this.selectedTicket) || !this.mobileHasRun(this.selectedTicket) || (this.activityStage !== null && this._activityExplicit) ? 'activity' : this.mobileFirstTab())
+        : panel === 'changes' ? 'diff' : panel;
+      this.mobileSwitchTab(mode);
+    },
     mobileTagLabel(t) {
       return t?.pipeline || this.pathBasename(t?.path) || '—';
     },
@@ -365,11 +388,6 @@ export function kontoraMobile() {
         if (await this.gotoView('board', navigation, { view: 'board', ticketId: t.id, source: t.source }) === false) return;
         if (navigation !== this._navigationSeq) return;
       }
-      // Pick the detail tab from the card's status before selectTicket() runs,
-      // so the right pane is already visible when the live terminal attaches.
-      if (this.executionActive(t) && this.mobileHasRun(t)) this.detailTab = 'terminal';
-      else if (this.mobileHasRun(t)) this.detailTab = 'logs';
-      else this.detailTab = 'ticket';
       await this.selectTicket(t, navigation);
       if (navigation !== this._navigationSeq || !this.sameTicket(this.selectedTicket, t)) return;
       // The board card lacks detail fields, so the summary check runs on the
@@ -386,17 +404,26 @@ export function kontoraMobile() {
       }
     },
 
-    mobileSwitchTab(tab) {
-      if (!this.selectedTicket || (this.isSecondary(this.selectedTicket) && tab !== 'ticket')) return;
+    mobileSwitchTab(tab, { logStage = null } = {}) {
+      if (!this.selectedTicket || !['ticket', 'notes', 'diff', 'terminal', 'activity', 'logs'].includes(tab) ||
+          (this.isSecondary(this.selectedTicket) && ['terminal', 'logs'].includes(tab))) return;
+      if (tab === 'terminal' && !this.executionActive(this.selectedTicket)) tab = 'activity';
+      if (tab !== this.detailTab) this.rememberDetailView();
       if (tab !== 'ticket' && this.editing) this.mobileFinishDescriptionEdit();
       if (tab !== this.detailTab) {
         this._invalidateStageLogs();
         this._invalidateRawLog();
       }
-      this._activityLoadSeq++;
-      this.activityLoading = false;
+      if (tab !== 'activity') {
+        this._activityLoadSeq++;
+        this.activityLoading = false;
+      }
       this._stopActivityPoll();
       this.detailTab = tab;
+      this.activeTab = tab === 'terminal' ? 'session' : tab;
+      if (tab === 'ticket' && !this.editing && this.editorCanEdit(this.selectedTicket)) this.startEditing();
+      if (tab === 'diff') this.fetchChanges(this.selectedTicket.id);
+      this.restoreDetailScroll();
       if (tab === 'terminal') {
         this.logViewContent = null;
         this.logViewStage = null;
@@ -405,13 +432,13 @@ export function kontoraMobile() {
         if (this.terminalOpen) this.closeTerminal();
         if (tab === 'logs') {
           var t = this.selectedTicket;
-          var stage = t.stage;
+          var stage = logStage ?? t.stage;
           if (!stage && t.history && t.history.length) stage = t.history[t.history.length - 1].stage;
           this.fetchStageLogs(t.id, stage);
-        } else if (tab === 'activity') {
+        } else if (tab === 'activity' && !this.isSecondary(this.selectedTicket)) {
           var target = this._activityExplicit && this.activityStage !== null
             ? { stage: this.activityStage, run: this.activityRun } : this.activityTarget();
-          if (target && (!this.activity || target.stage !== this.activityStage || target.run !== this.activityRun)) {
+          if (target && !this.activityLoading && (!this.activity || target.stage !== this.activityStage || target.run !== this.activityRun)) {
             this.fetchActivity(target.stage, target.run);
           } else if (this.activity?.live) {
             this._armActivityPoll(this.activityStage, this.activityRun, true);
@@ -475,46 +502,36 @@ export function kontoraMobile() {
     // directly, the secondary the alternate one; unknown statuses fall back to
     // the actions sheet.
     mobilePrimaryAction(t) {
-      if (!this.ticketCanControl(t)) return { label: this.ticketCanClaim(t) ? 'claim' : 'view', run: () => this.ticketCanClaim(t) ? this.claimTicket(t) : this._paletteOpenTicket(t) };
-      var self = this, id = t && t.id;
-      var run = function(ep) { return function() { self.moveTicketVia(id, ep, null); }; };
-      var move = function(st) { return function() { self.moveTicketVia(id, 'move', { status: st }); }; };
-      if (this.epicCanStart(t)) return { label: 'start epic', run: function() { self.openInitModal(t); } };
-      if (this.epicIsAgent(t) && ['paused', 'done', 'cancelled'].includes(t.status)) {
-        return { label: t.status === 'paused' ? 'retry supervisor' : 'restart supervisor', run: run('retry') };
-      }
-      var map = {
-        open:         { label: 'queue',          run: run('run') },
-        todo:         { label: 'queue',          run: run('run') },
-        in_progress:  { label: 'send to review', run: move('human_review') },
-        paused:       { label: 'resume',         run: run('retry') },
-        human_review: { label: 'approve',        run: move('done') },
-        done:         { label: 're-open',        run: run('retry') },
-        cancelled:    { label: 're-open',        run: run('retry') },
-      };
-      return map[this.executionActive(t) ? 'in_progress' : t?.status] || { label: 'actions', run: function() { self.openActionsSheet(t); } };
+      const key = this.ticketKey(t);
+      const command = t?.status === 'human_review' && !this.executionActive(t)
+        ? this.lifecycleCommand(key, 'move:done') : this.lifecycleActions(key)[0];
+      if (!command) return { label: t?.status === 'todo' ? 'Queued' : 'Actions', disabled: t?.status === 'todo', run: () => this.openActionsSheet(t) };
+      return { label: command.id === 'move:done' ? 'Mark done' : command.label,
+        disabled: this.lifecycleBusy(key), run: () => this.dispatchLifecycle(key, command) };
     },
+
     mobileSecondaryAction(t) {
-      if (!this.ticketCanControl(t)) return { label: 'details', run: () => this._paletteOpenTicket(t) };
-      var self = this, id = t && t.id;
-      var run = function(ep) { return function() { self.moveTicketVia(id, ep, null); }; };
-      var move = function(st) { return function() { self.moveTicketVia(id, 'move', { status: st }); }; };
-      if (this.epicIsAgent(t) && this.executionActive(t)) {
-        return { label: 'pause supervisor', run: function() { self.action('pause'); } };
-      }
-      if (t?.kind === 'epic' && !this.epicIsAgent(t)) {
-        return { label: 'epic overview', run: function() { self.openEpic(id); } };
-      }
-      if (this.executionActive(t)) return { label: 'pause', run: function() { self.action('pause'); } };
-      var map = {
-        open:         { label: 'cancel',    run: move('cancelled') },
-        todo:         { label: 'cancel',    run: move('cancelled') },
-        paused:       { label: 'cancel',    run: move('cancelled') },
-        human_review: { label: 'send back', run: run('retry') },
-        done:         { label: 'delete',    run: function() { self.openDeleteModal(); } },
-        cancelled:    { label: 'delete',    run: function() { self.openDeleteModal(); } },
-      };
-      return map[t?.status] || { label: 'more', run: function() { self.openActionsSheet(t); } };
+      return { label: 'Move to', disabled: this.lifecycleBusy(t) || !this.lifecycleDestinations(t).length,
+        run: () => this.openMoveSheet(t) };
+    },
+
+    openMoveSheet(t) {
+      if (!this.lifecycleDestinations(t).length || this.lifecycleBusy(t)) return;
+      this.closeAgentPicker(false);
+      this.sheet = { type: 'move', ticket: t, destinations: this.lifecycleDestinations(t) };
+      this._syncMobileSheet();
+    },
+
+    mobileMoveDestinations(t = this.sheet?.ticket || this.selectedTicket) {
+      return this.sheet?.type === 'move' && this.sameTicket(t, this.sheet.ticket)
+        ? this.sheet.destinations : this.lifecycleDestinations(t);
+    },
+
+    mobileMoveTo(status, t = this.sheet?.ticket || this.selectedTicket) {
+      const key = this.ticketKey(t);
+      const command = this.mobileMoveDestinations(t).find(destination => destination.status === status);
+      this.closeSheet();
+      return this.dispatchLifecycle(key, command);
     },
 
     mobileTerminalInputTarget: null,
@@ -722,8 +739,9 @@ export function kontoraMobile() {
       }
       if (this.scheduleSubmitting) return;
       const sheet = this.sheet;
-      await this._postSchedule(t, { scheduled_at: parsed.iso });
-      if (!this._appDestroyed && this.sheet === sheet && !this.scheduleError) this.closeSheet();
+      const result = await this._postSchedule(t, { scheduled_at: parsed.iso });
+      if (!this._appDestroyed && this.sheet === sheet && result?.outcome === 'success') this.closeSheet();
+      return result;
     },
 
     // Clearing from inside the sheet, where the error line is on screen and the
@@ -731,84 +749,57 @@ export function kontoraMobile() {
     async clearScheduleSheet(t) {
       if (this.scheduleSubmitting) return;
       const sheet = this.sheet;
-      await this.clearTicketSchedule(t);
-      if (!this._appDestroyed && this.sheet === sheet && !this.scheduleError) this.closeSheet();
+      const result = await this.clearTicketSchedule(t);
+      if (!this._appDestroyed && this.sheet === sheet && result?.outcome === 'success') this.closeSheet();
+      return result;
     },
 
     // "run now instead": the daemon drops the timestamp in the same save that
     // queues the ticket, so this is the ordinary start action.
     async runNowFromSheet(t) {
+      const command = this.lifecycleCommand(t, 'start');
       this.closeSheet();
-      await this.moveTicketVia(t.id, 'run', null);
+      return this.dispatchLifecycle(this.ticketKey(t), command);
     },
 
     // The actions sheet closes before the clear is posted, and scheduleError
     // only renders in the detail rail and the schedule sheet, neither of which
     // is on screen. The toast is the surface a phone has left.
     async clearScheduleMobile(t) {
-      await this.clearTicketSchedule(t);
-      if (this.scheduleError) this.error = this.scheduleError;
+      const result = await this.clearTicketSchedule(t);
+      if (result?.error) this.error = result.error;
+      return result;
     },
 
     mobileSheetActions(t) {
-      if (!this.ticketCanControl(t)) return this.ticketCanClaim(t) ? [{ label: 'Claim into primary', kind: 'primary', run: () => this.claimTicket(t) }] : [];
       if (!t) return [];
-      var self = this, rows = [];
-      var add = function(label, kind, fn) { rows.push({ label: label, kind: kind, run: function() { self.closeSheet(); fn(); } }); };
-      var run = function(ep) { return function() { self.moveTicketVia(t.id, ep, null); }; };
-      var move = function(st) { return function() { self.moveTicketVia(t.id, 'move', { status: st }); }; };
-      var s = t.status;
-      if (t.kind === 'epic') {
-        add('Epic overview', 'default', function() { self.openEpic(t.id); });
-        if (this.epicCanStart(t)) {
-          add('Start epic', 'primary', function() { self.openInitModal(t); });
-          return rows;
-        }
-        if (!this.epicIsAgent(t)) return rows;
-      }
-      if ((s === 'open' || s === 'todo') && !t.kontora) add('Initialize ticket', 'warn', function() { self.openInitModal(t); });
-      // On a scheduled ticket "Queue agent" is the run-now action: the daemon
-      // drops the timestamp in the same save.
-      if (this.canSchedule(t)) {
-        add(t.scheduled_at ? 'Reschedule…' : 'Schedule…', 'default', function() { self.openScheduleSheet(t); });
-        if (t.scheduled_at) add('Clear schedule', 'default', function() { self.clearScheduleMobile(t); });
-      }
-      if (s === 'open') {
-        add('Queue agent', 'primary', run('run'));
-        add('Move to Human Review', 'default', move('human_review'));
-        add('Cancel ticket', 'danger', move('cancelled'));
-      } else if (s === 'todo') {
-        add('Queue agent', 'primary', run('run'));
-        add('Move to open', 'default', move('open'));
-        add('Cancel ticket', 'danger', move('cancelled'));
-      } else if (this.executionActive(t)) {
-        add(this.epicIsAgent(t) ? 'Pause supervisor' : 'Pause agent before changing stages', 'warn', function() { self.moveTicketVia(t.id, 'pause', null); });
-        add('Send to review', 'primary', move('human_review'));
-        add('Mark done', 'default', move('done'));
-        add('Cancel ticket', 'danger', move('cancelled'));
-      } else if (s === 'paused') {
-        add(this.epicIsAgent(t) ? 'Retry supervisor' : 'Resume', 'primary', run('retry'));
-        add('Mark done', 'default', move('done'));
-        add('Cancel ticket', 'danger', move('cancelled'));
-      } else if (s === 'human_review') {
-        if (t.kontora) add('Plannotator review', 'default', function() { self.startPlannotatorReview(t); });
-        add('Approve & merge', 'primary', move('done'));
-        add('Send back', 'warn', run('retry'));
-        add('Cancel ticket', 'danger', move('cancelled'));
-      } else if (s === 'done') {
-        add(this.epicIsAgent(t) ? 'Restart supervisor' : 'Re-open', 'default', run('retry'));
-        add('Send to review', 'default', move('human_review'));
-        if (t.branch) add('Copy branch', 'default', function() { self.copyBranch(t.branch); });
-        add('Delete file', 'danger', function() { self.openDeleteModal(); });
-      } else if (s === 'cancelled') {
-        add(this.epicIsAgent(t) ? 'Restart supervisor' : 'Re-open', 'default', run('retry'));
-        add('Delete file', 'danger', function() { self.openDeleteModal(); });
-      } else {
-        this.ticketMoves(t).forEach(function(mv) {
-          add(mv.label, 'default', mv.status ? move(mv.status) : run(mv.endpoint));
+      const key = this.ticketKey(t);
+      const rows = [];
+      const add = (label, kind, run) => rows.push({ label, kind, run: () => { this.closeSheet(); return run(); } });
+      const addCommand = command => {
+        if (!command) return;
+        add(command.label, ['cancel', 'delete'].includes(command.kind) ? 'danger' : 'default', () => this.dispatchLifecycle(key, command));
+      };
+      if (t.kind === 'epic') add('Epic overview', 'default', () => this.openEpic(t.id));
+      if (this.ticketCanControl(t)) {
+        this.lifecycleActions(key).forEach(addCommand);
+        if (this.mobileHasRun(t)) add('Output options', 'default', async () => {
+          if (!this.sameTicket(this.selectedTicket, t)) await this._paletteOpenTicket(t);
+          if (this.sameTicket(this.selectedTicket, t)) this.mobileSwitchTab('activity');
         });
-      }
-      if (this.canSkipStage(t)) add('Skip stage', 'default', run('skip'));
+        if (this.lifecycleDestinations(key).length) add('Move to', 'default', () => this.openMoveSheet(t));
+        for (const id of ['cancel', 'skip', 'review', 'annotate', 'archive', 'delete']) {
+          const command = this.lifecycleCommand(key, id);
+          if (this._lifecycleAllowed(this.lifecycleResolve(key), command)) addCommand(command);
+        }
+        if (this.canSchedule(t)) {
+          add(t.scheduled_at ? 'Reschedule…' : 'Schedule…', 'default', () => this.openScheduleSheet(t));
+          if (t.scheduled_at) add('Clear schedule', 'default', () => this.clearScheduleMobile(t));
+        }
+      } else if (this.ticketCanClaim(t)) add('Claim into primary', 'primary', () => this.claimTicket(t));
+      if (t.branch) add('Copy branch', 'default', () => this.copyBranch(t.branch));
+      addCommand(this.lifecycleCommand(key, 'copy-id'));
+      addCommand(this.lifecycleCommand(key, 'copy-link'));
       return rows;
     },
     mobileActionColor(kind) {

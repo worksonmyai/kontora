@@ -5,7 +5,26 @@
 // Every key here is prefixed `note*`, because ui/detail.js and ui/activity.js
 // already own the unprefixed ticket helpers and merge() throws on a repeat.
 export function kontoraNotes() {
+  const requests = new Map();
+  const drafts = new Map();
   return {
+    _noteDraftEpoch: 0,
+    _noteReplyVersion: 0,
+    _noteEditVersion: 0,
+    _noteDeleteVersion: 0,
+
+    _noteDraftOwner(kind, text, target = null) {
+      var owner = { key: this.ticketKey(this.selectedTicket), epoch: this._noteDraftEpoch, detail: this._ticketDetailSeq,
+        kind, text, target, version: this['_note' + kind + 'Version'] };
+      drafts.set(kind, owner);
+      return owner;
+    },
+
+    _noteDraftCurrent(owner) {
+      return drafts.get(owner.kind) === owner && owner.epoch === this._noteDraftEpoch && owner.detail === this._ticketDetailSeq &&
+        owner.key === this.ticketKey(this.selectedTicket) &&
+        owner.version === this['_note' + owner.kind + 'Version'];
+    },
     // Which note the pointer is over, which one has an open reply or edit box,
     // and the drafts those boxes hold. One of each: opening a box closes the
     // one that was open.
@@ -173,20 +192,27 @@ export function kontoraNotes() {
 
     async submitNote() {
       var text = (this.noteDraft || '').trim();
-      if (!text || !this.selectedTicket || this.noteSubmitting) return;
+      if (!text || !this.ticketCanEdit(this.selectedTicket) || this.noteSubmitting) return;
+      var owner = this._noteDraftOwner('Add', this.noteDraft);
       this.noteSubmitting = true;
-      var ok = await this._noteRequest('/note', 'POST', { text: text }, 'Failed to add note');
-      if (ok) this.noteDraft = '';
+      var ok = await this._noteRequest('/note', 'POST', { text: text }, 'Failed to add note', owner);
+      if (!this._noteDraftCurrent(owner)) return;
+      if (ok && this.noteDraft === owner.text) this.noteDraft = '';
       this.noteSubmitting = false;
     },
 
     noteOpenReply(n) {
-      this.noteEditOn = null;
+      if (!n || !this.ticketCanEdit(this.selectedTicket)) return;
+      this.noteCancelEdit();
+      this._noteReplyVersion++;
+      this.noteReplySubmitting = false;
       this.noteReplyOn = n.id;
       this.noteReplyDraft = '';
     },
 
     noteCancelReply() {
+      this._noteReplyVersion++;
+      this.noteReplySubmitting = false;
       this.noteReplyOn = null;
       this.noteReplyDraft = '';
     },
@@ -194,20 +220,27 @@ export function kontoraNotes() {
     async submitReply() {
       var text = (this.noteReplyDraft || '').trim();
       var parent = this.noteReplyOn;
-      if (!text || !parent || this.noteReplySubmitting) return;
+      if (!text || !parent || !this.ticketCanEdit(this.selectedTicket) || this.noteReplySubmitting) return;
+      var owner = this._noteDraftOwner('Reply', this.noteReplyDraft, parent);
       this.noteReplySubmitting = true;
-      var ok = await this._noteRequest('/note', 'POST', { text: text, parent: parent }, 'Failed to add reply');
-      if (ok) this.noteCancelReply();
+      var ok = await this._noteRequest('/note', 'POST', { text: text, parent: parent }, 'Failed to add reply', owner);
+      if (!this._noteDraftCurrent(owner)) return;
       this.noteReplySubmitting = false;
+      if (ok && this.noteReplyOn === parent && this.noteReplyDraft === owner.text) this.noteCancelReply();
     },
 
     noteOpenEdit(n) {
-      this.noteReplyOn = null;
+      if (!this.ticketCanEdit(this.selectedTicket) || !this.noteIsMine(n)) return;
+      this.noteCancelReply();
+      this._noteEditVersion++;
+      this.noteEditSubmitting = false;
       this.noteEditOn = n.id;
       this.noteEditDraft = n.text || '';
     },
 
     noteCancelEdit() {
+      this._noteEditVersion++;
+      this.noteEditSubmitting = false;
       this.noteEditOn = null;
       this.noteEditDraft = '';
     },
@@ -215,32 +248,42 @@ export function kontoraNotes() {
     async saveNoteEdit() {
       var text = (this.noteEditDraft || '').trim();
       var id = this.noteEditOn;
-      if (!text || !id || this.noteEditSubmitting) return;
+      var note = this.selectedTicket?.notes?.find(n => n.id === id);
+      if (!text || !id || !this.ticketCanEdit(this.selectedTicket) || !this.noteIsMine(note) || this.noteEditSubmitting) return;
+      var owner = this._noteDraftOwner('Edit', this.noteEditDraft, id);
       this.noteEditSubmitting = true;
-      var ok = await this._noteRequest('/notes/' + encodeURIComponent(id), 'PATCH', { text: text }, 'Failed to edit note');
-      if (ok) this.noteCancelEdit();
+      var ok = await this._noteRequest('/notes/' + encodeURIComponent(id), 'PATCH', { text: text }, 'Failed to edit note', owner);
+      if (!this._noteDraftCurrent(owner)) return;
       this.noteEditSubmitting = false;
+      if (ok && this.noteEditOn === id && this.noteEditDraft === owner.text) this.noteCancelEdit();
     },
 
     noteAskDelete(n) {
+      if (!this.ticketCanEdit(this.selectedTicket) || !this.noteIsMine(n)) return;
+      this._noteDeleteVersion++;
       this.noteDeleteTarget = n;
     },
 
     noteCloseDelete() {
       if (this.noteDeleteSubmitting) return;
+      this._noteDeleteVersion++;
       this.noteDeleteTarget = null;
     },
 
     async confirmDeleteNote() {
       var n = this.noteDeleteTarget;
-      if (!n || this.noteDeleteSubmitting) return;
+      var current = this.selectedTicket?.notes?.find(note => note.id === n?.id);
+      if (!current || !this.ticketCanEdit(this.selectedTicket) || !this.noteIsMine(current) || this.noteDeleteSubmitting) return;
+      var owner = this._noteDraftOwner('Delete', null, n.id);
+      var editVersion = this._noteEditVersion, replyVersion = this._noteReplyVersion;
       this.noteDeleteSubmitting = true;
-      var ok = await this._noteRequest('/notes/' + encodeURIComponent(n.id), 'DELETE', null, 'Failed to delete note');
+      var ok = await this._noteRequest('/notes/' + encodeURIComponent(n.id), 'DELETE', null, 'Failed to delete note', owner);
+      if (!this._noteDraftCurrent(owner)) return;
       this.noteDeleteSubmitting = false;
       if (ok) {
         this.noteDeleteTarget = null;
-        if (this.noteEditOn === n.id) this.noteCancelEdit();
-        if (this.noteReplyOn === n.id) this.noteCancelReply();
+        if (this.noteEditOn === n.id && this._noteEditVersion === editVersion) this.noteCancelEdit();
+        if (this.noteReplyOn === n.id && this._noteReplyVersion === replyVersion) this.noteCancelReply();
       }
     },
 
@@ -263,7 +306,7 @@ export function kontoraNotes() {
     },
 
     async toggleReaction(n, emoji) {
-      if (!n || !emoji) return;
+      if (!n || !emoji || !this.ticketCanEdit(this.selectedTicket)) return;
       var chip = (n.reactions || []).find(function (c) { return c.emoji === emoji; });
       var base = '/notes/' + encodeURIComponent(n.id) + '/reactions';
       if (this.noteReacted(chip)) {
@@ -273,13 +316,33 @@ export function kontoraNotes() {
       }
     },
 
-    // Note routes return whole tickets, but their snapshots can precede a description save.
-    async _noteRequest(path, method, body, failure) {
+    // Serialize conversation writes per source-qualified ticket. Never replay
+    // mutations; if a newer local snapshot overtakes an ack, re-read instead.
+    async _noteRequest(path, method, body, failure, owner) {
       var t = this.selectedTicket;
       if (!this.ticketCanEdit(t)) return false;
+      var id = this.ticketKey(t), epoch = this._noteDraftEpoch;
+      var detail = this._ticketDetailSeq;
+      var mine = () => this.ticketKey(this.selectedTicket) === id && epoch === this._noteDraftEpoch && detail === this._ticketDetailSeq;
+      var previous = requests.get(id);
+      var request = (async () => {
+        if (previous) await previous;
+        if (!mine() || !this.ticketCanEdit(this.selectedTicket)) return false;
+        var feedback = () => mine() && (!owner || this._noteDraftCurrent(owner));
+        return this._noteSend(t, path, method, body, failure, mine, feedback);
+      })();
+      requests.set(id, request);
+      try { return await request; }
+      finally { if (requests.get(id) === request) requests.delete(id); }
+    },
+
+    async _noteSend(t, path, method, body, failure, mine, feedback) {
       var id = this.ticketKey(t);
       var update = this._selectedTicketUpdateSeq;
       var acknowledged = this._editorSaves[id]?.ackSequence || 0;
+      var snapshot = JSON.stringify(this.selectedTicket);
+      var committed = false;
+      var refreshFailure = 'Note saved, but the latest conversation could not be loaded. Reopen the ticket to refresh.';
       try {
         var init = { method: method };
         if (body) {
@@ -289,24 +352,41 @@ export function kontoraNotes() {
         var res = await fetch(this.ticketURL(t, path), init);
         if (!res.ok) {
           var err = await res.json().catch(function () { return {}; });
-          this.error = err.error || failure;
+          if (feedback()) this.error = err.error || failure;
           return false;
         }
         var full = await res.json();
         full = { ...full, source: t.source || full.source };
-        this._noteApplyTicket(id, full, update, acknowledged);
+        committed = true;
+        if (!mine()) return true;
+        if (this._noteApplyTicket(id, full, update, acknowledged, snapshot)) return true;
+        // Re-read stale snapshots without replaying the successful write.
+        for (var attempt = 0; attempt < 3 && mine(); attempt++) {
+          update = this._selectedTicketUpdateSeq;
+          acknowledged = this._editorSaves[id]?.ackSequence || 0;
+          snapshot = JSON.stringify(this.selectedTicket);
+          var fresh = await fetch(this.ticketURL(t));
+          if (!mine()) return true;
+          if (!fresh.ok) break;
+          full = { ...await fresh.json(), source: t.source || full.source };
+          if (!mine()) return true;
+          if (this._noteApplyTicket(id, full, update, acknowledged, snapshot)) return true;
+        }
+        if (feedback()) this.error = refreshFailure;
         return true;
       } catch (e) {
-        this.error = failure;
-        return false;
+        if (feedback()) this.error = committed ? refreshFailure : failure;
+        return committed;
       }
     },
 
-    _noteApplyTicket(id, full, update, acknowledged) {
+    _noteApplyTicket(id, full, update, acknowledged, snapshot) {
       var stale = (update !== undefined && update !== this._selectedTicketUpdateSeq) ||
-        (acknowledged !== undefined && acknowledged !== (this._editorSaves[id]?.ackSequence || 0));
+        (acknowledged !== undefined && acknowledged !== (this._editorSaves[id]?.ackSequence || 0)) ||
+        (snapshot !== undefined && snapshot !== JSON.stringify(this.selectedTicket));
+      if (stale || this.ticketKey(this.selectedTicket) !== id) return false;
       if (this.ticketKey(this.selectedTicket) === id) {
-        if (this.editing || stale) {
+        if (this.editing) {
           var description = this.descriptionText(this.selectedTicket);
           var tail = this.descriptionTail(full);
           this.selectedTicket = { ...this.selectedTicket, notes: full.notes,
@@ -324,12 +404,17 @@ export function kontoraNotes() {
         entries[idx] = this.boardEntry(full);
         this.recomputeBoard();
       }
+      return true;
     },
 
     // Clear every open box. Called when the ticket page closes and when it
     // switches to another ticket, so a draft never reappears over a note it was
     // not written against.
     noteResetDrafts() {
+      this._noteDraftEpoch++;
+      drafts.clear();
+      this.noteSubmitting = false;
+      this._noteDeleteVersion++;
       this.noteHover = null;
       this.noteCancelReply();
       this.noteCancelEdit();

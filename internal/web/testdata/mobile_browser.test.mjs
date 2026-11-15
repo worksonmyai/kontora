@@ -196,9 +196,10 @@ function fixtures(options = {}) {
     projects: [{ name: 'Fixture repository', path: '/fixtures/repository-with-a-long-name', agent: 'fixture-agent', pipeline: 'standard' }],
     custom_statuses: [], stages: ['plan', 'code'], channels: [], default_channels: [], ...options.config };
   const requests = [], mutations = [], sockets = [], socketRoutes = [], messages = [], violations = [], expectedHTTPFailures = [];
-  const descriptionWrites = [], pendingResizes = [];
+  const descriptionWrites = [], pendingResizes = [], enqueued = [], artifactReads = [];
   const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, activityEvents: null, bracketedPaste: false,
     descriptionWait: null, descriptionFailure: null, holdResizes: false,
+    changesWait: null, changesFailure: null, lifecycleWait: null, lifecycleFailure: null, noteWait: null,
     automationFailure: null, automationReadFailure: null, automationWait: null, automationsAvailable: true, loseCreate: false, loseRun: false,
     unavailableFolder: false, sourcesFailure: false, configFailure: options.configFailure || false,
     rawConfigUnavailable: options.rawConfigUnavailable || false, rawReadWait: null, configRefreshWait: null,
@@ -268,7 +269,8 @@ function fixtures(options = {}) {
   async function api(route, url) {
     const request = route.request(), method = request.method(), path = url.pathname;
     requests.push(`${method} ${path}`);
-    const allowedQuery = path === '/api/stats' ? ['range', 'project', 'pipeline']
+    const allowedQuery = /\/reactions(?:\/[^/]+)?$/.test(path) ? ['actor']
+      : path === '/api/stats' ? ['range', 'project', 'pipeline']
       : /\/runs$/.test(path) ? ['offset', 'limit']
       : /\/runs\/\d+\/log$/.test(path) ? ['raw']
       : /^\/api\/assistant\/threads\/[^/]+\/activity$/.test(path) ? ['after']
@@ -477,7 +479,54 @@ function fixtures(options = {}) {
         return route.fulfill({ status: 204 });
       }
     }
-    const match = path.match(/^\/api(?:\/sources\/([^/]+))?\/tickets\/([^/]+)(?:\/(cost|chain|changes|logs|activity|move|pause|retry|init))?$/);
+    const noteMatch = path.match(/^\/api(?:\/sources\/([^/]+))?\/tickets\/([^/]+)\/(note|notes\/([^/]+)(?:\/reactions(?:\/([^/]+))?)?)$/);
+    if (noteMatch) {
+      const folder = noteMatch[1] ? decodeURIComponent(noteMatch[1]) : 'primary';
+      const record = records.get(key(folder, decodeURIComponent(noteMatch[2])));
+      assert.ok(record, 'Notes require an existing source-qualified ticket');
+      const body = request.postData() ? request.postDataJSON() : {};
+      const notes = record.notes ||= [];
+      const note = notes.find(n => n.id === decodeURIComponent(noteMatch[4] || ''));
+      if (noteMatch[3] === 'note' && method === 'POST') {
+        assert.ok(body.text?.trim());
+        if (body.parent) assert.ok(notes.some(n => n.id === body.parent));
+        notes.push({ id: `n${notes.length + 1}fx`, author: config.author || 'Browser author', author_kind: 'human',
+          at: stamp, text: body.text, ...(body.parent ? { parent_id: body.parent } : {}), reactions: [] });
+      } else {
+        assert.ok(note, 'Conversation operation requires an existing note');
+        if (noteMatch[3].includes('/reactions')) {
+          const emoji = noteMatch[5] ? decodeURIComponent(noteMatch[5]) : body.emoji;
+          const actor = body.actor || url.searchParams.get('actor') || config.author || 'Browser author';
+          assert.ok(emoji);
+          const reactions = note.reactions ||= [];
+          const previous = reactions.find(r => r.emoji === emoji);
+          if (method === 'POST') {
+            if (!previous) reactions.push({ emoji, actors: [actor] });
+            else if (!previous.actors.includes(actor)) previous.actors.push(actor);
+          } else {
+            assert.equal(method, 'DELETE');
+            if (previous) previous.actors = previous.actors.filter(a => a !== actor);
+            note.reactions = reactions.filter(r => r.actors.length);
+          }
+        } else if (method === 'PATCH') {
+          assert.equal(note.author, config.author || 'Browser author');
+          assert.ok(body.text?.trim()); note.text = body.text; note.edited = true;
+        } else {
+          assert.equal(method, 'DELETE');
+          assert.equal(note.author, config.author || 'Browser author');
+          record.notes = notes.filter(n => n !== note && n.parent_id !== note.id);
+        }
+      }
+      // Notes update the protected tail, never the description. Retain its audit suffix.
+      const audit = record.description_tail.slice(record.description_tail.indexOf('## Audit'));
+      record.description_tail = '\n## Notes\n\n' + record.notes.map(n => `**${n.at} · ${n.author} · ${n.id}**\n\n${n.text}`).join('\n\n') + '\n\n' + audit;
+      record.body = record.description + record.description_tail;
+      mutations.push({ method, path, body, ticket: structuredClone(record) });
+      const snapshot = structuredClone(record);
+      if (behavior.noteWait) await behavior.noteWait;
+      return json(route, snapshot);
+    }
+    const match = path.match(/^\/api(?:\/sources\/([^/]+))?\/tickets\/([^/]+)(?:\/(cost|chain|changes|logs|activity|move|pause|retry|init|run))?$/);
     if (match) {
       const folder = match[1] ? decodeURIComponent(match[1]) : 'primary';
       const id = decodeURIComponent(match[2]), action = match[3];
@@ -515,17 +564,65 @@ function fixtures(options = {}) {
             return json(route, { id, cost_usd: record.history.length || active(record) ? '0.12' : null,
             tracked_runs: record.history.length || (active(record) ? 1 : 0),
             priced_runs: record.history.length || (active(record) ? 1 : 0), stages: [], runs: [] });
-          case 'chain': return json(route, { nodes: [], verdict: '' });
-          case 'changes': return json(route, options.changes?.[id] || { base: 'main', files: [], commits: [] });
+          case 'chain': return json(route, options.chains?.[id] || { id, nodes: [], verdict: 'ready', total: 0, done: 0, position: 0, path_length: 0, goal: '', cycle: [] });
+          case 'changes': {
+            const failure = behavior.changesFailure;
+            if (behavior.changesWait) await behavior.changesWait;
+            if (failure) {
+              expectedHTTPFailures.push(base + path);
+              return json(route, { error: failure }, 503);
+            }
+            return readResponse(route, path, options.changes?.[id] || { base: 'main', branch: record.branch || '', files: [], commits: [] });
+          }
           case 'logs': return json(route, { content: `${id} ${url.searchParams.get('stage') || 'code'} fixture log revision ${behavior.outputRevision}\n` });
-          case 'activity': return json(route, { live: active(record), source: 'events',
-            tape: { events: behavior.activityEvents || [{ kind: 'text', text: `Fixture activity revision ${behavior.outputRevision}` }] } });
+          case 'activity': {
+            const stage = url.searchParams.get('stage'), run = Number(url.searchParams.get('run') || 0);
+            artifactReads.push({ id, stage, run });
+            const occurrences = (record.history || []).filter(h => h.stage === stage);
+            if (occurrences[run]?.imported) throw new Error(`Imported history has no local artifact: ${id}/${stage}/${run}`);
+            return readResponse(route, path, { live: active(record), source: 'events',
+              tape: { events: options.artifacts?.[`${id}/${stage}/${run}`] || behavior.activityEvents || [{ kind: 'text', text: `Fixture activity revision ${behavior.outputRevision}` }] } });
+          }
         }
       }
-      if (method === 'POST' && ['move', 'pause', 'retry', 'init'].includes(action)) {
+      if (method === 'POST' && ['move', 'pause', 'retry', 'init', 'run'].includes(action)) {
         const body = request.postData() ? request.postDataJSON() : {};
-        record.status = action === 'move' ? body.status : action === 'pause' ? 'paused' : 'todo';
-        mutations.push({ method, path, body });
+        if (behavior.lifecycleWait) await behavior.lifecycleWait;
+        const refuse = message => {
+          expectedHTTPFailures.push(base + path);
+          return json(route, { error: message }, 400);
+        };
+        if (behavior.lifecycleFailure) return refuse(behavior.lifecycleFailure);
+        if (record.archived_at || record.status === 'archived') return refuse('Ticket is archived');
+        if (record.kind === 'epic' && record.epic_mode === 'passive') return refuse('Passive epic status is derived');
+        if (!record.can_control) return refuse('Ticket is not controllable');
+        const before = structuredClone(record);
+        if (action === 'move') {
+          assert.deepEqual(Object.keys(body), ['status'], 'A move is not an execution settings update');
+          if (!['open', 'todo', 'paused', 'human_review', 'done', 'cancelled', ...config.custom_statuses].includes(body.status)) return refuse('Invalid status');
+          if (record.status === body.status) return refuse('Ticket already has that status');
+          if (body.status === 'paused' && ['done', 'cancelled'].includes(record.status)) return refuse('Use retry to reopen');
+          record.status = body.status;
+          record.kontora = true;
+          record.last_error = '';
+          delete record.annotation_return_status;
+          if (body.status !== 'open') delete record.scheduled_at;
+          if (body.status === 'done') record.completed_at = stamp;
+          // SetStatus cancels/reconciles, but never enqueues or resets stage/attempt.
+        } else if (action === 'pause') {
+          if (!active(record) && record.status !== 'todo') return refuse('Ticket is not running');
+          record.status = 'paused'; delete record.scheduled_at;
+        } else {
+          if (active(record)) return refuse('Ticket is already running');
+          if (action === 'retry' && (!record.kontora || record.status === 'todo')) return refuse('Cannot retry this status');
+          if (action === 'run' && (!record.kontora || !['open', 'todo'].includes(record.status))) return refuse('Run requires an initialized open or todo ticket');
+          if (action === 'run') Object.assign(record, { status: 'todo', last_error: '' });
+          else Object.assign(record, body, { status: body.status || 'todo', attempt: 0, last_error: '' });
+          delete record.scheduled_at;
+          enqueued.push({ id, action });
+        }
+        record.execution_active = false; // Mutations park/queue; only a later daemon claim makes execution active.
+        mutations.push({ method, path, body, before, ticket: structuredClone(record) });
         return json(route, record);
       }
     }
@@ -630,13 +727,13 @@ function fixtures(options = {}) {
     });
   }
   return { install, config, configWrites, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig, descriptionWrites, pendingResizes,
-    holdSnapshot, holdDetail, pendingSnapshot, releaseReads,
+    holdSnapshot, holdDetail, holdRead, pendingSnapshot, releaseReads, enqueued, artifactReads,
     get rawConfig() { return rawConfig; }, set rawConfig(content) { rawConfig = content; } };
 }
 
 async function withPage(t, width, theme, run, options = {}) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: theme,
-    reducedMotion: options.reducedMotion || 'reduce', serviceWorkers: 'block', locale: 'en-US', timezoneId: 'UTC' });
+    reducedMotion: options.reducedMotion || 'reduce', hasTouch: options.hasTouch || false, serviceWorkers: 'block', locale: 'en-US', timezoneId: 'UTC' });
   const fixture = fixtures(options), errors = [];
   await fixture.install(context);
   if (options.noNavigation) await context.addInitScript(() => {
@@ -742,6 +839,12 @@ async function openTicket(page, id, folder = 'primary') {
 async function backToBoard(page) {
   await routeTo(page, '#/');
   await page.waitForFunction(() => !Alpine.$data(document.body).selectedTicket && !Alpine.$data(document.body).selectedEpic);
+  if (page.viewportSize().width < 768) {
+    // State settles before Alpine's x-show frame. Do not act on controls from
+    // the outgoing detail shell while the board is becoming visible.
+    await expect(page.locator('.mobile-detail')).toBeHidden();
+    await expect(page.locator('.mobile-epic')).toBeHidden();
+  }
 }
 
 // Settings assertions use real DOM controls; component reads below only observe
@@ -1921,15 +2024,14 @@ describe('mobile polish fixture evidence', () => {
         await openTicket(page, 'kon-live');
         const detail = page.locator('.mobile-detail');
         if (width < 768) {
-          // Accept old labels so the same fixtures can capture the baseline.
-          await detail.getByRole('button', { name: /^(▤ ticket|Ticket)$/ }).click();
+          await detailPanel(page, 'Ticket');
           await mobileCapture(page, width, theme, 'detail-ticket');
-          await detail.getByRole('button', { name: /^activity$/i }).click();
+          await phoneOutputView(page, 'Activity');
           await visible(detail.locator('#activity-scroll').getByText('Fixture activity revision 0', { exact: true }));
           await mobileCapture(page, width, theme, 'detail-activity');
-          await detail.getByRole('button', { name: /^(≡ logs|Logs)$/ }).click();
+          await phoneOutputView(page, 'Stage logs');
           await mobileCapture(page, width, theme, 'detail-logs');
-          await detail.getByRole('button', { name: /^(›_ terminal|Terminal)$/ }).click();
+          await phoneOutputView(page, 'Terminal');
           await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
           await page.setViewportSize({ width, height: 360 });
           await mobileCapture(page, width, theme, 'detail-terminal-short');
@@ -2126,7 +2228,8 @@ describe('graph execution evidence', () => {
           contentType: 'application/json', body: JSON.stringify({ stale: true, live: false, source: 'plaintext', content: 'Saved attempt output' }),
         }));
         await openTicket(page, record.id);
-        await page.getByRole('button', { name: /^activity$/i }).filter({ visible: true }).click();
+        if (width < 768) await phoneOutputView(page, 'Activity');
+        else await page.getByRole('button', { name: /^activity$/i }).filter({ visible: true }).click();
         const warning = page.locator('[x-show="activity?.stale && !activity?.live"]:visible');
         await expect(warning).toContainText(graph ? 'Showing the latest attempt of this visit.' : /[Ss]howing the latest run of this stage/, { useInnerText: true });
         if (graph) {
@@ -2140,7 +2243,7 @@ describe('graph execution evidence', () => {
 });
 
 describe('custom execution activity', () => {
-  for (const order of [[0, 1], [1, 0]]) test(`overlapping physical drags restore active controls after both failures / order=${order}`, async t => {
+  for (const destination of ['done', 'open']) test(`conflicting physical drag is refused and repaired / destination=${destination}`, async t => {
     const active = ticket('kon-live', 'Overlapping drag execution', { status: 'awaiting_data', execution_active: true,
       stage: 'code', started_at: stamp, can_edit: true });
     await withPage(t, 2560, 'dark', async (page, fixture) => {
@@ -2161,15 +2264,13 @@ describe('custom execution activity', () => {
       };
       await drag('awaiting_data', 'parked');
       await expect.poll(() => pending.length).toBe(1);
-      await drag('parked', 'done');
-      await expect.poll(() => pending.length).toBe(2);
-      assert.deepEqual(pending.map(route => route.request().postDataJSON()), [{ status: 'parked' }, { status: 'done' }]);
+      await drag('parked', destination);
+      await expect(page.locator('#col-parked [data-ticket-id="kon-live"]')).toBeVisible();
+      assert.equal(pending.length, 1, 'A conflicting drag must not submit another mutation');
+      assert.deepEqual(pending[0].request().postDataJSON(), { status: 'parked' });
       assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedTicket), null, 'The board stays interactive without a detail overlay');
-      for (const index of order) {
-        await pending[index].fulfill({ status: 503, contentType: 'application/json', body: '{"error":"Move rejected"}' });
-        const status = index === order[0] ? (index === 0 ? 'done' : 'parked') : 'awaiting_data';
-        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).tickets.find(t => t.id === 'kon-live').status)).toBe(status);
-      }
+      await pending[0].fulfill({ status: 503, contentType: 'application/json', body: '{"error":"Move rejected"}' });
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).tickets.find(t => t.id === 'kon-live').status)).toBe('awaiting_data');
       await expect(page.locator('#col-awaiting_data [data-ticket-id="kon-live"]')).toHaveClass(/card-state-running/);
       await expect(page.locator('.running-pill:visible').first()).toContainText('2');
       assert.equal(fixture.records.get('primary/kon-live').execution_active, true);
@@ -2192,15 +2293,20 @@ describe('custom execution activity', () => {
       { source: folder, can_edit: true, notify: [], notify_channels: [], ...fields });
     await withPage(t, 1280, 'dark', async (page, fixture) => {
       await openTicket(page, record.id, folder);
-      await page.locator('[x-text="notifyRailLabel()"]:visible').click();
+      await detailPanel(page, 'Ticket');
+      const metadata = page.locator('[data-detail-metadata]:visible');
+      await metadata.locator('summary').filter({ hasText: /^Details$/ }).click();
+      const notify = metadata.locator('[x-text="notifyRailLabel()"]:visible');
       const modes = page.getByRole('radiogroup', { name: 'notify me', exact: true }).filter({ visible: true });
       if (editable) {
+        await notify.click();
         await visible(modes);
         await modes.getByRole('radio', { name: 'when it is finished', exact: true }).click();
         await expect.poll(() => fixture.mutations.length).toBe(1);
         assert.equal(fixture.mutations[0].path, folder === 'primary' ? '/api/tickets/kon-live' : '/api/sources/secondary/tickets/kon-draft');
         assert.deepEqual(fixture.mutations[0].body.notify, ['human_review', 'done']);
       } else {
+        await expect(notify).toBeDisabled();
         await expect(modes).toHaveCount(0);
         assert.equal(await page.evaluate(() => Alpine.$data(document.body).notifyEditing), false);
         assert.deepEqual(fixture.mutations, []);
@@ -2243,7 +2349,7 @@ describe('custom execution activity', () => {
         assert.equal(await page.locator('#col-in_progress [data-ticket-id="kon-live"]').count(), 0);
       }
       await openTicket(page, active.id);
-      await visible(page.getByRole('button', { name: 'pause', exact: true }).filter({ visible: true }));
+      await visible(page.getByRole('button', { name: /^pause$/i }).filter({ visible: true }));
       await visible(page.locator('.status-chip[data-status="awaiting_data"]').filter({ visible: true }).first());
       await expect.poll(() => fixture.sockets.filter(url => url.pathname === '/ws/terminal/kon-live').length).toBeGreaterThan(0);
       assert.equal(await page.evaluate(() => Alpine.$data(document.body).editorCanEdit()), false);
@@ -2261,7 +2367,7 @@ describe('custom execution activity', () => {
       record.execution_active = false;
       record.history.push({ stage: 'code', run: 0, started_at: stamp, completed_at: stamp, exit_code: 0 });
       await page.evaluate(record => window.__fixtureSSE.filter(stream => !stream.closed && stream.url === '/api/events').forEach(stream => stream.emit('ticket_updated', record)), record);
-      await expect(page.getByRole('button', { name: 'pause', exact: true }).filter({ visible: true })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: /^pause$/i }).filter({ visible: true })).toHaveCount(0);
       await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).outputTab())).toBe('activity');
       await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).terminalOpen)).toBe(false);
       await expect(page.locator('.running-pill:visible').first()).toContainText('1');
@@ -2316,14 +2422,14 @@ describe('mobile desktop parity', () => {
           await expect(strip.getByRole('listitem', { name: stage + ': Ticket marked done; no recorded run', exact: true })).toBeVisible();
         }
         if (captureDirectory) await mobileCapture(page, width, theme, 'parity-review-title');
-        await detail.getByRole('button', { name: 'Logs', exact: true }).click();
+        await phoneOutputView(page, 'Stage logs');
         const stages = detail.getByLabel('Stages and cost estimates');
         for (const stage of ['code', 'test']) {
           assert.match(await stages.getByRole('button', { name: new RegExp('^' + stage + ':') }).getAttribute('aria-label'), /Ticket marked done; no recorded run/);
         }
         await backToBoard(page);
         await openTicket(page, standalone.id);
-        await detail.getByRole('button', { name: 'Logs', exact: true }).click();
+        await phoneOutputView(page, 'Stage logs');
         const synthetic = detail.getByLabel('Stages and cost estimates').getByRole('button', { name: /^default:/ });
         await expect(synthetic.locator('.mobile-stage-meta')).toHaveText('1 tracked run · duration unavailable');
         assert.match(await synthetic.getAttribute('aria-label'), /1 tracked run · duration unavailable/);
@@ -2398,7 +2504,7 @@ describe('mobile desktop parity', () => {
         assert.equal(await strip.getByRole('button').count(), 0);
         assert.equal(await strip.getByRole('listitem').count(), 5, 'configured, historical and cost-only stages remain');
         await readableStageLabel(strip.getByRole('listitem', { name: 'test: Not started', exact: true }));
-        await detail.getByRole('button', { name: 'Logs', exact: true }).click();
+        await phoneOutputView(page, 'Stage logs');
         assert.equal(await strip.count(), 0);
         const stages = detail.getByLabel('Stages and cost estimates');
         const code = stages.getByRole('button', { name: /^code:/ });
@@ -2540,19 +2646,19 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
           return { content: css.content, animation: css.animationName };
         }), { content: 'none', animation: 'none' }, 'Running metadata has no decorative status pulse');
         await polishMotion(page, reducedMotion);
-        assert.deepEqual(await tabs.getByRole('button').filter({ visible: true }).allTextContents(), ['Terminal', 'Logs', 'Activity', 'Ticket']);
-        for (const label of ['Terminal', 'Logs', 'Activity', 'Ticket']) {
+        assert.deepEqual(await tabs.getByRole('button').filter({ visible: true }).allTextContents(), ['Ticket', 'Notes', 'Output', 'Changes']);
+        for (const label of ['Ticket', 'Notes', 'Output', 'Changes']) {
           const tab = tabs.getByRole('button', { name: label, exact: true });
           await tab.scrollIntoViewIfNeeded(); await tab.click();
           await inViewport(tab);
           assert.equal(await tab.getAttribute('aria-pressed'), 'true');
           assert.equal(await tabs.locator('[aria-pressed="true"]').count(), 1);
           await immediateFocus(tab);
-          if (label === 'Activity') await visible(detail.locator('.side-label'));
+          if (label === 'Notes') await visible(detail.getByRole('textbox', { name: 'Add a note', exact: true }));
           await polishTypography(detail);
           await polishControls(detail);
         }
-        await tabs.getByRole('button', { name: 'Terminal', exact: true }).click();
+        await phoneOutputView(page, 'Terminal');
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         // With WebGL, xterm paints glyphs on canvas; the wrapper's inherited CSS font is
         // not the terminal renderer's font.
@@ -2830,7 +2936,10 @@ async function openTerminalSubject(page, id) {
   if (id === supervisorID) {
     await routeTo(page, '#/e/' + id);
     await page.getByRole('button', { name: page.viewportSize().width < 768 ? 'Terminal' : 'session', exact: true }).filter({ visible: true }).click();
-  } else await openTicket(page, id);
+  } else {
+    await openTicket(page, id);
+    if (page.viewportSize().width < 768) await phoneOutputView(page, 'Terminal');
+  }
 }
 
 function terminalGrid({ marker, minRows = 1, diagnostic = false } = {}) {
@@ -3170,13 +3279,15 @@ describe('initial board and mobile detail loading', { timeout: 120000 }, () => {
       await held.started;
       const detail = mobileDetail(page);
       await pendingDetail(page, 'primary', 'kon-live', liveTitle);
-      await detail.getByRole('button', { name: 'Logs', exact: true }).click();
+      await detail.getByRole('button', { name: 'Output', exact: true }).click();
+      await detail.getByRole('combobox', { name: 'Output view', exact: true, includeHidden: true }).selectOption('logs', { force: true });
       await page.waitForFunction(() => Alpine.$data(document.body).logViewContent?.includes('fixture log revision 0'));
       await expect(detail.getByText('kon-live code fixture log revision 0', { exact: true })).toBeHidden();
       await detail.getByRole('button', { name: 'Ticket', exact: true }).click();
       await expect(detail.locator('h1')).toBeHidden();
       await expect(detail.getByText('No ticket description.', { exact: true })).toBeHidden();
-      await detail.getByRole('button', { name: 'Terminal', exact: true }).click();
+      await detail.getByRole('button', { name: 'Output', exact: true }).click();
+      await detail.getByRole('combobox', { name: 'Output view', exact: true, includeHidden: true }).selectOption('terminal', { force: true });
       await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
       const host = page.locator('#terminal-container-mobile');
       const identity = await host.elementHandle();
@@ -3206,7 +3317,7 @@ describe('initial board and mobile detail loading', { timeout: 120000 }, () => {
       assert.equal(await mobileDetail(page).getByText('Second code run complete.', { exact: true }).count(), 0);
       await settleRead(page, held);
       await ready(page);
-      await expect(mobileDetail(page).getByText('Second code run complete.', { exact: true })).toBeVisible();
+      await expect(mobileDetail(page).locator('.mobile-ticket-pane:visible').getByText('Second code run complete.', { exact: true }).filter({ visible: true })).toBeVisible();
       await expect(mobileDetail(page).getByText('Fixture description.', { exact: true })).toBeVisible();
     }, loadingOptions);
   });
@@ -3742,10 +3853,9 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         assert.equal(await ticketTab.getAttribute('aria-pressed'), 'true');
         if (geometry.scroll > geometry.client + 1) assert.ok(await tabs.evaluate(el => el.scrollLeft > 0));
         await page.setViewportSize({ width: 390, height: 900 });
-        const activeTab = await page.evaluate(() => Alpine.$data(document.body).activeTab);
-        await detail.getByRole('button', { name: 'Activity', exact: true }).click();
+        await phoneOutputView(page, 'Activity');
         await visible(detail.locator('#activity-scroll').getByText('Fixture activity revision 0', { exact: true }));
-        assert.equal(await page.evaluate(() => Alpine.$data(document.body).activeTab), activeTab);
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).activeTab), 'activity');
         assert.equal(await page.evaluate(() => Alpine.$data(document.body).terminalOpen), false);
         assert.equal(await page.locator('#activity-scroll').count(), 1);
         await page.waitForRequest(request => new URL(request.url()).pathname === '/api/tickets/kon-live/activity', { timeout: 6000 });
@@ -3769,9 +3879,9 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       await withPage(t, 390, theme, async (page, fixture) => {
         await openTicket(page, 'kon-live');
         const detail = page.locator('.mobile-detail');
-        await detail.getByRole('button', { name: 'Activity', exact: true }).click();
+        await phoneOutputView(page, 'Activity');
         await visible(detail.locator('#activity-scroll').getByText('Fixture activity revision 0', { exact: true }));
-        await detail.getByRole('button', { name: 'Logs', exact: true }).click();
+        await phoneOutputView(page, 'Stage logs');
         await detail.getByRole('button', { name: /^plan:/ }).click();
         await visible(detail.getByText('kon-live plan fixture log revision 0', { exact: true }));
         const record = fixture.records.get('primary/kon-live');
@@ -3780,7 +3890,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         record.started_at = '2026-10-01T10:01:00Z';
         fixture.behavior.outputRevision = 1;
         await page.evaluate(record => Alpine.$data(document.body).applyTicketUpdate(record), record);
-        await detail.getByRole('button', { name: 'Activity', exact: true }).click();
+        await phoneOutputView(page, 'Activity');
         await visible(detail.locator('#activity-scroll').getByText('Fixture activity revision 1', { exact: true }));
         assert.equal(await page.evaluate(() => Alpine.$data(document.body).activityStage), 'test');
         const popupPromise = page.waitForEvent('popup');
@@ -3805,7 +3915,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           assert.equal(await page.evaluate(() => Alpine.$data(document.body).detailTab), 'ticket');
           const reads = fixture.requests.filter(request => request === 'GET /api/tickets/kon-done/activity').length;
           const detail = page.locator('.mobile-detail');
-          await detail.getByRole('button', { name: 'Activity', exact: true }).click();
+          await phoneOutputView(page, 'Activity');
           const scroller = detail.locator('#activity-scroll');
           await visible(scroller.getByText('Cached activity event 79', { exact: true }));
           await page.evaluate(() => Alpine.nextTick());
@@ -3818,7 +3928,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await scroller.evaluate(el => { el.scrollTop = 200; });
           const top = await scroller.evaluate(el => el.scrollTop);
           await detail.getByRole('button', { name: 'Ticket', exact: true }).click();
-          await detail.getByRole('button', { name: 'Activity', exact: true }).click();
+          await phoneOutputView(page, 'Activity');
           await visible(scroller);
           await page.evaluate(() => Alpine.nextTick());
           assert.equal(await scroller.evaluate(el => el.scrollTop), top, 'Follow off preserves the reading position');
@@ -4027,19 +4137,19 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         }
         const detail = page.locator('.mobile-detail');
         assert.equal(await detail.locator('.mobile-detail-title [x-text="parseTitleTag(selectedTicket || {}).rest"]').textContent(), liveTitle);
-        await detail.getByRole('button', { name: 'Logs', exact: true }).click();
-        assert.equal(await detail.getByRole('button', { name: 'Logs', exact: true }).getAttribute('aria-pressed'), 'true');
+        await phoneOutputView(page, 'Stage logs');
+        await expect(detail.getByRole('combobox', { name: 'Output view', exact: true })).toHaveValue('logs');
         const stages = detail.getByLabel('Stages and cost estimates');
         await visible(stages);
         assert.equal(await stages.getByRole('button').count(), 3, 'Each stage has one control, including unpriced stages');
         assert.match(await stages.textContent(), /1\/2/);
         await stages.getByRole('button', { name: /^test:/ }).click();
-        assert.equal(await detail.getByRole('button', { name: 'Logs', exact: true }).getAttribute('aria-pressed'), 'true');
+        await expect(detail.getByRole('combobox', { name: 'Output view', exact: true })).toHaveValue('logs');
         await stages.getByRole('button', { name: /^plan:/ }).click();
         await visible(detail.getByText('kon-live plan fixture log revision 0', { exact: true }));
         await stages.getByRole('button', { name: /^code:/ }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).detailTab === 'terminal' && Alpine.$data(document.body).terminalConnected);
-        await detail.getByRole('button', { name: 'Logs', exact: true }).click();
+        await phoneOutputView(page, 'Stage logs');
         assert.equal(await detail.locator('.mobile-detail-title [x-text="parseTitleTag(selectedTicket || {}).rest"]').textContent(), liveTitle);
         await detail.getByRole('button', { name: 'Ticket', exact: true }).click();
         assert.equal(await detail.locator('h1 [x-text="parseTitleTag(selectedTicket || {}).rest"]').textContent(), liveTitle);
@@ -4049,13 +4159,13 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await copy.focus();
         await page.keyboard.press('Enter');
         assert.equal(await page.evaluate(() => window.__fixtureCopied), 'kontora attach kon-live');
-        await detail.getByRole('button', { name: 'Terminal', exact: true }).click();
+        await phoneOutputView(page, 'Terminal');
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el.readOnly), true);
         await page.getByRole('button', { name: 'Type in terminal', exact: true }).filter({ visible: true }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
-        await detail.getByRole('button', { name: 'Logs', exact: true, includeHidden: true }).dispatchEvent('click');
-        await detail.getByRole('button', { name: 'Terminal', exact: true }).click();
+        await detail.getByRole('combobox', { name: 'Output view', exact: true, includeHidden: true }).selectOption('logs', { force: true });
+        await phoneOutputView(page, 'Terminal');
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el.readOnly), true);
       });
@@ -4088,9 +4198,17 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await t.test('long identifiers keep ticket actions reachable', async () => {
           await openTicket(page, longID);
           await noPageOverflow(page);
-          for (const name of ['queue', /^(?:✕ )?cancel$/]) {
-            await inViewport(page.getByRole('button', { name, exact: true }).filter({ visible: true }));
-          }
+          const queue = page.getByRole('button', { name: /^queue(?: ticket)?$/i }).filter({ visible: true });
+          const move = width < 768 ? page.getByRole('button', { name: 'Move to', exact: true }).filter({ visible: true })
+            : page.getByRole('combobox', { name: 'Move to status', exact: true }).filter({ visible: true });
+          await inViewport(queue); await inViewport(move);
+          if (width < 768) {
+            await move.click();
+            const moves = page.getByRole('dialog', { name: 'Move to', exact: true });
+            const cancel = moves.getByRole('button', { name: 'Move to Cancelled', exact: true });
+            await cancel.scrollIntoViewIfNeeded(); await inViewport(cancel);
+            await moves.getByRole('button', { name: 'Close', exact: true }).click();
+          } else await expect(move.locator('option[value="cancelled"]')).toHaveText('Move to Cancelled');
           const more = width < 768 ? page.getByRole('button', { name: 'Actions', exact: true })
             : page.getByRole('banner').getByRole('button', { name: 'More actions', exact: true });
           await inViewport(more);
@@ -4104,9 +4222,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           }
           await page.setViewportSize({ width, height: 420 });
           await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--mobile-vv-height') === '420px');
-          for (const name of ['queue', /^(?:✕ )?cancel$/]) {
-            await inViewport(page.getByRole('button', { name, exact: true }).filter({ visible: true }));
-          }
+          await inViewport(queue); await inViewport(move);
           await inViewport(more);
           await noPageOverflow(page);
         });
@@ -4270,7 +4386,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await t.test('init dialog owns focus and Escape closes it', async () => {
           await backToBoard(page);
           await openTicket(page, 'kon-draft');
-          const queue = page.getByRole('button', { name: /^(queue|initialize|start)$/i }).filter({ visible: true }).first();
+          const queue = page.getByRole('button', { name: /^(queue(?: ticket)?|initialize|start)$/i }).filter({ visible: true }).first();
           await queue.click();
           const dialog = page.getByRole('dialog', { name: /Primary draft$/ });
           await visible(dialog);
@@ -4375,9 +4491,8 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         const id = phone ? 'kon-done' : 'kon-live';
         await openTicket(page, id);
         await ready(page);
-        const tab = phone ? page.locator('[x-text="mobileFirstTabLabel()"]:visible')
-          : page.getByRole('button', { name: 'activity', exact: true }).filter({ visible: true });
-        await tab.click();
+        if (phone) await phoneOutputView(page, 'Stage logs');
+        else await page.getByRole('button', { name: 'activity', exact: true }).filter({ visible: true }).click();
         if (phone) await page.getByLabel('Stages and cost estimates').getByRole('button', { name: /^plan:/ }).click();
         const output = revision => page.getByText(phone
           ? `${id} plan fixture log revision ${revision}` : `Fixture activity revision ${revision}`, { exact: true }).filter({ visible: true });
@@ -4399,6 +4514,10 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         }
         await backToBoard(page);
         await openTicket(page, 'kon-live');
+        // A previously visited ticket now restores its local panel. Select the
+        // live session explicitly before testing terminal reconnection on Back.
+        if (phone) await phoneOutputView(page, 'Terminal');
+        else await page.getByRole('button', { name: 'session', exact: true }).filter({ visible: true }).click();
         const terminal = page.locator('#terminal-session:visible, #terminal-container-mobile:visible');
         await visible(terminal.locator('.xterm'));
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
@@ -4793,11 +4912,15 @@ async function focusedEditorGeometry(page, height, top = 0, error = false) {
   await inViewport(bar.getByRole('button', { name: 'Done', exact: true }));
   await expect(surface.locator('.mobile-detail-context, .mobile-detail-secondary, .mobile-detail-tabs, .mobile-detail-actions').filter({ visible: true })).toHaveCount(0);
   await expect(surface.locator('.mobile-ticket-pane > :not(template):not(.mobile-description), .mobile-description > .ticket-prose').filter({ visible: true })).toHaveCount(0);
+  // x-show applies on a frame after the error text arrives. Measure the editor
+  // only after the alert is visible, and both edges in the same layout sample.
+  if (error) await inViewport(surface.locator('.mobile-editor-error'));
   const geometry = await editor.evaluate(el => {
     const overlay = el.closest('.mobile-detail'), css = getComputedStyle(el);
     const bar = overlay.querySelector('.mobile-editor-bar'), header = overlay.querySelector('.mobile-detail-header');
     return { editor: el.getBoundingClientRect().toJSON(), overlay: overlay.getBoundingClientRect().toJSON(),
       bar: bar.getBoundingClientRect().toJSON(), header: header.getBoundingClientRect().toJSON(),
+      errorTop: overlay.querySelector('.mobile-editor-error')?.getBoundingClientRect().top,
       scroll: el.scrollHeight, client: el.clientHeight, font: css.fontSize, line: css.lineHeight, family: css.fontFamily,
       resize: css.resize, overflow: css.overflowY, border: css.borderTopWidth, radius: css.borderRadius,
       ancestors: ['.mobile-detail-content', '.mobile-ticket-pane', '.mobile-description', '.mobile-description-editor'].map(selector => {
@@ -4822,11 +4945,8 @@ async function focusedEditorGeometry(page, height, top = 0, error = false) {
     assert.equal(ancestor.minHeight, '0px', `${ancestor.selector} must shrink with the keyboard`);
     assert.ok(ancestor.box.top >= top - 1 && ancestor.box.bottom <= top + height + 1, JSON.stringify(geometry));
   }
-  if (error) {
-    const alert = surface.locator('.mobile-editor-error');
-    await inViewport(alert);
-    near(geometry.editor.bottom, (await alert.boundingBox()).y, 'error directly below editor');
-  } else near(geometry.editor.bottom, height + top, 'textarea fills remaining height');
+  if (error) near(geometry.editor.bottom, geometry.errorTop, 'error directly below editor');
+  else near(geometry.editor.bottom, height + top, 'textarea fills remaining height');
   assert.ok(geometry.scroll > geometry.client, 'Long descriptions scroll inside the native textarea');
   assert.ok(geometry.page.height <= geometry.page.viewport + 1, 'Focused editor must not overflow the page');
   await editor.evaluate(el => { el.scrollTop = el.scrollHeight; });
@@ -4847,7 +4967,10 @@ describe('phone inline terminal and focused description', () => {
           if (record.kind === 'epic') {
             await routeTo(page, '#/e/' + record.id);
             await mobileTerminalSurface(page).getByRole('button', { name: 'Terminal', exact: true }).click();
-          } else await openTicket(page, record.id);
+          } else {
+            await openTicket(page, record.id);
+            await phoneOutputView(page, 'Terminal');
+          }
           await mobileComposer(page).click();
           await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
           await mobileTerminalLayout(page, true, 900);
@@ -5009,8 +5132,13 @@ describe('phone inline terminal and focused description', () => {
           await compose.click();
           await compose.press('Escape');
           await page.waitForFunction(() => !Alpine.$data(document.body).terminalRW);
-          await surface.getByRole('button', { name: id === supervisorID ? 'Activity' : 'Logs', exact: true }).click();
-          await surface.getByRole('button', { name: 'Terminal', exact: true }).click();
+          if (id === supervisorID) {
+            await surface.getByRole('button', { name: 'Activity', exact: true }).click();
+            await surface.getByRole('button', { name: 'Terminal', exact: true }).click();
+          } else {
+            await phoneOutputView(page, 'Stage logs');
+            await phoneOutputView(page, 'Terminal');
+          }
           await expect(compose).toHaveValue(`Local draft for ${id}\nsecond line`);
           if (id === supervisorID) {
             await openTicket(page, supervisorID);
@@ -5107,12 +5235,14 @@ describe('focused phone description save lifecycle', () => {
       const original = 'Original native description.\n\n' + 'Long description paragraph with selectable text.\n'.repeat(100);
       await withPage(t, width, theme, async (page, fixture) => {
         await openTicket(page, 'kon-draft');
-        const surface = page.locator('.mobile-detail'), pane = surface.locator('.mobile-ticket-pane');
+        const surface = page.locator('.mobile-detail'), pane = surface.locator('.mobile-ticket-pane:visible');
+        await detailPanel(page, 'Changes');
+        await visible(pane.getByText('Fixture commit subject', { exact: true }));
         await surface.getByRole('button', { name: 'Ticket', exact: true }).click();
         await visible(pane.getByText('Fixture stage summary', { exact: true }));
         await visible(pane.getByText('Fixture final outcome', { exact: true }));
-        await visible(pane.getByText('Fixture commit subject', { exact: true }));
-        await visible(pane.getByRole('region', { name: 'Imported history', exact: true }));
+        await visible(pane.getByRole('region', { name: 'Run history', exact: true }));
+        await visible(pane.getByText('Imported run summary', { exact: true }));
         await visible(pane.getByText('Protected note identity: browser-note-1', { exact: true }));
         const sections = await pane.locator(':scope > :not(template):not(.mobile-description)').filter({ visible: true }).count();
         assert.ok(sections >= 7, 'Fixture includes errors, title, attach, outcome, summary, metadata and imported history');
@@ -5244,7 +5374,7 @@ describe('focused phone description save lifecycle', () => {
 describe('start-dialog notification availability', () => {
   async function openStartDialog(page) {
     await openTicket(page, 'kon-draft');
-    await page.getByRole('button', { name: /^(queue|initialize|start)$/i }).filter({ visible: true }).first().click();
+    await page.getByRole('button', { name: /^(queue(?: ticket)?|initialize|start)$/i }).filter({ visible: true }).first().click();
     const dialog = page.getByRole('dialog', { name: /Primary draft$/ });
     await visible(dialog);
     return dialog;
@@ -5465,3 +5595,560 @@ for (const width of [390, 1280]) {
     });
   });
 }
+
+// Core steps 1–4 use the shipped embedded bundle and real controls, not component mutation.
+async function detailPanel(page, name) {
+  const phone = page.viewportSize().width < 768;
+  const label = phone ? name : ({ Ticket: 'ticket', Notes: 'notes', Changes: /^Changes(?:\s+\d+)?$/, Output: 'activity' })[name];
+  await page.getByRole('button', { name: label, exact: true }).filter({ visible: true }).first().click();
+}
+async function phoneOutputView(page, view) {
+  const output = page.locator('.mobile-detail-tabs').getByRole('button', { name: 'Output', exact: true });
+  if (await output.getAttribute('aria-pressed') !== 'true') await output.click();
+  const select = page.getByRole('combobox', { name: 'Output view', exact: true }).filter({ visible: true });
+  if (!await select.count()) {
+    await page.locator('.mobile-detail').getByRole('button', { name: 'Actions', exact: true }).click();
+    await page.getByRole('button', { name: 'Output options', exact: true }).click();
+  }
+  await select.selectOption({ label: view });
+}
+const coreHistory = () => [
+  { stage: 'code', run: 0, summary: 'Legacy first implementation.', exit_code: 1 },
+  { stage: 'plan', run: 0, summary: 'Interleaved plan.', exit_code: 0 },
+  { stage: 'code', run: 0, kind: 'annotation', summary: 'Annotation evidence.', exit_code: 0 },
+  { stage: 'code', run: 0, imported: true, summary: 'Imported evidence without local artifacts.', exit_code: 0 },
+  { stage: 'code', run: 0, summary: 'Legacy last implementation.', exit_code: 0 },
+].map(h => ({ started_at: stamp, completed_at: stamp, agent: 'fixture-agent', ...h }));
+const coreChanges = { base: 'main', branch: 'fixture/core', commits: [{ sha: 'b0123456789', subject: 'Independent Changes fixture commit' }],
+  files: [{ path: 'internal/core-fixture.go', added: 17, deleted: 4 }] };
+
+describe('kon91cx core detail workflows', () => {
+  test('kon91cx lifecycle fixture contract table', async t => {
+    await withPage(t, 390, 'dark', async (page, fixture) => {
+      for (const [action, body, status, enqueue] of [
+        ['move', { status: 'open' }, 'open', false],
+        ['move', { status: 'needs_review' }, 'needs_review', false],
+        ['retry', {}, 'todo', true],
+      ]) {
+        const record = fixture.records.get('primary/kon-draft');
+        Object.assign(record, { status: 'paused', stage: 'code', attempt: 3 });
+        const queued = fixture.enqueued.length;
+        const response = await page.evaluate(async ({ action, body }) => {
+          const res = await fetch('/api/tickets/kon-draft/' + action, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          return { status: res.status, ticket: await res.json() };
+        }, { action, body });
+        assert.equal(response.status, 200); assert.equal(response.ticket.status, status);
+        assert.equal(response.ticket.stage, 'code'); assert.equal(response.ticket.attempt, enqueue ? 0 : 3);
+        assert.equal(fixture.enqueued.length - queued, enqueue ? 1 : 0);
+      }
+      for (const status of ['in_progress', 'archived', 'observed_only']) {
+        fixture.expectedHTTPFailures.push(base + '/api/tickets/kon-draft/move');
+        const result = await page.evaluate(async status => (await fetch('/api/tickets/kon-draft/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) })).status, status);
+        assert.equal(result, 400);
+      }
+    }, { config: { custom_statuses: ['needs_review'] } });
+  });
+
+  for (const width of [390, 1280]) test(`kon91cx dependencies missing cycle and guarded source navigation / ${width}px`, async t => {
+    const refs = [
+      { id: 'kon-blocker', title: 'Readable blocker title', status: 'paused', source: 'primary' },
+      { id: 'kon-missing', source: 'primary' }, // TicketRef omits title/status when unresolved.
+    ];
+    const archived = { id: 'kon-archived', title: 'Archived fixture', status: 'archived', source: 'primary' };
+    const secondary = { id: 'kon-draft', title: 'Secondary namesake', status: 'open', source };
+    await withPage(t, width, 'dark', async (page, fixture) => {
+      await openTicket(page, 'kon-cycle'); await detailPanel(page, 'Ticket');
+      await visible(page.getByText('Dependency cycle', { exact: true }).filter({ visible: true }));
+      await expect(page.locator('[data-detail-relationships]:visible')).toContainText('kon-cycle → kon-blocker → kon-cycle');
+      await openTicket(page, 'kon-draft'); await detailPanel(page, 'Ticket');
+      const relations = page.locator('[data-detail-relationships]:visible');
+      const dependency = relations.getByRole('button').filter({ hasText: 'Readable blocker title' });
+      await visible(dependency.first());
+      await expect(dependency.last()).toContainText('kon-blocker');
+      await expect(dependency.last()).toContainText(/paused/i);
+      const missing = relations.getByRole('button').filter({ hasText: 'kon-missing' }).first();
+      await expect(missing).toBeDisabled(); await expect(missing).toContainText(/Missing reference/i);
+      // References use guarded routing: archived goes to Archive, never primary Board.
+      const archivedControl = relations.getByRole('button').filter({ hasText: 'Archived fixture' });
+      await t.test('archived primary uses guarded Archive route', async () => {
+        await archivedControl.click();
+        await expect.poll(() => new URL(page.url()).hash).toBe('#/archive/t/kon-archived');
+        await page.goBack(); await ready(page);
+        await expect.poll(() => new URL(page.url()).hash).toBe('#/t/kon-draft');
+        await visible(relations);
+      });
+      await t.test('secondary reference never substitutes primary namesake', async () => {
+        await openTicket(page, 'kon-draft'); await detailPanel(page, 'Ticket');
+        const primaryReads = fixture.requests.filter(r => r === 'GET /api/tickets/kon-draft').length;
+        await relations.getByRole('button').filter({ hasText: 'Secondary namesake' }).click();
+        await expect.poll(() => new URL(page.url()).hash).toBe('#/s/secondary/t/kon-draft');
+        await ready(page);
+        assert.equal(fixture.requests.filter(r => r === 'GET /api/tickets/kon-draft').length, primaryReads);
+        assert.ok(fixture.requests.includes('GET /api/sources/secondary/tickets/kon-draft'));
+        assert.ok(!fixture.requests.some(r => /GET \/api\/tickets\/kon-draft\/(activity|logs)/.test(r)));
+      });
+      await noPageOverflow(page);
+    }, { ticket: { deps: refs, links: [archived, secondary] },
+      records: [ticket('kon-blocker', 'Readable blocker title', { status: 'paused' }), ticket('kon-cycle', 'Cycle fixture', { deps: [refs[0]] })],
+      chains: { 'kon-draft': { id: 'kon-draft', verdict: 'blocked', total: 3, done: 0, position: 2, path_length: 2, goal: 'kon-draft', cycle: [],
+        nodes: [{ ...refs[0], direction: 'upstream', depth: 0, holds_chain: true, waits_on: { open: 0, total: 0 } },
+          { ...refs[1], missing: true, direction: 'upstream', depth: 0, waits_on: { open: 0, total: 0 } },
+          { id: 'kon-draft', title: 'Primary draft', status: 'open', direction: 'self', depth: 1, waits_on: { open: 2, total: 2 } }] },
+        'kon-cycle': { id: 'kon-cycle', verdict: 'cycle', total: 2, done: 0, position: 0, path_length: 0, goal: '', nodes: [], cycle: ['kon-cycle', 'kon-blocker', 'kon-cycle'] } } });
+  });
+
+  for (const fail of [false, true]) test(`kon91cx execution drains latest description and blocks failed save / fail=${fail}`, async t => {
+    await withPage(t, 390, 'dark', async (page, fixture) => {
+      const first = deferred(), latest = deferred();
+      try {
+        await openTicket(page, 'kon-draft'); await detailPanel(page, 'Ticket');
+        fixture.behavior.descriptionWait = first.promise;
+        await page.getByRole('button', { name: 'Edit description', exact: true }).click();
+        const editor = page.locator('#mobile-description-editor');
+        await editor.fill('First outstanding draft.');
+        await expect.poll(() => fixture.descriptionWrites.length).toBe(1);
+        fixture.behavior.descriptionWait = latest.promise;
+        fixture.behavior.descriptionFailure = fail ? 'Latest draft save refused' : null;
+        await editor.fill('Latest targeted draft.');
+        await page.locator('.mobile-editor-bar').getByRole('button', { name: 'Done', exact: true }).click();
+        await page.getByRole('button', { name: 'Retry stage', exact: true }).filter({ visible: true }).click();
+        assert.ok(!fixture.requests.includes('POST /api/tickets/kon-draft/retry'));
+        first.resolve();
+        await expect.poll(() => fixture.descriptionWrites.length).toBe(2);
+        assert.ok(!fixture.requests.includes('POST /api/tickets/kon-draft/retry'));
+        latest.resolve();
+        if (fail) {
+          await visible(page.getByText('Latest draft save refused', { exact: false }).filter({ visible: true }).first());
+          await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).lifecycleBusy(Alpine.$data(document.body).selectedTicket))).toBe(false);
+          assert.ok(!fixture.requests.includes('POST /api/tickets/kon-draft/retry'));
+          await page.getByRole('button', { name: 'Edit description', exact: true }).click();
+          await expect(editor).toHaveValue('Latest targeted draft.');
+        } else {
+          await expect.poll(() => fixture.requests.filter(r => r === 'POST /api/tickets/kon-draft/retry').length).toBe(1);
+          assert.equal(fixture.records.get('primary/kon-draft').description, 'Latest targeted draft.');
+          assert.deepEqual(fixture.enqueued, [{ id: 'kon-draft', action: 'retry' }]);
+        }
+      } finally { first.resolve(); latest.resolve(); fixture.behavior.descriptionWait = null; }
+    }, { ticket: { status: 'paused', stage: 'code', attempt: 3 } });
+  });
+
+  test('kon91cx stale Notes cannot roll back newer notes permissions or another draft', async t => {
+    await withPage(t, 390, 'light', async (page, fixture) => {
+      await openTicket(page, 'kon-draft'); await detailPanel(page, 'Notes');
+      const gate = deferred(); fixture.behavior.noteWait = gate.promise;
+      await model(page, 'noteDraft').fill('Submitted older note');
+      await page.getByRole('button', { name: 'Add note', exact: true }).click();
+      await expect.poll(() => fixture.mutations.filter(m => m.path.endsWith('/note')).length).toBe(1);
+      const record = fixture.records.get('primary/kon-draft');
+      record.notes.push({ id: 'newr', author: 'External author', author_kind: 'human', at: stamp, text: 'Newer external note' });
+      record.description = 'Newer protected description.\n'; record.body = record.description + record.description_tail;
+      record.can_edit = false; record.revision = 'newer-revision';
+      await page.evaluate(record => window.__fixtureSSE.filter(s => !s.closed && s.url === '/api/events').forEach(s => s.emit('ticket_updated', record)), record);
+      await visible(page.getByText('Newer external note', { exact: true }).filter({ visible: true }));
+      gate.resolve(); fixture.behavior.noteWait = null;
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).noteSubmitting)).toBe(false);
+      await visible(page.getByText('Newer external note', { exact: true }).filter({ visible: true }));
+      await expect(model(page, 'noteDraft')).toBeDisabled();
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedTicket.description), 'Newer protected description.\n');
+      // A second outstanding submission cannot clear the next ticket's draft.
+      await openTicket(page, 'kon-fresh'); await detailPanel(page, 'Notes');
+      const second = deferred(); fixture.behavior.noteWait = second.promise;
+      await model(page, 'noteDraft').fill('Owned by fresh ticket');
+      await page.getByRole('button', { name: 'Add note', exact: true }).click();
+      await expect.poll(() => fixture.mutations.filter(m => m.path.endsWith('/note')).length).toBe(2);
+      await openTicket(page, 'kon-other'); await detailPanel(page, 'Notes');
+      await model(page, 'noteDraft').fill('Other ticket unsent draft');
+      second.resolve(); fixture.behavior.noteWait = null;
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).noteSubmitting)).toBe(false);
+      await expect(model(page, 'noteDraft')).toHaveValue('Other ticket unsent draft');
+    }, { records: [ticket('kon-fresh', 'Fresh note owner'), ticket('kon-other', 'Other note owner')], config: { author: 'Browser author' } });
+  });
+
+  test('kon91cx Changes stale read cannot replace another ticket and empty stays distinct', async t => {
+    await withPage(t, 390, 'dark', async (page, fixture) => {
+      await openTicket(page, 'kon-draft');
+      const held = fixture.holdRead('/api/tickets/kon-draft/changes');
+      await detailPanel(page, 'Changes'); await held.started;
+      await openTicket(page, 'kon-empty'); await detailPanel(page, 'Changes');
+      await visible(page.locator('.detail-changes:visible').getByText(/no (commits|changes|committed)|nothing.*(commit|change)|no branch/i).first());
+      held.release({ value: coreChanges }); await held.done;
+      await expect(page.getByText('Independent Changes fixture commit', { exact: true }).filter({ visible: true })).toHaveCount(0);
+      assert.equal(new URL(page.url()).hash, '#/t/kon-empty');
+    }, { records: [ticket('kon-empty', 'Empty Changes fixture')] });
+  });
+
+  for (const width of [390, 1280]) test(`kon91cx idle Todo Queue releases controls for prototype-named IDs / ${width}px`, async t => {
+    const ids = ['kon-draft', 'constructor', 'toString', '__proto__'];
+    await withPage(t, width, 'dark', async (page, fixture) => {
+      for (const id of ids) {
+        await openTicket(page, id);
+        const queue = page.getByRole('button', { name: /^queue ticket$/i }).filter({ visible: true });
+        await expect(queue).toBeEnabled();
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const queued = fixture.enqueued.length;
+          await queue.click();
+          await expect.poll(() => fixture.enqueued.length).toBe(queued + 1);
+          await expect(queue).toBeEnabled();
+          assert.deepEqual(fixture.enqueued.at(-1), { id, action: 'run' });
+        }
+      }
+      assert.ok(fixture.mutations.every(m => m.method === 'POST' && m.path.endsWith('/run')));
+    }, { ticket: { status: 'todo' }, records: ids.slice(1).map(id => ticket(id, 'Prototype-named ticket ' + id, { status: 'todo' })) });
+  });
+
+  for (const width of [390, 1280]) {
+    test(`kon91cx save-only metadata and secondary namesake / ${width}px`, async t => {
+      await withPage(t, width, 'dark', async (page, fixture) => {
+        await openTicket(page, 'kon-draft'); await detailPanel(page, 'Ticket');
+        const metadata = page.locator('[data-detail-metadata]:visible');
+        const edit = metadata.getByRole('button', { name: 'Edit details', exact: true });
+        if (await edit.isVisible()) await edit.click();
+        await expect(metadata.getByRole('combobox', { name: 'Pipeline', exact: true })).toHaveValue('standard');
+        await metadata.getByRole('combobox', { name: 'Pipeline', exact: true }).selectOption('alternate');
+        await expect.poll(() => fixture.records.get('primary/kon-draft').pipeline).toBe('alternate');
+        await metadata.getByRole('combobox', { name: 'Agent', exact: true }).selectOption('alternate-agent');
+        await expect.poll(() => fixture.records.get('primary/kon-draft').agent).toBe('alternate-agent');
+        if (!await metadata.locator('details').evaluate(el => el.open)) await metadata.getByText('Details', { exact: true }).click();
+        await metadata.getByRole('textbox', { name: 'Branch', exact: true }).fill('fixture/save-only');
+        await metadata.getByRole('textbox', { name: 'Branch', exact: true }).press('Tab');
+        await expect.poll(() => fixture.records.get('primary/kon-draft').branch).toBe('fixture/save-only');
+        const primary = fixture.records.get('primary/kon-draft');
+        assert.equal(primary.stage, 'code'); assert.equal(primary.attempt, 3);
+        assert.equal(primary.description_tail, tail); assert.equal(primary.body, primary.description + tail);
+        assert.deepEqual(fixture.enqueued, []);
+        assert.ok(fixture.mutations.every(m => m.method === 'PUT' && m.path === '/api/tickets/kon-draft'));
+        assert.deepEqual(fixture.mutations.map(m => Object.keys(m.body).sort()), [['pipeline'], ['agent'], ['branch']]);
+        await openTicket(page, 'kon-draft', source); await detailPanel(page, 'Ticket');
+        const secondaryEdit = metadata.getByRole('button', { name: 'Edit details', exact: true });
+        if (await secondaryEdit.isVisible()) await secondaryEdit.click();
+        if (!await metadata.locator('details').evaluate(el => el.open)) await metadata.getByText('Details', { exact: true }).click();
+        await metadata.getByRole('textbox', { name: 'Branch', exact: true }).fill('fixture/secondary-only');
+        await metadata.getByRole('textbox', { name: 'Branch', exact: true }).press('Tab');
+        await expect.poll(() => fixture.records.get('secondary/kon-draft').branch).toBe('fixture/secondary-only');
+        assert.equal(primary.branch, 'fixture/save-only');
+        assert.equal(fixture.mutations.at(-1).path, '/api/sources/secondary/tickets/kon-draft');
+        assert.ok(!fixture.requests.some(r => /GET \/api\/tickets\/kon-draft\/(activity|logs)/.test(r)));
+        await noPageOverflow(page);
+      }, { ticket: { status: 'paused', stage: 'code', attempt: 3 }, nativeAgentPicker: true,
+        config: { agents: ['fixture-agent', 'alternate-agent'], agent_infos: [{ name: 'fixture-agent', binary: 'pi' }, { name: 'alternate-agent', binary: 'claude' }], pipelines: ['standard', 'alternate'], pipeline_infos: [{ name: 'standard', stages: ['plan', 'code'] }, { name: 'alternate', stages: ['plan', 'code'] }] } });
+    });
+
+    test(`kon91cx paused to Open transport preserves attempt without enqueue / ${width}px`, async t => {
+      await withPage(t, width, 'light', async (page, fixture) => {
+        await openTicket(page, 'kon-draft');
+        if (width < 768) {
+          await page.getByRole('button', { name: 'Move to', exact: true }).filter({ visible: true }).click();
+          await page.getByRole('button', { name: /^Move to Open$/i }).filter({ visible: true }).click();
+        } else await page.getByRole('combobox', { name: 'Move to status', exact: true }).selectOption('open');
+        await expect.poll(() => fixture.records.get('primary/kon-draft').status).toBe('open');
+        assert.deepEqual(fixture.mutations.map(({ method, path, body }) => ({ method, path, body })),
+          [{ method: 'POST', path: '/api/tickets/kon-draft/move', body: { status: 'open' } }]);
+        const parked = fixture.records.get('primary/kon-draft');
+        assert.equal(parked.stage, 'code'); assert.equal(parked.attempt, 3);
+        assert.equal(parked.last_error, ''); assert.ok(!parked.annotation_return_status);
+        assert.deepEqual(fixture.enqueued, []);
+        assert.ok(!fixture.requests.some(r => /^POST .*\/(run|retry|init)$/.test(r)));
+      }, { ticket: { status: 'paused', stage: 'code', attempt: 3, last_error: 'Previous failure', annotation_return_status: 'human_review' } });
+    });
+
+    test(`kon91cx Notes before runs and visible conversation controls / ${width}px`, async t => {
+      await withPage(t, width, 'light', async (page, fixture) => {
+        await openTicket(page, 'kon-draft'); await detailPanel(page, 'Notes');
+        const original = fixture.records.get('primary/kon-draft').description;
+        await model(page, 'noteDraft').fill('A note before the first run.');
+        await page.getByRole('button', { name: /^add note$/i }).filter({ visible: true }).click();
+        await visible(page.locator('.detail-notes:visible').getByText('A note before the first run.', { exact: true }));
+        assert.equal(fixture.records.get('primary/kon-draft').history.length, 0);
+        assert.equal(fixture.records.get('primary/kon-draft').description, original);
+        assert.match(fixture.records.get('primary/kon-draft').body, /Do not edit this tail/);
+        // Move away from the note: controls must be discoverable without hover.
+        await page.mouse.move(0, 0);
+        for (const label of ['Reply', 'Edit', 'Delete']) {
+          const control = page.getByRole('button', { name: new RegExp('^' + label + '$', 'i') }).filter({ visible: true }).first();
+          await expect(control).toBeVisible();
+          assert.equal(await control.evaluate(el => {
+            for (let p = el; p; p = p.parentElement) if (Number(getComputedStyle(p).opacity) === 0) return false;
+            return true;
+          }), true, `${label} cannot be hover-only`);
+        }
+        await page.getByRole('button', { name: /^reply$/i }).filter({ visible: true }).first().click();
+        await model(page, 'noteReplyDraft').fill('A threaded reply.');
+        await model(page, 'noteReplyDraft').press('Control+Enter');
+        await visible(page.locator('.detail-notes:visible').getByText('A threaded reply.', { exact: true }));
+        await page.getByRole('button', { name: /^edit$/i }).filter({ visible: true }).first().click();
+        await model(page, 'noteEditDraft').fill('Edited before any run.');
+        await model(page, 'noteEditDraft').press('Control+Enter');
+        await visible(page.locator('.detail-notes:visible').getByText('Edited before any run.', { exact: true }));
+        await page.getByRole('button', { name: 'React to this note', exact: true }).filter({ visible: true }).first().click();
+        await expect.poll(() => fixture.records.get('primary/kon-draft').notes[0].reactions.length).toBe(1);
+        await page.getByRole('button', { name: /^delete$/i }).filter({ visible: true }).first().click();
+        const dialog = page.getByRole('dialog', { name: 'Delete note', exact: true });
+        await expect(dialog).toBeVisible();
+        await dialog.getByRole('button', { name: /^delete note$/i }).click();
+        await expect.poll(() => fixture.records.get('primary/kon-draft').notes.length).toBe(0);
+        assert.deepEqual(fixture.enqueued, []);
+      }, { config: { author: 'Browser author' }, hasTouch: width < 768 });
+    });
+
+    test(`kon91cx legacy annotation imported artifact addressing / ${width}px`, async t => {
+      await withPage(t, width, 'dark', async (page, fixture) => {
+        await openTicket(page, 'kon-evidence'); await detailPanel(page, 'Output');
+        const selector = page.getByRole('combobox', { name: 'Run', exact: true }).filter({ visible: true });
+        assert.deepEqual(await selector.locator('option').evaluateAll(els => els.map(el => el.value).filter(Boolean)), ['code#3', 'code#2', 'code#1', 'plan#0', 'code#0']);
+        for (const run of [0, 1, 3]) {
+          const before = fixture.artifactReads.length;
+          await selector.selectOption(`code#${run}`);
+          await visible(page.getByText(`Artifact occurrence ${run}`, { exact: true }).filter({ visible: true }));
+          assert.deepEqual(fixture.artifactReads.slice(before), [{ id: 'kon-evidence', stage: 'code', run }], 'Explicit selection fetches exactly one distinct artifact');
+        }
+        const beforeImported = fixture.artifactReads.length;
+        await selector.selectOption('code#2');
+        await visible(page.getByText('Imported evidence without local artifacts.', { exact: true }).filter({ visible: true }).first());
+        assert.equal(fixture.artifactReads.length, beforeImported);
+        assert.equal(new URL(page.url()).hash, '#/t/kon-evidence', 'No panel/run URL extension');
+        await noPageOverflow(page);
+      }, { records: [ticket('kon-evidence', 'Historical evidence', { status: 'done', stage: 'code', history: coreHistory() })],
+        artifacts: Object.fromEntries([0, 1, 3].map(run => [`kon-evidence/code/${run}`, [{ kind: 'text', text: `Artifact occurrence ${run}` }]])) });
+    });
+
+    test(`kon91cx Changes without summary loading failure retry and refresh / ${width}px`, async t => {
+      await withPage(t, width, 'light', async (page, fixture) => {
+        await openTicket(page, 'kon-draft');
+        const gate = deferred(); fixture.behavior.changesWait = gate.promise;
+        fixture.behavior.changesFailure = 'Changes fixture unavailable';
+        await detailPanel(page, 'Changes');
+        await visible(page.getByText(/Loading changes/i).filter({ visible: true }));
+        gate.resolve(); fixture.behavior.changesWait = null;
+        await visible(page.getByText('Changes fixture unavailable', { exact: true }).filter({ visible: true }));
+        const retry = page.getByRole('button', { name: 'Retry changes', exact: true }).filter({ visible: true });
+        await expect(retry).toBeVisible();
+        fixture.behavior.changesFailure = null;
+        await retry.click();
+        await visible(page.getByText('Independent Changes fixture commit', { exact: true }).filter({ visible: true }).first());
+        await visible(page.getByText('internal/core-fixture.go', { exact: true }).filter({ visible: true }).first());
+        assert.ok(!fixture.records.get('primary/kon-draft').summary);
+        const reads = fixture.requests.filter(r => r === 'GET /api/tickets/kon-draft/changes').length;
+        await detailPanel(page, 'Notes'); await detailPanel(page, 'Changes');
+        await expect.poll(() => fixture.requests.filter(r => r === 'GET /api/tickets/kon-draft/changes').length).toBe(reads + 1);
+        assert.deepEqual(fixture.mutations, []);
+      }, { changes: { 'kon-draft': coreChanges } });
+    });
+  }
+
+  for (const width of [390, 1280]) test(`kon91cx local panel run and scroll restore without URL extension / ${width}px`, async t => {
+    await withPage(t, width, 'dark', async (page, fixture) => {
+      await openTicket(page, 'kon-evidence'); await detailPanel(page, 'Output');
+      await page.getByRole('combobox', { name: 'Run', exact: true }).filter({ visible: true }).selectOption('code#1');
+      const scroller = page.locator('#activity-scroll:visible');
+      await visible(scroller.getByText('Restorable activity row 79', { exact: true }));
+      const follow = page.getByRole('button', { name: /follow/i }).filter({ visible: true }).first();
+      if (await follow.getAttribute('aria-pressed') === 'true') await follow.click();
+      await scroller.evaluate(el => { el.scrollTop = 200; });
+      const top = await scroller.evaluate(el => el.scrollTop);
+      assert.ok(top > 0);
+      await routeTo(page, '#/archive/t/kon-archived');
+      await page.goBack(); await ready(page);
+      await visible(scroller.getByText('Restorable activity row 79', { exact: true }));
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).outputRunKey()), 'code#1');
+      await expect(page.getByRole('combobox', { name: 'Run', exact: true }).filter({ visible: true })).toHaveValue('code#1');
+      await expect.poll(() => scroller.evaluate(el => el.scrollTop)).toBe(top);
+      assert.equal(new URL(page.url()).hash, '#/t/kon-evidence');
+      await detailPanel(page, 'Notes');
+      await openTicket(page, 'kon-draft'); await page.goBack(); await ready(page);
+      await visible(page.getByRole('textbox', { name: 'Add a note', exact: true }).filter({ visible: true }));
+      assert.equal(new URL(page.url()).hash, '#/t/kon-evidence');
+      assert.deepEqual(fixture.mutations, []);
+    }, { records: [ticket('kon-evidence', 'Locally restorable evidence', { status: 'done', stage: 'code', history: coreHistory() })],
+      artifacts: { 'kon-evidence/code/1': Array.from({ length: 80 }, (_, i) => ({ kind: 'text', text: `Restorable activity row ${i}` })) } });
+  });
+
+  for (const width of [390, 1280]) test(`kon91cx saved Stage logs restore supported output / ${width}px`, async t => {
+    await withPage(t, 390, 'dark', async (page, fixture) => {
+      await openTicket(page, 'kon-evidence'); await phoneOutputView(page, 'Stage logs');
+      await page.getByLabel('Stages and cost estimates', { exact: true }).getByRole('button', { name: /^plan:/ }).click();
+      await expect(page.locator('pre:visible')).toHaveText('kon-evidence plan fixture log revision 0');
+      await openTicket(page, 'kon-draft');
+      await page.setViewportSize({ width, height: 900 });
+      await openTicket(page, 'kon-evidence');
+      if (width < 768) {
+        await expect(page.getByRole('combobox', { name: 'Output view', exact: true }).filter({ visible: true })).toHaveValue('logs');
+        await expect(page.locator('pre:visible')).toHaveText('kon-evidence plan fixture log revision 0');
+      } else {
+        await visible(page.locator('#activity-scroll:visible').getByText('Restored desktop transcript', { exact: true }));
+        assert.ok(fixture.artifactReads.some(read => read.id === 'kon-evidence' && read.stage === 'code' && read.run === 3));
+      }
+      assert.deepEqual(fixture.mutations, []);
+    }, { records: [ticket('kon-evidence', 'Restorable stage logs', { status: 'done', stage: 'code', history: coreHistory() })],
+      artifacts: { 'kon-evidence/code/3': [{ kind: 'text', text: 'Restored desktop transcript' }] } });
+  });
+
+  for (const width of [390, 1280]) for (const panel of ['Output', 'Changes']) test(`kon91cx delayed ${panel} scroll restoration / ${width}px`, async t => {
+    await withPage(t, width, 'dark', async (page, fixture) => {
+      await page.evaluate(() => {
+        const watch = Alpine.watch;
+        window.__fixtureRestorationWatches = { started: 0, active: 0 };
+        Alpine.watch = (...args) => {
+          window.__fixtureRestorationWatches.started++;
+          window.__fixtureRestorationWatches.active++;
+          const stop = watch(...args);
+          return () => { window.__fixtureRestorationWatches.active--; stop(); };
+        };
+      });
+      await openTicket(page, 'kon-evidence'); await detailPanel(page, panel);
+      if (panel === 'Output') {
+        await page.getByRole('combobox', { name: 'Run', exact: true }).filter({ visible: true }).selectOption('code#1');
+        const follow = page.getByRole('button', { name: /follow/i }).filter({ visible: true }).first();
+        if (await follow.getAttribute('aria-pressed') === 'true') await follow.click();
+      }
+      const last = panel === 'Output' ? 'Delayed activity row 79' : 'delayed-file-79.go';
+      await visible(page.getByText(last, { exact: true }).filter({ visible: true }));
+      const positions = await page.evaluate(() => Alpine.$data(document.body).detailViewScrollers().map(el => {
+        el.scrollTop = 200; return el.scrollTop;
+      }));
+      assert.ok(positions.some(top => top === 200));
+      await routeTo(page, '#/archive/t/kon-archived');
+      const held = fixture.holdRead('/api/tickets/kon-evidence/' + (panel === 'Output' ? 'activity' : 'changes'));
+      try {
+        await page.goBack(); await held.started;
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        held.release(); await held.done;
+        await visible(page.getByText(last, { exact: true }).filter({ visible: true }));
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).detailViewScrollers().map(el => el.scrollTop))).toEqual(positions);
+        const watches = await page.evaluate(() => window.__fixtureRestorationWatches);
+        assert.ok(watches.started > 0);
+        assert.equal(watches.active, 0, 'Restoration releases the shipped Alpine watcher');
+      } finally { held.release(); }
+      assert.deepEqual(fixture.mutations, []);
+    }, { records: [ticket('kon-evidence', 'Delayed restorable evidence', { status: 'done', stage: 'code', history: coreHistory() })],
+      artifacts: { 'kon-evidence/code/1': Array.from({ length: 80 }, (_, i) => ({ kind: 'text', text: `Delayed activity row ${i}` })) },
+      changes: { 'kon-evidence': { ...coreChanges, files: Array.from({ length: 80 }, (_, i) => ({ path: `delayed-file-${i}.go`, added: 1, deleted: 0 })) } } });
+  });
+
+  for (const theme of themes) test(`kon91cx responsive panel and run equivalence / ${theme}`,  { timeout: 60000 }, async t => {
+    await withPage(t, 390, theme, async (page, fixture) => {
+      await openTicket(page, 'kon-evidence');
+      await expect(page.locator('.mobile-detail-tabs').getByRole('button')).toHaveText(['Ticket', 'Notes', 'Output', 'Changes']);
+      for (const panel of ['Notes', 'Changes', 'Output']) {
+        await detailPanel(page, panel);
+        if (panel === 'Output') await page.getByRole('combobox', { name: 'Run', exact: true }).filter({ visible: true }).selectOption('code#1');
+        for (const width of [767, 768, 769, 1100, 1101, 1280, 1024, 320, 390]) {
+          await page.setViewportSize({ width, height: width === 320 ? 555 : 900 });
+          await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).isMobile)).toBe(width < 768);
+          const state = await page.evaluate(() => {
+            const a = Alpine.$data(document.body);
+            return { mode: a.isMobile ? a.detailTab : a.activeTab, run: a.outputRunKey() };
+          });
+          await expect.poll(() => page.evaluate(() => {
+            const a = Alpine.$data(document.body); return a.isMobile ? a.detailTab : a.activeTab;
+          }), { message: `${panel} at ${width}px` }).toBe(({ Notes: 'notes', Changes: 'diff', Output: 'activity' })[panel]);
+          if (panel === 'Output') {
+            assert.equal(state.run, 'code#1');
+            await expect(page.getByRole('combobox', { name: 'Run', exact: true }).filter({ visible: true })).toHaveValue('code#1');
+          }
+          await visible(page.getByText(({ Notes: 'No notes yet', Changes: 'Independent Changes fixture commit', Output: 'Artifact occurrence 1' })[panel], { exact: true }).filter({ visible: true }).first());
+          assert.ok(await page.locator('#activity-scroll').count() <= 1);
+          assert.ok(await page.locator('[x-model="editForm.body"]:visible').count() <= 1);
+          await noPageOverflow(page);
+          if (captureDirectory && [320, 768, 1101].includes(width)) await mobileCapture(page, width, theme, `core-${panel.toLowerCase()}`);
+        }
+      }
+      assert.deepEqual(fixture.mutations, []);
+    }, { records: [ticket('kon-evidence', 'Responsive evidence', { status: 'done', stage: 'code', history: coreHistory() })],
+      changes: { 'kon-evidence': coreChanges }, artifacts: { 'kon-evidence/code/1': [{ kind: 'text', text: 'Artifact occurrence 1' }] } });
+  });
+
+  for (const width of [390]) test(`kon91cx empty Output and secondary read-only panels / ${width}px`, async t => {
+    await withPage(t, width, 'light', async (page, fixture) => {
+      await openTicket(page, 'kon-draft'); await detailPanel(page, 'Output');
+      await visible(page.getByText('No recorded runs yet.', { exact: true }).filter({ visible: true }));
+      await expect(page.getByRole('combobox', { name: 'Run', exact: true }).filter({ visible: true })).toBeDisabled();
+      assert.deepEqual(fixture.artifactReads, [], 'An unrun ticket has no local artifact to fetch');
+      if (width < 768) await expect(page.getByRole('combobox', { name: 'Output view', exact: true })).toHaveValue('activity');
+      await openTicket(page, 'kon-readonly', source);
+      for (const panel of ['Notes', 'Output', 'Changes']) {
+        await detailPanel(page, panel);
+        if (panel === 'Notes') {
+          await visible(page.getByText('Secondary conversation evidence.', { exact: true }).filter({ visible: true }));
+          await expect(page.getByRole('textbox', { name: 'Add a note', exact: true }).filter({ visible: true })).toBeDisabled();
+        } else if (panel === 'Output') {
+          const output = page.locator('.mobile-output-toolbar:visible');
+          await visible(output.getByText('Secondary historical summary.', { exact: true }));
+          await visible(output.getByText(/Imported history is readable here.*Local transcripts, logs and terminal are unavailable/));
+          await expect(output.getByRole('combobox', { name: 'Run', exact: true })).toHaveCount(0);
+          await expect(output.getByRole('region', { name: 'Run history', exact: true }).getByRole('button')).toBeDisabled();
+        } else await visible(page.getByText('Changes are available for primary tickets only.', { exact: true }).filter({ visible: true }));
+        await noPageOverflow(page);
+        if (captureDirectory) await mobileCapture(page, width, 'light', `secondary-${panel.toLowerCase()}`);
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).isMobile)).toBe(false);
+        if (panel === 'Notes') {
+          await visible(page.getByText('Secondary conversation evidence.', { exact: true }).filter({ visible: true }));
+        } else {
+          await visible(page.locator('[data-detail-metadata]:visible'));
+          await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).activeTab)).toBe('ticket');
+        }
+        await page.setViewportSize({ width, height: 900 });
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).isMobile)).toBe(true);
+        await detailPanel(page, panel);
+        await openTicket(page, 'kon-draft');
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await page.goBack(); await ready(page);
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).activeTab)).toBe(panel === 'Notes' ? 'notes' : 'ticket');
+        await visible(page.locator(panel === 'Notes' ? '.detail-notes:visible' : '[data-detail-metadata]:visible'));
+        await page.setViewportSize({ width, height: 900 });
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).isMobile)).toBe(true);
+      }
+      assert.deepEqual(fixture.artifactReads, []);
+      assert.ok(!fixture.requests.some(r => /GET \/api\/(?:sources\/secondary\/)?tickets\/kon-readonly\/(activity|logs|changes)/.test(r)), 'Secondary panels never fetch primary-only artifacts');
+      assert.deepEqual(fixture.mutations, []);
+    }, { records: [ticket('kon-readonly', 'Secondary read-only evidence', { source, kontora: false, can_edit: false, can_control: false,
+      status: 'done', stage: 'code', history: [{ ...coreHistory()[0], summary: 'Secondary historical summary.' }],
+      notes: [{ id: 'readonly-note', author: 'Other author', author_kind: 'human', at: stamp, text: 'Secondary conversation evidence.' }] })] });
+  });
+
+  for (const width of [390, 1280]) for (const theme of themes) test(`kon91cx final panel captures / ${width}px / ${theme}`, { skip: !captureDirectory, timeout: 60000 }, async t => {
+    await withPage(t, width, theme, async (page, fixture) => {
+      await openTicket(page, 'kon-evidence');
+      for (const panel of ['Ticket', 'Notes', 'Output', 'Changes']) {
+        await detailPanel(page, panel);
+        if (panel === 'Output') {
+          await page.getByRole('combobox', { name: 'Run', exact: true }).filter({ visible: true }).selectOption('code#1');
+          await visible(page.getByText('Artifact occurrence 1', { exact: true }).filter({ visible: true }));
+        } else if (panel === 'Changes') await visible(page.getByText('Independent Changes fixture commit', { exact: true }).filter({ visible: true }).first());
+        else if (panel === 'Notes') await visible(page.getByText('No notes yet', { exact: true }).filter({ visible: true }));
+        await noPageOverflow(page);
+        await mobileCapture(page, width, theme, `final-${panel.toLowerCase()}`);
+        await page.setViewportSize({ width, height: 360 });
+        if (panel === 'Notes') {
+          const composer = page.getByRole('textbox', { name: 'Add a note', exact: true }).filter({ visible: true });
+          await composer.scrollIntoViewIfNeeded();
+          const send = page.getByRole('button', { name: 'Add note', exact: true }).filter({ visible: true });
+          await send.scrollIntoViewIfNeeded();
+          await inViewport(send);
+          await inViewport(composer);
+        } else if (panel === 'Output' && width < 768) {
+          await inViewport(page.getByRole('combobox', { name: 'Run', exact: true }).filter({ visible: true }));
+          await inViewport(page.getByRole('combobox', { name: 'Output view', exact: true }).filter({ visible: true }));
+        }
+        await noPageOverflow(page);
+        await mobileCapture(page, width, theme, `final-${panel.toLowerCase()}-short`);
+        await page.setViewportSize({ width, height: 900 });
+      }
+      assert.deepEqual(fixture.mutations, []);
+    }, { records: [ticket('kon-evidence', 'Historical evidence', { status: 'done', stage: 'code', history: coreHistory() })],
+      changes: { 'kon-evidence': coreChanges }, artifacts: { 'kon-evidence/code/1': [{ kind: 'text', text: 'Artifact occurrence 1' }] } });
+  });
+
+  for (const width of [390, 1280]) test(`kon91cx baseline primary states / ${width}px`, { skip: !captureDirectory, timeout: 60000 }, async t => {
+    await withPage(t, width, 'dark', async (page, fixture) => {
+      for (const id of ['kon-draft', 'kon-paused', 'kon-live', 'kon-done', 'kon-archived']) {
+        await routeTo(page, id === 'kon-archived' ? '#/archive/t/kon-archived' : `#/t/${id}`);
+        await visible(page.getByText(id, { exact: true }).filter({ visible: true }).first());
+        const ticketTab = page.locator('.mobile-detail-tabs').getByRole('button', { name: /^(▤ ticket|Ticket)$/ });
+        if (width < 768 && await ticketTab.isVisible()) await ticketTab.click();
+        await mobileCapture(page, width, 'dark', `primary-${id}`);
+      }
+      assert.equal(fixture.mutations.length, 0);
+    }, { records: polishRecords(), sidebar: width >= 768 });
+  });
+});

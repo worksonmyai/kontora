@@ -456,6 +456,7 @@ export function kontoraCreate() {
 
     async openInitModal(ticket) {
       if (!this.ticketCanControl(ticket)) return;
+      const command = this.lifecycleCommand(ticket, 'initialize');
       this.closeAgentPicker(false);
       var seq = ++this._initContextSeq;
       var navigation = this._navigationSeq;
@@ -479,6 +480,11 @@ export function kontoraCreate() {
         if (seq === this._initContextSeq) this._initOpening = false;
       }
       if (!current()) return;
+      if (!command || command.expected !== this._lifecycleState(ticket) || !this.needsInitModal(ticket)) {
+        this.error = 'Ticket changed while opening initialization; refresh before starting it.';
+        return;
+      }
+      this._lifecycleInitCommand = command;
       var pt = this.parseTitleTag(ticket);
       this.initForm = {
         ticketId: ticket.id,
@@ -627,34 +633,27 @@ export function kontoraCreate() {
         this.initSubmitting = false;
         return;
       }
+      const form = this.initForm;
+      const command = this._lifecycleInitCommand;
+      if (!command || command.ticketKey !== form.ticketId) return { outcome: 'refused' };
       this.initSubmitting = true;
       try {
-        const res = await fetch('/api/tickets/' + this.initForm.ticketId + '/init', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            pipeline: this.initForm.kind === 'epic' ? undefined : this.pipelineOverride(this.initForm.pipelineChoice),
-            status: this.initForm.kind === 'epic' ? 'todo' : undefined,
-            path: this.initForm.path,
-            agent: this.initForm.agent || 'none',
-            branch: (this.initForm.branch || '').trim() || undefined,
-            // Both always sent, empty included: the row shows what the ticket
-            // will carry, so leaving them out would let a ticket keep a notify
-            // list the user just switched off.
-            notify: this.initForm.notify,
-            notify_channels: this.initForm.notifyChannels,
-          }),
-        });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          this.initError = data.error || 'Failed to start ticket';
-          this.initSubmitting = false;
-          return;
+        const result = await this.dispatchLifecycle(form.ticketId, { ...command, body: {
+          pipeline: form.kind === 'epic' ? undefined : this.pipelineOverride(form.pipelineChoice),
+          status: form.kind === 'epic' ? 'todo' : undefined,
+          path: form.path,
+          agent: form.agent || 'none',
+          branch: (form.branch || '').trim() || undefined,
+          notify: (form.notify || []).slice(),
+          notify_channels: (form.notifyChannels || []).slice(),
+        } });
+        if (form === this.initForm) {
+          if (result.outcome === 'success') this.closeInitModal();
+          else this.initError = result.error || 'Ticket could not start (' + result.outcome + ').';
         }
-        this.closeInitModal();
-      } catch (e) {
-        this.initError = 'Failed to start ticket: ' + e.message;
-        this.initSubmitting = false;
+        return result;
+      } finally {
+        if (form === this.initForm) this.initSubmitting = false;
       }
     },
   };

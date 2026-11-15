@@ -15,6 +15,7 @@ export function kontoraTickets() {
   let primaryFlight = null;
   let primaryAgain = false;
   let detailFlight = null;
+  const plannotatorStarts = new Map();
 
   return {
     get columns() {
@@ -26,9 +27,7 @@ export function kontoraTickets() {
     },
 
     ticketMoves(ticket) {
-      var active = this.executionActive(ticket);
-      var moves = this.validMoves[active ? 'in_progress' : ticket?.status] || [];
-      return active ? moves : moves.filter(m => m.endpoint !== 'pause');
+      return this.lifecycleActions(ticket).concat(this.lifecycleDestinations(ticket));
     },
 
     _deriveColumns() {
@@ -178,6 +177,7 @@ export function kontoraTickets() {
         do {
           primaryAgain = false;
           var touched = this._beginSnapshot();
+          const uncertainStarts = [...plannotatorStarts].filter(([, start]) => start.uncertain && !start.confirmed);
           try {
             const res = await fetch('/api/tickets');
             if (res.status === 401) { this.needsAuth = true; throw new Error('unauthorized'); }
@@ -186,6 +186,13 @@ export function kontoraTickets() {
             if (this._appDestroyed) return;
             this.tickets = this._mergeSnapshot((data.tickets || []).map(t => this.boardEntry(t)), this.tickets, touched);
             this._reconcileSnapshotSelection(this.tickets, false, touched);
+            // A refresh releases failed, unconfirmed starts. SSE owns confirmed
+            // sessions; the daemon still rejects duplicate starts.
+            for (const [id, start] of uncertainStarts) {
+              if (plannotatorStarts.get(id) !== start || start.confirmed) continue;
+              delete this.plannotatorInFlight[id];
+              plannotatorStarts.delete(id);
+            }
             this.recomputeBoard();
             // Exclude automation sessions, which have their own running count.
             this.runningAgents = Math.max(0, (data.running_agents || 0) - (data.automation_running_agents || 0));
@@ -649,14 +656,19 @@ export function kontoraTickets() {
         if (payload.ticket_id) {
           // The entry a local start already made names which pass it is; the
           // event does not say, so it must not overwrite that.
-          this.plannotatorInFlight[payload.ticket_id] ??= 'Plannotator';
+          const start = plannotatorStarts.get(payload.ticket_id);
+          if (start) start.confirmed = true;
+          if (!Object.hasOwn(this.plannotatorInFlight, payload.ticket_id)) {
+            this.plannotatorInFlight = { ...this.plannotatorInFlight, [payload.ticket_id]: 'Plannotator' };
+          }
         }
       });
       es.addEventListener('plannotator_finished', (e) => {
         const payload = JSON.parse(e.data);
-        const label = (payload.ticket_id && this.plannotatorInFlight[payload.ticket_id]) || 'Plannotator';
+        const label = Object.hasOwn(this.plannotatorInFlight, payload.ticket_id) ? this.plannotatorInFlight[payload.ticket_id] : 'Plannotator';
         if (payload.ticket_id) {
           delete this.plannotatorInFlight[payload.ticket_id];
+          plannotatorStarts.delete(payload.ticket_id);
         }
         if (payload.outcome === 'error') {
           this.error = label + ' failed' + (payload.message ? ': ' + payload.message : '');
@@ -670,6 +682,7 @@ export function kontoraTickets() {
         // is disconnected, we'll never see the finished event and the button
         // would stay disabled until a full page refresh.
         this.plannotatorInFlight = {};
+        plannotatorStarts.clear();
         this.companionDisconnected = true;
         this.companionError = 'Disconnected. Attention may be stale until the daemon reconnects.';
         clearTimeout(this._sseReconnect);
@@ -685,18 +698,27 @@ export function kontoraTickets() {
       return this.startPlannotator(ticket, 'plannotator-annotate', 'Ticket annotation');
     },
 
-    async startPlannotator(ticket, endpoint, label) {
-      if (!this.ticketCanControl(ticket)) return;
+    startPlannotator(ticket, endpoint) {
+      return this.dispatchLifecycle(this.ticketKey(ticket), this.lifecycleFromEndpoint(ticket, endpoint));
+    },
+
+    async _startPlannotatorTransport(ticket, endpoint, label) {
+      if (!this.ticketCanControl(ticket)) return { outcome: 'refused' };
       const id = ticket.id;
-      if (this.plannotatorInFlight[id]) return;
+      if (Object.hasOwn(this.plannotatorInFlight, id)) return { outcome: 'busy' };
       // Optimistically reflect in-flight state; the SSE event confirms it. The
       // label is kept so a failure names the pass that failed.
-      this.plannotatorInFlight[id] = label;
+      const start = { confirmed: false, uncertain: false };
+      plannotatorStarts.set(id, start);
+      this.plannotatorInFlight = { ...this.plannotatorInFlight, [id]: label };
       this.error = null;
       try {
         const res = await fetch('/api/tickets/' + id + '/' + endpoint, { method: 'POST' });
         if (!res.ok) {
-          delete this.plannotatorInFlight[id];
+          if (plannotatorStarts.get(id) === start && !start.confirmed) {
+            delete this.plannotatorInFlight[id];
+            plannotatorStarts.delete(id);
+          }
           const data = await res.json().catch(() => ({}));
           if (res.status === 409) {
             this.error = data.error || (label + ' cannot start in this state');
@@ -705,10 +727,16 @@ export function kontoraTickets() {
           } else {
             this.error = data.error || (label + ' failed (' + res.status + ')');
           }
+          return { outcome: 'failed', error: this.error };
         }
+        return { outcome: 'success' };
       } catch (e) {
-        delete this.plannotatorInFlight[id];
-        this.error = label + ' failed: ' + e.message;
+        // The host may have started the session. Refresh without replaying;
+        // a confirmed SSE session must retain ownership.
+        start.uncertain = true;
+        const error = this.error = label + ' result uncertain: ' + e.message;
+        await this._lifecycleRefresh();
+        return { outcome: 'uncertain', error };
       }
     },
 
@@ -789,18 +817,14 @@ export function kontoraTickets() {
 
     canRestartGraph(ticket = this.selectedTicket) {
       return this.isGraphTicket(ticket) && this.ticketCanControl(ticket) && !this.executionActive(ticket) &&
-        ticket.status !== 'archived' && !this.plannotatorInFlight?.[ticket.id];
+        ticket.status !== 'archived' && !(ticket.id in (this.plannotatorInFlight || {}) && Object.hasOwn(this.plannotatorInFlight, ticket.id));
     },
 
     async restartGraphWorkflow() {
       const t = this.selectedTicket;
       if (!this.canRestartGraph(t)) return;
       if (!confirm('Restart at the configured graph entry with a new execution and fresh loop counters? History and worktree are retained.')) return;
-      try {
-        const res = await fetch('/api/tickets/' + encodeURIComponent(t.id) + '/workflow-restart', { method: 'POST' });
-        if (!res.ok) { this.error = (await res.json()).error || 'workflow-restart failed'; return; }
-        await this.resyncTickets();
-      } catch (e) { this.error = 'workflow-restart failed: ' + e.message; }
+      return this.dispatchLifecycle(this.ticketKey(t), 'workflow-restart');
     },
 
     historyLabel(h) {
@@ -834,13 +858,7 @@ export function kontoraTickets() {
     // The history entry the activity tab is showing, or null when the run has
     // not finished and so has no entry yet.
     activityHistoryEntry() {
-      var h = this.outputSubject()?.history || [];
-      var stage = this.activityStage;
-      var run = this.activityRun || 0;
-      for (var i = h.length - 1; i >= 0; i--) {
-        if (h[i].stage === stage && (h[i].run || 0) === run) return h[i];
-      }
-      return null;
+      return this.activityHistoryRecord();
     },
 
     // The effort chip in the activity header. Nothing on a stale payload: the

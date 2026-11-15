@@ -65,9 +65,8 @@ export function kontoraPalette() {
     paletteMoves(t) {
       if (!this.ticketCanControl(t)) return [];
       if (!t) return [];
-      var moves = this.ticketMoves(t).slice();
-      if (!t.kontora) moves.unshift({ label: 'Initialize', endpoint: 'run' });
-      return moves;
+      return this.ticketMoves(t).map(command => !t.kontora && command.id === 'start'
+        ? { ...command, label: 'Initialize' } : command);
     },
 
     // The board filter, token grammar included, plus stage and agent as free
@@ -150,7 +149,7 @@ export function kontoraPalette() {
 
     _paletteActionRow(t, move) {
       return this._paletteCmdRow({
-        id: 'action:' + t.id + ':' + this._paletteSlug(move.label), kind: 'action', ticketId: t.id,
+        id: 'action:' + this.ticketKey(t) + ':' + move.id, kind: 'action', ticketId: this.ticketKey(t),
         move: move, fromStatus: t.status, glyph: '▸', title: move.label,
         danger: move.label === 'Cancel',
       });
@@ -244,6 +243,7 @@ export function kontoraPalette() {
         id: 'schedrun:' + t.id, kind: 'schedulerun', ticketId: t.id, glyph: '▸',
         title: 'run now instead',
       });
+      run.command = this.lifecycleCommand(t, 'start');
       run.sub = 'clears scheduled_at and queues the ticket';
       run.glyphClass = 'text-ok';
       run.status = 'open';
@@ -605,9 +605,9 @@ export function kontoraPalette() {
     // The list may have re-derived over SSE since the row was built. A move that
     // is no longer in validMoves must not be sent.
     _paletteMoveStillLegal(row) {
-      var t = this.tickets.find(x => x.id === row.ticketId);
-      if (!t) return false;
-      return this.paletteMoves(t).some(m => m.label === row.move.label);
+      var t = this.lifecycleResolve(row.ticketId);
+      return !!t && !!row.move && row.move.expected === this._lifecycleState(t) &&
+        this._lifecycleAllowed(t, row.move);
     },
 
     // The three schedule verbs. Each goes through the same calls the detail rail
@@ -631,18 +631,18 @@ export function kontoraPalette() {
       var label = this._paletteScheduleCurrent(t);
       this.closePalette();
       if (row.kind === 'schedulerun') {
-        await this.moveTicketVia(t.id, 'run', null);
-        if (!this.error) this.showToast(t.id + ' queued');
+        const result = await this.dispatchLifecycle(this.ticketKey(t), row.command);
+        if (result.outcome === 'success') this.showToast(t.id + ' queued');
         return;
       }
       if (row.kind === 'scheduleclear') {
-        await this.clearTicketSchedule(t);
-        if (this.scheduleError) { this.error = this.scheduleError; return; }
+        const result = await this.clearTicketSchedule(t);
+        if (result?.outcome !== 'success') { if (result?.error) this.error = result.error; return; }
         this.showToast(t.id + ' no longer starts ' + label);
         return;
       }
-      await this._postSchedule(t, { scheduled_at: row.scheduleISO });
-      if (this.scheduleError) { this.error = this.scheduleError; return; }
+      const result = await this._postSchedule(t, { scheduled_at: row.scheduleISO });
+      if (result?.outcome !== 'success') { if (result?.error) this.error = result.error; return; }
       this.showToast(t.id + ' starts ' + this._paletteScheduleCurrent(this.tickets.find(x => x.id === t.id) || t));
     },
 
@@ -652,14 +652,10 @@ export function kontoraPalette() {
         this.showToast(row.ticketId + ' is no longer ' + this.paletteStatusLabel(row.fromStatus));
         return;
       }
-      var t = this.tickets.find(x => x.id === row.ticketId);
-      var body = row.move.status ? { status: row.move.status } : null;
-      // A start that opens the init modal posts nothing, so there is no
-      // completed action to confirm.
-      var opensInit = this.needsInitModal(t) && this.ticketActionWouldStart(row.move.endpoint, body);
+      var t = this.lifecycleResolve(row.ticketId);
       this.closePalette();
-      await this.moveTicketVia(t.id, row.move.endpoint, body);
-      if (opensInit || this.error) return;
+      const result = await this.dispatchLifecycle(row.ticketId, row.move);
+      if (result.outcome !== 'success') return;
       var verb = this._paletteVerbs[row.move.label];
       this.showToast(t.id + ' ' + (typeof verb === 'string' ? verb : row.move.label.toLowerCase()));
     },

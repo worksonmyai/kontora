@@ -5,6 +5,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { webcrypto } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { kontoraDetailMarkup } from '../ui/detail_markup.js';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const htmlPath = path.join(dirname, "../static/index.html");
@@ -22,6 +23,16 @@ const uiSource = fs
   .join("\n");
 // The compiled bundle, written by staticjs_test.go. Testing what the daemon
 // serves means the source split cannot drift from what the browser runs.
+// Expand the shared, constant fragments at their actual mounting sites for
+// source assertions about both responsive shells (not runtime ticket content).
+function indexMarkup() {
+  const fragments = kontoraDetailMarkup();
+  return fs.readFileSync(htmlPath, 'utf8').replace(
+    /x-html="(detail\w+Markup)"><\/div>/g,
+    (_, name) => `>${fragments[name]}</div>`,
+  );
+}
+
 const bundlePath = process.env.KONTORA_BUNDLE;
 if (!bundlePath) throw new Error("KONTORA_BUNDLE is unset; run this through go test");
 
@@ -492,13 +503,19 @@ function kontoraContext(overrides = {}) {
       },
     },
     WebSocket: class {},
+    Alpine: { watch: () => () => {} },
     location: {
       protocol: "http:",
       host: "localhost:8080",
     },
   };
 
+  const documentDefaults = context.document;
   Object.assign(context, overrides);
+  // A partial document double still implements the browser's query APIs.
+  for (const [key, value] of Object.entries(documentDefaults)) {
+    if (!(key in context.document)) context.document[key] = value;
+  }
   return context;
 }
 
@@ -966,6 +983,8 @@ test("phone terminal compact mode follows the selected ticket or supervisor sess
     { name: 'ticket direct input', detailTab: 'terminal', target: 'terminal', height: 900, compact: true },
     { name: 'RW without input ownership', detailTab: 'terminal', rw: true, height: 900, compact: false },
     { name: 'ticket short viewport', detailTab: 'terminal', height: 360, compact: true },
+    { name: 'ticket keyboard viewport preserves resting controls', detailTab: 'terminal', height: 555, compact: false },
+    { name: 'ticket compact boundary', detailTab: 'terminal', height: 600, compact: false },
     { name: 'ticket reading', detailTab: 'terminal', height: 900, compact: false },
     { name: 'supervisor composer', epic: true, epicTab: 'session', target: 'composer', height: 900, compact: true },
     { name: 'supervisor direct input', epic: true, epicTab: 'session', target: 'terminal', height: 900, compact: true },
@@ -1998,7 +2017,7 @@ test("board columns include non-Kontora tickets in their status columns", () => 
 test("start actions open initialization instead of posting", async () => {
   const posted = [];
   const state = loadKontoraState({
-    fetch: async (url) => { posted.push(url); return { ok: true, json: async () => ({}) }; },
+    fetch: async (url) => { posted.push(url); return { ok: true, json: async () => ({ id: 'kon-paused', status: 'todo', kontora: true }) }; },
   });
   const opened = [];
   state.tickets = [
@@ -2632,21 +2651,47 @@ test("queueTicketUpdate applies immediately and refreshes the cached board", () 
 });
 
 test("moveTask re-buckets the cached board optimistically and reverts on failure", async () => {
-  // Default harness fetch returns ok:false, so the move request fails.
-  const state = loadKontoraState();
+  const reply = deferred();
+  const drain = deferred();
+  const state = loadKontoraState({ fetch: () => reply.promise });
+  state.lifecycleDraftBarrier = () => drain.promise;
   state.tickets = [{ id: "kon-1", title: "One", status: "todo", kontora: true }];
   state.recomputeBoard();
   assert.deepEqual(bt(state, "in_progress").map(t => t.id), ["kon-1"]);
 
   // Optimistic move reflects in the cache before the request resolves.
   const pending = state.moveTask("kon-1", "human_review");
+  assert.equal(bt(state, 'in_progress').length, 1, 'no optimistic write before successful draft drain');
+  assert.equal(state.lifecycleBusy('kon-1'), true);
+  assert.equal((await state.moveTask('kon-1', 'done')).outcome, 'busy');
+  drain.resolve(true);
+  await flushMicrotasks();
   assert.equal(bt(state, "in_progress").length, 0);
   assert.deepEqual(bt(state, "human_review").map(t => t.id), ["kon-1"]);
 
   // The failed request reverts the optimistic change in the cache too.
-  await pending;
+  reply.resolve({ ok: false, json: async () => ({ error: 'Rejected' }) });
+  assert.equal((await pending).outcome, 'failed');
+  assert.equal(state.lifecycleBusy('kon-1'), false);
   assert.deepEqual(bt(state, "in_progress").map(t => t.id), ["kon-1"]);
   assert.equal(bt(state, "human_review").length, 0);
+});
+
+test('a failed draft drain refuses a drag before transport or optimistic writes', async () => {
+  let posts = 0;
+  const state = loadKontoraState({ fetch: async () => { posts++; throw new Error('unexpected transport'); } });
+  state.tickets = [{ id: 'drain-failed', status: 'paused', kontora: true, execution_active: false }];
+  state.recomputeBoard();
+  state.flushNotifySave = async key => {
+    assert.equal(key, 'drain-failed');
+    assert.equal(state.lifecycleBusy(key), true, 'inputs are locked while draining');
+    return false;
+  };
+  assert.equal((await state.moveTask('drain-failed', 'done')).outcome, 'save-failed');
+  assert.equal(posts, 0);
+  assert.equal(state.tickets[0].status, 'paused');
+  assert.equal(state.lifecycleBusy('drain-failed'), false);
+  assert.deepEqual(bt(state, 'in_progress').map(ticket => ticket.id), ['drain-failed']);
 });
 
 test("deleteSelectedTicket drops the card from the cached board on success", async () => {
@@ -2685,36 +2730,31 @@ test("moveTicketVia re-buckets the cached board after a status change", async ()
   assert.deepEqual(bt(state, "human_review").map(t => t.id), ["kon-1"]);
 });
 
-test("detailMoves drops the bespoke Pause/Resume buttons but keeps the rest", () => {
+test("detailMoves drops covered execution buttons but keeps every destination", () => {
   const state = loadKontoraState();
-
-  // in_progress: the panel renders a tooltip-bearing Pause button itself, so the
-  // validMoves "pause" entry must not be duplicated.
-  const inProgress = state.detailMoves({ status: "in_progress" });
-  assert.equal(inProgress.some(mv => mv.endpoint === "pause"), false);
-  assert.deepEqual([...inProgress.map(mv => mv.label)], ["Send to review", "Mark done", "Cancel"]);
-
-  // paused: same for the bespoke Resume (retry) button.
-  const paused = state.detailMoves({ status: "paused" });
-  assert.equal(paused.some(mv => mv.endpoint === "retry"), false);
-  assert.deepEqual([...paused.map(mv => mv.label)], ["Mark done", "Cancel"]);
+  for (const status of ['in_progress', 'paused']) {
+    const ticket = { id: 'kon-moves', status, kontora: true };
+    state.tickets = [ticket];
+    const moves = state.detailMoves(ticket);
+    assert.equal(moves.some(mv => mv.endpoint === (status === 'in_progress' ? 'pause' : 'retry')), false);
+    assert.deepEqual([...moves.map(mv => mv.id)],
+      ['open', 'todo', 'paused', 'human_review', 'done', 'cancelled']
+        .filter(destination => destination !== status).map(destination => 'move:' + destination));
+  }
 });
 
-test("detailMoves exposes the per-status actions that only lived in the card menu", () => {
+test("detailMoves exposes semantic execution commands and destination descriptors", () => {
   const state = loadKontoraState();
-
-  // open gets Queue (run); human_review gets Approve (move->done) and Send back.
-  assert.deepEqual(
-    [...state.detailMoves({ status: "open" }).map(mv => `${mv.label}:${mv.endpoint}`)],
-    ["Queue:run", "Cancel:move"],
-  );
-
-  const review = state.detailMoves({ status: "human_review" });
-  const approve = review.find(mv => mv.label === "Approve");
-  assert.equal(approve.endpoint, "move");
-  assert.equal(approve.status, "done");
-  assert.equal(review.some(mv => mv.label === "Send back" && mv.endpoint === "retry"), true);
-
+  const ticket = { id: 'kon-moves', status: 'open', kontora: true };
+  state.tickets = [ticket];
+  assert.equal(state.detailMoves(ticket)[0].id, 'start');
+  ticket.status = 'human_review';
+  const review = state.detailMoves(ticket);
+  const approve = review.find(mv => mv.id === 'move:done');
+  assert.equal(approve.endpoint, 'move');
+  assert.equal(approve.status, 'done');
+  assert.equal(review.some(mv => mv.id === 'retry'), true);
+  assert.ok(review.every(mv => mv.ticketKey === ticket.id && mv.expected));
   assert.deepEqual([...state.detailMoves(null)], []);
 });
 
@@ -2925,6 +2965,12 @@ test("_cardHTML ships the menu button but no menu", () => {
 
 test("_cardMenuHTML encodes menu actions and the Initialize entry", () => {
   const state = loadKontoraState();
+  state.tickets = [
+    { id: 'sta-4', status: 'todo', kontora: true },
+    { id: 'sta-5', status: 'open', kontora: true },
+    { id: 'sta-6', status: 'open', kontora: false },
+    { id: 'sta-8', status: 'review', kontora: true, can_control: false },
+  ];
 
   // Kontora todo: move actions carry endpoint + target status.
   const todo = state._cardMenuHTML({ id: "sta-4", title: "T", status: "todo", kontora: true });
@@ -2940,7 +2986,7 @@ test("_cardMenuHTML encodes menu actions and the Initialize entry", () => {
   // Kontora ticket: it is not.
   assert.equal(state._cardMenuHTML({ id: "sta-5", title: "O", status: "open", kontora: true }).includes('data-act="init"'), false);
 
-  // Unknown (custom) status with no valid moves: fallback label.
+  // A canonical read-only subject has no commands even if an old card says otherwise.
   assert.match(state._cardMenuHTML({ id: "sta-8", title: "C", status: "review", kontora: true }), /No actions available/);
 });
 
@@ -3506,7 +3552,7 @@ test("a drop into a busy column rebuilds only the card that moved", async () => 
     ],
     {
       Sortable: class { constructor(el, o) { opts = o; } option() {} },
-      fetch: async () => ({ ok: true, json: async () => ({}) }),
+      fetch: async () => ({ ok: true, json: async () => ({ id: 'kon-move', title: 'Move', status: 'human_review', execution_active: false, kontora: true, created_at: '2026-05-19T09:00:00Z' }) }),
     },
   );
   state.$nextTick = () => Promise.resolve();
@@ -3545,7 +3591,7 @@ test("an update during a drag lands when the drag ends", async () => {
   );
   state.initSortable(board.els["col-in_progress"]);
   const dragged = { dataset: { dropStatus: "todo" }, closest: () => null };
-  opts.onStart({ from: dragged });
+  opts.onStart({ from: dragged, item: board.els['col-in_progress'].children[0] });
 
   // An SSE update mid-drag: the board data takes it, but the cards do not, or
   // the reconcile could pull the node out from under the cursor.
@@ -3573,7 +3619,7 @@ test("ticket updates during a drag update the model without touching card DOM", 
   );
   state.initSortable(board.els["col-in_progress"]);
   const dragged = { dataset: { dropStatus: "todo" }, closest: () => null };
-  opts.onStart({ from: dragged });
+  opts.onStart({ from: dragged, item: board.els['col-in_progress'].children[0] });
   const query = board.document.querySelectorAll;
   board.document.querySelectorAll = () => { throw new Error('drag-owned card access'); };
   state._markSelectedCard();
@@ -3773,7 +3819,7 @@ test("mobile sheets retain their dialog heading and actions without repeated tit
   assert.match(sheets, /@click="a\.run\(\)"/);
   const actions = html.slice(html.indexOf('<!-- action bar -->'), html.indexOf('<!-- schedule sheet:'));
   assert.match(actions, /@click="mobilePrimaryAction\(selectedTicket\)\.run\(\)"/);
-  assert.match(actions, /@click="mobileSecondaryAction\(selectedTicket\)\.run\(\)"/);
+  assert.match(actions, /@click="openMoveSheet\(selectedTicket\)"/);
   assert.doesNotMatch(actions, /width:[67]px;height:[67]px;border-radius:9999px|mobileActionDotColor/);
   assert.doesNotMatch(uiSource + html, /mobileActionDotColor/);
 });
@@ -4520,12 +4566,13 @@ test('secondary notes, reactions and relationships never address primary namesak
   state.secondaryTickets.push({ id: 'related', source: 'team', title: 'Source relation', status: 'open' });
   state.tickets.push({ id: 'related', title: 'Primary relation', status: 'open' });
   let opened;
-  state._paletteOpenTicket = async ticket => { opened = ticket; };
-  await state.openTicketRef({ id: 'related', title: 'Source relation', status: 'open' });
+  state.selectTicket = async ticket => { opened = ticket; };
+  await state.openTicketRef({ id: 'related', source: 'team', title: 'Source relation', status: 'open' });
   assert.equal(opened.source, 'team');
   await state.moveTicketVia(state.ticketKey(state.selectedTicket), 'run');
   assert.equal(ui.requests.filter(r => r.url.endsWith('/run')).length, 0);
   state.switchTab('notes');
+  await flushMicrotasks();
   assert.equal(state.activeTab, 'notes');
   state.noteDraft = 'Only in source';
   await state.submitNote();
@@ -4550,7 +4597,7 @@ test('secondary notes, reactions and relationships never address primary namesak
 });
 
 for (const source of ['', 'team', 'other']) {
-  test(`late schedule completion only rebinds the matching primary editor: source=${source || 'primary'}`, async () => {
+  test(`late schedule completion preserves the source-qualified description editor: source=${source || 'primary'}`, async () => {
     const ui = descriptionEditorUI('', 'same', source);
     await ui.open();
     const { state } = ui;
@@ -4558,6 +4605,7 @@ for (const source of ['', 'team', 'other']) {
     ui.respond(async (url, _opts, full) => url.endsWith('/schedule')
       ? scheduled.promise : { ok: true, json: async () => full });
     const pending = state._postSchedule({ id: 'same', status: 'open', kontora: true }, { clear: true });
+    await flushMicrotasks();
     const form = state.editForm;
     const generation = state._editorGeneration;
     scheduled.resolve({ ok: true, json: async () => ({ id: 'same', status: 'open', kontora: true, description: 'Scheduled primary body' }) });
@@ -4571,8 +4619,10 @@ for (const source of ['', 'team', 'other']) {
       assert.equal(ui.requests.at(-1).url, `/api/sources/${source}/tickets/same`);
       assert.equal(state.tickets[0].description, undefined);
     } else {
-      assert.equal(state.editForm.body, 'Scheduled primary body');
-      assert.ok(state._editorGeneration > generation);
+      assert.equal(state.selectedTicket.scheduled_at, undefined);
+      assert.equal(state.editForm, form, 'lifecycle acknowledgement cannot replace the description draft');
+      assert.equal(state.editForm.body, ui.stored().description);
+      assert.equal(state._editorGeneration, generation);
     }
   });
 }
@@ -4774,14 +4824,13 @@ for (const mobile of [false, true]) {
   }
 }
 
-test('desktop and mobile native fieldsets disable every description and settings input during Claim', () => {
-  const html = fs.readFileSync(htmlPath, 'utf8');
-  const fieldsets = [...html.matchAll(/<fieldset :disabled="editorClaimLocked\(\)"[^>]*>([\s\S]*?)<\/fieldset>/g)];
-  assert.equal(fieldsets.length, 2);
-  for (const [index, [, content]] of fieldsets.entries()) {
-    assert.match(content, /x-model="editForm.body"/);
-    assert.match(content, index ? /x-model="editForm\[field\]"/ : /x-model="editForm.pipeline"/);
-  }
+test('desktop and mobile native fieldsets disable every description and settings input during Claim and lifecycle drain', () => {
+  const html = indexMarkup();
+  const fieldsets = [...html.matchAll(/<fieldset :disabled="([^"]*editorClaimLocked\(\)[^"]*)"[^>]*>([\s\S]*?)<\/fieldset>/g)];
+  assert.equal(fieldsets.length, 4, 'one metadata and one description fieldset in each shell');
+  assert.equal(fieldsets.filter(([, , content]) => /x-model="editForm.body"/.test(content)).length, 2);
+  assert.equal(fieldsets.filter(([, , content]) => /x-model="editForm.pipeline"/.test(content)).length, 2);
+  for (const [, disabled] of fieldsets) assert.match(disabled, /lifecycleBusy\(selectedTicket\)/);
   const tooltip = 'Move into primary without starting work. Related tickets are not moved; references resolve in primary.';
   assert.equal(html.split(`selectedTicket?.refusal_reason || '${tooltip}'`).length - 1, 2);
 });
@@ -4834,7 +4883,10 @@ test('imported summaries remain visible without artifact navigation', async () =
   assert.equal(state.summaryCards()[0].summary, 'Stored summary');
   assert.equal(state.summaryCards()[0].imported, true);
   assert.equal(state.latestCompletedRun(), null);
-  assert.equal(state.outputRuns().length, 0);
+  assert.equal(state.outputRuns().length, 1);
+  assert.equal(state.outputRuns()[0].imported, true);
+  state.selectOutputRun('code#0');
+  assert.equal(state.activityHistoryRecord().summary, 'Stored summary');
   await state.fetchActivity('code', 0);
   assert.equal(state.activity, null);
 });
@@ -4916,13 +4968,13 @@ test('mobile paused-with-history description starts an editor and focuses withou
   await ui.open();
   const { state } = ui;
   assert.equal(state.mobileHasRun(state.selectedTicket), true);
-  assert.equal(state.editing, false);
+  assert.equal(state.editing, true, 'metadata editor is initialized after hydration even with history');
   assert.equal(state.mobileCanEditDescription(), true);
   const focused = [];
   state.$refs.mobileDescriptionEditor.focus = options => focused.push(vmValue(options));
   const generation = state._editorGeneration;
   assert.equal(await state.mobileBeginDescriptionEdit(), true);
-  assert.equal(state._editorGeneration, generation + 1);
+  assert.equal(state._editorGeneration, generation, 'focusing description reuses the hydrated editor');
   assert.equal(state.editing, true);
   assert.equal(state.editingBody, true);
   assert.equal(state.mobileDescriptionFocused(), true);
@@ -5490,13 +5542,32 @@ test("the edit form preserves pipelines and applies agent defaults without chang
   }
 });
 
+test('initialization refuses unresolved subjects rather than authorizing a supplied snapshot', async () => {
+  const ticket = { id: 'unresolved', status: 'open', path: '/repo', kontora: false };
+  const requests = [];
+  const state = loadKontoraState({ fetch: async (url, options) => {
+    requests.push({ url, options });
+    return { ok: true, json: async () => ticket };
+  } });
+  state.configCache = {};
+  state.$nextTick = async () => {};
+  assert.equal((await state.dispatchLifecycle(ticket, 'start')).outcome, 'refused');
+  assert.equal(requests.length, 0);
+  await state.openInitModal(ticket);
+  assert.equal(state.initModal, false);
+  assert.equal(requests.length, 1, 'preview hydration alone cannot grant canonical lifecycle ownership');
+  assert.equal(requests[0].options?.method, undefined);
+  assert.equal(state._lifecycleInitCommand, null);
+});
+
 test("the init form never fills or replaces the branch", async () => {
   for (const branch of ["", "my/custom-branch"]) {
     const state = loadKontoraState();
     state.configCache = { projects: EDIT_PROJECTS, pipelines: [], agents: [] };
     state.$nextTick = async () => {};
 
-    await state.openInitModal({ id: "kon-1", path: "~/projects/kontora", branch });
+    state.tickets = [{ id: 'kon-1', status: 'open', path: '~/projects/kontora', branch }];
+    await state.openInitModal(state.tickets[0]);
     assert.equal(state.initForm.branch, branch);
     assert.equal(state.initForm.pipeline, "implement");
 
@@ -5526,7 +5597,7 @@ test("create and init pipeline choices keep preview strings separate from reques
   ];
   for (const c of cases) {
     const sent = [];
-    const ticket = { id: 'kon-child', path: '/repos/api', parent: { id: 'kon-parent' }, epic_child: c.epicChild !== false };
+    const ticket = { id: 'kon-child', status: 'open', path: '/repos/api', parent: { id: 'kon-parent' }, epic_child: c.epicChild !== false };
     const state = loadKontoraState({ fetch: async (url, options = {}) => {
       if (!options.method) return { ok: true, json: async () => ticket };
       sent.push({ url, body: JSON.parse(options.body) });
@@ -5563,6 +5634,7 @@ test("create and init pipeline choices keep preview strings separate from reques
     assert.equal(state.createForm.pipeline, c.preview, JSON.stringify(c));
     assert.equal(state.createPipelineDefaults().pipelineSource, c.source);
     assert.equal(state.createPreviewYaml.includes('pipeline: ' + c.preview), !!c.preview);
+    state.tickets.push({ ...ticket, epic_child: false });
     await state.openInitModal({ ...ticket, epic_child: false });
     state.initForm.pipelineChoice = c.choice;
     state.onInitPipelineChange();
@@ -5611,6 +5683,7 @@ test("init refreshes child membership on relevant events without changing explic
     state.recomputeBoard = () => {};
     state.updateFavicon = () => {};
     state.connectSSE();
+    state.tickets = [{ ...fresh, epic_child: false }];
     await state.openInitModal({ ...fresh, epic_child: false });
     assert.equal(requests[0].url, '/api/tickets/kon-child');
     assert.equal(state.initForm.pipeline, 'child', 'opening uses fresh detail membership');
@@ -5687,6 +5760,7 @@ test("init ignores stale refresh responses and responses after closing", async (
   } });
   superseded.configCache = { projects: [] };
   superseded.$nextTick = async () => {};
+  superseded.tickets = [{ id: 'kon-old', path: '/repo' }, { id: 'kon-new', path: '/repo' }];
   const first = superseded.openInitModal({ id: 'kon-old', path: '/repo' });
   const second = superseded.openInitModal({ id: 'kon-new', path: '/repo' });
   openings[0].resolve({ status: 404, ok: false });
@@ -5707,6 +5781,7 @@ test("init ignores stale refresh responses and responses after closing", async (
     : Promise.resolve({ ok: true, json: async () => ticket }) });
   controlled.configCache = { projects: [{ name: 'repo', path: '/repo', pipeline: 'ordinary', epic_child_pipeline: 'child' }] };
   controlled.$nextTick = async () => {};
+  controlled.tickets = [ticket];
   await controlled.openInitModal(ticket);
   hold = true;
   const old = controlled.refreshInitContext('kon-parent');
@@ -5731,7 +5806,7 @@ test("create and init requests omit empty branches and send custom branches", as
     const state = loadKontoraState({
       fetch: async (_url, options) => {
         sent.push(JSON.parse(options.body));
-        return { ok: true, json: async () => ({}) };
+        return { ok: true, json: async () => ({ id: 'kon-1', status: 'todo', kontora: true }) };
       },
     });
     state.configCache = {};
@@ -5756,6 +5831,8 @@ test("create and init requests omit empty branches and send custom branches", as
     };
 
     await state.submitCreateTicket();
+    state.tickets = [{ id: 'kon-1', status: 'open', path: '/repos/api' }];
+    state._lifecycleInitCommand = state.lifecycleCommand('kon-1', 'initialize');
     await state.submitInitTicket();
 
     assert.equal(sent.length, 2);
@@ -5812,9 +5889,9 @@ test("edit path requests preserve pipelines, omit empty branches and send custom
 });
 
 test("index.html applies project defaults and leaves branch naming to the daemon", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
+  const html = indexMarkup();
 
-  assert.match(html, /<input type="text" x-model="editForm\.path" @change="onEditPathChange\(\)"/);
+  assert.match(html, /<input type="text" aria-label="Path" x-model="editForm\.path" @change="onEditPathChange\(\)"/);
   // The create form has no ticket ID yet, so it is the only branch field that
   // states the rule instead of naming the branch.
   assert.equal((html.match(/placeholder="daemon assigns branch when run starts"/g) || []).length, 1);
@@ -5897,20 +5974,14 @@ test("the init modal's error line reports the start it is showing and nothing el
       name: "a rejection that names no reason",
       submit: true,
       fetch: async () => ({ ok: false, json: async () => ({}) }),
-      wantInitError: "Failed to start ticket",
-      wantModal: true,
-    },
-    {
-      name: "a request that never reached the daemon",
-      submit: true,
-      fetch: async () => { throw new Error("offline"); },
-      wantInitError: "Failed to start ticket: offline",
+      wantInitError: 'init failed',
       wantModal: true,
     },
     {
       name: "a start that works closes the modal",
       submit: true,
-      fetch: async () => ({ ok: true, json: async () => ({}) }),
+      fetch: async (_url, options) => ({ ok: true, json: async () => options?.method
+        ? { ...ticket, status: 'todo', kontora: true } : ticket }),
       wantInitError: null,
       wantModal: false,
     },
@@ -5922,6 +5993,13 @@ test("the init modal's error line reports the start it is showing and nothing el
       wantInitError: null,
       wantModal: true,
     },
+    {
+      name: 'an uncertain start whose refresh also fails retains its warning',
+      submit: true,
+      fetch: async () => { throw new Error('offline'); },
+      wantInitError: 'Result uncertain; refresh before trying again: offline',
+      wantModal: true,
+    },
   ];
 
   for (const c of cases) {
@@ -5929,13 +6007,14 @@ test("the init modal's error line reports the start it is showing and nothing el
     state.configCache = { projects: EDIT_PROJECTS, pipelines: [], agents: [] };
     state.$nextTick = async () => {};
     if (c.error) state.error = c.error;
+    state.tickets = [ticket];
 
     await state.openInitModal(ticket);
     if (c.submit) await state.submitInitTicket();
     if (c.reopen) await state.openInitModal(ticket);
 
     assert.equal(state.initError, c.wantInitError, c.name);
-    assert.equal(state.error, c.error || null, c.name);
+    assert.equal(state.error, c.error || (c.reopen ? 'path is not a git repository' : c.submit ? c.wantInitError : null), c.name);
     assert.equal(state.initModal, c.wantModal, c.name);
     assert.equal(state.initSubmitting, false, c.name);
   }
@@ -6007,6 +6086,7 @@ test("the pipeline badge names a project only when the pipeline came from it", a
       projects: [...EDIT_PROJECTS, { name: 'global', path: '/repos/global' }],
       pipelines: ["implement", "commit-no-push"], agents: [], default_pipeline: 'implement',
     };
+    state.tickets = [c.ticket];
     state.$nextTick = async () => {};
 
     await state.openInitModal(c.ticket);
@@ -6080,6 +6160,7 @@ test("the init form's derived values follow the pipeline, the path and the branc
   for (const c of cases) {
     const state = loadKontoraState();
     state.configCache = { projects: EDIT_PROJECTS, pipelines: ["implement", "commit-no-push"], agents: [], pipeline_infos: infos };
+    state.tickets = [c.ticket];
     state.$nextTick = async () => {};
 
     await state.openInitModal(c.ticket);
@@ -6125,6 +6206,7 @@ test("openInitModal carries the ticket's status and parsed title into the header
     state.configCache = { projects: EDIT_PROJECTS, pipelines: [], agents: [] };
     state.$nextTick = async () => {};
 
+    state.tickets = [c.ticket];
     await state.openInitModal(c.ticket);
 
     assert.equal(state.initForm.status, c.wantStatus, c.name);
@@ -6165,6 +6247,7 @@ test("an empty branch field shows the name the daemon would assign", async () =>
     state.configCache = { projects: EDIT_PROJECTS, pipelines: [], agents: [] };
     state.$nextTick = async () => {};
 
+    state.tickets = [c.ticket];
     await state.openInitModal(c.ticket);
     if (c.retarget) {
       state.initForm.path = c.retarget;
@@ -6312,7 +6395,7 @@ test("index.html body editor grows with its content and owns its exit gestures",
 });
 
 test("index.html renders every prose block through the idempotent write", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
+  const html = indexMarkup();
 
   // x-html reassigns innerHTML on every effect run, so an SSE refresh rebuilds
   // the subtree and the scroller clamps to the top while it is empty.
@@ -6325,7 +6408,7 @@ test("index.html renders every prose block through the idempotent write", () => 
   // its body through it too; and the notes tab's own note and reply bodies
   // are markdown like every other authored block; and the epic page renders
   // both its brief and its own notes the same way in both layouts.
-  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 20);
+  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 24);
   assert.equal(html.match(/setSummaryProse\(\$el, /g).length, 2);
   assert.match(html, /card\.imported \? setProse\(\$el, card\.summary\) : setSummaryProse/);
   // Nothing in the markup writes a note as plain text any more: the rail block
@@ -9152,7 +9235,7 @@ for (const visualViewport of [false, true]) {
     assert.deepEqual(dom.document.listeners.map(l => l.name), ['keydown', 'focusin', 'focusout']);
     assert.ok(dom.document.listeners.every(l => l.options === true));
     assert.equal(dom.viewport?.listeners.length || 0, visualViewport ? 2 : 0);
-    assert.equal(watches.size, 1);
+    assert.deepEqual([...watches.keys()].sort(), ['currentView', 'selectedEpic', 'selectedTicket', 'sheet']);
     assert.equal(state.isMobile, true);
     dom.window.innerHeight = 400;
     if (dom.viewport) { dom.viewport.height = 200; dom.viewport.width = 100; }
@@ -9178,7 +9261,7 @@ for (const visualViewport of [false, true]) {
     assert.equal(dom.window.listeners.length, 0);
     assert.equal(dom.document.listeners.length, 0);
     assert.equal(dom.viewport?.listeners.length || 0, 0);
-    assert.equal(unwatched, 1);
+    assert.equal(unwatched, 4);
     assert.equal(dom.style.getPropertyValue('--mobile-vv-top'), '7px');
     assert.equal(dom.style.getPropertyPriority('--mobile-vv-top'), 'important');
     assert.equal(dom.style.getPropertyValue('--mobile-vv-height'), '');
@@ -9338,6 +9421,8 @@ test("the four picker adapters preserve their host side effects", () => {
 test("init and detail edit the stored agent override, not the resolved agent", async () => {
   const { state } = pickerState();
   state.parseTitleTag = () => ({ tag: "", rest: "Ticket" });
+  state.tickets = [{ id: 'kon-init', status: 'open', path: '/work/repo', pipeline: 'default', agent: 'claude' },
+    { id: 'kon-project', status: 'open', path: '/work/repo', pipeline: 'default', agent: 'claude' }];
 
   await state.openInitModal({
     id: "kon-init", status: "open", path: "/work/repo", pipeline: "default",
@@ -9378,6 +9463,7 @@ test("path changes preserve an explicit override equal to the old project defaul
   });
   state.parseTitleTag = () => ({ tag: "", rest: "Ticket" });
   state.saveEdit = () => {};
+  state.tickets = [{ id: 'kon-init', status: 'open', path: '/work/old', pipeline: 'default', agent: 'claude', agent_override: true }];
 
   await state.openInitModal({
     id: "kon-init", status: "open", path: "/work/old", pipeline: "default",
@@ -9816,10 +9902,10 @@ for (const failure of ['unsupported', 'missing panel', 'missing method', 'show t
 }
 
 test("the shared picker markup wires all hosts, ARIA, Popover, and fallback behavior", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
+  const html = indexMarkup();
 
   const hosts = [...html.matchAll(/x-data="\{ pickerHost: '([^']+)' \}" x-html="agentPickerControl"/g)].map((match) => match[1]);
-  assert.deepEqual(hosts.sort(), ["automations", "create", "edit", "init", "mobile-create", "settings-assistant", "settings-default"]);
+  assert.deepEqual(hosts.sort(), ["automations", "create", "edit", "edit", "init", "mobile-create", "settings-assistant", "settings-default"]);
   assert.match(uiSource, /popover="manual" role="presentation"/);
   assert.match(uiSource, /role="listbox" tabindex="-1"/);
   assert.match(uiSource, /role="option" :aria-selected="row\.selected"/);
@@ -9925,7 +10011,7 @@ test("the open ticket leads the root list with its actions and its live logs", (
   const lead = groupIn(state, "This ticket · kon-1");
   assert.equal(lead.hint, "Add a settings view");
   assert.deepEqual(rowIds(lead.items), ["drill:kon-1", "tab:kon-1:session"]);
-  assert.equal(lead.items[0].meta, "4 →");
+  assert.equal(lead.items[0].meta, "7 →");
   assert.equal(lead.items[1].meta, "live");
 });
 
@@ -10020,8 +10106,8 @@ test("drilling into a paused ticket lists its legal moves then the three tab tar
 
   assert.deepEqual(groupLabels(state), ["Actions", "Open"]);
   const actions = groupIn(state, "Actions");
-  assert.equal(actions.hint, "paused · 3 legal");
-  assert.deepEqual(rowTitles(actions.items), ["Resume", "Mark done", "Cancel"]);
+  assert.equal(actions.hint, "paused · 6 legal");
+  assert.deepEqual(rowTitles(actions.items), ['Retry stage', 'Move to Open', 'Move to Todo', 'Move to Human Review', 'Move to Done', 'Move to Cancelled']);
   assert.deepEqual(rowTitles(groupIn(state, "Open").items),
     ["Open logs", "Open summary", "Open ticket body"]);
 });
@@ -10030,7 +10116,7 @@ test("an unmanaged ticket gets Initialize before its other moves", () => {
   const state = paletteState();
   state.palettePush("gol-3");
 
-  assert.deepEqual(rowTitles(groupIn(state, "Actions").items), ["Initialize", "Queue", "Cancel"]);
+  assert.deepEqual(rowTitles(groupIn(state, "Actions").items), ['Initialize', 'Move to Todo', 'Move to Paused', 'Move to Human Review', 'Move to Done', 'Move to Cancelled']);
 });
 
 test("the palette offers no Delete anywhere", () => {
@@ -10220,29 +10306,29 @@ test("an action that is no longer legal sends nothing and says so", async () => 
   assert.equal(state.paletteOpen, false);
 });
 
-test("a legal action posts through moveTicketVia and confirms in past tense", async () => {
+test("a legal action dispatches a captured semantic descriptor and confirms success", async () => {
   const state = paletteState();
   const calls = [];
-  state.moveTicketVia = async (id, endpoint, body) => { calls.push([id, endpoint, vmValue(body)]); };
+  state.dispatchLifecycle = async (id, command) => { calls.push([id, command.id, command.expected]); return { outcome: 'success' }; };
   state.palettePush("kon-1");
 
   await state.paletteRun(state._paletteRows.find((r) => r.id === "action:kon-1:pause"), false);
 
-  assert.deepEqual(vmValue(calls), [["kon-1", "pause", null]]);
+  assert.deepEqual(vmValue(calls), [['kon-1', 'pause', state._lifecycleState(state.tickets[0])]]);
   assert.equal(state.paletteOpen, false);
   assert.equal(state.toast, "kon-1 paused");
 });
 
-test("an action carrying a target status sends it as the request body", async () => {
+test("an action carrying a target status dispatches its stable move descriptor", async () => {
   const state = paletteState();
   const calls = [];
-  state.moveTicketVia = async (id, endpoint, body) => { calls.push([id, endpoint, vmValue(body)]); };
+  state.dispatchLifecycle = async (id, command) => { calls.push([id, command.id, command.status]); return { outcome: 'success' }; };
   state.palettePush("kon-1");
 
-  await state.paletteRun(state._paletteRows.find((r) => r.id === "action:kon-1:send-to-review"), false);
+  await state.paletteRun(state._paletteRows.find((r) => r.id === 'action:kon-1:move:human_review'), false);
 
-  assert.deepEqual(vmValue(calls), [["kon-1", "move", { status: "human_review" }]]);
-  assert.equal(state.toast, "kon-1 sent to review");
+  assert.deepEqual(vmValue(calls), [['kon-1', 'move:human_review', 'human_review']]);
+  assert.equal(state.toast, 'kon-1 move to human review');
 });
 
 test("a failed action is not confirmed as done", async () => {
@@ -10256,13 +10342,32 @@ test("a failed action is not confirmed as done", async () => {
   assert.match(state.error, /pause failed/);
 });
 
+for (const outcome of ['initialized', 'confirmation', 'busy', 'obsolete', 'refused', 'save-failed', 'failed', 'uncertain']) {
+  test(`palette never confirms a lifecycle command without explicit success: ${outcome}`, async () => {
+    const state = paletteState();
+    state.palettePush('kon-1');
+    const row = state._paletteRows.find(row => row.move?.id === 'pause');
+    const calls = [];
+    state.dispatchLifecycle = async (key, command) => {
+      calls.push([key, command]);
+      return { outcome, ticketKey: key, command: command.id };
+    };
+    await state.paletteRun(row, false);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], 'kon-1');
+    assert.equal(calls[0][1], row.move, 'activation dispatches the exact captured descriptor');
+    assert.equal(state.toast, null);
+    assert.equal(state.paletteOpen, false);
+  });
+}
+
 test("starting an unmanaged ticket opens initialization and confirms nothing", async () => {
   const state = paletteState();
   let posts = 0;
   state.fetch = async () => { posts += 1; return { ok: true, json: async () => ({}) }; };
   state.palettePush("gol-3");
 
-  await state.paletteRun(state._paletteRows.find((r) => r.id === "action:gol-3:initialize"), false);
+  await state.paletteRun(state._paletteRows.find((r) => r.id === 'action:gol-3:start'), false);
 
   assert.equal(state.initModal, true);
   assert.equal(posts, 0);
@@ -10459,13 +10564,13 @@ test("a scoped query that matches nothing renders no group headers", () => {
 test("the legal-move count in the scope header does not move with the query", () => {
   const state = paletteState();
   state.palettePush("kon-2");
-  assert.equal(groupIn(state, "Actions").hint, "paused · 3 legal");
+  assert.equal(groupIn(state, "Actions").hint, "paused · 6 legal");
 
   state.paletteQuery = "cancel";
   state.onPaletteQueryChanged();
 
-  assert.equal(groupIn(state, "Actions").hint, "paused · 3 legal");
-  assert.deepEqual(rowTitles(groupIn(state, "Actions").items), ["Cancel"]);
+  assert.equal(groupIn(state, "Actions").hint, "paused · 6 legal");
+  assert.deepEqual(rowTitles(groupIn(state, "Actions").items), ["Move to Cancelled"]);
 });
 
 test("hovering a row moves the highlight to it", () => {
@@ -10528,7 +10633,7 @@ test("a row id can be referenced by aria-activedescendant, which takes no whites
   ids.push(...rowIds(state._paletteRows));
 
   assert.deepEqual(ids.filter((id) => /\s/.test(id)), []);
-  assert.equal(ids.includes("action:kon-1:send-to-review"), true);
+  assert.equal(ids.includes('action:kon-1:move:human_review'), true);
 });
 
 test("the palette dismisses on a press that starts on the scrim, not on a drag that ends there", () => {
@@ -11201,7 +11306,7 @@ test("a malformed escape in the hash does not throw", async () => {
   assert.equal(location.hash, "#/");
 });
 
-test("mobileSwitchTab drives the terminal without touching the desktop tab", () => {
+test("mobileSwitchTab drives the terminal and synchronizes the shared detail mode", () => {
   const cases = [
     {
       name: "opening the mobile terminal",
@@ -11249,7 +11354,7 @@ test("mobileSwitchTab drives the terminal without touching the desktop tab", () 
 
     state.mobileSwitchTab(c.tab);
 
-    assert.equal(state.activeTab, "ticket", `${c.name}: desktop tab must not move`);
+    assert.equal(state.activeTab, c.tab === 'terminal' ? 'session' : c.tab, `${c.name}: shared mode follows phone selection`);
     c.check(state, calls);
   }
 });
@@ -11557,7 +11662,7 @@ for (const [history, tracked, status, expected] of [
 
 test('mobile progress strip is noninteractive and hidden with secondary metadata', () => {
   const html = fs.readFileSync(htmlPath, 'utf8');
-  const mobile = html.slice(html.indexOf('<div x-show="isMobile && selectedTicket'));
+  const mobile = html.slice(html.indexOf('class="mobile-detail detail-enter"'));
   const strip = mobile.split('aria-label="Pipeline stage progress"')[1].split('</div>\n          </template>')[0];
   assert.match(strip, /x-for="seg in stageRibbon\(\)"/);
   assert.doesNotMatch(strip, /<button|@click/);
@@ -12250,7 +12355,7 @@ test("phone activity fetches its target, polls, and re-arms the cached live tran
   h.state.mobileSwitchTab('activity');
   await flushMicrotasks();
   assert.equal(closed, 1);
-  assert.equal(h.state.activeTab, 'ticket');
+  assert.equal(h.state.activeTab, 'activity');
   assert.equal(h.state.outputContainerID('activity'), 'activity-scroll');
   assert.match(h.calls[0].url, /\/api\/tickets\/kon-1\/activity\?stage=commit&run=0$/);
   assert.equal(h.pending(), 1);
@@ -12299,7 +12404,7 @@ for (const hiddenTab of ['ticket', 'terminal']) for (const live of [false, true]
         assert.deepEqual(h.state.tapeEvents().map(e => e.text), ['line 1']);
         assert.equal(h.pending(), 1);
       }
-      assert.equal(h.state.activeTab, 'ticket');
+      assert.equal(h.state.activeTab, 'activity');
       h.state.mobileSwitchTab('ticket');
     });
   }
@@ -12324,7 +12429,7 @@ for (const initialTab of ['activity', 'terminal']) {
     await flushMicrotasks();
 
     assert.equal(h.state.detailTab, 'activity');
-    assert.equal(h.state.activeTab, 'ticket');
+    assert.equal(h.state.activeTab, 'activity');
     assert.deepEqual(h.state.tapeEvents().map(e => e.text), ['line 0', 'line 1']);
     assert.equal(h.state.activity.live, false);
     assert.equal(h.calls.length, 2, 'completion reads the final transcript once');
@@ -12339,7 +12444,7 @@ test("phone activity on a finished ticket opens the last completed run without p
   await flushMicrotasks();
   assert.match(h.calls[0].url, /activity\?stage=review&run=1$/);
   assert.equal(h.state.activity.content, 'finished');
-  assert.equal(h.state.activeTab, 'summary');
+  assert.equal(h.state.activeTab, 'activity');
   assert.equal(h.pending(), 0);
 });
 
@@ -12365,9 +12470,9 @@ test("activity survives a breakpoint round trip and refreshes in both layouts", 
   assert.deepEqual(asked, [['commit', 0], ['commit', 0]]);
 });
 
-test("phone activity markup has a follow toggle, shared scroller, retry and no run picker", () => {
+test('phone Output retains activity controls, shared scroller, selectors and four primary panels', () => {
   const html = fs.readFileSync(htmlPath, 'utf8');
-  const pane = html.slice(html.indexOf('<div x-show="!isSecondary(selectedTicket) && detailTab===\'activity\'"')).split('<!-- logs (stage history) -->')[0];
+  const pane = html.slice(html.indexOf('<div x-show="!isSecondary(selectedTicket) && !importedRun(activityStage, activityRun) && detailTab===\'activity\'"')).split('<!-- logs (stage history) -->')[0];
   assert.match(pane, /detailTab==='activity'/);
   assert.match(pane, /id="activity-scroll"/);
   assert.match(pane, /@click="toggleLogFollow\(\)" :aria-pressed="logFollow"/);
@@ -12377,19 +12482,20 @@ test("phone activity markup has a follow toggle, shared scroller, retry and no r
   assert.doesNotMatch(pane, /<select|selectOutputRun|openActivity/);
   assert.equal((html.match(/id="activity-scroll"/g) || []).length, 2);
 
-  const tabs = html.split('<template x-if="!isSecondary(selectedTicket) && mobileHasRun(selectedTicket)">')[1].split('</template>')[0];
-  assert.match(tabs, /class="mobile-detail-tabs flex overflow-x-auto"/);
+  const tabs = html.split('<nav class="mobile-detail-tabs flex" aria-label="Ticket panels">')[1].split('</nav>')[0];
   assert.equal((tabs.match(/class="mobile-tab"/g) || []).length, 4);
-  assert.match(tabs, /@click="mobileSwitchTab\('activity'\)" :aria-pressed="detailTab === 'activity'"/);
-  assert.match(tabs, /@click="mobileSwitchTab\(mobileFirstTab\(\)\)" :aria-pressed="detailTab === mobileFirstTab\(\)"[\s\S]*?x-text="mobileFirstTabLabel\(\)"/);
-  for (const [tab, label] of [['logs', 'Logs'], ['activity', 'Activity'], ['ticket', 'Ticket']]) {
+  for (const [tab, label] of [['ticket', 'Ticket'], ['notes', 'Notes'], ['output', 'Output'], ['changes', 'Changes']]) {
     const button = [...tabs.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)]
-      .find(([markup]) => markup.includes(`@click="mobileSwitchTab('${tab}')"`));
-    assert.ok(button, tab + ' remains reachable');
+      .find(([markup]) => markup.includes(`@click="mobileSwitchPanel('${tab}')"`));
+    assert.ok(button, tab + ' remains reachable regardless of run history');
     assert.equal(button[1].trim(), label);
-    assert.ok(button[0].includes(`:aria-pressed="detailTab === '${tab}'"`));
-    if (tab === 'logs') assert.match(button[0], /x-show="executionActive\(selectedTicket\)"/);
+    assert.ok(button[0].includes(`:aria-pressed="mobilePanel() === '${tab}'"`));
+    assert.doesNotMatch(button[0], /x-show/);
   }
+  const toolbar = html.split('class="mobile-output-toolbar detail-shared"')[1].split('<!-- terminal')[0];
+  assert.match(toolbar, /@change="selectOutputRun\(\$event.target.value\)"/);
+  assert.match(toolbar, /@change="mobileSwitchTab\(\$event.target.value\)"/);
+  for (const view of ['terminal', 'activity', 'logs']) assert.ok(toolbar.includes(`value="${view}"`), view + ' remains reachable within Output');
   assert.doesNotMatch(tabs, /text-transform:uppercase|letter-spacing:|JetBrains Mono/);
 });
 
@@ -12918,8 +13024,8 @@ test("the chain lookups find the holder, the goal and the direct dependents", ()
 
 test("the resume pill only offers a move the daemon would take", () => {
   const cases = [
-    { name: "paused holder resumes", status: "paused", want: { id: "pca-qv0y", endpoint: "retry", label: "resume" } },
-    { name: "open holder queues", status: "open", want: { id: "pca-qv0y", endpoint: "run", label: "queue" } },
+    { name: "paused holder resumes", status: "paused", want: { id: "pca-qv0y", endpoint: "retry", label: "retry stage" } },
+    { name: "open holder queues", status: "open", want: { id: "pca-qv0y", endpoint: "run", label: "queue ticket" } },
     { name: "a running holder needs no push", status: "in_progress", want: null },
     { name: "a queued holder needs no push", status: "todo", want: null },
     { name: "a holder in review is not the pill's business", status: "human_review", want: null },
@@ -12928,7 +13034,9 @@ test("the resume pill only offers a move the daemon would take", () => {
 
   for (const c of cases) {
     const chain = { ...CHAIN_PAYLOAD, nodes: CHAIN_PAYLOAD.nodes.map((n) => (n.holds_chain ? { ...n, status: c.status, source: c.source } : n)) };
-    assert.deepEqual(vmValue(chainState(chain).chainResumeMove()), c.want, c.name);
+    const state = chainState(chain);
+    state.tickets.push(...chain.nodes.map(n => ({ ...n, kontora: true })));
+    assert.deepEqual(vmValue(state.chainResumeMove()), c.want, c.name);
   }
 
   // No holder, and a holder with no ticket file, both offer nothing.
@@ -13214,7 +13322,10 @@ test("a relation opens through the board entry when the board has one", async ()
   const boardEntry = { id: "kon-wait", title: "Waiting on this", status: "open", pipeline: "default" };
   state.tickets = [boardEntry];
   let opened;
-  state._paletteOpenTicket = (t) => { opened = t; };
+  state.selectTicket = async t => { opened = t; };
+  state.openMobileTicket = state.selectTicket;
+  state.archiveOpenRow = async t => { opened = t; };
+  state.gotoView = async view => { state.currentView = view; };
 
   // The board entry is the object the card list holds, so the panel and the
   // selected card agree.
@@ -13224,12 +13335,13 @@ test("a relation opens through the board entry when the board has one", async ()
   // A ticket the board hides is opened from the ref, and the detail fetch fills
   // the rest in.
   await state.openTicketRef({ id: "kon-blk1", title: "Archived blocker", status: "archived" });
-  assert.deepEqual({ ...opened }, { id: "kon-blk1", title: "Archived blocker", status: "archived" });
+  assert.deepEqual({ ...opened }, { id: 'kon-blk1' }, 'archive owns hydration of the historical target');
 
   const external = { id: "kon-wait", source: "other-folder", title: "Completed elsewhere", status: "done" };
   state.secondaryTickets = [external];
   await state.openTicketRef(external);
   assert.equal(opened, external);
+  state.secondaryTickets.push({ id: 'hidden-external', source: 'other-folder', title: 'Archived elsewhere', status: 'archived' });
   await state.openTicketRef({ id: "hidden-external", source: "other-folder", title: "Archived elsewhere", status: "archived" });
   assert.deepEqual({ ...opened }, { id: "hidden-external", source: "other-folder", title: "Archived elsewhere", status: "archived" });
 
@@ -13239,97 +13351,66 @@ test("a relation opens through the board entry when the board has one", async ()
   assert.equal(opened, null);
 });
 
-test("index.html renders the relation rows inside the frontmatter grid", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
-
-  // One row per relation, spanning both grid columns so the label stays on the
-  // rail's 58px column.
-  assert.match(html, /x-for="row in relationRows\(\)" :key="row\.key"/);
-  assert.match(html, /class="col-span-2 grid grid-cols-\[58px_1fr\]/);
-  // The chip carries the same hover card the summary chips use, and a click
-  // opens the ticket it names.
-  assert.match(html, /:class="relationChipClass\(ref\)"/);
-  assert.match(html, /:data-tip-e="ticketTip\(ref\)\.title"/);
-  assert.match(html, /:data-tip-e-tag="ticketTip\(ref\)\.tag"/);
-  assert.match(html, /:data-tip-e-tag-color="ticketTip\(ref\)\.tagColor"/);
-  assert.match(html, /@click="openTicketRef\(ref\)"/);
-  assert.match(html, /@click="relExpanded\[row\.key\] = true"/);
-  // Notes moved to their own tab: the rail carries relations and details only.
-  assert.equal(html.includes("Notes: read back from the body"), false);
-  // A gone relation is dashed and not clickable.
-  assert.match(html, /\.ent-ticket-gone \{ border-style: dashed;/);
+test('shared relationships render complete, readable references without relying on hover', () => {
+  const html = indexMarkup();
+  const relationships = kontoraDetailMarkup().detailRelationshipsMarkup;
+  assert.equal((html.match(/data-detail-relationships/g) || []).length, 2, 'same relationship surface in both shells');
+  assert.match(relationships, /aria-label="Relationships"/);
+  assert.match(relationships, /x-for="row in relationRows\(\)" :key="row.key"/);
+  assert.match(relationships, /parent: 'Parent', deps: 'Dependencies', blocks: 'Dependents', links: 'Related tickets'/);
+  assert.match(relationships, /x-for="ref in row.refs" :key="ref.id"/);
+  assert.match(relationships, /x-text="ref.title \|\| ref.id"/);
+  assert.match(relationships, /x-text="ref.id"/);
+  assert.match(relationships, /:class="relationHueClass\(ref\)"/);
+  assert.match(relationships, /Missing reference.*paletteStatusLabel\(ref.status\)/);
+  assert.match(relationships, /:disabled="!relationKnown\(ref\) \|\| !!ref.missing" @click="openTicketRef\(ref\)"/);
+  assert.doesNotMatch(relationships, /relationRefs\(row\)|data-tip-e|noteDraft/);
 });
 
-test("index.html renders the parent crumb, the relations strip and the sub-ticket tree", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
+test('both detail shells retain the parent crumb, readable chain and expandable children', () => {
+  const html = indexMarkup();
 
   // The crumb sits between board and the open id, and only when there is a
   // parent to sit there.
   assert.match(html, /<template x-if="selectedTicket\?\.parent">/);
   assert.match(html, /@click="openTicketRef\(selectedTicket\.parent\)"/);
   assert.match(html, /:class="relationDotClass\(selectedTicket\.parent\)"/);
-  // All five, because setupTip mirrors them on every hover and an omitted one
-  // leaks the previous chip's tag or hue.
-  for (const attr of ["", "-tag", "-tag-color", "-body", "-hint"]) {
+  // The breadcrumb keeps its tooltip; the shared lists render identity inline.
+  for (const attr of ['', '-tag', '-tag-color', '-body', '-hint']) {
     assert.match(html, new RegExp(`:data-tip-e${attr}="ticketTip\\(selectedTicket\\.parent\\)\\.`));
-    assert.match(html, new RegExp(`:data-tip-e${attr}="ticketTip\\(c\\)\\.`));
   }
-
-
-  // The ladder replaces the strip: it is drawn for a chain with something to
-  // say and for a cycle, and not at all for a lone ticket.
-  assert.match(html, /<template x-if="chain && \(chainVerdict\(\) === 'cycle' \|\| chainSummary\(\)\.total > 1\)">/);
-  assert.match(html, /x-for="row in chainRows\(\)" :key="row\.id"/);
-  assert.match(html, /@click="openTicketRef\(row\)"/);
-  assert.match(html, /@click="chainCollapsed = !chainCollapsed"/);
-  // The staircase, the borrowed 26px gutter, and the stem stopping at the
-  // elbow on the last row of a run.
-  assert.match(html, /:style="'width:' \+ row\.indent \+ 'px'"/);
-  assert.match(html, /<div class="w-\[26px\] shrink-0 relative">/);
-  assert.match(html, /:class="row\.last \? 'h-\[20px\]' : 'bottom-0'"/);
-  // The meta cell is fixed at 178px and must not shrink: it holds the longest
-  // meta plus the resume pill.
-  assert.match(html, /grid-cols-\[1fr_178px_94px_96px\]/);
-  // The pill is re-derived at click time rather than read off the rendered row.
-  assert.match(html, /x-show="ticketCanControl\(selectedTicket\) && row\.holds_chain && chainResumeMove\(\)"/);
-  assert.match(html, /@click\.stop="resumeChainHolder\(\)"/);
-  // The row class is derived, so a row for a gone ticket is not painted as a
-  // link it cannot be.
-  assert.match(html, /:class="chainRowClass\(row\)"/);
-  // A chain that failed to load says so, in the header when the old one is
-  // still on screen and on its own when there is nothing to draw.
-  assert.match(html, /<template x-if="!chain && chainError">/);
-  assert.match(html, /x-show="chainError" class="font-mono text-\[10\.5px\] text-warn shrink-0"/);
-  // A cycle draws the banner instead of the ladder.
-  assert.match(html, /<template x-if="chainVerdict\(\) === 'cycle'">/);
-  // Every row carries all five, or the hover card leaks the previous one's hue.
-  for (const attr of ["", "-tag", "-tag-color", "-body", "-hint"]) {
-    assert.match(html, new RegExp(`:data-tip-e${attr}="ticketTip\\(row\\)\\.`));
-  }
-  // The rail's three derived rows sit under id, and its relation rows are left
-  // as they were.
-  assert.match(html, /<template x-if="chainSummary\(\)\.total > 1 && chainSummary\(\)\.place">/);
-  assert.match(html, /<span class="text-surface-600">chain<\/span>/);
-  // Only an upstream holder is blocking: a downstream one is waiting on this
-  // ticket, and naming it "blocked by" would point the row the wrong way.
-  assert.match(html, /<template x-if="chainHolder\(\) && chainHolder\(\)\.direction === 'upstream'">/);
-  assert.match(html, /<span class="text-surface-600">blocked by<\/span>/);
-  assert.match(html, /<span class="text-surface-600">unblocks<\/span>/);
-  assert.match(html, /x-for="row in relationRows\(\)" :key="row\.key"/);
-
-  // The tree: no children, no block, so the body does not shift.
-  assert.match(html, /<template x-if="\(selectedTicket\?\.children \|\| \[\]\)\.length > 0">/);
-  assert.match(html, /x-for="c in childRows\(\)" :key="c\.id"/);
-  assert.match(html, /@click="openTicketRef\(c\)"/);
-  assert.match(html, /x-text="childRollup\(\)\.done \+ ' of ' \+ childRollup\(\)\.total"/);
-  assert.match(html, /@click="childrenCollapsed = !childrenCollapsed"/);
-  assert.match(html, /@click="childrenExpanded = true"/);
-  // The stem stops at the elbow on the last drawn row.
-  assert.match(html, /:class="c\.last \? 'h-\[20px\]' : 'bottom-0'"/);
+  const relationships = kontoraDetailMarkup().detailRelationshipsMarkup;
+  assert.match(relationships, /x-show="chainError" role="status"/);
+  assert.match(relationships, /x-text="chainError"/);
+  assert.match(relationships, /<template x-if="chainVerdict\(\) === 'cycle'">/);
+  assert.match(relationships, /role="alert"[\s\S]*Dependency cycle[\s\S]*chain\?\.cycle/);
+  assert.match(relationships, /<template x-if="chainHolder\(\) && chainHolder\(\).direction === 'upstream'">/);
+  assert.match(relationships, /<strong>Blocked by<\/strong>/);
+  assert.match(relationships, /@click="openTicketRef\(chainHolder\(\)\)"/);
+  assert.match(relationships, /x-show="ticketCanControl\(selectedTicket\) && chainResumeMove\(\)"/);
+  assert.match(relationships, /:disabled="lifecycleBusy\(chainHolder\(\)\)" @click="resumeChainHolder\(\)"/);
+  assert.match(relationships, /chain && chainVerdict\(\) !== 'cycle' && chainSummary\(\).total > 1/);
+  assert.match(relationships, /<summary><span>Dependency chain<\/span>/);
+  assert.match(relationships, /chainSummary\(\).place, chainSummary\(\).state, chainSummary\(\).releases/);
+  assert.match(relationships, /x-for="row in chainRows\(\)" :key="row.id"/);
+  assert.match(relationships, /:disabled="row.is_self \|\| row.missing \|\| !relationKnown\(row\)" @click="openTicketRef\(row\)"/);
+  for (const field of ['title', 'id', 'status', 'holds_chain', 'meta']) assert.ok(relationships.includes('row.' + field), field + ' is readable without hover');
+  assert.match(relationships, /chainSummary\(\).total - \(chain.nodes \|\| \[\]\).length/);
+  // Children retain progress, stage, timing, missing-reference protection and expansion.
+  assert.match(relationships, /<template x-if="\(selectedTicket\?\.children \|\| \[\]\).length">/);
+  assert.match(relationships, /x-for="c in childRows\(\)" :key="c.id"/);
+  assert.match(relationships, /:disabled="!relationKnown\(c\) \|\| !!c.missing" @click="openTicketRef\(c\)"/);
+  assert.match(relationships, /x-text="c.title \|\| c.id"/);
+  assert.match(relationships, /x-text="c.id"/);
+  assert.match(relationships, /paletteStatusLabel\(c.status\)/);
+  assert.match(relationships, /childRollup\(\).done \+ ' of ' \+ childRollup\(\).total/);
+  assert.match(relationships, /childStageLine\(c\)/);
+  assert.match(relationships, /childElapsed\(c\)/);
+  assert.match(relationships, /x-show="childrenHidden\(\) > 0" @click="childrenExpanded = true"/);
 });
 
 test("index.html renders the ribbon, transcript and rail the page needs", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
+  const html = indexMarkup();
 
   // flex-grow carries the duration; the floor and basis stay in Tailwind.
   assert.match(html, /:style="'flex-grow:' \+ seg\.seconds"/);
@@ -13339,7 +13420,7 @@ test("index.html renders the ribbon, transcript and rail the page needs", () => 
   assert.match(html, /class="flex flex-col gap-\[9px\] h-\[152px\] shrink-0"/);
   // Desktop ribbons and History lists use costLabel; mobile labels also show pricing coverage.
   assert.equal((html.match(/costLabel\(seg\.cost\)/g) || []).length, 4);
-  assert.equal((html.match(/costLabel\(ticketRunCost\(hi\)\)/g) || []).length, 4);
+  assert.equal((html.match(/costLabel\(ticketRunCost\(hi\)\)/g) || []).length, 5, 'primary desktop, primary phone, imported phone and archive expose history cost coverage');
   assert.match(html, /x-text="mobileTicketCostLabel\(\)"/);
   assert.match(html, /aria-label="Stages and cost estimates"/);
   assert.match(html, /x-text="mobileStageLabel\(seg\)"/);
@@ -13427,15 +13508,15 @@ test("author kind picks the avatar hue, and only your own notes are yours", () =
 
 test("opening a reply box closes the edit box, and both clear with the ticket", () => {
   const state = pageState(NOTES_TICKET, { configCache: { author: "alexander" } });
-  const note = NOTES_TICKET.notes[0];
+  const note = NOTES_TICKET.notes[1];
 
   state.noteOpenEdit(note);
-  assert.equal(state.noteEditOn, "q88f");
-  assert.equal(state.noteEditDraft, "done");
+  assert.equal(state.noteEditOn, "a1b2");
+  assert.equal(state.noteEditDraft, "ack");
 
   state.noteOpenReply(note);
   assert.equal(state.noteEditOn, null, "one box at a time");
-  assert.equal(state.noteReplyOn, "q88f");
+  assert.equal(state.noteReplyOn, "a1b2");
 
   state.noteReplyDraft = "half typed";
   state.noteResetDrafts();
@@ -13458,7 +13539,7 @@ test("a note mutation refreshes the snapshot without replacing the editor draft"
 });
 
 test("the notes tab is always present and its composer is never gated on status", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
+  const html = indexMarkup();
   const tabBar = html.slice(html.indexOf("<!-- Tab bar -->"), html.indexOf("<!-- Content column -->"));
 
   // No x-show: an open ticket with no runs can still carry a note.
@@ -13466,17 +13547,21 @@ test("the notes tab is always present and its composer is never gated on status"
 
   const pane = html.slice(html.indexOf("<!-- Notes: the ticket's conversation"), html.indexOf("<!-- Right rail."));
   // Header, scrolling feed, pinned composer.
-  assert.match(pane, /class="h-full flex flex-col bg-surface-frame"/);
+  assert.match(pane, /class="detail-notes detail-shared h-full min-h-0 flex flex-col bg-surface-frame"/);
   assert.equal((pane.match(/max-w-\[820px\] mx-auto/g) || []).length, 3);
-  assert.match(pane, /class="flex-1 min-h-0 overflow-y-auto px-6/);
-  // The feed pins to the newest comment the way the activity scroller does.
-  assert.match(pane, /\$el\.scrollTop = \$el\.scrollHeight/);
-  // Every textarea swallows Escape, or the global chain closes the ticket page.
-  assert.equal((pane.match(/<textarea/g) || []).length, 3);
-  assert.equal((pane.match(/@keydown\.escape\.stop/g) || []).length, 3);
-  // ⌘↵ submits; the composer never carries a status condition.
-  assert.equal((pane.match(/\$event\.metaKey \|\| \$event\.ctrlKey/g) || []).length, 3);
+  assert.match(pane, /class="detail-notes-scroll flex-1 min-h-0 overflow-y-auto px-6/);
+  // Every textarea, including edit-reply, swallows Escape rather than closing
+  // the ticket. Each retains the keyboard submit shortcut and an owned draft.
+  assert.equal((pane.match(/<textarea/g) || []).length, 4);
+  assert.equal((pane.match(/@keydown\.escape\.stop/g) || []).length, 4);
+  assert.equal((pane.match(/\$event\.metaKey \|\| \$event\.ctrlKey/g) || []).length, 4);
+  for (const label of ['Edit note', 'Edit reply', 'Reply', 'Add a note']) assert.ok(pane.includes(`aria-label="${label}"`), label);
   assert.equal(pane.includes("in_progress"), false);
+});
+
+test('shared Notes retains newest-comment scrolling after markup extraction', () => {
+  const pane = kontoraDetailMarkup().detailNotesMarkup;
+  assert.match(pane, /\$el\.scrollTop = \$el\.scrollHeight/);
 });
 
 test("deleting a note is confirmed in a modal that leads the ticket page on Escape", () => {
@@ -13564,8 +13649,8 @@ test("semantic outcomes stay separate from runner exits in summary and lifecycle
       assert.equal(end.meta, "runner exit " + exit + " · reason text · invocation inv-1 · 40s");
     }
   }
-  const html = fs.readFileSync(htmlPath, "utf8");
-  assert.equal((html.match(/x-text="runOutcomeLabel\(h\)"/g) || []).length, 2, "live and archive history both show semantics");
+  const html = indexMarkup();
+  assert.equal((html.match(/x-text="runOutcomeLabel\(h\)"/g) || []).length, 4, 'desktop, primary phone, imported phone and archive history all show semantics');
   assert.doesNotMatch(html, /h\.exit_code === 0 \? '✓'/);
 });
 
@@ -14282,11 +14367,11 @@ test("a number stays prose without a github origin behind it", () => {
   }
 });
 
-test("a ticket chip opens the ticket it names and keeps the prose around it", () => {
+test("a ticket chip opens the ticket it names and keeps the prose around it", async () => {
   const dom = fakeProseDom();
   const state = entityState(dom);
   let opened = null;
-  state._paletteOpenTicket = (t) => { opened = t; };
+  state.selectTicket = async t => { opened = t; };
   const text = "no-push, then kon-9xz1, then test-lisp.";
   const root = dom.build(["div", text]);
 
@@ -14305,6 +14390,7 @@ test("a ticket chip opens the ticket it names and keeps the prose around it", ()
   assert.equal(chip.getAttribute("data-tip-e-tag-color"), "none");
 
   chip.events.click[0]();
+  await flushMicrotasks();
   assert.equal(opened.id, "kon-9xz1");
   // The two declined runs sit either side of the chip, so a splice that drops
   // them would show up here.
@@ -15192,22 +15278,17 @@ test("stage actions refuse active execution and review without making requests",
   }
 });
 
-test("the stage row is gated on the predicate and on the pipeline, not on the stage", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
-
-  assert.equal(html.includes("['paused', 'open'].includes"), false, "the hardcoded status list is gone");
-  // The row now hangs off the pipeline alone, so a ticket that gained one
-  // through the detail form still gets somewhere to set its stage.
-  assert.ok(html.includes(`<template x-if="selectedTicket?.stages?.length > 1"><span class="text-surface-600">stage</span></template>`));
-  assert.ok(html.includes(`<template x-if="ticketCanControl(selectedTicket) && canSetStage() && setStageOpen">`));
-  assert.ok(html.includes(`@click="if (ticketCanControl(selectedTicket) && canSetStage()) setStageOpen = true"`));
-  assert.ok(html.includes(`x-text="displayStage()"`));
-  // The pre-selected option is the stage on the file, never the display fallback:
-  // a pick that matches the selection fires no change event.
-  assert.ok(html.includes(`:selected="s === selectedTicket?.stage"`));
-  assert.equal(html.includes(`:selected="s === displayStage()"`), false);
-  assert.ok(html.includes(`<template x-if="!selectedTicket?.stage">`));
-  assert.ok(html.includes(`<option value="" selected>set stage…</option>`));
+test("the shared stage field gates writes on permissions and editability, not on the current stage", () => {
+  const metadata = kontoraDetailMarkup().detailMetadataMarkup;
+  assert.doesNotMatch(metadata, /\['paused', 'open'\]\.includes/);
+  assert.match(metadata, /<template x-if="ticketCanControl\(selectedTicket\) && canSetStage\(\)">/);
+  assert.match(metadata, /aria-label="Stage" :value="selectedTicket\?\.stage \|\| ''" @change="setStage\(\$event.target.value\)"/);
+  assert.match(metadata, /x-for="s in selectedTicket\?\.stages \|\| \[\]"/);
+  assert.match(metadata, /x-text="displayStage\(\) \|\| '—'"/);
+  assert.match(metadata, /:selected="s === selectedTicket\?\.stage"/);
+  assert.doesNotMatch(metadata, /:selected="s === displayStage\(\)"/);
+  assert.match(metadata, /<option value="" :selected="!selectedTicket\?\.stage">Set stage…<\/option>/);
+  assert.match(metadata, /Pause and wait for the agent to stop before changing stages/);
 });
 
 test("an empty stage shows the pipeline's first stage without writing it", async () => {
@@ -15234,7 +15315,7 @@ test("an empty stage shows the pipeline's first stage without writing it", async
   assert.equal(state.displayStage(), "code");
 });
 
-test("the detail panel's re-run button says restart on a finished ticket", () => {
+test("the detail panel's re-run button uses semantic retry labels on parked and finished tickets", () => {
   const state = loadKontoraState();
   const cases = [
     { status: "paused", idle: "retry", busy: "retrying..." },
@@ -15244,18 +15325,20 @@ test("the detail panel's re-run button says restart on a finished ticket", () =>
 
   for (const c of cases) {
     state.selectedTicket = { id: "kon-a", status: c.status };
-    state.actionLoading = null;
+    state.lifecyclePending = {};
     assert.equal(state.retryLabel(), c.idle, c.status);
-    state.actionLoading = "retry";
+    state.lifecyclePending['kon-a'] = 'retry';
     assert.equal(state.retryLabel(), c.busy, c.status);
+    assert.equal(state.lifecycleCommand(state.selectedTicket, 'retry').label,
+      c.status === 'paused' ? 'Retry stage' : 'Run again', c.status);
   }
 
   const html = fs.readFileSync(htmlPath, "utf8");
   // One button, one endpoint, three statuses, and only on a ticket the daemon owns:
   // Service.Retry rejects a foreign one before it looks at the status.
   assert.ok(html.includes(`<template x-if="ticketCanControl(selectedTicket) && ['paused', 'done', 'cancelled'].includes(selectedTicket?.status) && selectedTicket?.kontora && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">`));
-  assert.ok(html.includes(`<button @click="action('retry')" :disabled="!!actionLoading"`));
-  assert.ok(html.includes(`<span x-text="retryLabel()"></span>`));
+  assert.ok(html.includes(`<button @click="action('retry')" :disabled="!!actionLoading || lifecycleBusy(selectedTicket)"`));
+  assert.ok(html.includes(`<span x-text="actionLoading === 'retry' ? 'Queuing…' : lifecycleCommand(selectedTicket, 'retry')?.label"></span>`));
 });
 
 test("the detail header renders one retry button, not the bespoke one plus Reopen", () => {
@@ -15264,13 +15347,17 @@ test("the detail header renders one retry button, not the bespoke one plus Reope
   // The bespoke restart button covers the endpoint for every parked status, so
   // the validMoves list must not put a second /retry button next to it.
   for (const status of ["paused", "done", "cancelled"]) {
-    const moves = state.detailMoves({ status: status, kontora: true });
+    state.tickets = [{ id: 'kon-covered', status, kontora: true }];
+    const moves = state.detailMoves(state.tickets[0]);
     assert.equal(moves.some(mv => mv.endpoint === "retry"), false, status);
   }
 
   // Everything else on those statuses stays.
-  assert.deepEqual([...state.detailMoves({ status: "done", kontora: true }).map(mv => mv.label)], ["Send to review"]);
-  assert.deepEqual([...state.detailMoves({ status: "cancelled", kontora: true }).map(mv => mv.label)], []);
+  for (const status of ['done', 'cancelled']) {
+    state.tickets = [{ id: 'kon-covered', status, kontora: true }];
+    assert.deepEqual([...state.detailMoves(state.tickets[0]).map(mv => mv.id)],
+      ['open', 'todo', 'human_review', status === 'done' ? 'cancelled' : 'done'].map(destination => 'move:' + destination));
+  }
 });
 
 // ─── Waiting for input ──────────────────────────────────────────────────────
@@ -17425,9 +17512,9 @@ test("clear and run-now are offered only once a schedule exists", async () => {
   // the same save — so it is asserted at that call, as the other action rows are.
   const runner = scheduleScopeState({ scheduled_at: SCHED_ISO });
   const calls = [];
-  runner.state.moveTicketVia = async (id, endpoint) => { calls.push([id, endpoint]); };
+  runner.state.dispatchLifecycle = async (id, command) => { calls.push([id, command.id]); return { outcome: 'success' }; };
   await runner.state.paletteRun(runner.state._paletteRows.find(r => r.id === "schedrun:kon-1"), false);
-  assert.deepEqual(calls.join(), "kon-1,run");
+  assert.deepEqual(calls.join(), 'kon-1,start');
 });
 
 test("the schedule scope pops out when the ticket stops being schedulable", () => {
@@ -18660,7 +18747,8 @@ for (const derived of ['open', 'in_progress', 'done', 'cancelled']) {
     assert.equal(state.initForm.pipeline, '', 'project defaults cannot add a child pipeline');
     state.initForm.branch = 'epic/new';
     await state.submitInitTicket();
-    assert.equal(requests.length, 1);
+    assert.deepEqual(requests.map(request => request.url), ['/api/tickets/' + epic.id + '/init', '/api/tickets/' + epic.id]);
+    assert.equal(requests.filter(request => request.method === 'POST').length, 1, 'only one supervisor mutation; the extra read refreshes init context');
     assert.equal(requests[0].url, '/api/tickets/' + epic.id + '/init');
     assert.deepEqual(JSON.parse(requests[0].body), {
       path: epic.path, agent: 'claude', branch: 'epic/new', status: 'todo', notify: [], notify_channels: [],
@@ -19100,8 +19188,9 @@ test('passive execution links offer activation without attaching a nonexistent s
   assert.equal(state.selectedTicket.id, epic.id);
   assert.equal(state.detailTab, 'ticket');
   assert.equal(sockets.length, 0);
-  assert.equal(state.mobilePrimaryAction(state.selectedTicket).label, 'start epic');
-  assert.deepEqual(vmValue(state.detailMoves(state.selectedTicket)), [{ label: 'Start epic', endpoint: 'run' }]);
+  assert.equal(state.mobilePrimaryAction(state.selectedTicket).label, 'Start epic');
+  assert.deepEqual(vmValue(state.detailMoves(state.selectedTicket)), [{ label: 'Start epic', endpoint: 'run',
+    id: 'start', kind: 'start', ticketKey: epic.id, expected: state._lifecycleState(state.lifecycleResolve(epic.id)) }]);
   await state.moveTicketVia(epic.id, 'run', null);
   assert.equal(state.initForm.ticketId, epic.id);
   state.closeDetail();
@@ -19327,8 +19416,8 @@ test('epic controls and brief surfaces are available in both responsive layouts'
   for (const id of ['epic-terminal-session', 'epic-terminal-mobile', 'epic-activity-scroll', 'epic-activity-scroll-mobile']) {
     assert.equal(html.split('id="' + id + '"').length - 1, 1, id + ' is a distinct embedded output container');
   }
-  assert.equal(html.match(/x-for="r in outputRuns\(\)"/g).length, 2);
-  assert.equal(html.match(/@change="selectOutputRun\(\$event.target.value\)"/g).length, 2);
+  assert.equal(html.match(/x-for="r in outputRuns\(\)"/g).length, 4, 'ticket and epic Output selectors in both layouts');
+  assert.equal(html.match(/@change="selectOutputRun\(\$event.target.value\)"/g).length, 4);
   assert.equal(html.split('Transcript truncated. Open the full raw stage log; it may show a different attempt.').length - 1, 3);
 });
 
@@ -19409,6 +19498,7 @@ for (const recover of [false, true]) {
       return { ok: true, json: async () => ticket };
     } }, { channels: [], default_channels: [] });
     state.$nextTick = () => Promise.resolve();
+    state.tickets = [ticket];
     await state.openInitModal(ticket);
     assert.deepEqual(vmValue(state.initForm.notify), ticket.notify);
     assert.deepEqual(vmValue(state.initForm.notifyChannels), ticket.notify_channels);
@@ -19607,7 +19697,9 @@ test("an unrouted notification is invalid unless it is explicitly silenced", () 
 
 test("the init modal does not start a ticket with an accidental silent route", async () => {
   const seen = [];
-  const state = notifyState({ fetch: async (...args) => { seen.push(args); return { ok: true }; } });
+  const state = notifyState({ fetch: async (...args) => { seen.push(args); return { ok: true, json: async () => ({ id: 'kon-1', status: 'todo', kontora: true }) }; } });
+  state.tickets = [{ id: 'kon-1', status: 'open', path: '/home/a/projects/kontora' }];
+  state._lifecycleInitCommand = state.lifecycleCommand('kon-1', 'initialize');
   state.configCache.default_channels = [];
   state.initForm = {
     ticketId: "kon-1", path: "/home/a/projects/kontora", pipeline: "build", agent: "claude",
@@ -19629,7 +19721,9 @@ test("the init modal does not start a ticket with an accidental silent route", a
 
 test("changing the init path clears an unrouted error when the project supplies a route", async () => {
   const seen = [];
-  const state = notifyState({ fetch: async (...args) => { seen.push(args); return { ok: true }; } });
+  const state = notifyState({ fetch: async (...args) => { seen.push(args); return { ok: true, json: async () => ({ id: 'kon-1', status: 'todo', kontora: true }) }; } });
+  state.tickets = [{ id: 'kon-1', status: 'open', path: '/elsewhere' }];
+  state._lifecycleInitCommand = state.lifecycleCommand('kon-1', 'initialize');
   state.configCache.default_channels = [];
   state.configCache.projects[0].notify_channels = ["tg"];
   state.initForm = {
@@ -20551,10 +20645,15 @@ for (const boundary of ['close/reopen', 'source', 'mobile tab', 'desktop tab', '
     test(`stage-log ownership ends at ${boundary}, delayed ${delayed}`, async () => {
       const pending = deferred();
       const json = deferred();
+      let logsReads = 0;
       const identity = { id: 'logs-a', status: 'paused', kind: 'ticket', source: 'primary' };
       const epic = { id: 'epic-a', status: 'open', kind: 'epic' };
       const state = loadKontoraState({ fetch: async url => {
-        if (/\/logs(?:\?|$)/.test(url)) return pending.promise;
+        if (/\/logs(?:\?|$)/.test(url)) {
+          // Reopening now restores the Logs view and starts a NEW owned read.
+          if (logsReads++) return { ok: true, json: async () => ({ content: 'current context' }) };
+          return pending.promise;
+        }
         return { ok: true, json: async () => url.includes('epic-a') ? epic : identity };
       } });
       state.$nextTick = cb => { cb?.(); return Promise.resolve(); };
@@ -21158,9 +21257,9 @@ test('custom activity is independent of status, grouping, filters and edit permi
   assert.equal(state.canSetStage(parked), true);
   assert.ok(state.ticketMoves(active).some(m => m.endpoint === 'pause'));
   assert.ok(!state.ticketMoves(parked).some(m => m.endpoint === 'pause'));
-  assert.equal(state.mobileSecondaryAction(active).label, 'pause');
-  assert.equal(state.mobileSecondaryAction(parked).label, 'more');
-  assert.ok(state.mobileSheetActions(active).some(m => /Pause agent/.test(m.label)));
+  assert.equal(state.mobileSecondaryAction(active).label, 'Move to');
+  assert.equal(state.mobileSecondaryAction(parked).label, 'Move to');
+  assert.ok(state.mobileSheetActions(active).some(m => m.label === 'Pause'));
   assert.equal(state.childRowFromEvent(active).execution_active, true);
   assert.equal(state.childRowFromEvent(parked).execution_active, false);
   state.selectedTicket = active;
@@ -21255,13 +21354,13 @@ for (const outcome of ['success', 'failure', 'network']) for (const race of ['no
     state.tickets = [{ ...state.selectedTicket }];
     state.activeTab = 'ticket';
     state.recomputeBoard();
-    const moving = state.moveTask('drag', 'parked');
+    const moving = state._moveTaskTransport('drag', 'parked');
     assert.equal(state.tickets[0].status, 'parked');
     assert.equal(state.tickets[0].execution_active, false);
     assert.equal(state.selectedTicket.execution_active, false);
     let second;
     if (race === 'SSE') state.queueTicketUpdate({ ...state.tickets[0], status: 'awaiting_data', execution_active: true, title: 'Newer event' });
-    if (race === 'second drag') second = state.moveTask('drag', 'done');
+    if (race === 'second drag') second = state._moveTaskTransport('drag', 'done');
     const response = { id: 'drag', title: 'Authoritative', status: race === 'second drag' ? 'done' : 'paused', execution_active: false, kontora: true };
     if (outcome === 'network') pending.reject(new Error('offline'));
     else pending.resolve({ ok: outcome === 'success', json: async () => outcome === 'success' ? response : { error: 'Rejected' } });
@@ -21299,7 +21398,10 @@ for (const first of ['success', 'failure', 'network']) for (const second of ['su
       state._boardRaf = 1;
       state.configCache = { custom_statuses: ['awaiting_data', 'parked'] };
       state.tickets = [{ ...original }];
-      const moves = [state.moveTask('drag', 'parked'), state.moveTask('drag', 'done')];
+      // Stub canonical refreshes to isolate transport ordering.
+      let refreshes = 0;
+      state.resyncTickets = async () => { refreshes++; };
+      const moves = [state._moveTaskTransport('drag', 'parked'), state._moveTaskTransport('drag', 'done')];
       const outcomes = [first, second];
       for (const [step, index] of order.entries()) {
         if (outcomes[index] === 'network') replies[index].reject(new Error('offline'));
@@ -21308,7 +21410,7 @@ for (const first of ['success', 'failure', 'network']) for (const second of ['su
         await moves[index];
         if (step === 0) {
           if (race === 'SSE') state.queueTicketUpdate(intervening);
-          if (race === 'action response') await state.moveTicketVia('drag', 'pause');
+          if (race === 'action response') await state._lifecyclePost('drag', 'pause');
         }
       }
       const expected = race !== 'none' ? intervening : second === 'success' ? responses[1]
@@ -21317,6 +21419,7 @@ for (const first of ['success', 'failure', 'network']) for (const second of ['su
       assert.equal(state.tickets[0].execution_active, expected.execution_active);
       assert.equal(state.tickets[0].title, expected.title);
       assert.equal(state.ticketMoves(state.tickets[0]).some(move => move.endpoint === 'pause'), expected.execution_active);
+      assert.equal(refreshes, [first, second].filter(outcome => outcome === 'network').length, 'every ambiguous transport asks for a canonical refresh');
     });
   }
 }
@@ -21326,7 +21429,7 @@ test('a drag accepts authoritative custom activity rather than retaining its opt
   const state = loadKontoraState({ fetch: async () => ({ ok: true, json: async () => response }) });
   state._boardRaf = 1;
   state.tickets = [{ id: 'drag', status: 'paused', execution_active: false, kontora: true }];
-  const moving = state.moveTask('drag', 'todo');
+  const moving = state._moveTaskTransport('drag', 'todo');
   assert.equal(state.tickets[0].status, 'todo');
   assert.equal(state.tickets[0].execution_active, false);
   await moving;

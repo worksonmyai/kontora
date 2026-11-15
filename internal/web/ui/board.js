@@ -547,6 +547,8 @@ export function kontoraBoard() {
     // the terminal container. This is the one path that disposes the terminal:
     // its container is going away, so the instance cannot be carried over.
     _onBreakpointChange() {
+      this.rememberDetailView(!this.isMobile);
+      const hadDetailFocus = !!this.detailViewRoot(!this.isMobile)?.contains(document.activeElement);
       this.mobileBreakpointChanged();
       this._invalidateStageLogs();
       this.closeAgentPicker(false);
@@ -559,14 +561,20 @@ export function kontoraBoard() {
       this.activityLoading = false;
       this._stopActivityPoll();
       if (this.selectedTicket) {
-        if (this.isMobile) this.detailTab = this.activeTab === 'session' ? 'terminal'
-          : (this.activeTab === 'activity' ? 'activity' : 'ticket');
-        else if (this.detailTab === 'terminal') this.activeTab = 'session';
-        else if (['activity', 'logs'].includes(this.detailTab)) this.activeTab = 'activity';
-        else if (['session', 'activity'].includes(this.activeTab)) this.activeTab = 'ticket';
+        const mode = this.supportedDetailMode(this.detailMode(!this.isMobile));
+        if (this.isMobile) this.detailTab = mode;
+        else this.activeTab = mode === 'terminal' ? 'session' : mode;
       }
       this.$nextTick(() => {
         this._mountBoard();
+        this.syncDetailCoverage();
+        this.restoreDetailScroll();
+        if (hadDetailFocus) {
+          const root = this.detailViewRoot();
+          const selected = root?.querySelector('button[aria-pressed="true"], button[aria-selected="true"]');
+          const target = selected || root?.querySelector('button');
+          target?.focus({ preventScroll: true });
+        }
         if (this.terminalWanted()) this.openTerminal();
         else if (this.currentView === 'board' && this.isMobile && this.selectedTicket && this.detailTab === 'logs') this.mobileSwitchTab('logs');
         else if (this.currentView === 'board' && this.outputTab() === 'activity') {
@@ -593,23 +601,30 @@ export function kontoraBoard() {
           self._closeCardMenu();
           if (!mid) return;
           var act = item.dataset.act;
-          if (act === 'init') {
-            var it = self.tickets.find(function (t) { return t.id === mid; });
-            if (it) self.openInitModal(it);
-          } else if (act === 'epic-overview') {
+          if (act === 'epic-overview') {
             self.openEpic(mid);
-          } else if (act === 'archive') {
-            self.openArchivePrompt(mid);
           } else {
-            var status = item.dataset.status;
-            self.moveTicketVia(mid, act, status ? { status: status } : null);
+            const actionKey = act + ':' + (item.dataset.status || '');
+            const command = mcard?._lifecycleCommands?.[actionKey];
+            // Menu ownership was captured when it opened, not reconstructed
+            // from a stale endpoint after SSE changed the ticket.
+            if (command) self.dispatchLifecycle(mid, command);
           }
           return;
         }
         var btn = e.target.closest('.card-menu-btn');
         if (btn) {
           e.stopPropagation();
-          self._toggleCardMenu(btn.closest('.kt-card'));
+          const menuCard = btn.closest('.kt-card');
+          const menuKey = menuCard?.dataset.ticketId;
+          const menuTicket = self.lifecycleResolve(menuKey);
+          if (menuTicket) {
+            menuCard._lifecycleCommands = Object.fromEntries(self.ticketMoves(menuTicket).map(command =>
+              [command.endpoint + ':' + (command.status || ''), command]));
+            menuCard._lifecycleCommands['init:'] = self.lifecycleCommand(menuKey, 'start');
+            menuCard._lifecycleCommands['archive:'] = self.lifecycleCommand(menuKey, 'archive');
+          }
+          self._toggleCardMenu(menuCard);
           return;
         }
         var card = e.target.closest('.kt-card');
@@ -866,6 +881,7 @@ export function kontoraBoard() {
         filter: '.empty-state, [data-no-drag]',
         preventOnFilter: false,
         onStart: function(evt) {
+          evt.item._lifecycleDragState = self.lifecycleCommand?.(evt.item.dataset.ticketId, 'move:open')?.expected;
           tuneAnimations();
           // Sortable owns the card nodes until the drop: a reconcile that runs
           // in between can move or replace the node under the cursor. Updates
@@ -907,7 +923,9 @@ export function kontoraBoard() {
           // No manual DOM restore: moveTask sets the status optimistically and
           // recomputeBoard → renderBoard patches both columns from canonical
           // data, moving the node Sortable moved (and reverting on failure).
-          self.moveTask(ticketId, toDrop);
+          if (evt.item._lifecycleDragState !== undefined) {
+            self.moveTask(ticketId, toDrop, evt.item._lifecycleDragState);
+          } else self.moveTask(ticketId, toDrop);
         }
       }, function () {
         self._dragging = false;

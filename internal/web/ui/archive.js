@@ -629,6 +629,7 @@ export function kontoraArchive() {
 
     openArchivePrompt(id) {
       if (!id || this.isSecondary(this.ticketIdentity(id)) || (this.isSecondary(this.selectedTicket) && this.selectedTicket.id === id)) return;
+      this._lifecycleArchiveCommand = this.lifecycleCommand(id, { id: 'archive', confirmed: true });
       this.archivePromptId = id;
       this.archiveNoteDraft = '';
       this.archivePromptError = null;
@@ -647,27 +648,18 @@ export function kontoraArchive() {
       this.archiveSubmitting = true;
       this.archivePromptError = null;
       try {
-        const res = await fetch('/api/tickets/' + encodeURIComponent(id) + '/archive', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ note: (this.archiveNoteDraft || '').trim() }),
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || 'archive failed (' + res.status + ')');
+        const result = await this.dispatchLifecycle(id, { ...this._lifecycleArchiveCommand, note: (this.archiveNoteDraft || '').trim() });
+        if (this.archivePromptId !== id) return result;
+        if (result.outcome !== 'success') {
+          this.archivePromptError = result.error || 'Archive not completed (' + result.outcome + ').';
+          return result;
         }
-        const ticket = await res.json();
         this.closeArchivePrompt();
         this.showToast(id + ' archived');
-        // The event carries status archived, so this is what drops the ticket
-        // from the board and closes its detail panel.
-        this.applyTicketUpdate(ticket);
-        this.recomputeBoard();
         if (this.currentView === 'archive') this.archiveLoad();
-      } catch (e) {
-        this.archivePromptError = String((e && e.message) || e);
+        return result;
       } finally {
-        this.archiveSubmitting = false;
+        if (this.archivePromptId === id) this.archiveSubmitting = false;
       }
     },
 

@@ -49,6 +49,7 @@ export function kontoraDetail() {
         this.closeDetail();
         return;
       }
+      this.rememberDetailView();
       // The epic page is the other overlay over this board. Opening a ticket
       // from it, a sub-ticket row for instance, replaces it rather than
       // stacking on it: both pages carry a body editor, and only one of them
@@ -78,7 +79,7 @@ export function kontoraDetail() {
       this.notifyEditing = false;
       this.notifyDraft = null;
       this.notifyError = null;
-      this.ticketChanges = null;
+      this.resetChanges();
       this.collapsedStages = {};
       this.relExpanded = {};
       this.chain = null;
@@ -93,6 +94,7 @@ export function kontoraDetail() {
       var key = this.ticketKey(ticket);
       var mine = () => this.sameTicket(this.selectedTicket, ticket) && detailSeq === this._ticketDetailSeq;
       this.selectedTicket = ticket;
+      this.syncDetailCoverage();
       this._pushRecentTicket(key);
       this.fetchTicketCost(ticket.id);
       this.detailLoading = true;
@@ -142,6 +144,9 @@ export function kontoraDetail() {
         this.activeTab = 'ticket';
         this.detailTab = 'ticket';
         await this.startEditing();
+        if (!mine()) return;
+        await this.restoreDetailView();
+        if (!mine()) return;
         this.writeHash();
         return;
       }
@@ -155,6 +160,12 @@ export function kontoraDetail() {
       if (this.selectedTicket?.id) {
         this.fetchChain(this.selectedTicket.id);
       }
+      const restored = await this.restoreDetailView();
+      if (!mine()) return;
+      if (restored) {
+        this.writeHash();
+        return;
+      }
       if (!this.executionActive(this.selectedTicket) && this.selectedTicket?.status !== 'todo' && this.selectedTicket?.status !== 'open'
           && this.selectedTicket?.history?.length > 0) {
         var latest = this.latestCompletedRun();
@@ -162,12 +173,15 @@ export function kontoraDetail() {
         // Finished tickets with a summary open on the summary tab; the
         // transcript stays prefetched for the activity tab.
         this.activeTab = this.summaryFirst(this.selectedTicket) ? 'summary' : 'activity';
+        this.detailTab = this.summaryFirst(this.selectedTicket) ? 'ticket' : 'activity';
       } else if (this.executionActive(this.selectedTicket) &&
           (this.selectedTicket.kind !== 'epic' || this.epicIsAgent(this.selectedTicket))) {
         this.activeTab = 'session';
+        this.detailTab = 'terminal';
         this.openTerminal();
       } else {
         this.activeTab = 'ticket';
+        this.detailTab = 'ticket';
         if (['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []).includes(this.selectedTicket?.status)) this.startEditing();
       }
       this.writeHash();
@@ -339,15 +353,51 @@ export function kontoraDetail() {
       return parts.join(' · ');
     },
 
+    ticketChangesLoading: false,
+    ticketChangesError: null,
+    ticketChangesOwner: null,
+    _ticketChangesSeq: 0,
+
+    resetChanges() {
+      this._ticketChangesSeq++;
+      this.ticketChanges = null;
+      this.ticketChangesOwner = null;
+      this.ticketChangesLoading = false;
+      this.ticketChangesError = null;
+    },
+
+    // A slow read may not complete a newer read's loading state,
+    // even for the same ticket or after close/reopen.
     async fetchChanges(id) {
-      if (this.isSecondary(this.selectedTicket)) return;
+      var t = this.selectedTicket;
+      if (!t || t.id !== id || this.isSecondary(t)) return false;
+      var seq = ++this._ticketChangesSeq;
+      var detail = this._ticketDetailSeq;
+      var owner = this.ticketKey(t);
+      var mine = () => seq === this._ticketChangesSeq && detail === this._ticketDetailSeq &&
+        this.ticketKey(this.selectedTicket) === owner && !this.isSecondary(this.selectedTicket);
+      if (this.ticketChangesOwner !== owner) this.ticketChanges = null;
+      this.ticketChangesOwner = owner;
+      this.ticketChangesLoading = true;
+      this.ticketChangesError = null;
       try {
-        var res = await fetch('/api/tickets/' + id + '/changes');
-        if (res.ok) {
-          var changes = await res.json();
-          if (!this.isSecondary(this.selectedTicket) && this.selectedTicket?.id === id) this.ticketChanges = changes;
+        var res = await fetch('/api/tickets/' + encodeURIComponent(id) + '/changes');
+        if (!mine()) return false;
+        if (!res.ok) {
+          var err = await res.json().catch(() => ({}));
+          if (mine()) this.ticketChangesError = err.error || 'Failed to load changes';
+          return false;
         }
-      } catch (e) { /* the card simply shows no commit list */ }
+        var changes = await res.json();
+        if (!mine()) return false;
+        this.ticketChanges = changes;
+        return true;
+      } catch (e) {
+        if (mine()) this.ticketChangesError = 'Failed to load changes';
+        return false;
+      } finally {
+        if (mine()) this.ticketChangesLoading = false;
+      }
     },
 
     _resetTicketCost() {
@@ -480,7 +530,8 @@ export function kontoraDetail() {
         this.activityLoading = false;
         this._stopActivityPoll();
       } else if (!this.activity && !this.activityLoading) {
-        var target = this.activityTarget();
+        var target = this._activityExplicit && this.activityStage !== null
+          ? { stage: this.activityStage, run: this.activityRun } : this.activityTarget();
         if (target) this.fetchActivity(target.stage, target.run);
       } else if (this.activity?.live) {
         this._armActivityPoll(this.activityStage, this.activityRun, true);
@@ -496,6 +547,7 @@ export function kontoraDetail() {
     },
 
     closeDetail(writeRoute = true) {
+      this.rememberDetailView();
       if (writeRoute) ++this._navigationSeq;
       this.closeAgentPicker(false);
       this.flushEditSave();
@@ -509,6 +561,7 @@ export function kontoraDetail() {
       this.editSubmitting = false;
       this.deleteSubmitting = false;
       this.selectedTicket = null;
+      this.syncDetailCoverage();
       this.detailLoading = false;
       this.activeTab = 'ticket';
       this.logViewContent = null;
@@ -516,7 +569,7 @@ export function kontoraDetail() {
       this.logViewLoading = false;
       this._resetActivity();
       this._resetTicketCost();
-      this.ticketChanges = null;
+      this.resetChanges();
       this.collapsedStages = {};
       this.relExpanded = {};
       this.chain = null;
@@ -888,22 +941,22 @@ export function kontoraDetail() {
           const identity = { source: r.source || 'primary', id: r.ticketId };
           const alreadySelected = this.sameTicket(this.selectedTicket, identity);
           let t = this.allBoardTickets().find(x => this.sameTicket(x, identity));
-          if (!t && !this.isSecondary(identity)) {
+          if (!t) {
             try {
-              const response = await fetch('/api/tickets/' + encodeURIComponent(r.ticketId));
+              const response = await fetch(this.ticketURL(identity));
               if (!mine()) return false;
               if (response.status === 401) this.needsAuth = true;
               if (!response.ok) throw new Error(response.status === 404 ? 'Historical ticket ' + r.ticketId + ' is missing. It may have been deleted.' : 'Failed to look up ticket (' + response.status + ')');
               const full = await response.json();
               if (!mine()) return false;
-              if (full.id !== r.ticketId || this.isSecondary(full)) throw new Error('The primary ticket lookup returned a different ticket.');
-              t = { ...full, source: 'primary' };
+              if (full.id !== r.ticketId || (full.source && full.source !== identity.source)) throw new Error('The ticket lookup returned a different ticket.');
+              t = { ...full, source: identity.source };
             } catch (error) {
               if (!mine()) return false;
               this.error = error.message;
             }
           }
-          if (t?.status === 'archived') {
+          if (t?.status === 'archived' && !this.isSecondary(t)) {
             if (await this.gotoView('archive', navigation, { view: 'archive', ticketId: t.id }) === false || !mine()) return false;
             await this.archiveOpenRow(t, navigation);
             if (!mine()) return false;
@@ -956,36 +1009,20 @@ export function kontoraDetail() {
     },
 
     async action(type) {
-      if (!this.ticketCanControl(this.selectedTicket) || this.actionLoading) return;
+      // Preserve immediate wait guidance, including callers that only render
+      // workflow diagnostics. The dispatcher rechecks this after draining saves.
       if (type === 'retry' && this.workflowWaiting?.(this.selectedTicket) && !this.selectedTicket.graph_execution.wait.disarmed) {
         this.error = this.workflowReleaseInstructions(this.selectedTicket);
-        return;
+        return { outcome: 'refused', error: this.error };
       }
-      if (type === 'skip' && !this.canSkipStage()) {
-        this.error = 'Pause first and wait for the agent and review to stop before changing stages.';
-        return;
-      }
-      this.actionLoading = type;
-      this.error = null;
-      try {
-        const res = await fetch('/api/tickets/' + this.selectedTicket.id + '/' + type, { method: 'POST' });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          this.error = data.error || type + ' failed';
-          return;
-        }
-        const updated = await res.json();
-        this.applyTicketUpdate(updated);
-        this.recomputeBoard();
-      } catch (e) {
-        this.error = type + ' failed: ' + e.message;
-      } finally {
-        this.actionLoading = null;
-      }
+      const key = this.ticketKey(this.selectedTicket);
+      if (!key) return { outcome: 'refused' };
+      return this.dispatchLifecycle(key, this.lifecycleFromEndpoint(key, type));
     },
 
     openDeleteModal() {
       if (!this.ticketCanControl(this.selectedTicket) || this.deleteSubmitting) return;
+      this._lifecycleDeleteCommand = this.lifecycleCommand(this.selectedTicket, { id: 'delete', confirmed: true });
       this.deleteModal = true;
     },
 
@@ -995,27 +1032,13 @@ export function kontoraDetail() {
     },
 
     async deleteSelectedTicket() {
-      if (!this.ticketCanControl(this.selectedTicket) || this.deleteSubmitting) return;
-      const ticketId = this.selectedTicket.id;
+      const key = this.ticketKey(this.selectedTicket);
+      if (!key || this.deleteSubmitting) return { outcome: 'refused' };
       this.deleteSubmitting = true;
-      this.error = null;
       try {
-        const res = await fetch('/api/tickets/' + ticketId, {
-          method: 'DELETE',
-          headers: { 'X-Kontora-Confirm': 'delete-ticket-file' },
-        });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          this.error = data.error || 'Delete failed';
-          return;
-        }
-        this.deleteModal = false;
-        this.tickets = this.tickets.filter(t => t.id !== ticketId);
-        if (this.selectedTicket?.id === ticketId) this.closeDetail();
-        this.recomputeBoard();
-        this.updateFavicon();
-      } catch (e) {
-        this.error = 'Delete failed: ' + e.message;
+        const result = await this.dispatchLifecycle(key, this._lifecycleDeleteCommand || { id: 'delete', confirmed: true });
+        if (result.outcome === 'success') this.deleteModal = false;
+        return result;
       } finally {
         this.deleteSubmitting = false;
       }
@@ -1091,33 +1114,24 @@ export function kontoraDetail() {
         this.scheduleError = null;
         return;
       }
-      await this._postSchedule(ticket, { scheduled_at: iso });
+      return this._postSchedule(ticket, { scheduled_at: iso });
     },
 
     async clearTicketSchedule(ticket) {
-      await this._postSchedule(ticket, { clear: true });
+      return this._postSchedule(ticket, { clear: true });
     },
 
     async _postSchedule(ticket, body) {
       var t = ticket || this.selectedTicket;
-      if (!this.ticketCanControl(t) || this.scheduleSubmitting) return;
+      if (!this.ticketCanControl(t)) return { outcome: 'refused' };
+      if (this.scheduleSubmitting) return { outcome: 'busy' };
       this.scheduleSubmitting = true;
       this.scheduleError = null;
       try {
-        const res = await fetch('/api/tickets/' + t.id + '/schedule', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          this.scheduleError = data.error || 'Schedule failed';
-          return;
-        }
-        this._applyScheduled(data);
-        this.scheduleEditing = false;
-      } catch (e) {
-        this.scheduleError = 'Schedule failed: ' + e.message;
+        const result = await this.dispatchLifecycle(this.ticketKey(t), { id: 'schedule', body });
+        if (result.outcome === 'success') this.scheduleEditing = false;
+        else this.scheduleError = result.error || 'Schedule not completed (' + result.outcome + ').';
+        return result;
       } finally {
         this.scheduleSubmitting = false;
       }
@@ -1143,55 +1157,28 @@ export function kontoraDetail() {
 
     ticketActionWouldStart(endpoint, body) {
       if (endpoint === 'run' || endpoint === 'retry') return true;
-      if (endpoint === 'move' && body && ['todo', 'in_progress'].includes(body.status)) return true;
+      if (endpoint === 'move' && body && body.status === 'todo') return true;
       return false;
     },
 
-    async moveTicketVia(ticketId, endpoint, body) {
-      this.error = null;
-      var ticket = this.allBoardTickets().find(t => this.ticketKey(t) === ticketId);
-      if ((ticket && !this.ticketCanControl(ticket)) || this.isSecondary(this.ticketIdentity(ticketId))) return;
-      // Starting a ticket goes through the init modal, not /run, /retry, or
-      // /move: an unmanaged one cannot execute at all, and a managed one in open
-      // gets the form so the run's fields are confirmed before it is queued.
-      if (ticket && this.needsInitModal(ticket) && this.ticketActionWouldStart(endpoint, body)) {
-        return this.openInitModal(ticket);
-      }
-      try {
-        var opts = { method: 'POST' };
-        if (body) {
-          opts.headers = { 'Content-Type': 'application/json' };
-          opts.body = JSON.stringify(body);
-        }
-        const res = await fetch('/api/tickets/' + ticketId + '/' + endpoint, opts);
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          this.error = data.error || (endpoint + ' failed');
-          return;
-        }
-        const updated = await res.json().catch(() => null);
-        if (updated && updated.id) {
-          this.applyTicketUpdate(updated);
-          this.recomputeBoard();
-        }
-      } catch (e) {
-        this.error = endpoint + ' failed: ' + e.message;
-      }
+    moveTicketVia(ticketId, endpoint, body) {
+      return this.dispatchLifecycle(ticketId, this.lifecycleFromEndpoint(ticketId, endpoint, body));
     },
 
-    async moveTask(ticketId, newStatus) {
+    async moveTask(ticketId, newStatus, expected) {
+      const command = this.lifecycleCommand(ticketId, 'move:' + newStatus);
+      if (command && expected !== undefined) command.expected = expected;
+      const result = await this.dispatchLifecycle(ticketId, command);
+      // A rejected drop has already changed Sortable's DOM, not canonical data.
+      this.recomputeBoard();
+      return result;
+    },
+
+    async _moveTaskTransport(ticketId, newStatus) {
       this.error = null;
       const ticket = this.allBoardTickets().find(t => this.ticketKey(t) === ticketId);
       if ((ticket && !this.ticketCanControl(ticket)) || this.isSecondary(this.ticketIdentity(ticketId))) return;
-      if (ticket && this.needsInitModal(ticket) && ['todo', 'in_progress'].includes(newStatus)) {
-        // A drag here has already moved the DOM node into the target column;
-        // rebuild from canonical data so the card snaps back if the user
-        // dismisses the init modal. The drag dropped the render cache for both
-        // columns, so this render patches them even though no status changed.
-        this.recomputeBoard();
-        return this.openInitModal(ticket);
-      }
-      if (!ticket) return;
+      if (!ticket) return { outcome: 'refused' };
       let chain = moves.get(ticketId);
       const mine = () => !this._appDestroyed && moves.get(ticketId) === chain &&
         !chain.touched.has(ticketId) && this.tickets.find(t => t.id === ticketId) === chain.current;
@@ -1219,31 +1206,38 @@ export function kontoraDetail() {
         this.recomputeBoard();
       };
       reconcile();
+      let outcome = 'success';
+      let failure = null;
       try {
-        const res = await fetch('/api/tickets/' + ticketId + '/move', {
+        const res = await fetch(this.ticketURL(ticketId, '/move'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: newStatus }),
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          this.error = data.error || 'Move failed';
+          failure = this.error = data.error || 'Move failed';
+          outcome = 'failed';
           move.failed = true;
         } else {
-          const updated = await res.json().catch(() => null);
-          if (updated?.id === ticketId) move.result = updated;
+          const updated = await res.json();
+          if (updated?.id !== ticketId || this.isSecondary(updated)) throw new Error('Invalid move acknowledgement');
+          move.result = updated;
         }
         reconcile();
       } catch (e) {
-        this.error = 'Move failed: ' + e.message;
+        failure = this.error = 'Move result uncertain; refresh before trying again: ' + e.message;
+        outcome = 'uncertain';
         move.failed = true;
         reconcile();
+        await this._lifecycleRefresh();
       } finally {
         if (--chain.pending === 0) {
           this._endSnapshot(chain.touched);
           if (moves.get(ticketId) === chain) moves.delete(ticketId);
         }
       }
+      return { outcome, ...(failure ? { error: failure } : {}) };
     },
 
     async startEditing() {
@@ -1654,32 +1648,10 @@ export function kontoraDetail() {
       return this.selectedTicket?.stage || this.selectedTicket?.stages?.[0] || '';
     },
 
-    async setStage(stage) {
-      // The empty value is the picker's placeholder, not a stage.
-      if (!this.selectedTicket || !stage) return;
-      if (!this.canSetStage()) {
-        this.error = 'Pause first and wait for the agent and review to stop before changing stages.';
-        return;
-      }
-      this.error = null;
-      try {
-        const res = await fetch('/api/tickets/' + this.selectedTicket.id + '/set-stage', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ stage: stage }),
-        });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          this.error = data.error || 'set-stage failed';
-          return;
-        }
-        const updated = await res.json();
-        const idx = this.tickets.findIndex(t => t.id === updated.id);
-        if (idx >= 0) this.tickets[idx] = this.boardEntry(updated);
-        this.selectedTicket = updated;
-      } catch (e) {
-        this.error = 'set-stage failed: ' + e.message;
-      }
+    setStage(stage) {
+      const key = this.ticketKey(this.selectedTicket);
+      if (!key || !stage) return Promise.resolve({ outcome: 'refused' });
+      return this.dispatchLifecycle(key, 'set-stage:' + stage);
     },
 
     _stageLogSeq: 0,
@@ -1804,7 +1776,7 @@ export function kontoraDetail() {
     // Open the currently viewed log as plain text in a new tab.
     async openRawLog() {
       var subject = this.outputSubject();
-      if (!subject || this._appDestroyed) return;
+      if (!subject || this._appDestroyed || this.importedRun(this.activityStage, this.activityRun)) return;
       var generation = this._rawLogEpoch;
       var viewingActivity = this.outputTab() === 'activity';
       var content = this.selectedEpic || viewingActivity ? null : this.logViewContent;

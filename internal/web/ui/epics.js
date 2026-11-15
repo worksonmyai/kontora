@@ -34,8 +34,8 @@ var EPIC_DONE_STATUSES = { done: true, closed: true };
 // Group order on the epic page: what is moving, then what is waiting, then
 // what is finished.
 // dropStatus is what a drop into the group asks for, the same value the board's
-// own columns carry: moveTask posts it to /move, and the daemon turns todo into
-// a run or a retry.
+// own columns carry: moveTask posts it to /move without a separate run/retry
+// request or resetting the stage's attempt counter.
 var EPIC_GROUPS = [
   { key: 'in_progress', label: 'in flight', statuses: ['in_progress', 'todo', 'paused'], dropStatus: 'todo' },
   { key: 'human_review', label: 'review', statuses: ['human_review'], dropStatus: 'human_review' },
@@ -284,7 +284,7 @@ export function kontoraEpics() {
     },
 
     epicCanEditBrief() {
-      return !!this.selectedEpic && this._epicDetail?.id === this.selectedEpic.id && (!this.epicIsAgent(this.selectedEpic) ||
+      return !!this.selectedEpic && !this.lifecycleBusy(this.selectedEpic) && this._epicDetail?.id === this.selectedEpic.id && (!this.epicIsAgent(this.selectedEpic) ||
         ['open', 'todo', 'paused'].includes(this.selectedEpic.status));
     },
 
@@ -316,12 +316,8 @@ export function kontoraEpics() {
       return actions;
     },
 
-    async epicStart() {
-      if (!this.epicCanStart(this.selectedEpic)) return;
-      var id = this.selectedEpic.id;
-      var navigation = ++this._navigationSeq;
-      if (await this.epicFlushBrief() === false) return;
-      if (navigation === this._navigationSeq && this.selectedEpic?.id === id) await this.openInitModal(this.selectedEpic);
+    epicStart() {
+      return this.dispatchLifecycle(this.ticketKey(this.selectedEpic), 'start');
     },
 
     epicWatchAgent() {
@@ -365,13 +361,8 @@ export function kontoraEpics() {
 
     async epicAction(endpoint, status) {
       var epic = this.selectedEpic;
-      if (!this.epicIsAgent(epic) || this.actionLoading) return;
-      this.actionLoading = endpoint;
-      try {
-        await this.moveTicketVia(epic.id, endpoint, status ? { status: status } : null);
-      } finally {
-        this.actionLoading = null;
-      }
+      if (!this.epicIsAgent(epic)) return { outcome: 'refused' };
+      return this.moveTicketVia(this.ticketKey(epic), endpoint, status ? { status: status } : null);
     },
 
     // The board list carries no body, and the brief is the body. The row is
@@ -513,7 +504,7 @@ export function kontoraEpics() {
     async epicApproveHolder() {
       var r = this.epicRollup(this.selectedEpic ? this.selectedEpic.id : '');
       if (!r.holder) return;
-      await this.moveTicketVia(r.holder.id, 'done', null);
+      return this.dispatchLifecycle(this.ticketKey(r.holder), 'move:done');
     },
 
     // One JSON request, with the failure reported the way moveTicketVia
@@ -711,7 +702,10 @@ export function kontoraEpics() {
         draggable: '.epic-row:not(.epic-row-add)',
         ghostClass: 'sortable-ghost',
         dragClass: 'sortable-drag',
-        onStart: function () { self.epicDragging = true; },
+        onStart: function (evt) {
+          self.epicDragging = true;
+          if (evt?.item) evt.item._lifecycleDragState = self.lifecycleCommand?.(evt.item.dataset.childId, 'move:open')?.expected;
+        },
         onEnd: async function (evt) {
           self.epicDragging = false;
           var childID = evt.item.dataset.childId;
@@ -722,7 +716,10 @@ export function kontoraEpics() {
           self._epicRestoreRows();
           if (from !== to) {
             var status = self._epicDropStatus(to);
-            if (status) await self.moveTask(childID, status);
+            if (status) {
+              if (evt.item._lifecycleDragState !== undefined) await self.moveTask(childID, status, evt.item._lifecycleDragState);
+              else await self.moveTask(childID, status);
+            }
             return;
           }
           await self.epicSaveOrder(order);

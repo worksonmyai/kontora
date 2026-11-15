@@ -1,7 +1,8 @@
 package daemon
 
 import (
-	"fmt"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -42,15 +43,25 @@ func TestReview12DurableWaitNotifiesPausedSubscribers(t *testing.T) {
 }
 
 func TestReview15DeploymentNotificationUsesCheckout(t *testing.T) {
-	h := newHarness(t)
-	d := h.newDaemon(notifyConfig(h))
-	w := &ticket.WorkflowWait{ID: "deployment", Kind: "deployment", Phase: "pending",
-		Repository: "/repos/project/.git", Worktree: "/checkouts/release candidate",
-		Environment: "production", RequiredCommit: "0123456789012345678901234567890123456789"}
-	tk := &ticket.Ticket{ID: "review-deployment", Status: ticket.StatusPaused, GraphState: &ticket.GraphState{Wait: w}}
-	question := d.notifyTarget(tk).fields.Question
-	require.Contains(t, question, fmt.Sprintf("--repo %q --environment %q", w.Worktree, w.Environment))
-	require.Contains(t, question, "--rev <full-commit> --event-id <unique-id>")
-	require.Contains(t, question, "required commit "+w.RequiredCommit)
-	require.NotContains(t, question, w.Repository)
+	for _, value := range []string{"release candidate", "release'$HOME`exit 91`$(exit 92)\\雪\nnext"} {
+		t.Run(value, func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(notifyConfig(h))
+			w := &ticket.WorkflowWait{ID: "deployment", Kind: "deployment", Phase: "pending",
+				Repository: "/repos/project/.git", Worktree: "/checkouts/" + value,
+				Environment: value, RequiredCommit: "0123456789012345678901234567890123456789"}
+			tk := &ticket.Ticket{ID: "review-deployment", Status: ticket.StatusPaused, GraphState: &ticket.GraphState{Wait: w}}
+			question := d.notifyTarget(tk).fields.Question
+			require.Contains(t, question, "--rev <full-commit> --event-id <unique-id>")
+			require.Contains(t, question, "required commit "+w.RequiredCommit)
+			require.NotContains(t, question, w.Repository)
+			_, args, ok := strings.Cut(question, "kontora release ")
+			require.True(t, ok)
+			args, _, ok = strings.Cut(args, " --rev ")
+			require.True(t, ok)
+			out, err := exec.Command("sh", "-c", "printf '%s\\0' "+args).Output()
+			require.NoError(t, err)
+			require.Equal(t, []string{"--repo", w.Worktree, "--environment", w.Environment, ""}, strings.Split(string(out), "\x00"))
+		})
+	}
 }

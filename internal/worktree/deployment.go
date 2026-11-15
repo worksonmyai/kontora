@@ -2,39 +2,44 @@ package worktree
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 )
 
 // DeploymentEvidence freezes the canonical Git common directory and the current
 // worktree HEAD commit. The worktree must belong to repoPath. It does not inspect
 // or modify the index or working files.
 func DeploymentEvidence(repoPath, worktreePath string) (repository, commit string, err error) {
-	repository, err = deploymentCommonDir(repoPath)
+	ctx, cancel := context.WithTimeout(context.Background(), deploymentReadTimeout)
+	defer cancel()
+	repository, err = deploymentCommonDir(ctx, repoPath)
 	if err != nil {
 		return "", "", err
 	}
-	common, err := deploymentCommonDir(worktreePath)
+	common, err := deploymentCommonDir(ctx, worktreePath)
 	if err != nil {
 		return "", "", err
 	}
 	if common != repository {
 		return "", "", fmt.Errorf("deployment worktree belongs to a different repository")
 	}
-	inside, err := deploymentGit(worktreePath, "rev-parse", "--is-inside-work-tree")
+	inside, err := deploymentGit(ctx, worktreePath, "rev-parse", "--is-inside-work-tree")
 	if err != nil {
 		return "", "", err
 	}
 	if inside != "true" {
 		return "", "", fmt.Errorf("deployment evidence requires a worktree")
 	}
-	commit, err = deploymentGit(worktreePath, "rev-parse", "--verify", "HEAD")
+	commit, err = deploymentGit(ctx, worktreePath, "rev-parse", "--verify", "HEAD")
 	if err == nil {
-		err = deploymentCommit(worktreePath, commit)
+		commit, err = deploymentCommit(ctx, worktreePath, commit)
 	}
 	if err != nil {
 		return "", "", err
@@ -48,22 +53,36 @@ func DeploymentEvidence(repoPath, worktreePath string) (repository, commit strin
 // Non-equal commits require complete, non-shallow history; equal commits need no
 // ancestry traversal. No objects are fetched and replacement refs are ignored.
 func DeploymentMatches(repoPath, repository, required, deployed string) (bool, error) {
-	common, err := deploymentCommonDir(repoPath)
+	return DeploymentMatchesContext(context.Background(), repoPath, repository, required, deployed)
+}
+
+// A slow or unavailable local repository must not occupy a matcher indefinitely.
+const deploymentReadTimeout = 5 * time.Second
+
+// DeploymentMatchesContext bounds all Git reads together, including the complete
+// history check. Cancellation and timeout are errors, never ancestry evidence.
+func DeploymentMatchesContext(ctx context.Context, repoPath, repository, required, deployed string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, deploymentReadTimeout)
+	defer cancel()
+	common, err := deploymentCommonDir(ctx, repoPath)
 	if err != nil {
 		return false, err
 	}
 	if repository != common {
 		return false, nil
 	}
-	for _, oid := range []string{required, deployed} {
-		if err := deploymentCommit(repoPath, oid); err != nil {
-			return false, err
-		}
+	required, err = deploymentCommit(ctx, repoPath, required)
+	if err != nil {
+		return false, err
+	}
+	deployed, err = deploymentCommit(ctx, repoPath, deployed)
+	if err != nil {
+		return false, err
 	}
 	if required == deployed {
 		return true, nil
 	}
-	shallow, err := deploymentGit(repoPath, "rev-parse", "--is-shallow-repository")
+	shallow, err := deploymentGit(ctx, repoPath, "rev-parse", "--is-shallow-repository")
 	if err != nil {
 		return false, err
 	}
@@ -72,10 +91,10 @@ func DeploymentMatches(repoPath, repository, required, deployed string) (bool, e
 	}
 	// Do not let merge-base's early exit or generation/date pruning conceal
 	// missing parents. Ignore commit-graph acceleration in all these reads.
-	if _, err := deploymentGit(repoPath, "rev-list", "--quiet", required, deployed, "--"); err != nil {
+	if _, err := deploymentGit(ctx, repoPath, "rev-list", "--quiet", required, deployed, "--"); err != nil {
 		return false, err
 	}
-	_, err = deploymentGit(repoPath, "merge-base", "--is-ancestor", required, deployed)
+	_, err = deploymentGit(ctx, repoPath, "merge-base", "--is-ancestor", required, deployed)
 	if err == nil {
 		return true, nil
 	}
@@ -86,8 +105,8 @@ func DeploymentMatches(repoPath, repository, required, deployed string) (bool, e
 	return false, err
 }
 
-func deploymentCommonDir(repo string) (string, error) {
-	path, err := deploymentGit(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+func deploymentCommonDir(ctx context.Context, repo string) (string, error) {
+	path, err := deploymentGit(ctx, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return "", err
 	}
@@ -98,43 +117,42 @@ func deploymentCommonDir(repo string) (string, error) {
 	return filepath.Abs(path)
 }
 
-func deploymentCommit(repo, oid string) error {
-	if len(oid) != 40 && len(oid) != 64 {
-		return fmt.Errorf("deployment requires a full lowercase commit ID: %q", oid)
+var deploymentObjectID = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+
+// Callers must use the returned ID, not unchecked input, in later Git commands.
+func deploymentCommit(ctx context.Context, repo, oid string) (string, error) {
+	if !deploymentObjectID.MatchString(oid) {
+		return "", fmt.Errorf("deployment requires a full lowercase commit ID: %q", oid)
 	}
-	for _, c := range oid {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return fmt.Errorf("deployment requires a full lowercase commit ID: %q", oid)
-		}
-	}
-	actual, err := deploymentGit(repo, "rev-parse", "--verify", "--end-of-options", oid)
+	actual, err := deploymentGit(ctx, repo, "rev-parse", "--verify", "--end-of-options", oid)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if actual != oid {
-		return fmt.Errorf("deployment requires a full commit ID: %q", oid)
+		return "", fmt.Errorf("deployment requires a full commit ID: %q", oid)
 	}
-	kind, err := deploymentGit(repo, "cat-file", "-t", oid)
+	kind, err := deploymentGit(ctx, repo, "cat-file", "-t", oid)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if kind != "commit" {
-		return fmt.Errorf("deployment object %s is not a commit", oid)
+		return "", fmt.Errorf("deployment object %s is not a commit", oid)
 	}
-	return nil
+	return oid, nil
 }
 
 // Keep deployment reads separate from the package's general Git helpers. Never
 // retry without these options: old Git must fail closed. Inherited Git variables
 // must not redirect repository/object discovery, inject config, or hide shallow
 // boundaries. Grafts, like replacement refs, must not rewrite ancestry.
-func deploymentGit(repo string, args ...string) (string, error) {
+func deploymentGit(ctx context.Context, repo string, args ...string) (string, error) {
 	if repo == "" {
 		return "", fmt.Errorf("deployment repository path is required")
 	}
 	argv := make([]string, 0, 4+len(args))
 	argv = append(argv, "--no-lazy-fetch", "--no-replace-objects", "-c", "core.commitGraph=false")
-	cmd := exec.Command("git", append(argv, args...)...)
+	cmd := exec.CommandContext(ctx, "git", append(argv, args...)...)
+	cmd.WaitDelay = 100 * time.Millisecond
 	cmd.Dir = repo
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, "GIT_") {
@@ -149,6 +167,9 @@ func deploymentGit(repo string, args ...string) (string, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	if err != nil {
 		return "", fmt.Errorf("deployment git %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(stderr.String()), err)
 	}

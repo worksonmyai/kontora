@@ -4883,24 +4883,32 @@ describe('phone inline terminal and focused description', () => {
       });
     });
 
-    test(`slow supervisor details preserve newly focused drafting / ${width}px / ${theme}`, async t => {
+    test(`slow supervisor details hide composing initially and preserve drafting across refresh / ${width}px / ${theme}`, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
         await openTerminalSubject(page, supervisorID);
         await terminalGridFits(page, fixture);
-        let release, requested = false;
-        const response = new Promise(resolve => { release = resolve; });
-        await page.route('**/api/tickets/' + supervisorID, async route => {
-          requested = true;
-          await response;
-          await route.fallback();
-        });
+        const initial = fixture.holdDetail('primary', supervisorID);
+        await mobileTerminalSurface(page).locator('.mobile-epic-output-toolbar').getByRole('button', { name: 'run details', exact: true }).click();
+        await initial.started;
+        // Initial hydration hides the body. Background reads must keep the composer usable.
+        await assertLoadingStatus(loadingStatus(page), 'Loading ticket…');
+        await expect(mobileDetail(page).locator('.mobile-detail-content')).toBeHidden();
+        await expect(mobileDetail(page).locator('#mobile-terminal-compose')).toBeHidden();
+        await inViewport(mobileDetail(page).getByRole('button', { name: 'Back', exact: true }));
+        await settleRead(page, initial);
+        await ready(page);
+        await terminalGridFits(page, fixture);
+        const refresh = fixture.holdDetail('primary', supervisorID);
+        await page.evaluate(() => window.__fixtureSSE.filter(stream => !stream.closed && stream.url === '/api/events').forEach(stream => stream.emit('open')));
+        await refresh.started;
         try {
-          await mobileTerminalSurface(page).locator('.mobile-epic-output-toolbar').getByRole('button', { name: 'run details', exact: true }).click();
-          await expect.poll(() => requested).toBe(true);
+          await expect(loadingStatus(page)).toBeHidden();
           await mobileComposer(page).click();
           await page.keyboard.type('Draft before details arrive');
           await expect(mobileComposer(page)).toBeFocused();
-          release();
+          const description = 'Supervisor description refreshed while composing.';
+          await settleRead(page, refresh, { value: { ...fixture.records.get('primary/' + supervisorID), description } });
+          await page.waitForFunction(description => Alpine.$data(document.body).selectedTicket?.description === description, description);
           await page.waitForFunction(() => !Alpine.$data(document.body).detailLoading && Alpine.$data(document.body).terminalConnected);
           assert.deepEqual(await page.evaluate(() => {
             const app = Alpine.$data(document.body);
@@ -4912,7 +4920,7 @@ describe('phone inline terminal and focused description', () => {
           await expect(mobileTerminalSurface(page).getByRole('button', { name: 'Send', exact: true })).toBeEnabled();
           await mobileTerminalDone(page).click();
           await page.waitForFunction(() => !Alpine.$data(document.body).terminalRW && !Alpine.$data(document.body).mobileTerminalInputTarget);
-        } finally { release(); }
+        } finally { refresh.release(); }
       });
     });
 

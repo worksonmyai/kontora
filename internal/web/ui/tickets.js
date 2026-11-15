@@ -5,6 +5,10 @@
 // snapshots anyway.
 const SSE_OPEN_WAIT_MS = 1500;
 
+function quoteShellArg(s) {
+  return "'" + s.replaceAll("'", "'\\''") + "'";
+}
+
 export function kontoraTickets() {
   // Resolves the first load's wait for the event stream; null once released.
   let initialSnapshot = null;
@@ -748,7 +752,7 @@ export function kontoraTickets() {
       if (!this.workflowWaiting(t)) return '';
       if (w.disarmed) return 'Wait is disarmed. Inspect diagnostics, then explicitly retry to rearm; retry does not release the wait.';
       if (w.kind === 'human') return 'kontora release ' + t.id + ' --execution-id ' + x.execution_id + ' --wait-id ' + w.id + ' --revision ' + x.revision + ' --request-id <unique-id> --reason <reason>';
-      if (w.kind === 'deployment') return 'Report the actual full deployed commit (required: ' + w.required_commit + '): kontora release --repo ' + JSON.stringify(w.worktree) + ' --environment ' + JSON.stringify(w.environment) + ' --rev <full-deployed-commit> --event-id <unique-id>';
+      if (w.kind === 'deployment') return 'Report the actual full deployed commit (required: ' + w.required_commit + '): kontora release --repo ' + quoteShellArg(w.worktree) + ' --environment ' + quoteShellArg(w.environment) + ' --rev <full-deployed-commit> --event-id <unique-id>';
       return 'The daemon resumes this visit automatically when the timer or check is satisfied, or its deadline expires.';
     },
 

@@ -438,7 +438,7 @@ func (m detailModel) ticketContent() string {
 			} else if x.Wait.Kind == "human" {
 				fmt.Fprintf(&b, "release: kontora release %s --execution-id %s --wait-id %s --revision %d --request-id <unique-id> --reason <reason>\n", m.ticket.ID, x.ExecutionID, x.Wait.ID, x.Revision)
 			} else if x.Wait.Kind == "deployment" {
-				fmt.Fprintf(&b, "release: kontora release --repo %q --environment %q --rev <actual-full-deployed-commit> --event-id <unique-id>\n", x.Wait.Worktree, x.Wait.Environment)
+				fmt.Fprintf(&b, "release: kontora release --repo %s --environment %s --rev <actual-full-deployed-commit> --event-id <unique-id>\n", cli.QuoteShellArg(x.Wait.Worktree), cli.QuoteShellArg(x.Wait.Environment))
 			}
 		}
 		for i := range x.WaitHistory {

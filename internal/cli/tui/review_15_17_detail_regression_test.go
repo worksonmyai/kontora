@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -16,14 +18,24 @@ import (
 )
 
 func TestReview15DeploymentDetailUsesCheckout(t *testing.T) {
-	info := tuiGraphTicket()
-	w := &ticket.WorkflowWait{ID: "deployment", Kind: "deployment", Phase: "pending",
-		Repository: "/repos/project/.git", Worktree: "/checkouts/release candidate", Environment: "production"}
-	info.GraphExecution.Wait = w
-	content := newDetailModel(info, 160, 70).ticketContent()
-	require.Contains(t, content, fmt.Sprintf("release: kontora release --repo %q --environment %q", w.Worktree, w.Environment))
-	require.Contains(t, content, "--rev <actual-full-deployed-commit> --event-id <unique-id>")
-	require.NotContains(t, content, fmt.Sprintf("--repo %q", w.Repository))
+	for _, value := range []string{"release candidate", "release'$HOME`exit 91`$(exit 92)\\雪\nnext"} {
+		t.Run(value, func(t *testing.T) {
+			info := tuiGraphTicket()
+			w := &ticket.WorkflowWait{ID: "deployment", Kind: "deployment", Phase: "pending",
+				Repository: "/repos/project/.git", Worktree: "/checkouts/" + value, Environment: value}
+			info.GraphExecution.Wait = w
+			content := newDetailModel(info, 160, 70).ticketContent()
+			require.Contains(t, content, "--rev <actual-full-deployed-commit> --event-id <unique-id>")
+			_, args, ok := strings.Cut(content, "release: kontora release ")
+			require.True(t, ok)
+			args, _, ok = strings.Cut(args, " --rev ")
+			require.True(t, ok)
+			require.NotContains(t, args, w.Repository)
+			out, err := exec.Command("sh", "-c", "printf '%s\\0' "+args).Output()
+			require.NoError(t, err)
+			require.Equal(t, []string{"--repo", w.Worktree, "--environment", w.Environment, ""}, strings.Split(string(out), "\x00"))
+		})
+	}
 }
 
 func TestReview16ConnectedTUIKeepsExactPlaintextTranscript(t *testing.T) {

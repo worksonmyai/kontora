@@ -2604,11 +2604,10 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 	return d.finishAttempt(taskCtx, t, p, attempt)
 }
 
-// recordStageRun reports one finished stage run. A run that ends while the
-// ticket's context is cancelled is neither a success nor a failure of the
-// stage, so it is reported as cancelled; anything that pauses the ticket or
-// exits non-zero is a failure, including a runner that never produced an exit
-// code.
+// recordStageRun reports one finished stage run. An explicit pause reason is
+// a failure, even if shutdown cancels the context while the pause is saved.
+// Otherwise, a cancelled context marks an interrupted run. Non-zero exits and
+// runner failures are failures when the context is still live.
 //
 // An annotation run comes through here under the stage's own name, so it is
 // marked as one: the pipeline never evaluated that stage and it did none of the
@@ -2617,7 +2616,7 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 func (d *Daemon) recordStageRun(taskCtx context.Context, p spawnAgentParams, attempt agentAttempt, elapsed time.Duration) {
 	outcome := metrics.OutcomeFailure
 	switch {
-	case taskCtx.Err() != nil:
+	case attempt.pauseReason == "" && taskCtx.Err() != nil:
 		outcome = metrics.OutcomeCancelled
 	case attempt.ok && attempt.pauseReason == "" && attempt.run.Result.ExitCode == 0:
 		outcome = metrics.OutcomeSuccess

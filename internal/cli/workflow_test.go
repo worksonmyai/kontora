@@ -146,11 +146,11 @@ func TestWorkflowDefinitionHasNoPositionalProgress(t *testing.T) {
 
 func TestWorkflowWaitDisplay(t *testing.T) {
 	at := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	for _, tc := range []struct{ kind, want string }{{"check", "completed polls 2"}, {"human", "--wait-id wait --revision 7"}, {"deployment", "--event-id EVENT_ID"}} {
+	for _, tc := range []struct{ kind, want string }{{"check", "completed polls 2"}, {"human", "--wait-id wait --revision 7"}, {"deployment", "--environment 'production'\\''$HOME`exit 91`$(exit 92)' --rev DEPLOYED_FULL_COMMIT --event-id EVENT_ID"}} {
 		t.Run(tc.kind, func(t *testing.T) {
 			var out bytes.Buffer
 			PrintWorkflow(&out, nil, &app.GraphExecutionView{ExecutionID: "exec", Revision: 7, WakeCount: 1,
-				Wait: &ticket.WorkflowWait{ID: "wait", Kind: tc.kind, Phase: "pending", Deadline: at, NextPoll: at, PollCount: 2, Next: "Read evidence", Output: "probe output", OutputTruncated: true}})
+				Wait: &ticket.WorkflowWait{ID: "wait", Kind: tc.kind, Environment: "production'$HOME`exit 91`$(exit 92)", Phase: "pending", Deadline: at, NextPoll: at, PollCount: 2, Next: "Read evidence", Output: "probe output", OutputTruncated: true}})
 			for _, want := range []string{"Waiting:", tc.want, "2030-01-01T00:00:00Z", "Read evidence", "probe output", "truncated", "wakes:     1"} {
 				assert.Contains(t, out.String(), want)
 			}

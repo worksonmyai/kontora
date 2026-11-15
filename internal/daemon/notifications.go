@@ -76,7 +76,7 @@ func (d *Daemon) notifyTarget(t *ticket.Ticket) notifyTarget {
 		} else if w.Kind == "human" {
 			question += fmt.Sprintf("; release with kontora release %s --execution-id %s --wait-id %s --revision %d --request-id <unique-id> --reason <reason>", t.ID, t.GraphState.ExecutionID, w.ID, t.GraphState.Revision)
 		} else if w.Kind == "deployment" {
-			question += fmt.Sprintf("; report the actual deployed commit with kontora release --repo %q --environment %q --rev <full-commit> --event-id <unique-id>; required commit %s", w.Worktree, w.Environment, w.RequiredCommit)
+			question += fmt.Sprintf("; report the actual deployed commit with kontora release --repo %s --environment %s --rev <full-commit> --event-id <unique-id>; required commit %s", shellQuote(w.Worktree), shellQuote(w.Environment), w.RequiredCommit)
 		}
 	}
 	return notifyTarget{

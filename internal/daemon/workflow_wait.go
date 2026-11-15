@@ -277,11 +277,31 @@ func (d *Daemon) workflowControlOnlyLocked(t *ticket.Ticket) bool {
 	return ok && (node.Type == "wait" || node.Type == "end")
 }
 func (d *Daemon) workflowWaitLoop(ctx context.Context) {
+	ctx, cancel := context.WithCancel(ctx)
+	// One worker and one coalesced request keep receipt history off the timer
+	// path without creating a goroutine or a queued scan for every wake.
+	events := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-events:
+				d.reconcileWorkflowEventsContext(ctx)
+			}
+		}
+	}()
+	defer func() { cancel(); <-done }()
 	for ctx.Err() == nil {
 		d.reconcileControlTransitions()
-		d.reconcileWorkflowEvents()
 		d.reconcileWorkflowWaits(ctx)
 		d.reconcileControlCleanup()
+		select {
+		case events <- struct{}{}:
+		default:
+		}
 		clock := d.workflowClock
 		if clock == nil {
 			clock = realWorkflowWaitClock{}
@@ -386,7 +406,7 @@ func (d *Daemon) reconcileWorkflowWaits(ctx context.Context) {
 		if active != nil {
 			continue
 		}
-		if reason != "" {
+		if reason != "" && d.canExpireWorkflowWait(t) {
 			saved, err := d.patchWorkflowWait(t, ts.filePath, func(current *ticket.Ticket) error { return d.applyWaitReason(current, reason) })
 			if err == nil {
 				d.enqueueWorkflowContinuation(saved)
@@ -396,6 +416,17 @@ func (d *Daemon) reconcileWorkflowWaits(ctx context.Context) {
 		if w.Kind == "check" && !now.Before(w.NextPoll) {
 			d.queueWorkflowProbe(t, ts.filePath)
 		}
+	}
+}
+
+// Accepted releases retain authority past the deadline while event recovery
+// applies their journaled transitions. Unreadable journals also prevent expiry.
+func (d *Daemon) canExpireWorkflowWait(t *ticket.Ticket) bool {
+	switch workflowWait(t).Kind {
+	case "human", "deployment":
+		return d.checkAcceptedWaitRelease(t, "") == nil
+	default:
+		return true
 	}
 }
 

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 
 	"github.com/worksonmyai/kontora/internal/pipeline"
@@ -253,6 +253,15 @@ func (d *Daemon) WorkflowRelease(id string, req web.WorkflowReleaseRequest) (*ti
 // DeploymentRelease records immutable local evidence. There is no ticket
 // argument, no ref/HEAD substitution for Commit, and no network Git operation.
 func (d *Daemon) DeploymentRelease(req web.DeploymentReleaseRequest) (*ticket.WorkflowReceipt, error) {
+	receipt, err := d.acceptDeploymentRelease(req)
+	if err == nil {
+		d.reconcileWorkflowDeployment(context.Background(), d.workflowEventPath("deployment", req.EventID), make(deploymentMatchCache))
+		d.signalWorkflowWait()
+	}
+	return receipt, err
+}
+
+func (d *Daemon) acceptDeploymentRelease(req web.DeploymentReleaseRequest) (*ticket.WorkflowReceipt, error) {
 	if err := req.Validate(); err != nil {
 		return nil, workflowReleaseConflict(err.Error())
 	}
@@ -297,22 +306,35 @@ func (d *Daemon) DeploymentRelease(req web.DeploymentReleaseRequest) (*ticket.Wo
 // startup. Corrupt or unreadable events are skipped here, but block new
 // applications when checking for competing receipts.
 func (d *Daemon) reconcileWorkflowEvents() {
-	workflowEventsMu.Lock()
-	defer workflowEventsMu.Unlock()
-	d.reconcileControlTransitionsLocked()
+	d.reconcileWorkflowEventsContext(context.Background())
+}
+
+func (d *Daemon) reconcileWorkflowEventsContext(ctx context.Context) {
+	d.reconcileControlTransitions()
 	paths, err := filepath.Glob(filepath.Join(d.workflowEventsDir(), "*.json"))
 	if err != nil {
 		return
 	}
 	// Glob's sorted order supplies deterministic historical matching; receipts
 	// prove an occurrence, not which commit is currently deployed.
+	cache := make(deploymentMatchCache)
 	for _, path := range paths {
+		if ctx.Err() != nil {
+			return
+		}
+		workflowEventsMu.Lock()
 		event, err := readWorkflowEvent(path)
+		if err == nil {
+			d.reconcileWorkflowEvent(path, event)
+		}
+		workflowEventsMu.Unlock()
 		if err != nil {
 			d.log.Error("read workflow event", "path", path, "err", err)
 			continue
 		}
-		d.reconcileWorkflowEvent(path, event)
+		if event.Kind == "deployment" {
+			d.reconcileWorkflowDeployment(ctx, path, cache)
+		}
 	}
 }
 
@@ -326,68 +348,6 @@ func (d *Daemon) reconcileWorkflowEvent(path string, event *workflowEvent) {
 			if err := saveWorkflowEvent(path, event); err != nil {
 				return
 			}
-		}
-	}
-	if event.Kind != "deployment" {
-		return
-	}
-	var candidates []*app.StoredTicket
-	err := d.withTicketMutation(func(repo app.MutationRepository) error {
-		stored, err := repo.List()
-		if err != nil {
-			return err
-		}
-		for _, st := range stored {
-			w := workflowWait(st.Ticket)
-			if w == nil || w.Kind != "deployment" || w.Phase != "pending" || w.Disarmed ||
-				w.Repository != event.Receipt.Repository || w.Environment != event.Receipt.Environment {
-				continue
-			}
-			if _, err := d.workflowActionTicket(repo, st.Ticket.ID, false); err != nil {
-				continue
-			}
-			candidates = append(candidates, &app.StoredTicket{Ticket: st.Ticket.Clone(), FilePath: st.FilePath})
-		}
-		return nil
-	})
-	if err != nil {
-		return
-	}
-	slices.SortFunc(candidates, func(a, b *app.StoredTicket) int {
-		if a.Ticket.ID < b.Ticket.ID {
-			return -1
-		}
-		if a.Ticket.ID > b.Ticket.ID {
-			return 1
-		}
-		return 0
-	})
-	for _, st := range candidates {
-		t, w := st.Ticket, st.Ticket.GraphState.Wait
-		if workflowEventHasApplication(event, t) {
-			continue
-		}
-		if err := validateWaitWorkspace(t, w); err != nil {
-			continue
-		}
-		matches, err := worktree.DeploymentMatches(expandTilde(t.Path), event.Receipt.Repository, w.RequiredCommit, event.Receipt.Commit)
-		if err != nil || !matches {
-			continue
-		}
-		application, err := d.releaseApplication(t, st.FilePath, event.Receipt)
-		if err != nil {
-			continue
-		}
-		event.Applications = append(event.Applications, application)
-		if err := saveWorkflowEvent(path, event); err != nil {
-			return
-		}
-		if err := d.applyWorkflowEvent(event, application); err != nil {
-			continue
-		}
-		application.Applied = true
-		if err := saveWorkflowEvent(path, event); err != nil {
-			return
 		}
 	}
 }

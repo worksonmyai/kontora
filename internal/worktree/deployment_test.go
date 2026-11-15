@@ -1,12 +1,14 @@
 package worktree
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -92,6 +94,8 @@ func TestDeploymentRejectsNonCommitInputs(t *testing.T) {
 	for _, invalid := range []string{
 		"", "HEAD", "refs/heads/main", "annotated", oid[:12], oid + "^", oid + "^{commit}",
 		strings.ToUpper(oid), "--all", strings.Repeat("g", 40), strings.Repeat("0", 40),
+		"--" + strings.Repeat("a", 38), "$(touch injected)" + strings.Repeat("a", 23),
+		strings.Repeat("a", 39) + "\n", strings.Repeat("a", 39) + "\x00",
 		revParse(t, repo, "HEAD^{tree}"), revParse(t, repo, "HEAD:README.md"),
 		revParse(t, repo, "annotated"),
 	} {
@@ -255,6 +259,51 @@ func TestDeploymentInvalidWorktrees(t *testing.T) {
 		require.Empty(t, identity)
 		require.Empty(t, commit)
 	}
+}
+
+func TestDeploymentMatchesCancellation(t *testing.T) {
+	// The wrapper stalls a real history read, not repository setup or validation.
+	repo := initRepo(t)
+	first := revParse(t, repo, "HEAD")
+	second := exactCommitFile(t, repo, "next", "next")
+	repository, _, err := DeploymentEvidence(repo, repo)
+	require.NoError(t, err)
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	bin := t.TempDir()
+	started := filepath.Join(bin, "started")
+	script := fmt.Sprintf("#!/bin/sh\nfor arg do\n if [ \"$arg\" = rev-list ]; then touch %q; exec sleep 30; fi\ndone\nexec %q \"$@\"\n", started, realGit)
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0700))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		matches, err := DeploymentMatchesContext(ctx, repo, repository, first, second)
+		if matches {
+			err = fmt.Errorf("canceled traversal supplied deployment proof")
+		}
+		done <- err
+	}()
+	require.Eventually(t, func() bool { _, err := os.Stat(started); return err == nil }, 2*time.Second, 10*time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled Git traversal did not stop")
+	}
+	ctx, cancelDeadline := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelDeadline()
+	matches, err := DeploymentMatchesContext(ctx, repo, repository, first, second)
+	require.False(t, matches)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	// The compatibility entry point must also bound a stuck Git read.
+	before := time.Now()
+	matches, err = DeploymentMatches(repo, repository, first, second)
+	require.False(t, matches)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(before), deploymentReadTimeout+2*time.Second)
 }
 
 func TestDeploymentRestrictedGit(t *testing.T) {

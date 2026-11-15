@@ -87,6 +87,11 @@ func PrintWorkflow(w io.Writer, definition *app.GraphDefinitionView, execution *
 	printWorkflowTrace(w, execution)
 }
 
+// QuoteShellArg prevents expansion when an operator copies a generated command.
+func QuoteShellArg(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 func printWorkflowWait(w io.Writer, definition *app.GraphDefinitionView, execution *app.GraphExecutionView) {
 	if wait := execution.Wait; wait != nil {
 		fmt.Fprintf(w, "Waiting:   %s (%s, wait %s)\n", wait.Kind, wait.Phase, wait.ID)
@@ -127,7 +132,7 @@ func printWorkflowWait(w io.Writer, definition *app.GraphDefinitionView, executi
 			fmt.Fprintf(w, "release:   kontora release --execution-id %s --wait-id %s --revision %d --request-id REQUEST --reason REASON TICKET_ID\n", execution.ExecutionID, wait.ID, execution.Revision)
 		}
 		if wait.Kind == "deployment" {
-			fmt.Fprintf(w, "release:   kontora release --repo REPO --environment %q --rev DEPLOYED_FULL_COMMIT --event-id EVENT_ID (required commit %s)\n", wait.Environment, wait.RequiredCommit)
+			fmt.Fprintf(w, "release:   kontora release --repo REPO --environment %s --rev DEPLOYED_FULL_COMMIT --event-id EVENT_ID (required commit %s)\n", QuoteShellArg(wait.Environment), wait.RequiredCommit)
 		}
 	}
 	if execution.Wake != nil {

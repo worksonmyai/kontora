@@ -79,7 +79,7 @@ export function kontoraLifecycle() {
       if (ticket.kind === 'epic' && !this.epicIsAgent(ticket)) return [];
       const statuses = [...new Set(MOVE_STATUSES.concat(this.configCache?.custom_statuses || []))];
       return statuses.filter(status => status !== ticket.status &&
-        !(status === 'paused' && ['done', 'cancelled'].includes(ticket.status)))
+        (status !== 'paused' || this.executionActive(ticket) || this.workflowWaiting?.(ticket)))
         .map(status => this.lifecycleCommand(subject, 'move:' + status));
     },
 

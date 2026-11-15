@@ -2061,47 +2061,83 @@ history:
 		assert.Equal(t, first.ETag, again.ETag)
 	})
 
-	t.Run("an older run without a sidecar is stale plaintext", func(t *testing.T) {
-		got, err := d.GetActivity(web.ActivityQuery{ID: "tst-act", Stage: "step1", Run: 0})
-		require.NoError(t, err)
-		assert.Equal(t, "log", got.Source)
-		assert.True(t, got.Stale, "run 0 is not the newest run of step1")
-		assert.Equal(t, "newest run output", got.Content)
-		assert.Nil(t, got.Tape)
-	})
+	modernHistory := []ticket.HistoryEntry{{Stage: "step1"}, {Stage: "step1", Run: 1}}
+	legacyHistory := []ticket.HistoryEntry{
+		{Stage: "step1"}, {Stage: "step2"}, {Stage: "step1"}, {Stage: "step1"},
+	}
+	graphHistory := []ticket.HistoryEntry{
+		{Stage: "step1", NodeVisitID: "first"},
+		{Stage: "step1", NodeVisitID: "second", Run: 1},
+		{Stage: "step1", NodeVisitID: "second", Run: 2},
+	}
+	for _, tc := range []struct {
+		name       string
+		history    []ticket.HistoryEntry
+		run        int
+		running    bool
+		graphVisit string
+		logFile    string
+		stale      bool
+		live       bool
+	}{
+		{name: "an older run without a sidecar is stale plaintext", history: modernHistory, stale: true},
+		{name: "the newest run without a sidecar is not stale", history: modernHistory, run: 1},
+		{name: "legacy first occurrence is stale", history: legacyHistory, stale: true},
+		{name: "legacy middle occurrence is stale", history: legacyHistory, run: 1, stale: true},
+		{name: "legacy newest occurrence is not stale", history: legacyHistory, run: 2},
+		{name: "another stage does not make the latest occurrence stale", history: legacyHistory[:2]},
+		{name: "stored run values do not define artifact indexes", run: 1,
+			history: []ticket.HistoryEntry{{Stage: "step1", Run: 3}, {Stage: "step1", Run: 7}}},
+		{name: "a fallback taken while the stage runs again is stale", history: modernHistory[:1], running: true, stale: true},
+		{name: "legacy latest finished occurrence is stale while running", history: legacyHistory, run: 2, running: true, stale: true},
+		{name: "legacy live occurrence uses the next index", history: legacyHistory, run: 3, running: true, stale: true, live: true},
+		{name: "a fallback without history is not stale"},
+		{name: "an earlier graph visit is not stale", history: graphHistory, logFile: "step1.first.log"},
+		{name: "a retried graph visit shares stale output", history: graphHistory, run: 1, logFile: "step1.second.log", stale: true},
+		{name: "the latest graph retry is not stale", history: graphHistory, run: 2, logFile: "step1.second.log"},
+		{name: "a graph visit running again is stale", history: graphHistory, run: 2, running: true,
+			graphVisit: "second", logFile: "step1.second.log", stale: true},
+		{name: "another running graph visit does not make an earlier visit stale", history: graphHistory, running: true,
+			graphVisit: "second", logFile: "step1.first.log"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.cfg)
+			status := "paused"
+			if tc.running {
+				status = "in_progress"
+			}
+			tk, err := ticket.ParseBytes([]byte(h.taskMD("tst-fallback", status, "retry-stage")))
+			require.NoError(t, err)
+			require.NoError(t, tk.SetField("stage", "step1"))
+			require.NoError(t, tk.SetField("history", tc.history))
+			if tc.graphVisit != "" {
+				require.NoError(t, tk.SetField("graph_state", &ticket.GraphState{VisitID: tc.graphVisit}))
+			}
+			data, err := tk.Marshal()
+			require.NoError(t, err)
+			path := h.writeTicket(tk.ID+".md", string(data))
+			d.tickets[tk.ID] = newTicketState(tk, path)
 
-	t.Run("a fallback taken while the stage runs again is stale", func(t *testing.T) {
-		running := h.writeTicket("tst-live.md", `---
-id: tst-live
-kontora: true
-status: in_progress
-pipeline: retry-stage
-stage: step1
-history:
-  - stage: step1
-    agent: agent1
-    exit_code: 1
-    run: 0
----
-# Live ticket
-`)
-		tk, err := ticket.ParseFile(running)
-		require.NoError(t, err)
-		d.tickets["tst-live"] = newTicketState(tk, running)
+			logDir := filepath.Join(h.logsDir, tk.ID)
+			require.NoError(t, os.MkdirAll(logDir, 0o755))
+			logFile := tc.logFile
+			if logFile == "" {
+				logFile = "step1.log"
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(logDir, logFile), []byte("newest run output"), 0o644))
 
-		liveDir := filepath.Join(h.logsDir, "tst-live")
-		require.NoError(t, os.MkdirAll(liveDir, 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(liveDir, "step1.log"),
-			[]byte("run 0 output, then the live run appended"), 0o644))
-
-		// Run 0 is the newest run in history, but step1 is running again and
-		// appending to the same file, so its bytes are not run 0's alone.
-		got, err := d.GetActivity(web.ActivityQuery{ID: "tst-live", Stage: "step1", Run: 0})
-		require.NoError(t, err)
-		assert.Equal(t, "log", got.Source)
-		assert.True(t, got.Stale)
-		assert.False(t, got.Live, "run 0 has finished; the run in flight is run 1")
-	})
+			got, err := d.GetActivity(web.ActivityQuery{ID: tk.ID, Stage: "step1", Run: tc.run})
+			require.NoError(t, err)
+			assert.Equal(t, "log", got.Source)
+			assert.Equal(t, "step1", got.Stage)
+			assert.Equal(t, tc.run, got.Run)
+			assert.Equal(t, tc.stale, got.Stale)
+			assert.Equal(t, tc.live, got.Live)
+			assert.Equal(t, "newest run output", got.Content)
+			assert.Nil(t, got.Tape)
+		})
+	}
 
 	t.Run("an unknown ticket is not found", func(t *testing.T) {
 		_, err := d.GetActivity(web.ActivityQuery{ID: "nope", Stage: "step1", Run: 0})

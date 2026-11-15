@@ -5946,8 +5946,14 @@ describe('kon91cx core detail workflows', () => {
       await scroller.evaluate(el => { el.scrollTop = 200; });
       const top = await scroller.evaluate(el => el.scrollTop);
       assert.ok(top > 0);
+      await detailPanel(page, 'Notes');
+      await detailPanel(page, 'Output');
+      await expect.poll(() => scroller.evaluate(el => el.scrollTop)).toBe(top);
+      await detailPanel(page, 'Notes');
       await routeTo(page, '#/archive/t/kon-archived');
       await page.goBack(); await ready(page);
+      await visible(page.getByRole('textbox', { name: 'Add a note', exact: true }).filter({ visible: true }));
+      await detailPanel(page, 'Output');
       await visible(scroller.getByText('Restorable activity row 79', { exact: true }));
       assert.equal(await page.evaluate(() => Alpine.$data(document.body).outputRunKey()), 'code#1');
       await expect(page.getByRole('combobox', { name: 'Run', exact: true }).filter({ visible: true })).toHaveValue('code#1');

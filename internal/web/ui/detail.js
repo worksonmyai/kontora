@@ -508,7 +508,9 @@ export function kontoraDetail() {
       // The live session only exists while a stage runs. Asking for it on a
       // finished ticket lands on that stage's transcript instead.
       if (tab === 'session' && !this.executionActive(this.selectedTicket)) tab = 'activity';
-      if (tab !== this.activeTab) {
+      var changed = tab !== this.activeTab;
+      if (changed) {
+        this.rememberDetailView();
         this._invalidateStageLogs();
         this._invalidateRawLog();
       }
@@ -544,6 +546,7 @@ export function kontoraDetail() {
       if ((tab === 'summary' || tab === 'diff') && this.selectedTicket) {
         this.fetchChanges(this.selectedTicket.id);
       }
+      if (changed) this.restoreDetailScroll();
     },
 
     closeDetail(writeRoute = true) {

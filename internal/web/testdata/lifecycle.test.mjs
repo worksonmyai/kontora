@@ -32,6 +32,26 @@ test('destinations are configured, not inferred from observed board columns', ()
   assert.equal(a.lifecycleDestinations({ source: 'secondary', id: 'a' }).length, 0);
 });
 
+test('Paused destinations require running execution or workflow wait authority', async () => {
+  const cases = [
+    ...['open', 'todo', 'human_review', 'paused', 'done', 'cancelled', 'waiting_external'].map(status => [{ status }, false]),
+    [{ status: 'in_progress' }, true],
+    [{ status: 'waiting_external', execution_active: true }, true],
+    [{ status: 'paused', graph_execution: { wait: { id: 'wait-1' } } }, true],
+  ];
+  for (const [fields, canPause] of cases) {
+    const a = app(); let moves = 0;
+    a.tickets[0] = { ...a.tickets[0], ...fields };
+    a._moveTaskTransport = async () => { moves++; return { outcome: 'success' }; };
+    const canMove = canPause && fields.status !== 'paused';
+    const label = JSON.stringify(fields);
+    assert.equal(a.lifecycleDestinations('a').some(d => d.status === 'paused'), canMove, label);
+    assert.equal(!!a._lifecycleAllowed(a.tickets[0], a.lifecycleCommand('a', 'pause')), canPause, label);
+    assert.equal((await a.dispatchLifecycle('a', 'move:paused')).outcome, canMove ? 'success' : 'refused', label);
+    assert.equal(moves, canMove ? 1 : 0, label);
+  }
+});
+
 test('paused to Open is one move and preserves execution fields', async () => {
   const a = app(); const calls = [];
   const oldFetch = globalThis.fetch;

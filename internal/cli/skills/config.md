@@ -175,6 +175,8 @@ projects:
 | `prefix` | Pin the ticket id prefix instead of deriving it from the directory name. |
 | `branch_prefix`, `branch_naming` | Override the top-level branch settings. |
 | `hooks` | Lifecycle hooks scoped to this project. |
+| `notify` | Optional status default before global `notifications.default_statuses`. `[]` means Off. |
+| `notify_channels` | Channel override before `notifications.default`; `[none]` silences delivery. |
 
 The name is what `--project` on `ls`, `search`, `archive` and `stats` matches.
 Two projects may not resolve to the same directory. Matching is lexical after
@@ -208,6 +210,53 @@ initialization can fill the blank unless the caller opts out again. Project
 
 Browser inheritance omits `pipeline`; standalone sends `none`. The backend resolves
 current defaults at submission, independently of the preview snapshot.
+
+## notifications
+
+Status defaults and delivery routes are separate:
+
+```yaml
+notifications:
+  default_statuses: [paused, human_review, waiting] # Optional; initially unset.
+```
+
+Status selection uses the first applicable list, without merging:
+
+1. Explicit request.
+2. Saved ticket `notify`.
+3. Project `notify`.
+4. Global `notifications.default_statuses`.
+5. No subscription.
+
+An empty status list means persistent Off. Missing, null, or blank ticket statuses
+are unset. Project and global defaults accept known statuses and `waiting`, never
+`none`, even as a custom status. Config export preserves missing versus empty lists.
+
+Defaults apply at ordinary creation and explicit initialization/starts, including
+unset older/imported tickets. Starts include run, retry, move to `todo`, advancing
+skip, workflow restart, and reviewer-requested rework or annotation runs.
+Initialization uses the final path. Epic creation skips defaults; activation
+applies them only to the supervisor, not its children.
+Startup, imports, reloads, automatic pickup, stage progression, and wakes do not add subscriptions.
+Saved choices survive default changes.
+
+Settings edits global statuses with shared presets or custom lists and reloads live.
+Start dialogs preselect saved choices or effective defaults. Untouched forms follow
+path/config changes and omit `notify`; saved or edited choices submit explicit arrays.
+Start dialogs require loaded config and a route, explicit silence, or Off.
+Channel-only edits keep unset statuses unset.
+There is no dashboard reset-to-default action. Remove stored `notify` manually to restore default eligibility.
+
+`notify: []` stays Off across starts and returns `[]` through the ticket API.
+Older versions deleted Off choices, so those tickets inherit at their next explicit
+start unless the user selects Off again. Upgrade all participating clients and daemons;
+older writers can delete the empty-list marker, and older loaders reject `default_statuses`.
+
+Routes still use ticket `notify_channels`, project `notify_channels`, then
+`notifications.default`. `notify_channels: []` removes an override; `[none]` silences it.
+`enabled` controls delivery; `all_changes` includes command/API/dashboard/file status changes.
+Neither switch changes status defaults. Defaults validate without channels, but delivery needs a route.
+`waiting` covers only live Pi questions, not Claude questions or durable workflow wakes.
 
 ## statuses
 
@@ -335,6 +384,8 @@ The CLI reads `editor` and `pager` on the next command.
 Run settings apply to the next run, never to one already going.
 Pipeline defaults affect later creation and initialization, not existing assignments.
 Initialization preserves stored nonempty pipelines.
+Notification defaults affect later ordinary creation and explicit initialization/starts,
+not saved choices or automatic lifecycle transitions.
 An invalid child-pipeline reference rejects the reload and keeps the running config.
 
 `max_concurrent_agents` and `max_concurrent_epic_supervisors` reload live.

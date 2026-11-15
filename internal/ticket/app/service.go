@@ -170,6 +170,9 @@ func (s *Service) setStatus(id string, status ticket.Status) (Result, error) {
 		if err := ValidateWorkflowReentry(s.cfg(), st.Ticket); err != nil {
 			return Result{}, err
 		}
+		if _, err := ApplyNotifyDefaults(s.cfg(), st.Ticket); err != nil {
+			return Result{}, err
+		}
 	}
 
 	if err := st.Ticket.SetField("kontora", true); err != nil {
@@ -276,6 +279,9 @@ func (s *Service) retry(id string) (Result, error) {
 	if err := retryWorkflow(s.cfg(), st.Ticket); err != nil {
 		return Result{}, err
 	}
+	if _, err := ApplyNotifyDefaults(s.cfg(), st.Ticket); err != nil {
+		return Result{}, err
+	}
 	if err := st.Ticket.SetField("attempt", 0); err != nil {
 		return Result{}, fmt.Errorf("setting attempt: %w", err)
 	}
@@ -347,6 +353,9 @@ func (s *Service) skip(id string) (Result, error) {
 		}
 	} else {
 		// Advance to next stage.
+		if _, err := ApplyNotifyDefaults(s.cfg(), t); err != nil {
+			return Result{}, err
+		}
 		newStatus = string(ticket.StatusTodo)
 		if err := t.SetField("stage", pipelineCfg[currentIdx+1].Stage); err != nil {
 			return Result{}, fmt.Errorf("setting stage: %w", err)
@@ -478,7 +487,7 @@ func (s *Service) resolveInitFields(cfg *config.Config, t *ticket.Ticket, req In
 // applyInitFields writes the run's fields onto the ticket. It is a function of
 // its own because Init is at gocyclo's ceiling. Nothing is saved here: the
 // caller writes the file once, after the status is settled too.
-func applyInitFields(t *ticket.Ticket, req InitRequest, pipeline, agent string) error {
+func applyInitFields(cfg *config.Config, t *ticket.Ticket, req InitRequest, pipeline, agent string) error {
 	if err := t.SetField("pipeline", pipeline); err != nil {
 		return fmt.Errorf("setting pipeline: %w", err)
 	}
@@ -506,13 +515,28 @@ func applyInitFields(t *ticket.Ticket, req InitRequest, pipeline, agent string) 
 	if err := SetNotifyFields(t, req.Notify, req.NotifyChannels); err != nil {
 		return err
 	}
-	return nil
+	_, err := ApplyNotifyDefaults(cfg, t)
+	return err
 }
 
-// SetNotifyFields writes the two notification fields, or removes them. A nil
-// slice is a caller that said nothing about the field and leaves it as it is;
-// an empty non-nil one deletes the key rather than leaving `notify: []` behind,
-// so a ticket that asks for nothing reads the way one that never asked does.
+// ApplyNotifyDefaults copies status defaults only when the ticket has no saved
+// choice. Callers save the ticket before publishing an explicit execution request.
+func ApplyNotifyDefaults(cfg *config.Config, t *ticket.Ticket) (bool, error) {
+	if t.Notify.Statuses != nil {
+		return false, nil
+	}
+	statuses := cfg.NotifyDefaultFor(t.Path)
+	if statuses == nil {
+		return false, nil
+	}
+	if err := t.SetField(ticket.FieldNotify, statuses); err != nil {
+		return false, fmt.Errorf("setting %s: %w", ticket.FieldNotify, err)
+	}
+	return true, nil
+}
+
+// SetNotifyFields leaves nil inputs unchanged. Empty statuses persist Off;
+// empty channels remove the route override.
 func SetNotifyFields(t *ticket.Ticket, notify, channels []string) error {
 	for _, f := range []struct {
 		key  string
@@ -522,7 +546,7 @@ func SetNotifyFields(t *ticket.Ticket, notify, channels []string) error {
 			continue
 		}
 		var err error
-		if len(f.list) == 0 {
+		if f.key == ticket.FieldNotifyChannels && len(f.list) == 0 {
 			err = t.DeleteField(f.key)
 		} else {
 			err = t.SetField(f.key, f.list)
@@ -599,7 +623,7 @@ func (s *Service) init(id string, req InitRequest) (Result, error) {
 		return Result{}, err
 	}
 
-	if err := applyInitFields(t, req, pipeline, agent); err != nil {
+	if err := applyInitFields(cfg, t, req, pipeline, agent); err != nil {
 		return Result{}, err
 	}
 	if err := initStage(cfg, t, req, reinit, prevPipeline, prevStage); err != nil {

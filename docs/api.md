@@ -20,7 +20,7 @@ When the web server is enabled, the following endpoints are exposed:
 |----------|-------------|
 | `GET /` | Static dashboard UI. |
 | `GET /api/tickets` | List all board tickets (JSON). `?all=true` adds the ones whose status has no board column: archived, legacy `closed`, and any foreign status. |
-| `POST /api/tickets` | Create a new ticket (JSON body: `title`, `path`, optional `pipeline`, `agent`, `status`, `body`, `branch`, `base_branch`, `scheduled_at`, `kind`, `parent`, `notify`, `notify_channels`). The notify fields are arrays; an absent `notify` inherits the project's default for ordinary tickets, while `[]` skips it. Unknown statuses or channels return 400. A `scheduled_at` creates the ticket `open` and cannot be combined with another status; one that is malformed or already past answers 400. |
+| `POST /api/tickets` | Create a new ticket (JSON body: `title`, `path`, optional `pipeline`, `agent`, `status`, `body`, `branch`, `base_branch`, `scheduled_at`, `kind`, `parent`, `notify`, `notify_channels`). The notify fields are arrays; an absent `notify` inherits project then global status defaults for ordinary tickets, while `[]` stores persistent Off. Unknown statuses or channels return 400. A `scheduled_at` creates the ticket `open` and cannot be combined with another status; one that is malformed or already past answers 400. |
 | `GET /api/tickets/{id}` | Get ticket details (JSON). |
 | `GET /api/tickets/{id}/cost` | Estimate the cost of finished tracked runs from their activity sidecars and the bundled model-price catalog. |
 | `GET /api/tickets/{id}/activity` | Get a run's structured activity, with a plaintext log fallback. Accepts `stage`, `run`, and `after` (for live activity); supports `ETag`/`If-None-Match` revalidation. |
@@ -40,14 +40,14 @@ When the web server is enabled, the following endpoints are exposed:
 | `GET /api/stats` | Aggregate ticket and run statistics (JSON). Optional filters: `range` (`1d`, `1w`, `30d`, `90d`, or `all`; default `90d`), `project`, and `pipeline`. |
 | `POST /api/tickets/{id}/archive` | Archive a closed ticket (optional `{"note": "..."}` body). |
 | `POST /api/tickets/{id}/restore` | Return an archived ticket to the status it was archived from. |
-| `GET /api/config` | Available pipelines, agents, and projects (JSON). `agents` remains the sorted agent-name list; `agent_infos` adds sorted `{name, model, effort}` metadata for each agent. The top-level `default_pipeline` exposes the global pipeline default. Projects are sorted by name and carry `name`, `path`, `resolved_path` (`~` expanded), `pipeline`, `epic_child_pipeline`, `agent`, and `notify_channels`. `channels` and `default_channels` are the configured notification channel names and `notifications.default`; names only, never a chat id or a webhook URL. |
+| `GET /api/config` | Available pipelines, agents, and projects (JSON). `agents` remains the sorted agent-name list; `agent_infos` adds sorted `{name, model, effort}` metadata for each agent. The top-level `default_pipeline` exposes the global pipeline default. Projects are sorted by name and carry `name`, `path`, `resolved_path` (`~` expanded), `pipeline`, `epic_child_pipeline`, `agent`, optional `notify`, and `notify_channels`. Optional top-level `default_notify` exposes `notifications.default_statuses`. `channels` and `default_channels` are the configured notification channel names and `notifications.default`; names only, never a chat id or a webhook URL. |
 | `GET /api/config/raw` | Read the full on-disk YAML configuration as JSON `content`, without redaction. See [Raw configuration](#raw-configuration). |
 | `PUT /api/config/raw` | Validate, replace, and reload the configuration using `content` and optional `expected_content`. See [Raw configuration](#raw-configuration). |
 | `GET /api/tickets/{id}/logs` | Get agent logs for a ticket (optional `?stage=` query param). |
 | `POST /api/tickets/{id}/summary` | Set the ticket's `summary` field (`{"text": "..."}` body). |
 | `GET /api/tickets/{id}/changes` | Commits and changed files on the ticket's branch relative to its `base_branch`, or the repo's default branch when unset. Empty payload when the ticket has no branch or the branch was deleted. |
 | `GET /api/tickets/{id}/chain` | The dependency chain through the ticket: everything it transitively waits on, itself, and everything that transitively waits on it. |
-| `POST /api/tickets/{id}/init` | Initialize a non-kontora ticket (`path`, optional `pipeline`, `agent`, `branch`, `status`, `notify`, `notify_channels`). `status` is `todo` by default; `open` leaves the ticket a draft and keeps any `scheduled_at` it carries. See [notifications](tickets.md#notifications) for the two notify fields. |
+| `POST /api/tickets/{id}/init` | Initialize a non-kontora ticket (`path`, optional `pipeline`, `agent`, `branch`, `status`, `notify`, `notify_channels`). `status` is `todo` by default; `open` leaves the ticket a draft and keeps any `scheduled_at` it carries. Omitted `notify` preserves a saved choice or resolves project then global defaults when unset; `[]` stores Off. Defaults use the final requested path. See [notifications](tickets.md#notifications). |
 | `POST /api/tickets/{id}/dep` | Make the ticket wait on another one (`{"related": ["<id>"]}` body, exactly one id). |
 | `POST /api/tickets/{id}/undep` | Drop a dependency edge (`{"related": ["<id>"]}` body, exactly one id). |
 | `POST /api/tickets/{id}/link` | Relate the ticket to each id in `{"related": [...]}`, on both sides. |
@@ -55,7 +55,7 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/tickets/{id}/parent` | Set a child's epic (`{"parent":"EPIC_ID"}`). Agent epics require the same repository. |
 | `POST /api/tickets/{id}/unparent` | Clear a child's parent. |
 | `PUT /api/tickets/{id}/children` | Set an epic's display order (`{"children":["CHILD_ID"]}`). Does not change membership or execution order. |
-| `PUT /api/tickets/{id}` | Update an editable ticket's description, full body or frontmatter fields (`description`, `body`, `pipeline`, `path`, `agent`, `branch`, `base_branch`, `notify`, `notify_channels`). On the two notify fields an absent key leaves the ticket's own alone and `[]` removes it; a status nothing reaches or a channel nothing answers to is refused with 400. See [notifications](tickets.md#notifications). |
+| `PUT /api/tickets/{id}` | Update an editable ticket's description, full body or frontmatter fields (`description`, `body`, `pipeline`, `path`, `agent`, `branch`, `base_branch`, `notify`, `notify_channels`). An absent notify key leaves that field unchanged. `notify: []` stores persistent Off; `notify_channels: []` removes the route override. Unknown statuses or channels return 400. See [notifications](tickets.md#notifications). |
 | `POST /api/tickets/upload` | Import tickets from raw `.md` file content (multipart form). Requires `X-Kontora-Confirm: upload-tickets`. Every uploaded ticket arrives as an `open` draft: the status is clamped and any `scheduled_at` is dropped. |
 | `POST /api/tickets/{id}/plannotator-review` | Open the ticket's branch diff in Plannotator. Only in `human_review`. Submitted feedback routes the ticket to the built-in rework stage. See [plannotator](configuration.md#plannotator). |
 | `POST /api/tickets/{id}/plannotator-annotate` | Open the ticket's own markdown in Plannotator. Only in `open`. Submitted annotations set `kontora: true` and schedule a run that rewrites the ticket. |
@@ -93,6 +93,16 @@ When the web server is enabled, the following endpoints are exposed:
 | `GET /health` | Health check (returns 200). |
 
 Each `agent_infos` entry in `GET /api/config` reports the model and effort that Kontora detects. Kontora reads the agent's `effort` field and supported CLI flags. Pipeline and stage overrides are not applied. Both response fields are always present. An empty value means Kontora detected no setting.
+
+Notification status arrays preserve the difference between unset and Off:
+
+- In `GET /api/config`, omitted `default_notify` or project `notify` means unset; `[]` means Off.
+- In ticket responses, explicit `notify: []` remains an empty array. Do not treat it as an omitted preference.
+- On creation or initialization, an explicit request wins over saved statuses, then project `notify`, then global `default_notify`.
+- Ordinary updates do not apply defaults. Explicit starts apply defaults only when saved statuses are unset, including older/imported tickets.
+
+See [notifications](tickets.md#notifications) for start behavior, persistent Off compatibility, and Pi-only `waiting`.
+Status defaults do not change channel routing, delivery enablement, or `all_changes`.
 
 `GET /api/config` also exposes optional runtime identity:
 

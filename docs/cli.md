@@ -124,7 +124,7 @@ Creates a ticket and prints its ID. Locally, omitting `--path` with `--parent EP
 | `--path PATH` | Repository the ticket works in. |
 | `--pipeline NAME` | Explicit pipeline, or `none` to skip all pipeline defaults and run standalone. |
 | `--agent NAME` | Agent to use, or `none` to skip the project default. |
-| `--notify STATUSES` | Comma-separated statuses. Omit to inherit the project's list; `""` or `none` skips it. Epics do not inherit. |
+| `--notify STATUSES` | Comma-separated statuses. Omit to inherit project then global status defaults; `""` or `none` stores persistent Off (`notify: []`). Epic creation skips defaults. |
 | `--notify-channels NAMES` | Comma-separated channel names; `none` silences delivery. |
 | `--branch NAME` | Work branch name. Defaults to `<branch_prefix>/<title-slug>-<ticket-id>`. With `branch_naming.mode: off` or a title that yields no slug, uses `<branch_prefix>/<ticket-id>`. |
 | `--base-branch NAME` | Branch the work branch starts from. Defaults to the repository's default branch. |
@@ -144,6 +144,15 @@ agent. It then falls back to the project's `pipeline`, global `default_pipeline`
 and standalone execution. A missing or ordinary-ticket parent never qualifies for
 the child default. Project matching uses the selected path and remains lexical.
 `--pipeline none` does not change independent agent resolution.
+
+Notification precedence is explicit request, saved ticket choice, project `notify`,
+then `notifications.default_statuses` (initially unset). Lists do not merge.
+Defaults also apply at explicit initialization/starts of unset older or imported tickets.
+Saved lists, including `notify: []` for Off, survive later default changes.
+
+Older versions deleted Off choices. Select Off again where needed and upgrade all
+participating clients and daemons. See [notifications](tickets.md#notifications)
+for start operations, compatibility, and Pi-only `waiting`.
 
 `--kind epic` creates a passive epic in `open` and skips the repository check. It accepts `--agent` without starting it. It cannot be combined with a pipeline, `--parent`, `--at`, `--after` or `--status todo`. Creation never starts a supervisor. The daemon derives passive status from children. Use `kontora run EPIC_ID` to activate a supervisor; see [Epics](tickets.md#epics).
 
@@ -180,7 +189,8 @@ Opens the ticket file in `$EDITOR`. Local only.
 
 ### `kontora update TICKET_ID [flags]`
 
-Changes frontmatter fields or the body of an existing ticket. At least one flag is required. Passing an empty value, or `none` where noted, clears the field.
+Changes frontmatter fields or the body of an existing ticket. At least one flag is required.
+Empty values clear fields except `--notify ""`, which stores persistent Off.
 
 | Flag | Description |
 |------|-------------|
@@ -188,7 +198,7 @@ Changes frontmatter fields or the body of an existing ticket. At least one flag 
 | `--pipeline NAME` | Set the pipeline (`""` or `none` clears it). |
 | `--path PATH` | Set the repository path. |
 | `--agent NAME` | Set the agent override (`""` or `none` clears it). |
-| `--notify STATUSES` | Set comma-separated statuses (`""` or `none` removes the field). |
+| `--notify STATUSES` | Set comma-separated statuses (`""` or `none` stores persistent Off as `notify: []`). |
 | `--notify-channels NAMES` | Set comma-separated channels (`""` removes the override; `none` silences delivery). |
 | `--branch NAME` | Set the work branch (`""` clears it). |
 | `--base-branch NAME` | Set the base branch (`""` clears it). |

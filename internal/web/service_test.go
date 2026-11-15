@@ -285,6 +285,37 @@ func TestTicketInfoFromView_Notes(t *testing.T) {
 	assert.Equal(t, body, info.Body, "parsing notes must not rewrite the body")
 }
 
+func TestConfigInfo_NotifyIntent(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		statuses []string
+		present  bool
+	}{
+		{name: "unset"},
+		{name: "off", statuses: []string{}, present: true},
+		{name: "enabled", statuses: []string{"waiting"}, present: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(ConfigInfo{DefaultNotify: tt.statuses, Projects: []ProjectInfo{{Name: "project", Notify: tt.statuses}}})
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(encoded, &fields))
+			_, present := fields["default_notify"]
+			assert.Equal(t, tt.present, present)
+			var projects []map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(fields["projects"], &projects))
+			_, present = projects[0]["notify"]
+			assert.Equal(t, tt.present, present)
+			if tt.present {
+				want, err := json.Marshal(tt.statuses)
+				require.NoError(t, err)
+				assert.JSONEq(t, string(want), string(fields["default_notify"]))
+				assert.JSONEq(t, string(want), string(projects[0]["notify"]))
+			}
+		})
+	}
+}
+
 // The ticket's own notify fields ride the projection, unresolved: the rail
 // states where they go, and the dashboard resolves the project and the global
 // default from the config payload.
@@ -297,9 +328,24 @@ func TestTicketInfoFromView_Notify(t *testing.T) {
 	assert.Equal(t, []string{"human_review", "waiting"}, info.Notify)
 	assert.Equal(t, []string{"tg"}, info.NotifyChannels)
 
-	// A ticket that names neither carries neither key, so the row reads "off"
-	// rather than an empty list somebody has to interpret.
-	encoded, err := json.Marshal(TicketInfoFromView(app.View{ID: "t2"}))
-	require.NoError(t, err)
-	assert.NotContains(t, string(encoded), "notify")
+	for _, tt := range []struct {
+		name     string
+		statuses []string
+		present  bool
+	}{
+		{name: "unset"},
+		{name: "off", statuses: []string{}, present: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(TicketInfoFromView(app.View{ID: "t2", Notify: tt.statuses}))
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(encoded, &fields))
+			_, present := fields["notify"]
+			assert.Equal(t, tt.present, present)
+			if tt.present {
+				assert.JSONEq(t, "[]", string(fields["notify"]))
+			}
+		})
+	}
 }

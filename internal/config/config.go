@@ -289,7 +289,14 @@ type Notifications struct {
 	// Default names the channels a notification goes to when neither the ticket
 	// nor its project names one.
 	Default []string `yaml:"default"`
+	// DefaultStatuses applies when neither the ticket nor its project chooses statuses.
+	DefaultStatuses OptionalStatusList `yaml:"default_statuses,omitempty"`
 }
+
+// OptionalStatusList preserves explicit Off ([]) separately from an unset default.
+type OptionalStatusList []string
+
+func (s OptionalStatusList) IsZero() bool { return s == nil }
 
 // Channel types a notification can be delivered over.
 const (
@@ -600,8 +607,8 @@ type Project struct {
 	BranchPrefix      string       `yaml:"branch_prefix"`
 	BranchNaming      BranchNaming `yaml:"branch_naming"`
 	Hooks             Hooks        `yaml:"hooks"`
-	// Notify is written into new non-epic tickets at creation only.
-	Notify []string `yaml:"notify"`
+	// Notify overrides global status defaults, including an explicit empty list.
+	Notify OptionalStatusList `yaml:"notify,omitempty"`
 	// NotifyChannels overrides notifications.default for tickets in this
 	// repository. The sole entry "none" silences the project even when a global
 	// default is set.
@@ -1353,6 +1360,9 @@ func (c *Config) validateNotifications() error {
 		}
 	}
 
+	if err := c.ValidateNotifyFields(c.Notifications.DefaultStatuses, nil); err != nil {
+		return fmt.Errorf("notifications.default_statuses: %w", err)
+	}
 	if err := c.checkNotifyChannelList("notifications.default", c.Notifications.Default); err != nil {
 		return err
 	}
@@ -1649,6 +1659,9 @@ func (c *Config) BranchPrefixFor(repoPath string) string {
 // not required: callers may configure routing later.
 func (c *Config) ValidateNotifyFields(statuses, channels []string) error {
 	for _, s := range statuses {
+		if s == NoneSentinel {
+			return fmt.Errorf("%q cannot be used in notification status lists; use [] to disable subscriptions", s)
+		}
 		if s != notify.StatusWaiting && !c.IsKnownStatus(s) {
 			return fmt.Errorf("no ticket ever reaches status %q", s)
 		}
@@ -1667,13 +1680,13 @@ func (c *Config) ValidateNotifyFields(statuses, channels []string) error {
 	return nil
 }
 
-// NotifyDefaultFor returns a copy of the owning project's status list for a
-// new ticket. Existing tickets do not inherit status defaults at send time.
+// NotifyDefaultFor copies project status defaults, falling back to global defaults.
+// Existing tickets do not inherit status defaults at send time.
 func (c *Config) NotifyDefaultFor(repoPath string) []string {
-	if _, project, ok := c.ProjectFor(repoPath); ok {
+	if _, project, ok := c.ProjectFor(repoPath); ok && project.Notify != nil {
 		return slices.Clone(project.Notify)
 	}
-	return nil
+	return slices.Clone(c.Notifications.DefaultStatuses)
 }
 
 // NotifyChannelsFor resolves which channels a ticket's notification goes to:

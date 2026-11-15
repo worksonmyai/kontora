@@ -261,11 +261,20 @@ standalone execution. Passive and agent epics both qualify. A missing or
 ordinary-ticket parent does not qualify. `--pipeline none` skips pipeline defaults
 without changing independent agent resolution.
 
+Notification precedence is explicit request, saved ticket choice, project `notify`,
+then `notifications.default_statuses` (initially unset). Lists do not merge.
+Defaults also apply at explicit initialization/starts of unset older or imported tickets.
+Saved choices, including `notify: []` for Off, survive default changes.
+
+Older versions deleted Off choices; select Off again where needed and upgrade all
+participating clients and daemons. See `kontora skills show config notifications`
+for start operations, compatibility, and Pi-only `waiting`.
+
 - `--path PATH` — repository the ticket works in.
 - `--pipeline NAME` — pipeline to run, or `none` for a standalone ticket.
 - `--agent NAME` — agent to use, or `none` to skip the project default.
-- `--notify STATUSES`: comma-separated statuses. Omit to inherit the project's list;
-  `""` or `none` skips it. Epics do not inherit.
+- `--notify STATUSES`: comma-separated statuses. Omit to inherit project then global status defaults;
+  `""` or `none` stores persistent Off (`notify: []`). Epic creation skips defaults.
 - `--notify-channels NAMES`: comma-separated channel names; `none` silences delivery.
 - `--branch NAME` — work branch name.
 - `--base-branch NAME` — branch the work branch starts from.
@@ -344,14 +353,14 @@ interactive: never run it from an agent.
 ## kontora update
 
 `kontora update TICKET_ID [flags]` — change frontmatter fields or the body. At
-least one flag is required. An empty value, or `none` where noted, clears the
-field.
+least one flag is required. Empty values clear fields except `--notify ""`,
+which stores persistent Off.
 
 - `--body-file PATH` — replace the body from a file, `-` for stdin.
 - `--pipeline NAME` — set the pipeline (`""` or `none` clears it).
 - `--path PATH` — set the repository path.
 - `--agent NAME` — set the agent override (`""` or `none` clears it).
-- `--notify STATUSES`: set comma-separated statuses (`""` or `none` removes the field).
+- `--notify STATUSES`: set comma-separated statuses (`""` or `none` stores persistent Off as `notify: []`).
 - `--notify-channels NAMES`: set comma-separated channels (`""` removes the override;
   `none` silences delivery).
 - `--branch NAME` — set the work branch (`""` clears it).

@@ -16,9 +16,9 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/hook"
 	"github.com/worksonmyai/kontora/internal/metrics"
-	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/tmux"
 	"github.com/worksonmyai/kontora/internal/web"
 	"github.com/worksonmyai/kontora/internal/worktree"
@@ -270,50 +270,45 @@ func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, pcfg conf
 	})
 }
 
-// transitionToRework sets the ticket's stage=rework, status=todo and enqueues
-// it via the existing scheduler path. Keeps lock discipline similar to
-// SetStage/Retry.
+// Rework must read and save under the board mutation lock so a concurrent edit
+// cannot be replaced by a snapshot from before that edit.
 func (d *Daemon) transitionToRework(id string) error {
-	d.mu.Lock()
-	ts, ok := d.tickets[id]
-	if !ok {
-		d.mu.Unlock()
-		return web.ErrTicketNotFound
-	}
-	filePath := ts.filePath
-	d.mu.Unlock()
-
-	// Re-read from disk to avoid racing with other mutators.
-	t2, err := ticket.ParseFile(filePath)
-	if err != nil {
-		return fmt.Errorf("re-read ticket: %w", err)
-	}
-	if d.isGraphTicket(t2) {
-		return fmt.Errorf("%w: Plannotator rework is unavailable for graph workflows; use the configured review loop", web.ErrInvalidState)
-	}
-	if err := t2.SetField("stage", config.ReworkStageName); err != nil {
-		return fmt.Errorf("set stage: %w", err)
-	}
-	if err := t2.SetField("status", string(ticket.StatusTodo)); err != nil {
-		return fmt.Errorf("set status: %w", err)
-	}
-	if err := t2.SetField("attempt", 0); err != nil {
-		return fmt.Errorf("reset attempt: %w", err)
-	}
-	if err := t2.SetField("last_error", ""); err != nil {
-		return fmt.Errorf("clear last_error: %w", err)
-	}
-	// A reviewer chose rework, so this transition is a request.
-	if err := d.writeTicket(t2, filePath, notify.OriginRequest); err != nil {
-		return fmt.Errorf("write ticket: %w", err)
-	}
-
-	d.mu.Lock()
-	d.setTicketState(id, t2, filePath)
-	d.enqueue(t2)
-	d.broadcastTicketUpdate(id)
-	d.mu.Unlock()
-	return nil
+	err := d.withTicketMutation(func(repo app.MutationRepository) error {
+		if _, ok := d.tickets[id]; !ok {
+			return web.ErrTicketNotFound
+		}
+		st, err := repo.Get(id)
+		if err != nil {
+			return fmt.Errorf("re-read ticket: %w", err)
+		}
+		t2 := st.Ticket
+		if d.isGraphTicket(t2) {
+			return fmt.Errorf("%w: Plannotator rework is unavailable for graph workflows; use the configured review loop", web.ErrInvalidState)
+		}
+		if err := t2.SetField("stage", config.ReworkStageName); err != nil {
+			return fmt.Errorf("set stage: %w", err)
+		}
+		if err := t2.SetField("status", string(ticket.StatusTodo)); err != nil {
+			return fmt.Errorf("set status: %w", err)
+		}
+		if err := t2.SetField("attempt", 0); err != nil {
+			return fmt.Errorf("reset attempt: %w", err)
+		}
+		if err := t2.SetField("last_error", ""); err != nil {
+			return fmt.Errorf("clear last_error: %w", err)
+		}
+		if _, err := app.ApplyNotifyDefaults(d.config(), t2); err != nil {
+			return err
+		}
+		// A reviewer chose rework, so the mutation uses the default request origin.
+		if err := repo.Save(st); err != nil {
+			return fmt.Errorf("write ticket: %w", err)
+		}
+		d.enqueue(t2)
+		d.broadcastTicketUpdate(id)
+		return nil
+	})
+	return mapAppError(err)
 }
 
 // runReworkStage executes the built-in rework stage: use the last-known agent

@@ -2894,8 +2894,9 @@ func TestDaemon_GetConfig_NotifyChannelNamesOnly(t *testing.T) {
 		"ops": {Type: config.NotifyWebhook, URL: "https://hooks.example.com/abc"},
 	}
 	h.cfg.Notifications.Default = []string{"tg"}
+	h.cfg.Notifications.DefaultStatuses = []string{"paused", "human_review", "waiting"}
 	h.cfg.Projects = map[string]config.Project{
-		"kontora": {Path: h.repoDir, NotifyChannels: []string{"ops"}},
+		"kontora": {Path: h.repoDir, Notify: []string{}, NotifyChannels: []string{"ops"}},
 	}
 	d := h.newDaemon(h.cfg)
 
@@ -2903,9 +2904,13 @@ func TestDaemon_GetConfig_NotifyChannelNamesOnly(t *testing.T) {
 	assert.Equal(t, []string{"ops", "tg"}, got.Channels)
 	assert.Equal(t, []string{"tg"}, got.DefaultChannels)
 	assert.Equal(t, []string{"ops"}, got.Projects[0].NotifyChannels)
+	assert.Equal(t, []string{"paused", "human_review", "waiting"}, got.DefaultNotify)
+	assert.Equal(t, []string{}, got.Projects[0].Notify)
 
 	payload, err := json.Marshal(got)
 	require.NoError(t, err)
 	assert.NotContains(t, string(payload), "hooks.example.com")
 	assert.NotContains(t, string(payload), "-100123")
+	assert.Contains(t, string(payload), `"default_notify":["paused","human_review","waiting"]`)
+	assert.Contains(t, string(payload), `"notify":[]`)
 }

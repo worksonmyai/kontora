@@ -10,6 +10,41 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 )
 
+func TestShowConfigNotificationStatusIntent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		list []string
+	}{
+		{name: "unset"},
+		{name: "off", list: []string{}},
+		{name: "statuses", list: []string{"paused", "waiting"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.LoadReader(strings.NewReader("agents:\n  claude:\n    binary: claude\nprojects:\n  work:\n    path: /repos/work\n"))
+			require.NoError(t, err)
+			cfg.Notifications.DefaultStatuses = tc.list
+			project := cfg.Projects["work"]
+			project.Notify = tc.list
+			cfg.Projects["work"] = project
+			var out strings.Builder
+			require.NoError(t, ShowConfig(cfg, &out))
+			reloaded, err := config.LoadReader(strings.NewReader(out.String()))
+			require.NoError(t, err)
+			assert.Equal(t, tc.list, []string(reloaded.Notifications.DefaultStatuses))
+			assert.Equal(t, tc.list, []string(reloaded.Projects["work"].Notify))
+			assert.Equal(t, tc.list, []string(cfg.Notifications.DefaultStatuses))
+			assert.Equal(t, tc.list, []string(cfg.Projects["work"].Notify))
+			if tc.list == nil {
+				assert.NotContains(t, out.String(), "default_statuses:")
+				assert.NotContains(t, out.String(), "notify:")
+			} else if len(tc.list) == 0 {
+				assert.Contains(t, out.String(), "default_statuses: []")
+				assert.Contains(t, out.String(), "notify: []")
+			}
+		})
+	}
+}
+
 func TestShowConfig(t *testing.T) {
 	cfg := &config.Config{
 		TicketsDir: "~/org/tickets",

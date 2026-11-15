@@ -55,8 +55,8 @@ type NewOpts struct {
 	EpicExecution string
 	// Parent files the new ticket under an epic.
 	Parent string
-	// Notify defaults to the project's list only when nil. An explicit empty
-	// slice opts out. Channels resolve at send time unless explicitly set.
+	// Nil Notify inherits project or global defaults. An explicit empty slice opts out.
+	// Channels resolve at send time unless explicitly set.
 	Notify         []string
 	NotifyChannels []string
 }
@@ -186,12 +186,16 @@ func ticketFrontmatter(id string, opts NewOpts, created string) (string, error) 
 		return fmt.Sprintf("%s: %s\n", key, yamlQuote(value))
 	}
 	var notifications []byte
-	if len(opts.Notify) > 0 || len(opts.NotifyChannels) > 0 {
+	if opts.Notify != nil || len(opts.NotifyChannels) > 0 {
+		var statuses *[]string
+		if opts.Notify != nil {
+			statuses = &opts.Notify
+		}
 		var err error
 		notifications, err = yaml.Marshal(struct {
-			Notify         []string `yaml:"notify,omitempty,flow"`
-			NotifyChannels []string `yaml:"notify_channels,omitempty,flow"`
-		}{opts.Notify, opts.NotifyChannels})
+			Notify         *[]string `yaml:"notify,omitempty,flow"`
+			NotifyChannels []string  `yaml:"notify_channels,omitempty,flow"`
+		}{statuses, opts.NotifyChannels})
 		if err != nil {
 			return "", fmt.Errorf("encoding notification fields: %w", err)
 		}

@@ -15,8 +15,37 @@ export function kontoraTickets() {
   let primaryFlight = null;
   let primaryAgain = false;
   let detailFlight = null;
+  let configGeneration = 0;
 
   return {
+    // Startup, dialogs and reloads share one request order. A dialog guard alone
+    // cannot stop its older response from replacing a newer reload in that dialog.
+    async loadConfigCache({ current = () => true, required = true } = {}) {
+      const generation = ++configGeneration;
+      const previous = this.configCache;
+      const fresh = () => !this._appDestroyed && current() && generation === configGeneration && this.configCache === previous;
+      try {
+        const res = await fetch('/api/config');
+        if (!fresh()) return;
+        if (!res.ok) {
+          if (!required) return res;
+          throw new Error('Failed to load config');
+        }
+        const config = await res.json();
+        if (fresh()) this.configCache = config;
+      } catch (e) {
+        if (fresh()) throw e;
+      }
+    },
+
+    async refreshConfigCache() {
+      try {
+        await this.loadConfigCache({ required: false });
+      } catch (e) {
+        // A reload failure leaves the last usable configuration in the cache.
+      }
+    },
+
     get columns() {
       return this._columns || this._builtinColumns;
     },
@@ -98,6 +127,7 @@ export function kontoraTickets() {
         this.recomputeBoard();
         if (this.currentView === 'new' || this.sheet?.type === 'new') this.syncCreatePipeline();
         if (this.initModal) {
+          this.syncInitNotifyDefaults();
           this._initInherited = this.projectDefaultsFor(this.initForm.path, this.initForm.epicChild);
           this.onInitPipelineChange();
         }
@@ -128,9 +158,8 @@ export function kontoraTickets() {
       this.connectSSE();
       var config = (async () => {
         try {
-          var cfgRes = await fetch('/api/config');
-          if (cfgRes.status === 401) this.needsAuth = true;
-          else if (cfgRes.ok) this.configCache = await cfgRes.json();
+          const res = await this.loadConfigCache({ required: false });
+          if (res?.status === 401) this.needsAuth = true;
         } catch (e) {
           this.error = 'Failed to load config';
         }
@@ -641,7 +670,7 @@ export function kontoraTickets() {
       es.addEventListener('config_reloaded', () => {
         this._assistantRefreshConfig();
         this.companionRefresh();
-        this._settingsRefreshConfigCache();
+        this.refreshConfigCache();
         this._settingsRefreshForm();
       });
       es.addEventListener('plannotator_started', (e) => {

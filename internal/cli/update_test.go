@@ -160,9 +160,9 @@ func TestUpdate_NoneClearsFields(t *testing.T) {
 	}{
 		{name: "pipeline", req: web.UpdateTicketRequest{Pipeline: new(config.NoneSentinel)}, want: `pipeline: ""`},
 		{name: "agent", req: web.UpdateTicketRequest{Agent: new(config.NoneSentinel)}, want: `agent: ""`},
-		{name: "notify", req: web.UpdateTicketRequest{Notify: []string{}}, want: "notify_channels: [tg]", removed: "notify:"},
+		{name: "notify", req: web.UpdateTicketRequest{Notify: []string{}}, want: "notify: []"},
 		{name: "notify channels", req: web.UpdateTicketRequest{NotifyChannels: []string{}}, want: "notify: [done]", removed: "notify_channels:"},
-		{name: "both notify fields", req: web.UpdateTicketRequest{Notify: []string{}, NotifyChannels: []string{}}, want: "# Body", removed: "notify"},
+		{name: "both notify fields", req: web.UpdateTicketRequest{Notify: []string{}, NotifyChannels: []string{}}, want: "notify: []", removed: "notify_channels:"},
 	}
 
 	for _, tc := range cases {
@@ -186,6 +186,14 @@ notify_channels: [tg]
 			data, err := os.ReadFile(filepath.Join(dir, "tst-none.md"))
 			require.NoError(t, err)
 			assert.Contains(t, string(data), tc.want)
+			stored, err := ticket.ParseBytes(data)
+			require.NoError(t, err)
+			if tc.req.Notify != nil {
+				assert.Equal(t, tc.req.Notify, stored.Notify.Statuses)
+			}
+			if tc.req.NotifyChannels == nil {
+				assert.Equal(t, []string{"tg"}, stored.NotifyChannels)
+			}
 			if tc.removed != "" {
 				assert.NotContains(t, string(data), tc.removed)
 			}

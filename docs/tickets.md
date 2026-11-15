@@ -97,7 +97,7 @@ Set these fields when creating a ticket, manually or with `kontora new`. Both `k
 | `links` | no | — | Ids of related tickets. See [Relations](#relations). |
 | `parent` | no | — | Id of the epic this ticket belongs to. See [Relations](#relations). |
 | `children` | no | — | On an epic, the manual order of its sub-tickets. Order only; membership is what each child's `parent` says. See [Epics](#epics). |
-| `notify` | no | — | Statuses whose arrival this ticket asks to be told about. Without it the ticket is silent. See [Notifications](#notifications). |
+| `notify` | no | — | Subscribed statuses. Unset inherits defaults at creation or explicit initialization/start; `[]` is persistent Off. See [Notifications](#notifications). |
 | `notify_channels` | no | — | Channels this ticket's notifications go to, above the project's and the global default. See [Notifications](#notifications). |
 
 #### Relations
@@ -275,7 +275,23 @@ When `base_branch` is set through `kontora new` or `POST /api/tickets`, Kontora 
 
 #### Notifications
 
-`notify` lists the statuses that trigger notifications for this ticket. Without the field nothing is sent, however many channels the config names. For new ordinary tickets, Kontora writes the [project's `notify` default](configuration.md#projects) into the file. An explicit list overrides that default; `kontora new --notify none` or `--notify ""` skips it. Epics and initialization do not inherit this default.
+`notify` lists the statuses that trigger notifications for this ticket.
+Kontora selects the first applicable list, without merging:
+
+1. The explicit request.
+2. The ticket's saved `notify`.
+3. The [project's `notify`](configuration.md#projects).
+4. Global [`notifications.default_statuses`](configuration.md#notification-defaults), initially unset.
+5. No subscription.
+
+An empty list (`notify: []`) is persistent Off at every level.
+Missing, null, or blank ticket statuses are unset.
+Saved choices survive later default changes.
+
+Defaults are copied at ordinary creation and explicit initialization/starts, including older or imported tickets.
+Explicit starts include run, retry, move to `todo`, advancing skip, workflow restart, and reviewer-requested rework or annotation runs.
+Initialization uses the final requested path. Epic creation skips defaults; explicit activation applies them only to the supervisor.
+Imports, daemon startup, config reloads, automatic pickup, stage progression, and wakes do not add subscriptions.
 
 ```yaml
 notify: [human_review, done]
@@ -302,15 +318,36 @@ Three things that would otherwise make a ticket quiet with no explanation are wa
 
 Both fields are editable from the dashboard. The start-ticket modal uses `notify me`; the details rail uses `notify`. The row has three presets: off, when it needs me (`[paused, human_review, waiting]`), and when it is finished (`[human_review, done]`). The full status set is behind `custom`.
 
-The start-ticket modal disables notification controls while configuration loads. With no configured channels, only off is available. Add a channel under [`notifications.channels`](configuration.md#notifications). Channel changes reload without a daemon restart. The modal links to these instructions in a separate tab, so the draft stays open. You can start with notifications off without configuring a channel.
+Start ticket and Start epic preselect the saved choice or the effective project/global default.
+Untouched forms follow path and config changes, then omit `notify` so the backend resolves current defaults.
+Saved or user-selected choices stay selected and submit an explicit array, including `[]` for Off.
+Changing only channels does not select Off or stop the form from following status defaults.
 
-Opening the modal preserves existing preferences. Choosing off with no configured channels clears both notification fields, including references to removed channels. When channels are configured, off keeps the ticket's channel choices.
+The start dialog blocks submission until configuration loads.
+If selected statuses have no route, the dialog explains the missing route instead of silently selecting Off.
+Add a channel under [`notifications.channels`](configuration.md#notifications), or explicitly choose Off to start without notifications.
+Choosing Off stores `notify: []`. With no configured channels, it also removes obsolete channel overrides.
+With configured channels, Off keeps the ticket's channel choices. Channel changes reload without a restart.
 
 The row states one inherited channel instead of asking for it. If no inherited route exists, the channel picker appears. The dashboard refuses to save or start until the ticket has a route, is silenced, or turns notifications off. The rail row opens only where the API accepts a frontmatter edit. A running ticket shows its setting but cannot change it because the agent owns the file.
 
-The API accepts `notify` and `notify_channels` on `POST /api/tickets`, `POST /api/tickets/{id}/init`, and `PUT /api/tickets/{id}`. During creation, an absent `notify` inherits the project default and `[]` skips it. During initialization or update, an absent key preserves the stored field and `[]` removes it.
+The API accepts `notify` and `notify_channels` on creation, initialization, and update.
+Omitted `notify` follows defaults at creation; initialization preserves a saved choice or resolves defaults when unset.
+On update, omission leaves statuses unchanged. `notify: []` always stores Off and remains an empty array in ticket responses.
+For `notify_channels`, omission preserves the override and `[]` removes it.
+Channel-only rail edits leave unset statuses unset.
 
-The CLI flags take comma-separated lists. On update, `--notify ""` or `--notify none` removes the status list. `--notify-channels ""` removes the channel override; `--notify-channels none` writes `[none]` to silence delivery. The CLI and API reject unknown statuses and channels; `none` is allowed only alone in a channel list. API validation failures return 400. Hand edits instead produce daemon warnings.
+The CLI flags take comma-separated lists.
+On creation or update, `--notify ""` or `--notify none` stores `notify: []`.
+`--notify-channels ""` removes the channel override; `--notify-channels none` writes `[none]` to silence delivery.
+The CLI and API reject unknown statuses and channels; `none` is allowed only alone in a channel list.
+API validation failures return 400. Hand edits instead produce daemon warnings.
+Status choices do not change routing, `notifications.enabled`, or `notifications.all_changes`.
+
+Older versions deleted `notify` when you chose Off, so historical Off choices cannot be recovered.
+After you configure defaults, those tickets inherit at their next explicit start unless you select Off again.
+Upgrade all participating clients and daemons: older writers can delete the new empty-list marker.
+There is no reset-to-default action in the dashboard. Remove the stored `notify` field manually to restore default eligibility.
 
 #### Scheduled pickup
 

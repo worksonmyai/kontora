@@ -2896,6 +2896,7 @@ func TestLoadNotificationsValid(t *testing.T) {
 	assert.True(t, *n.Enabled, "notifications are on unless switched off")
 	assert.True(t, n.AllChanges)
 	assert.Equal(t, []string{"tg"}, n.Default)
+	assert.Equal(t, OptionalStatusList{"paused", "human_review", "waiting"}, n.DefaultStatuses)
 	require.NotNil(t, n.Attempts)
 	assert.Equal(t, 2, *n.Attempts, "an explicit attempts survives the default")
 	assert.Equal(t, 10*time.Second, n.Timeout.Duration)
@@ -2910,7 +2911,7 @@ func TestLoadNotificationsValid(t *testing.T) {
 	assert.Equal(t, http.MethodPost, n.Channels["hook"].Method, "a webhook without a method defaults to POST")
 	assert.Equal(t, http.MethodPut, n.Channels["put"].Method, "a method is uppercased, because http sends it as written")
 	assert.Equal(t, []string{"mm"}, cfg.Projects["work-repo"].NotifyChannels)
-	assert.Equal(t, []string{"human_review", "done", "waiting"}, cfg.Projects["work-repo"].Notify)
+	assert.Equal(t, OptionalStatusList{"human_review", "done", "waiting"}, cfg.Projects["work-repo"].Notify)
 }
 
 func TestLoadRejectsNotifications(t *testing.T) {
@@ -3125,7 +3126,7 @@ func TestNotifyChannelsForWithoutADefault(t *testing.T) {
 
 func TestValidateNotifyFields(t *testing.T) {
 	cfg := &Config{
-		Statuses:      []string{"deployed"},
+		Statuses:      []string{"deployed", NoneSentinel},
 		Notifications: Notifications{Channels: map[string]NotifyChannel{"tg": {}}},
 	}
 	tests := []struct {
@@ -3140,7 +3141,7 @@ func TestValidateNotifyFields(t *testing.T) {
 		{name: "configured channel", channels: []string{"tg"}},
 		{name: "channel opt-out", channels: []string{NoneSentinel}},
 		{name: "unknown status", statuses: []string{"unknown_status"}, wantErr: `no ticket ever reaches status "unknown_status"`},
-		{name: "none is not a status", statuses: []string{NoneSentinel}, wantErr: `no ticket ever reaches status "none"`},
+		{name: "none is not a notification status", statuses: []string{NoneSentinel}, wantErr: `"none" cannot be used in notification status lists; use [] to disable subscriptions`},
 		{name: "unknown channel", channels: []string{"ghost"}, wantErr: `no channel named "ghost" is configured`},
 		{name: "mixed opt-out", channels: []string{"tg", NoneSentinel}, wantErr: `"none" silences the list and cannot be combined with a channel`},
 		{name: "mixed opt-out first", channels: []string{NoneSentinel, "tg"}, wantErr: `"none" silences the list and cannot be combined with a channel`},

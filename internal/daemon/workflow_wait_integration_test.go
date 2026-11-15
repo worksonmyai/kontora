@@ -159,6 +159,7 @@ func TestWorkflowWaitReleasesCapacity(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			h := newHarness(t)
 			cfg := workflowWaitTestConfig(t, h)
+			cfg.Notifications.DefaultStatuses = []string{"paused", "waiting"}
 			clock := newWorkflowWaitTestClock()
 			requested := clock.Now()
 			request := &session.WaitRequest{Kind: "timer", Until: requested.Add(time.Hour)}
@@ -200,6 +201,7 @@ func TestWorkflowWaitReleasesCapacity(t *testing.T) {
 				return tkt.Status == ticket.StatusPaused && tkt.GraphState != nil && tkt.GraphState.Wait != nil && (kind != "check" || tkt.GraphState.Wait.PollCount == 1)
 			})
 			requireWorkflowWaitTestIdle(t, d)
+			require.Nil(t, parked.Notify.Statuses)
 			require.Equal(t, 2, parked.GraphState.Version)
 			require.Len(t, parked.History, 1)
 			require.Equal(t, "waiting", string(parked.History[0].RunOutcome))
@@ -246,6 +248,7 @@ func TestWorkflowWaitReleasesCapacity(t *testing.T) {
 				d.reconcileWorkflowWaits(context.Background())
 			}
 			stop()
+			require.Nil(t, got.Notify.Statuses)
 			require.Equal(t, int32(2), agentCalls.Load(), "one wake must start exactly one continuation")
 			require.Len(t, got.History, 2, "probes must not fabricate agent history")
 			require.Equal(t, parked.GraphState.ExecutionID, got.GraphState.ExecutionID)

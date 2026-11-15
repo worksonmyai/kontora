@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deferred, settingsFixture, settingsState } from './settings_fixtures.mjs';
+import * as yaml from '../static/vendor/yaml@2.8.1/yaml.mjs';
+import { deferred, settingsFixture, settingsNotificationMergeCases, settingsState } from './settings_fixtures.mjs';
 
 for (const boundary of ['stale', 'yaml', 'put', 'rebase', 'cache']) {
   test(`save locks mutations throughout ${boundary}`, async () => {
@@ -327,6 +328,278 @@ test('diagnostics contain trusted field identities instead of parsing error stri
   const issue = state.settingsClientIssues().find(i => i.key.join('.') === 'agents.claude.binary');
   assert.ok(issue?.blocking);
   assert.ok(state.settingsFieldCatalogue().some(f => f.id === issue.field));
+});
+
+for (const [raw, mode, statuses] of [
+  ['', 'unset', null],
+  ['  default_statuses: null\n', 'unset', null],
+  ['  default_statuses: []\n', 'off', []],
+  ['  default_statuses: [waiting, human_review, paused]\n', 'needs', ['waiting', 'human_review', 'paused']],
+  ['  default_statuses: [human_review, done]\n', 'done', ['human_review', 'done']],
+  ['  default_statuses: [qa, waiting]\n', 'custom', ['qa', 'waiting']],
+]) {
+  test(`global notification statuses hydrate as ${mode}: ${raw.trim() || 'missing'}`, async () => {
+    const text = `statuses: [qa]\nnotifications:\n${raw}  all_changes: true\n`;
+    const state = await settingsState(text);
+    assert.equal(state.settingsNotifStatusMode(), mode);
+    assert.equal(state.settingsNotifStatusesOpen, mode === 'custom');
+    assert.deepEqual(state.settingsConfig.notifications.default_statuses == null ? null
+      : Array.from(state.settingsConfig.notifications.default_statuses), statuses);
+    assert.equal(state.settingsDirty(), false);
+    state.settingsConfig.general.branch_prefix = 'edited';
+    const written = await state._settingsWrite();
+    const doc = yaml.parseDocument(written);
+    const key = ['notifications', 'default_statuses'];
+    assert.equal(doc.hasIn(key), !!raw);
+    if (raw) {
+      assert.equal(doc.getIn(key, true).toString(), state._settingsDoc.getIn(key, true).toString());
+      assert.deepEqual(doc.toJS().notifications.default_statuses, statuses);
+    } else assert.match(state.settingsNotifStatusesEcho(), /Unset/);
+  });
+}
+
+for (const [name, text, statuses] of settingsNotificationMergeCases) {
+  test(`global notification statuses resolve ${name} without rewriting YAML`, async () => {
+    const state = await settingsState(text);
+    const selected = () => state.settingsConfig.notifications.default_statuses == null
+      ? null : Array.from(state.settingsConfig.notifications.default_statuses);
+    assert.deepEqual(selected(), statuses);
+    assert.equal(state.settingsNotifStatusMode() === 'unset', statuses === null);
+    assert.equal(state.settingsDirty(), false);
+    state.settingsConfig.general.branch_prefix = 'edited';
+    assert.deepEqual(Array.from(state.settingsChangedPaths()), ['branch_prefix']);
+    const written = await state._settingsWrite();
+    const after = yaml.parseDocument(written);
+    after.delete('branch_prefix');
+    assert.equal(String(after), String(yaml.parseDocument(text)));
+    assert.deepEqual(yaml.parse(written, { merge: true }).notifications.default_statuses, statuses);
+    await state._settingsRebase(written);
+    assert.deepEqual(selected(), statuses);
+    assert.equal(state.settingsDirty(), false);
+  });
+
+  for (const mode of ['needs', 'off']) {
+    test(`global notification ${mode} edit overrides ${name} without changing merge sources`, async () => {
+      const state = await settingsState(text);
+      const before = yaml.parseDocument(text);
+      state.settingsNotifPickStatusMode(mode);
+      const expected = Array.from(state.settingsConfig.notifications.default_statuses);
+      const written = await state._settingsWrite();
+      const after = yaml.parseDocument(written);
+      assert.deepEqual(yaml.parse(written, { merge: true }).notifications.default_statuses, expected);
+      if (state.settingsDirty()) {
+        assert.deepEqual(after.getIn(['notifications', 'default_statuses'], true).toJSON(), expected);
+      }
+      after.deleteIn(['notifications', 'default_statuses']);
+      before.deleteIn(['notifications', 'default_statuses']);
+      assert.equal(String(after), String(before));
+      await state._settingsRebase(written);
+      assert.equal(state.settingsNotifStatusMode(), mode);
+      assert.equal(state.settingsDirty(), false);
+    });
+  }
+}
+
+test('saving a delivery edit retains merged status defaults through rebase and reopen', async () => {
+  let raw = 'notifications: { <<: { default_statuses: [done] }, enabled: true }\n';
+  let puts = 0;
+  const state = await settingsState(raw, { fetch: async (_url, options) => {
+    if (!options) return { ok: true, json: async () => ({ content: raw }) };
+    const body = JSON.parse(options.body);
+    assert.equal(body.expected_content, raw);
+    raw = body.content;
+    puts++;
+    return { status: 204 };
+  } });
+  state.settingsConfig.notifications.enabled = false;
+  assert.deepEqual(Array.from(state.settingsChangedPaths()), ['notifications.enabled']);
+  assert.equal(await state.saveSettings(), true);
+  assert.equal(puts, 1);
+  assert.deepEqual(Array.from(state.settingsConfig.notifications.default_statuses), ['done']);
+  assert.equal(state.settingsDirty(), false);
+  assert.equal(yaml.parseDocument(raw).hasIn(['notifications', 'default_statuses']), false);
+  const reopened = await settingsState(raw);
+  assert.deepEqual(Array.from(reopened.settingsConfig.notifications.default_statuses), ['done']);
+});
+
+test('status edits still refuse to strand aliases to an explicitly anchored sequence', async () => {
+  const text = 'notifications: { <<: { enabled: true }, default_statuses: &choice [done] }\nprojects: { repo: { path: /repo, notify: *choice } }\n';
+  let puts = 0;
+  const state = await settingsState(text, { fetch: async (_url, options) => {
+    if (options?.method === 'PUT') puts++;
+    return { ok: true, json: async () => ({ content: text }) };
+  } });
+  state.settingsNotifPickStatusMode('off');
+  await assert.rejects(state._settingsWrite(), /Edit the file directly/);
+  assert.equal(await state.saveSettings(), false);
+  assert.equal(puts, 0);
+  assert.equal(state._settingsRawText, text);
+  assert.deepEqual(yaml.parse(text, { merge: true }).projects.repo.notify, ['done']);
+});
+
+test('global status presets save, reload, and never call ticket autosave', async () => {
+  let raw = settingsFixture;
+  const state = await settingsState(raw, { fetch: async (_url, options) => {
+    if (!options) return { ok: true, json: async () => ({ content: raw }) };
+    const body = JSON.parse(options.body);
+    assert.equal(body.expected_content, raw);
+    raw = body.content;
+    return { status: 204 };
+  }, state: { notifyChanged() { throw new Error('Settings must not autosave a ticket'); } } });
+  for (const mode of state.settingsNotifStatusModes()) {
+    state.settingsNotifPickStatusMode(mode.key);
+    assert.deepEqual(Array.from(state.settingsConfig.notifications.default_statuses), Array.from(mode.statuses));
+    assert.notEqual(state.settingsConfig.notifications.default_statuses, mode.statuses);
+    assert.deepEqual(Array.from(state.settingsChangedPaths()), ['notifications.default_statuses']);
+    assert.equal(state.settingsPathDirty('notifications'), true);
+    assert.equal(state.settingsRestartPending(), 0);
+    assert.equal(await state.saveSettings(), true);
+    assert.equal(state.settingsDirty(), false);
+    const reopened = await settingsState(raw);
+    assert.equal(reopened.settingsNotifStatusMode(), mode.key);
+    assert.deepEqual(yaml.parse(raw).notifications.default_statuses, Array.from(mode.statuses));
+  }
+});
+
+test('opening custom controls leaves missing defaults unset; Off writes an explicit empty list', async () => {
+  const state = await settingsState();
+  state.settingsNotifStatusesOpen = true;
+  state.settingsNotifPickStatusMode('custom');
+  assert.equal(state.settingsConfig.notifications.default_statuses, null);
+  assert.equal(state.settingsDirty(), false);
+  state.settingsNotifPickStatusMode('off');
+  assert.equal(state.settingsNotifStatusMode(), 'off');
+  assert.deepEqual(Array.from(state.settingsChangedPaths()), ['notifications.default_statuses']);
+  assert.match(state.settingsNotifStatusesEcho(), /default_statuses: \[\]/);
+  assert.deepEqual(yaml.parse(await state._settingsWrite()).notifications.default_statuses, []);
+  state.discardSettings();
+  assert.equal(state.settingsNotifStatusMode(), 'unset');
+  assert.equal(state.settingsNotifStatusesOpen, false);
+  assert.equal(state.settingsDirty(), false);
+});
+
+test('notification routing and channel edits leave missing status defaults unset', async () => {
+  const state = await settingsState();
+  state.settingsNotifToggleDefault('hook');
+  state.settingsNotifChannel('hook').url = 'https://changed.invalid';
+  state.settingsConfig.notifications.enabled = false;
+  const written = await state._settingsWrite();
+  assert.equal(yaml.parseDocument(written).hasIn(['notifications', 'default_statuses']), false);
+  assert.equal(state.settingsNotifStatusMode(), 'unset');
+  assert.equal(state.settingsChangedPaths().includes('notifications.default_statuses'), false);
+});
+
+test('clearing all default status chips persists Off instead of removing the preference', async () => {
+  const state = await settingsState('notifications: { default_statuses: [waiting] }\n');
+  state.settingsNotifToggleStatus('waiting');
+  assert.equal(state.settingsNotifStatusMode(), 'off');
+  const doc = yaml.parseDocument(await state._settingsWrite());
+  assert.equal(doc.hasIn(['notifications', 'default_statuses']), true);
+  assert.deepEqual(doc.toJS().notifications.default_statuses, []);
+});
+
+test('custom status chips use edited statuses, retain unknown selections for removal, and honor save locks', async () => {
+  const state = await settingsState('notifications: { default_statuses: [old_status] }\n');
+  state.configCache = { custom_statuses: ['stale_status'] };
+  state.settingsNewStatus = 'fresh_status';
+  state.settingsAddStatus();
+  assert.ok(state.settingsNotifStatusChoices().includes('fresh_status'));
+  assert.ok(state.settingsNotifStatusChoices().includes('old_status'));
+  assert.equal(state.settingsNotifStatusChoices().includes('stale_status'), false);
+  state.settingsNotifToggleStatus('old_status');
+  state.settingsNotifToggleStatus('fresh_status');
+  state.settingsNotifToggleStatus('waiting');
+  assert.equal(state.settingsNotifStatusMode(), 'custom');
+  assert.equal(state.settingsNotifStatusOn('fresh_status'), true);
+  assert.deepEqual(Array.from(state.settingsClientErrors()), []);
+  const written = await state._settingsWrite();
+  const reopened = await settingsState(written);
+  assert.equal(reopened.settingsNotifStatusMode(), 'custom');
+  assert.deepEqual(Array.from(reopened.settingsConfig.notifications.default_statuses), ['fresh_status', 'waiting']);
+  state.settingsSaving = true;
+  state.settingsNotifPickStatusMode('off');
+  state.settingsNotifToggleStatus('waiting');
+  assert.deepEqual(Array.from(state.settingsConfig.notifications.default_statuses), ['fresh_status', 'waiting']);
+});
+
+test('global status edits preserve unrelated notification and project YAML nodes', async () => {
+  const text = `# retain root comment
+projects:
+  repo: # keep repo
+    path: /repo
+    notify: [] # project Off
+    future: { unknown: keep }
+notifications:
+  default_statuses: [qa]
+  default: [hook] # destinations
+  enabled: false # delivery stays off
+  all_changes: true # preserve origins
+  channels:
+    hook: # channel comment
+      type: webhook
+      url: 'https://example.invalid'
+      headers: { X-Trace: keep } # header comment
+  future: { untouched: yes }
+statuses: [qa]
+`;
+  const state = await settingsState(text);
+  const before = state._settingsDoc;
+  state.settingsNotifPickStatusMode('needs');
+  const written = await state._settingsWrite();
+  const after = yaml.parseDocument(written);
+  assert.deepEqual(Array.from(state.settingsChangedPaths()), ['notifications.default_statuses']);
+  for (const key of [['projects'], ['statuses'], ...['default', 'enabled', 'all_changes', 'channels', 'future'].map(key => ['notifications', key])]) {
+    assert.equal(after.getIn(key, true).toString(), before.getIn(key, true).toString(), key.join('.'));
+  }
+  for (const comment of ['retain root comment', 'keep repo', 'project Off', 'destinations', 'delivery stays off', 'preserve origins', 'channel comment', 'header comment']) {
+    assert.ok(written.includes('# ' + comment), comment);
+  }
+  assert.deepEqual(after.toJS().notifications.default_statuses, ['paused', 'human_review', 'waiting']);
+});
+
+for (const statuses of [['none'], ['missing_status'], ['paused', 'none']]) {
+  test(`global notification statuses reject ${statuses.join(', ')} without sending a save`, async () => {
+    let requests = 0;
+    const state = await settingsState('statuses: [none]\n', { fetch: async () => { requests++; } });
+    state.settingsConfig.notifications.default_statuses = statuses;
+    const issue = state.settingsClientIssues().find(issue => issue.key.join('.') === 'notifications.default_statuses');
+    assert.equal(issue?.blocking, true);
+    assert.match(issue.message, /notifications.default_statuses/);
+    assert.equal(state.settingsFieldIssue('notif-default_statuses'), issue.message);
+    assert.equal(await state.saveSettings(), false);
+    assert.equal(requests, 0);
+  });
+}
+
+test('global default validation accepts all known statuses without destinations or delivery', async () => {
+  const state = await settingsState('statuses: [qa]\nnotifications: { enabled: false }\n');
+  state.settingsConfig.notifications.default_statuses = [...state.settingsBuiltinStatuses, 'archived', 'waiting', 'qa'];
+  assert.deepEqual(Array.from(state.settingsClientErrors()), []);
+  state.settingsRemoveStatus('qa');
+  assert.match(state.settingsClientErrors().join(' '), /notifications.default_statuses.*qa/);
+});
+
+test('notification default search and field reveal focus the status control', async () => {
+  let focused = false;
+  const lookedUp = [];
+  const state = await settingsState(settingsFixture, { document: { getElementById(id) {
+    lookedUp.push(id);
+    return id === 'notif-default_statuses' ? {
+      getClientRects: () => [{}], focus() { focused = true; }, scrollIntoView() {},
+    } : null;
+  } } });
+  const field = state.settingsFieldCatalogue().find(field => field.configKey === 'notifications.default_statuses');
+  assert.equal(field.section, 'notifications');
+  assert.equal(field.target, 'notif-default_statuses');
+  assert.match(field.help, /live Pi questions/);
+  for (const query of ['default_statuses', 'Default notification statuses', 'explicit starts']) {
+    state.settingsQuery = query;
+    assert.ok(state.settingsSearchResults().some(result => result.id === field.id));
+  }
+  await state.settingsRevealField(field.id, false);
+  assert.equal(state.settingsSection, 'notifications');
+  assert.equal(focused, true);
+  assert.ok(lookedUp.includes('notif-default_statuses'));
 });
 
 for (const [value, valid] of [['0', true], ['+0', true], ['-0', true], ['1h30m', true], ['-.5h', true], ['1h+30m', false], ['.5ms', true], ['-5m', true]]) {

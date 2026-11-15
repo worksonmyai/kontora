@@ -5549,6 +5549,36 @@
                   <p x-show="settingsNewChannelName.trim() === settingsNotifNone" x-cloak class="m-0 text-[11.5px] text-err">
                     "none" is reserved for the opt-out and cannot name a channel.</p>
 
+                  <section class="settings-panel" aria-labelledby="notif-default-statuses-label">
+                    <h2 id="notif-default-statuses-label" class="settings-inset">Default notification statuses</h2>
+                    <div class="settings-inset">
+                      <code class="settings-key">notifications.default_statuses</code>
+                      <span x-show="settingsPathDirty('notifications.default_statuses')" x-cloak class="w-1.5 h-1.5 rounded-full bg-accent inline-block" aria-label="unsaved"></span>
+                      <p class="settings-help" x-text="fieldInfo(['notifications', 'default_statuses']).help"></p>
+                      <div class="flex items-center gap-2 flex-wrap">
+                        <div id="notif-default_statuses" tabindex="-1" class="notify-seg" role="radiogroup" aria-label="Default notification statuses"
+                             :aria-invalid="!!settingsFieldIssue('notif-default_statuses')" :aria-describedby="settingsFieldID(['notifications', 'default_statuses'], 'issue')">
+                          <template x-for="m in settingsNotifStatusModes()" :key="m.key">
+                            <button type="button" role="radio" :aria-checked="settingsNotifStatusMode() === m.key"
+                                    @click="settingsNotifPickStatusMode(m.key)" x-text="m.label"></button>
+                          </template>
+                        </div>
+                        <button type="button" class="font-mono text-[11px] text-accent hover:underline"
+                                :aria-expanded="settingsNotifStatusesOpen"
+                                @click="settingsNotifStatusesOpen = !settingsNotifStatusesOpen">custom</button>
+                        <span x-show="settingsNotifStatusMode() === 'custom'" class="settings-key">custom statuses selected</span>
+                      </div>
+                      <div x-show="settingsNotifStatusesOpen" x-cloak class="flex flex-wrap items-center gap-2" role="group" aria-label="Custom default notification statuses">
+                        <template x-for="s in settingsNotifStatusChoices()" :key="s">
+                          <button type="button" class="notify-chip" :data-status="s"
+                                  :data-on="settingsNotifStatusOn(s) ? '1' : null" :aria-pressed="settingsNotifStatusOn(s)"
+                                  @click="settingsNotifToggleStatus(s)" x-text="s"></button>
+                        </template>
+                      </div>
+                      <p class="settings-help" x-text="settingsNotifStatusesEcho()"></p>
+                      <p :id="settingsFieldID(['notifications', 'default_statuses'], 'issue')" class="settings-field-issue" x-text="settingsFieldIssue('notif-default_statuses')"></p>
+                    </div>
+                  </section>
                   <section class="settings-panel" aria-labelledby="notif-default-label">
                     <h2 id="notif-default-label" class="settings-inset">Fallback destinations</h2>
                     <div class="settings-inset">

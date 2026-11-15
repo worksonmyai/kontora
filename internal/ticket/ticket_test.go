@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestEpicExecution(t *testing.T) {
@@ -714,6 +715,67 @@ func TestNotifyDecode(t *testing.T) {
 			assert.Equal(t, tt.want, tkt.Notify.Statuses)
 			assert.Equal(t, tt.wantChannels, tkt.NotifyChannels)
 		})
+	}
+}
+
+func TestNotifyIntentRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  []string
+	}{
+		{name: "missing"},
+		{name: "null", value: "notify: null\n"},
+		{name: "blank", value: "notify:\n"},
+		{name: "empty string", value: "notify: \"\"\n"},
+		{name: "off", value: "notify: []\n", want: []string{}},
+		{name: "scalar", value: "notify: done\n", want: []string{"done"}},
+		{name: "sequence", value: "notify: [done, waiting]\n", want: []string{"done", "waiting"}},
+		{name: "block sequence", value: "notify:\n  - done\n  - waiting\n", want: []string{"done", "waiting"}},
+	} {
+		for _, form := range []string{"direct", "alias", "merge", "merge alias"} {
+			t.Run(tc.name+"/"+form, func(t *testing.T) {
+				fields := tc.value
+				if fields != "" {
+					value := strings.TrimPrefix(fields, "notify:")
+					switch form {
+					case "alias":
+						fields = "choice: &choice" + value + "notify: *choice\n"
+					case "merge":
+						fields = "<<:\n" + "  " + strings.ReplaceAll(strings.TrimSuffix(fields, "\n"), "\n", "\n  ") + "\n"
+					case "merge alias":
+						fields = "defaults: &defaults\n  " + strings.ReplaceAll(strings.TrimSuffix(fields, "\n"), "\n", "\n  ") + "\n<<: *defaults\n"
+					}
+				}
+				tkt, err := ParseBytes([]byte("---\nid: n-intent\nstatus: open\n" + fields + "---\n# Body\n"))
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, tkt.Notify.Statuses)
+				cloned := tkt.Clone()
+				assert.Equal(t, tc.want, cloned.Notify.Statuses)
+				require.NoError(t, cloned.SetField("status", "todo"))
+				out, err := cloned.Marshal()
+				require.NoError(t, err)
+				reparsed, err := ParseBytes(out)
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, reparsed.Notify.Statuses)
+				assert.Equal(t, StatusOpen, tkt.Status)
+				if len(cloned.Notify.Statuses) > 0 {
+					cloned.Notify.Statuses[0] = "changed"
+					assert.Equal(t, tc.want, tkt.Notify.Statuses)
+				}
+
+				typed, err := yaml.Marshal(tkt)
+				require.NoError(t, err)
+				var decoded Ticket
+				require.NoError(t, yaml.Unmarshal(typed, &decoded))
+				assert.Equal(t, tc.want, decoded.Notify.Statuses)
+				if tc.want == nil {
+					assert.NotContains(t, string(typed), "notify:")
+				} else if len(tc.want) == 0 {
+					assert.Contains(t, string(typed), "notify: []")
+				}
+			})
+		}
 	}
 }
 

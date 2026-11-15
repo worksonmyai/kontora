@@ -18663,7 +18663,7 @@ for (const derived of ['open', 'in_progress', 'done', 'cancelled']) {
     assert.equal(requests.length, 1);
     assert.equal(requests[0].url, '/api/tickets/' + epic.id + '/init');
     assert.deepEqual(JSON.parse(requests[0].body), {
-      path: epic.path, agent: 'claude', branch: 'epic/new', status: 'todo', notify: [], notify_channels: [],
+      path: epic.path, agent: 'claude', branch: 'epic/new', status: 'todo', notify_channels: [],
     });
     assert.equal(state.initModal, false);
     assert.ok(state.tickets.slice(1).every(t => t.status === 'open'));
@@ -19344,6 +19344,19 @@ test('supervisor capacity reloads live and defaults to four', async () => {
   assert.match(await state._settingsWrite(), /^max_concurrent_epic_supervisors: many$/m);
 });
 
+test('Settings uses shared notification presets independently of delivery routing', () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const section = html.slice(html.indexOf('<section class="settings-panel" aria-labelledby="notif-default-statuses-label">'), html.indexOf('<section class="settings-panel" aria-labelledby="notif-default-label">'));
+  assert.match(section, /notifications\.default_statuses/);
+  assert.match(section, /id="notif-default_statuses" tabindex="-1"/);
+  assert.match(section, /role="radiogroup" aria-label="Default notification statuses"/);
+  assert.match(section, /settingsNotifStatusModes\(\)/);
+  assert.match(section, /settingsNotifPickStatusMode\(m\.key\)/);
+  assert.match(section, /settingsNotifToggleStatus\(s\)/);
+  assert.match(section, /settingsFieldID\(\['notifications', 'default_statuses'\], 'issue'\)/);
+  assert.doesNotMatch(section, /notifyHasChannels|notifyChanged|notifyPickMode|notifyToggleStatus/);
+});
+
 // ─── notify row ───
 
 // One channel, one project, so the resolution has all three levels to walk.
@@ -19518,7 +19531,7 @@ test("the echo line and the rail value say the same thing two ways", () => {
   const state = notifyState();
   const form = { notify: [], notifyChannels: [], path: "~/projects/kontora" };
 
-  assert.equal(state.notifyEcho(form), "no notify: field written");
+  assert.equal(state.notifyEcho(form), "notify: []");
   assert.equal(state.notifyLabel(form), "off");
 
   state.notifyPickMode(form, "needs");
@@ -19790,6 +19803,237 @@ test("the rail editor does not carry one ticket's statuses onto the next", async
   assert.equal(state.notifyEditing, false);
   assert.equal(state.notifyDraft, null);
 });
+
+for (const [name, stored, project, global, expected, follows] of [
+  ['global', undefined, undefined, ['paused', 'human_review', 'waiting'], ['paused', 'human_review', 'waiting'], true],
+  ['project', undefined, ['done'], ['paused'], ['done'], true],
+  ['project Off', undefined, [], ['paused'], [], true],
+  ['stored Off', [], ['done'], ['paused'], [], false],
+  ['stored statuses', ['waiting'], ['done'], ['paused'], ['waiting'], false],
+  ['unconfigured', undefined, undefined, undefined, [], true],
+]) {
+  test(`start notification preselection: ${name}`, async () => {
+    const posts = [];
+    const ticket = { id: 'kon-1', path: '~/projects/kontora', notify: stored };
+    const state = notifyState({ fetch: async (url, options) => {
+      if (options?.method === 'POST') posts.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ticket };
+    } }, { default_notify: global });
+    state.configCache.projects[0].notify = project;
+    state.$nextTick = () => Promise.resolve();
+    await state.openInitModal(ticket);
+    assert.deepEqual(vmValue(state.initForm.notify), expected);
+    assert.equal(state.initForm.notifyFollowsDefaults, follows);
+    await state.submitInitTicket();
+    assert.equal(posts.length, 1);
+    assert.equal(Object.hasOwn(posts[0], 'notify'), !follows);
+    if (!follows) assert.deepEqual(posts[0].notify, expected);
+  });
+}
+
+test('start defaults follow path and config until a status choice, not a channel choice', async () => {
+  const state = notifyState({}, { default_notify: ['paused'] });
+  state.initForm = { path: '~/projects/kontora', notify: [], notifyChannels: [], notifyFollowsDefaults: true };
+  state.configCache.projects[0].notify = ['done'];
+  state.syncInitNotifyDefaults();
+  assert.deepEqual(vmValue(state.initForm.notify), ['done']);
+  state.notifyToggleChannel(state.initForm, { key: 'tg', kind: 'channel', on: false });
+  state.initForm.path = '~/elsewhere';
+  state.onInitPathChange();
+  assert.deepEqual(vmValue(state.initForm.notify), ['paused']);
+  state.configCache.default_notify = ['waiting'];
+  state.syncInitNotifyDefaults();
+  assert.deepEqual(vmValue(state.initForm.notify), ['waiting']);
+  state.notifyPickMode(state.initForm, 'off');
+  state.initForm.path = '~/projects/kontora';
+  state.onInitPathChange();
+  assert.deepEqual(vmValue(state.initForm.notify), []);
+  assert.equal(state.initForm.notifyFollowsDefaults, false);
+});
+
+test('delayed notification config preselects defaults after a ticket-context refresh', async () => {
+  let release;
+  const config = new Promise(resolve => { release = resolve; });
+  const ticket = { id: 'kon-1', path: '~/elsewhere' };
+  const state = notifyState({ fetch: async url => ({ ok: true, json: async () => url === '/api/config' ? config : ticket }) });
+  state.configCache = null;
+  state.$nextTick = () => Promise.resolve();
+  const opening = state.openInitModal(ticket);
+  await flushMicrotasks();
+  assert.equal(state.initModal, true);
+  assert.deepEqual(vmValue(state.initForm.notify), []);
+  await state.refreshInitContext(ticket.id);
+  release({ default_notify: ['paused', 'human_review', 'waiting'], channels: ['tg'], default_channels: ['tg'] });
+  await opening;
+  assert.deepEqual(vmValue(state.initForm.notify), ['paused', 'human_review', 'waiting']);
+});
+
+for (const delayed of ['response', 'json']) {
+  for (const older of ['start', 'create', 'startup', 'reload']) {
+    test(`newer config reload wins over ${older} config: delayed ${delayed}`, async () => {
+      const pending = deferred();
+      const listeners = {};
+      const posts = [];
+      const ticket = { id: 'kon-1', path: '~/elsewhere' };
+      const stale = { default_notify: [], channels: ['tg'], default_channels: ['tg'] };
+      const latest = { default_notify: ['done'], channels: ['tg'], default_channels: [] };
+      let reads = 0;
+      const state = notifyState({
+        EventSource: class {
+          addEventListener(name, fn) { listeners[name] = fn; }
+          close() {}
+        },
+        fetch: async (url, options) => {
+          if (options?.method === 'POST') { posts.push(JSON.parse(options.body)); return { ok: true }; }
+          if (url !== '/api/config') return { ok: true, json: async () => ticket };
+          if (++reads > 1) return { ok: true, json: async () => latest };
+          return delayed === 'response' ? pending.promise : { ok: true, json: () => pending.promise };
+        },
+      });
+      state.configCache = null;
+      state.$nextTick = () => Promise.resolve();
+      state.connectSSE();
+      let opening;
+      if (older === 'start') opening = state.openInitModal(ticket);
+      else if (older === 'create') {
+        state.currentView = 'new';
+        opening = state.loadCreateConfig();
+      } else if (older === 'startup') {
+        for (const name of ['initMobile', 'setupSettingsLifecycle', 'setupSettingsHistory', '_bindGlobalEvents',
+          'setupAgentPicker', 'fetchTasks', 'fetchTicketSources', 'automationsRefresh', 'initAssistant',
+          'companionInit', 'applyRoute', '_mountBoard']) state[name] = () => {};
+        state.$watch = () => {};
+        state.$nextTick = callback => { callback?.(); return Promise.resolve(); };
+        opening = state.init();
+      } else listeners.config_reloaded({ data: '{}' });
+      await flushMicrotasks();
+      state._releaseInitialSnapshot();
+      assert.equal(reads, 1);
+      listeners.config_reloaded({ data: '{}' });
+      await flushMicrotasks();
+      assert.deepEqual(vmValue(state.configCache), latest);
+      pending.resolve(delayed === 'response' ? { ok: true, json: async () => stale } : stale);
+      await opening;
+      await flushMicrotasks();
+      assert.deepEqual(vmValue(state.configCache), latest);
+      if (older !== 'start') await state.openInitModal(ticket);
+      assert.deepEqual(vmValue(state.initForm.notify), ['done']);
+      await state.submitInitTicket();
+      assert.equal(posts.length, 0);
+      assert.match(state.initError, /Choose a notification channel/);
+      state.closeInitModal();
+      state._eventSource?.close();
+    });
+  }
+}
+
+for (const newer of ['start', 'create']) {
+  test(`an older reload cannot overwrite newer ${newer} config`, async () => {
+    const pending = deferred();
+    const latest = { default_notify: ['done'], channels: ['tg'], default_channels: ['tg'] };
+    let reads = 0;
+    const state = notifyState({ fetch: async url => url === '/api/config'
+      ? { ok: true, json: async () => ++reads === 1 ? pending.promise : latest }
+      : { ok: true, json: async () => ({ id: 'kon-1', path: '~/elsewhere' }) } });
+    state.configCache = null;
+    state.$nextTick = () => Promise.resolve();
+    const reload = state.refreshConfigCache();
+    await flushMicrotasks();
+    if (newer === 'start') await state.openInitModal({ id: 'kon-1', path: '~/elsewhere' });
+    else { state.currentView = 'new'; await state.loadCreateConfig(); }
+    pending.resolve({ default_notify: [] });
+    await reload;
+    assert.deepEqual(vmValue(state.configCache), latest);
+  });
+}
+
+for (const outcome of ['error', 'replaced cache', 'destroy']) {
+  test(`a pending config request ignores ${outcome}`, async () => {
+    const pending = deferred();
+    const state = notifyState({ fetch: async () => ({ ok: true, json: () => pending.promise }) });
+    state.configCache = null;
+    const loading = state.loadConfigCache();
+    await flushMicrotasks();
+    const latest = { default_notify: ['done'] };
+    if (outcome === 'error') {
+      state.configCache = latest;
+      pending.reject(new Error('obsolete failure'));
+    } else {
+      if (outcome === 'destroy') state._appDestroyed = true;
+      else state.configCache = latest;
+      pending.resolve({ default_notify: [] });
+    }
+    await loading;
+    assert.deepEqual(vmValue(state.configCache), outcome === 'destroy' ? null : latest);
+  });
+}
+
+test('notification status choices exclude reserved none but keep other custom statuses', () => {
+  const state = notifyState({}, { custom_statuses: ['none', 'awaiting_data', 'done'] });
+  assert.deepEqual(vmValue(state.notifyStatuses()), [
+    'paused', 'human_review', 'done', 'waiting', 'open', 'todo', 'in_progress', 'cancelled', 'awaiting_data',
+  ]);
+});
+
+test('a closed start dialog cannot replace notification config or the next draft', async () => {
+  let release;
+  const config = new Promise(resolve => { release = resolve; });
+  const ticket = { id: 'kon-1', path: '~/elsewhere' };
+  const state = notifyState({ fetch: async url => ({ ok: true, json: async () => url === '/api/config' ? config : ticket }) });
+  state.configCache = null;
+  state.$nextTick = () => Promise.resolve();
+  const opening = state.openInitModal(ticket);
+  await flushMicrotasks();
+  state.closeInitModal();
+  state.configCache = { default_notify: ['done'], channels: ['tg'], default_channels: ['tg'] };
+  await state.openInitModal({ id: 'kon-2', path: '~/elsewhere' });
+  release({ default_notify: ['waiting'] });
+  await opening;
+  assert.equal(state.initForm.ticketId, 'kon-2');
+  assert.deepEqual(vmValue(state.initForm.notify), ['done']);
+  assert.deepEqual(vmValue(state.configCache.default_notify), ['done']);
+});
+
+test('start blocks unseen config and unrouted defaults, then permits explicit Off', async () => {
+  const posts = [];
+  const state = notifyState({ fetch: async (url, options) => {
+    posts.push(JSON.parse(options.body));
+    return { ok: true };
+  } });
+  state.configCache = null;
+  state.initForm = { ticketId: 'kon-1', path: '~/elsewhere', notify: [], notifyChannels: [], notifyFollowsDefaults: true };
+  await state.submitInitTicket();
+  assert.equal(posts.length, 0);
+  assert.match(state.initError, /Waiting for notification configuration/);
+  state.configCache = { channels: [], default_notify: ['paused', 'human_review', 'waiting'] };
+  await state.submitInitTicket();
+  assert.equal(posts.length, 0);
+  assert.deepEqual(vmValue(state.initForm.notify), ['paused', 'human_review', 'waiting']);
+  assert.match(state.initError, /Choose a notification channel/);
+  state.initPickNotifyMode('off');
+  await state.submitInitTicket();
+  assert.equal(posts.length, 1);
+  assert.deepEqual(posts[0].notify, []);
+});
+
+for (const stored of [undefined, []]) {
+  test(`channel-only rail edits preserve ${stored ? 'Off' : 'unset'} statuses`, async () => {
+    const posts = [];
+    const ticket = { id: 'kon-1', status: 'todo', path: '', notify: stored };
+    const state = notifyState({ fetch: async (url, options) => {
+      posts.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ticket };
+    } });
+    state.selectedTicket = ticket;
+    state.openNotifyEditor();
+    state.notifyToggleChannel(state.notifyDraft, { key: 'tg', kind: 'channel', on: false });
+    await flushMicrotasks();
+    assert.equal(posts.length, 1);
+    assert.equal(Object.hasOwn(posts[0], 'notify'), stored != null);
+    if (stored) assert.deepEqual(posts[0].notify, []);
+    assert.deepEqual(posts[0].notify_channels, ['tg']);
+  });
+}
 
 // No refresh path may POST a message.
 const COMPANION_SNAPSHOT = {

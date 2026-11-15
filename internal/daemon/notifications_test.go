@@ -1053,8 +1053,9 @@ func TestDaemon_NotifyFieldsThroughTheAPI(t *testing.T) {
 			wantChan: []string{"tg"},
 		},
 		{
-			name:   "an empty list removes the field",
+			name:   "empty statuses persist Off while empty channels remove the route",
 			update: &web.UpdateTicketRequest{Notify: []string{}, NotifyChannels: []string{}},
+			want:   []string{},
 		},
 		{
 			name:     "a request that says nothing leaves the fields alone",
@@ -1096,8 +1097,9 @@ func TestDaemon_NotifyFieldsThroughTheAPI(t *testing.T) {
 			wantChan: []string{"tg"},
 		},
 		{
-			name: "init clears what the ticket carried",
+			name: "init persists Off and clears the route",
 			init: &web.InitTicketRequest{Pipeline: "one-stage", Status: "open", Notify: []string{}, NotifyChannels: []string{}},
+			want: []string{},
 		},
 		{
 			name:    "init refuses an unconfigured channel too",
@@ -1118,6 +1120,7 @@ func TestDaemon_NotifyFieldsThroughTheAPI(t *testing.T) {
 		{
 			name:   "create skips the default for an explicit empty list",
 			create: &web.CreateTicketRequest{Notify: []string{}},
+			want:   []string{},
 		},
 		{
 			name:   "create skips the default for epics",

@@ -643,7 +643,7 @@ func TestNew_RejectsUnknownNames(t *testing.T) {
 		{name: "unknown pipeline", pipeline: "ghost", wantErr: `unknown pipeline "ghost"`},
 		{name: "unknown agent", agent: "claud", wantErr: `unknown agent "claud"`},
 		{name: "unknown notify status", notify: []string{"unknown_status"}, wantErr: `no ticket ever reaches status "unknown_status"`},
-		{name: "none is not a notify status", notify: []string{"none"}, wantErr: `no ticket ever reaches status "none"`},
+		{name: "none is not a notify status", notify: []string{"none"}, wantErr: `"none" cannot be used in notification status lists; use [] to disable subscriptions`},
 		{name: "unknown notify channel", notifyChannels: []string{"ghost"}, wantErr: `no channel named "ghost" is configured`},
 		{name: "none mixed with a channel", notifyChannels: []string{"none", "ghost"}, wantErr: `"none" silences the list`},
 	}
@@ -1690,6 +1690,7 @@ func TestNew_ProjectDefaults(t *testing.T) {
 		notify          []string
 		notifyChannels  []string
 		projectNotify   []string
+		globalNotify    []string
 		wantNotify      []string
 		wantChannels    []string
 		wantPipeline    string
@@ -1767,7 +1768,16 @@ func TestNew_ProjectDefaults(t *testing.T) {
 			projectNotify:   []string{"done"},
 		},
 		{name: "explicit notify wins", path: repoDir, projectNotify: []string{"done"}, notify: []string{"waiting", "reviewed"}, wantNotify: []string{"waiting", "reviewed"}},
-		{name: "empty notify skips default", path: repoDir, projectNotify: []string{"done"}, notify: []string{}},
+		{name: "empty notify skips default", path: repoDir, projectNotify: []string{"done"}, notify: []string{}, wantNotify: []string{}},
+		{name: "global notify", path: repoDir, globalNotify: []string{"paused", "human_review", "waiting"}, wantNotify: []string{"paused", "human_review", "waiting"}},
+		{name: "global notify without project", path: unlistedRepo, globalNotify: []string{"done"}, wantNotify: []string{"done"}},
+		{name: "global off", path: repoDir, globalNotify: []string{}, wantNotify: []string{}},
+		{name: "project notify wins over global", path: repoDir, projectNotify: []string{"done"}, globalNotify: []string{"waiting"}, wantNotify: []string{"done"}},
+		{name: "project off wins over global", path: repoDir, projectNotify: []string{}, globalNotify: []string{"waiting"}, wantNotify: []string{}},
+		{name: "explicit notify wins over global", path: repoDir, notify: []string{"done"}, globalNotify: []string{"waiting"}, wantNotify: []string{"done"}},
+		{name: "explicit off wins over global", path: repoDir, notify: []string{}, globalNotify: []string{"waiting"}, wantNotify: []string{}},
+		{name: "epic skips global notify", path: repoDir, kind: "epic", globalNotify: []string{"done"}},
+		{name: "epic accepts explicit off", path: repoDir, kind: "epic", globalNotify: []string{"done"}, notify: []string{}, wantNotify: []string{}},
 		{name: "epic skips defaults", path: repoDir, kind: "epic", projectPipeline: "default", projectAgent: "claude-sonnet", projectNotify: []string{"done"}},
 		{name: "epic accepts explicit notify", path: repoDir, kind: "epic", projectNotify: []string{"done"}, notify: []string{"human_review"}, wantNotify: []string{"human_review"}},
 		{name: "explicit channels quoted", path: repoDir, notify: []string{"done"}, wantNotify: []string{"done"}, notifyChannels: []string{" team ", "ops:hook", "null"}, wantChannels: []string{" team ", "ops:hook", "null"}},
@@ -1787,6 +1797,7 @@ func TestNew_ProjectDefaults(t *testing.T) {
 				"repo": {Path: repoDir, Pipeline: tc.projectPipeline, Agent: tc.projectAgent, Notify: tc.projectNotify},
 			}
 			cfg.Statuses = append(cfg.Statuses, "reviewed")
+			cfg.Notifications.DefaultStatuses = tc.globalNotify
 			cfg.Notifications.Channels = map[string]config.NotifyChannel{}
 			for _, name := range tc.notifyChannels {
 				cfg.Notifications.Channels[name] = config.NotifyChannel{}
@@ -1822,7 +1833,7 @@ func TestNew_ProjectDefaults(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantNotify, stored.Notify.Statuses)
 			assert.Equal(t, tc.wantChannels, stored.NotifyChannels)
-			if len(tc.wantNotify) == 0 {
+			if tc.wantNotify == nil {
 				assert.NotContains(t, content, "notify:")
 			} else {
 				assert.Contains(t, content, "notify: ["+strings.Join(tc.wantNotify, ", ")+"]")

@@ -1,4 +1,5 @@
 import { clockHM } from './format.js';
+import { NOTIFY_MODES, notifyModeFor } from './notify.js';
 
 // Settings view. Merged into the kontora() component by index.js, so `this` here
 // is the same Alpine object the board and the new-ticket form run on.
@@ -123,7 +124,7 @@ const SETTINGS_SECTIONS = [
   { key: 'web', label: 'web', blurb: 'This dashboard and the HTTP API the CLI talks to.' },
   { key: 'assistant', label: 'assistant', blurb: 'Board chat and the companion inbox. The inbox works without an agent.' },
   { key: 'plannotator', label: 'plannotator', blurb: 'Human review of the diff, and annotation of the ticket. Review notes feed the rework stage; ticket notes rewrite the ticket.' },
-  { key: 'notifications', label: 'notifications', blurb: 'Where a ticket can tell you it changed. Which statuses it tells you about is per ticket.' },
+  { key: 'notifications', label: 'notifications', blurb: 'Default notification statuses and delivery destinations. Ticket and project choices take precedence.' },
   { key: 'display', label: 'display', blurb: 'Browser-local. Never written to config.yaml.' },
 ];
 
@@ -170,7 +171,7 @@ const SETTINGS_FIELD_LABELS = {
   binary: 'Binary', args: 'Arguments', reviews_dir: 'Reviews directory', failure_patterns: 'Failure patterns',
   secret_env: 'Credential environment variable', secret_file: 'Credential file',
   chat_id: 'Telegram chat ID', channel: 'Mattermost channel', url: 'Webhook URL', method: 'HTTP method',
-  type: 'Channel type', enabled: 'Enabled', default: 'Fallback destinations',
+  type: 'Channel type', enabled: 'Enabled', default: 'Fallback destinations', default_statuses: 'Default notification statuses',
   attempts: 'Delivery attempts', backoff: 'Retry delay', pipeline_badges: 'Pipeline badges', agent_meta: 'Agent details',
 };
 
@@ -190,6 +191,7 @@ const SETTINGS_FIELD_HELP = {
   'assistant.companion.name': 'Display name for the companion inbox. Does not select a chat agent.',
   'notifications.enabled': 'Enable notification delivery. Ticket status choices still determine when notifications are requested.',
   'notifications.default': 'Used when neither the ticket nor its project sets notification channels.',
+  'notifications.default_statuses': 'Used for new ordinary tickets and explicit starts when neither the ticket nor its project sets notification statuses. Destinations and delivery enablement are separate. Waiting applies only to live Pi questions.',
   'display.theme': 'Changes apply immediately in this browser. Never written to config.yaml.',
   'display.pipeline_badges': 'Show pipeline labels on ticket cards in this browser.',
   'display.agent_meta': 'Show agent details on ticket cards in this browser.',
@@ -304,6 +306,7 @@ export function kontoraSettings() {
     // Which secret source a channel's select shows while both fields are
     // empty. Never written to YAML.
     settingsNotifSecretPick: {},
+    settingsNotifStatusesOpen: false,
     // The per-agent control appears once per stage and twice in general, so its
     // open state and its draft key are keyed by field path rather than being one
     // boolean per control the way the three add/remove pairs above are.
@@ -430,7 +433,8 @@ export function kontoraSettings() {
     async _settingsParse(text, canApply = () => true) {
       const yaml = await this._settingsLoadYAML();
       if (!canApply()) return;
-      const doc = yaml.parseDocument(text, { intAsBigInt: true });
+      // Resolve merges for the form model. Saves still edit only changed YAML nodes.
+      const doc = yaml.parseDocument(text, { intAsBigInt: true, merge: true });
       if (doc.errors && doc.errors.length) throw new Error(doc.errors[0].message);
       this._settingsDoc = doc;
       this._settingsRawText = text;
@@ -588,6 +592,14 @@ export function kontoraSettings() {
         settingsNotifChannelErrors(name, n.channels[name], (field, message) => add(['notifications', 'channels', name, ...field], message));
       }
       for (const message of this._settingsNotifListErrors('notifications.default', n.default)) add(['notifications', 'default'], message);
+      const knownStatuses = new Set([...SETTINGS_BUILTIN_STATUSES, 'archived', 'waiting', ...this.settingsConfig.statuses]);
+      for (const status of n.default_statuses || []) {
+        if (status === SETTINGS_NOTIFY_NONE) {
+          add(['notifications', 'default_statuses'], 'notifications.default_statuses: "none" cannot be used in notification status lists; use [] to disable subscriptions');
+        } else if (!knownStatuses.has(status)) {
+          add(['notifications', 'default_statuses'], `notifications.default_statuses: no ticket ever reaches status "${status}"`);
+        }
+      }
       return errs;
     },
 
@@ -801,7 +813,7 @@ export function kontoraSettings() {
     // otherwise go on showing a row config.yaml no longer has, and report clean.
     async _settingsRebase(content) {
       const yaml = await this._settingsLoadYAML();
-      const doc = yaml.parseDocument(content, { intAsBigInt: true });
+      const doc = yaml.parseDocument(content, { intAsBigInt: true, merge: true });
       this._settingsRawText = content;
       this._settingsDoc = doc;
       this.settingsConfig = settingsModel(doc.toJS({ maxAliasCount: -1 }) || {});
@@ -999,6 +1011,49 @@ export function kontoraSettings() {
     // Prefixed settingsNotif*, not notify*: ui/notify.js owns the unprefixed
     // family for the ticket's own notify row, and merge() throws on a repeat.
 
+    settingsNotifStatusModes() {
+      return NOTIFY_MODES;
+    },
+
+    settingsNotifStatusMode() {
+      const statuses = this.settingsConfig?.notifications.default_statuses;
+      return statuses == null ? 'unset' : notifyModeFor(statuses);
+    },
+
+    settingsNotifPickStatusMode(key) {
+      if (this.settingsSaving) return;
+      const mode = NOTIFY_MODES.find(mode => mode.key === key);
+      if (mode) this.settingsConfig.notifications.default_statuses = mode.statuses.slice();
+    },
+
+    settingsNotifStatusChoices() {
+      const n = this.settingsConfig?.notifications;
+      return [...new Set([
+        ...NOTIFY_MODES.flatMap(mode => mode.statuses),
+        ...SETTINGS_BUILTIN_STATUSES, 'archived', 'waiting',
+        ...(this.settingsConfig?.statuses || []).filter(status => status !== SETTINGS_NOTIFY_NONE),
+        ...(n?.default_statuses || []),
+      ])];
+    },
+
+    settingsNotifStatusOn(status) {
+      return (this.settingsConfig?.notifications.default_statuses || []).includes(status);
+    },
+
+    settingsNotifToggleStatus(status) {
+      if (this.settingsSaving) return;
+      const n = this.settingsConfig.notifications;
+      n.default_statuses = this.settingsNotifStatusOn(status)
+        ? n.default_statuses.filter(value => value !== status)
+        : [...(n.default_statuses || []), status];
+    },
+
+    settingsNotifStatusesEcho() {
+      const statuses = this.settingsConfig?.notifications.default_statuses;
+      return statuses == null ? 'Unset: no global status preference.'
+        : 'notifications.default_statuses: [' + statuses.join(', ') + ']';
+    },
+
     // Half-typed rows and picker state for channels the reloaded or reverted
     // model no longer has. The same reason settingsClearPerAgentDrafts exists.
     settingsClearNotifDrafts() {
@@ -1007,6 +1062,7 @@ export function kontoraSettings() {
       this.settingsNewHeaderOpen = {};
       this.settingsNewHeaderKey = {};
       this.settingsNotifSecretPick = {};
+      this.settingsNotifStatusesOpen = this.settingsNotifStatusMode() === 'custom';
     },
 
     settingsNotifChannelNames() {
@@ -1316,7 +1372,7 @@ export function kontoraSettings() {
       for (const key of ['enabled', 'name']) add('assistant', ['assistant', 'companion', key], { label: key === 'enabled' ? 'Companion inbox' : 'Companion name', target: 'companion-' + key });
       for (const f of SETTINGS_PLANNOTATOR_FIELDS) add('plannotator', ['plannotator', f.key], { help: f.help, target: 'pl-' + f.key });
       for (const key of ['host', 'port', 'token']) add('web', ['web', key], { target: 'web-' + key });
-      for (const key of ['enabled', 'default', 'timeout', 'attempts', 'backoff']) add('notifications', ['notifications', key], {
+      for (const key of ['enabled', 'default_statuses', 'default', 'timeout', 'attempts', 'backoff']) add('notifications', ['notifications', key], {
         target: 'notif-' + key,
         help: this.settingsNotificationFields.find(field => field.key === key)?.help || SETTINGS_FIELD_HELP['notifications.' + key] || '',
       });
@@ -1780,6 +1836,8 @@ function settingsModel(raw) {
       attempts: str(raw.notifications?.attempts),
       backoff: str(raw.notifications?.backoff),
       default: (raw.notifications?.default || []).map(String),
+      default_statuses: raw.notifications?.default_statuses == null
+        ? null : raw.notifications.default_statuses.map(String),
       // Object.create(null) here and on headers below: a channel named after an
       // Object.prototype member is a key like any other, and settingsClone
       // keeps the null prototype.
@@ -1954,6 +2012,9 @@ function settingsFlatten(cfg) {
   out['notifications.attempts'] = cfg.notifications.attempts;
   out['notifications.backoff'] = cfg.notifications.backoff;
   out['notifications.default'] = cfg.notifications.default.join('\n');
+  // Missing is not Off: selecting Off from an unset preference must be dirty.
+  out['notifications.default_statuses'] = cfg.notifications.default_statuses == null
+    ? '' : JSON.stringify(cfg.notifications.default_statuses);
   // One path per channel, not one per field. A removed channel is then a single
   // deletion of its node: deleting field by field would leave `name: {}`, which
   // config.Validate rejects for having no type.
@@ -2160,6 +2221,9 @@ function settingsNotifNodeFor(path, cfg) {
   if (field === 'enabled') return { keys: ['notifications', 'enabled'], value: n.enabled };
   if (field === 'default') {
     return { keys: ['notifications', 'default'], value: n.default.length ? n.default.slice() : null };
+  }
+  if (field === 'default_statuses') {
+    return { keys: ['notifications', 'default_statuses'], value: n.default_statuses == null ? null : n.default_statuses.slice() };
   }
   if (field === 'attempts') {
     const raw = n.attempts.trim();

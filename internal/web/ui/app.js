@@ -77,7 +77,9 @@ export function kontoraApp() {
     _initContextSeq: 0,
     _initOpening: false,
     _initAgentFollowsProject: false,
-    actionLoading: null,
+    get actionLoading() {
+      return this.lifecyclePending?.[this.ticketKey(this.selectedTicket || this.selectedEpic)] || null;
+    },
     // The detail panel's schedule editor. scheduleDraft is a local wall time,
     // the value a datetime-local input holds; the API is sent the instant it
     // means. scheduleError is the editor's own line, kept out of `error` so the
@@ -284,28 +286,8 @@ export function kontoraApp() {
     // In-flight sort order: in_progress > paused > todo. Used inside the IN PROGRESS column.
     _inflightRank: { in_progress: 0, paused: 1, todo: 2 },
 
-    // Per-status list of valid transitions surfaced in the per-card action menu.
-    // `endpoint` is the URL segment appended to /api/tickets/{id}/. When it is "move",
-    // `status` must be supplied and is sent as the JSON body.
-    validMoves: {
-      open:         [{ label: 'Queue',          endpoint: 'run' },
-                     { label: 'Cancel',         endpoint: 'move', status: 'cancelled' }],
-      todo:         [{ label: 'Move to open',   endpoint: 'move', status: 'open' },
-                     { label: 'Cancel',         endpoint: 'move', status: 'cancelled' }],
-      in_progress:  [{ label: 'Pause',          endpoint: 'pause' },
-                     { label: 'Send to review', endpoint: 'move', status: 'human_review' },
-                     { label: 'Mark done',      endpoint: 'move', status: 'done' },
-                     { label: 'Cancel',         endpoint: 'move', status: 'cancelled' }],
-      paused:       [{ label: 'Resume',         endpoint: 'retry' },
-                     { label: 'Mark done',      endpoint: 'move', status: 'done' },
-                     { label: 'Cancel',         endpoint: 'move', status: 'cancelled' }],
-      human_review: [{ label: 'Approve',        endpoint: 'move', status: 'done' },
-                     { label: 'Send back',      endpoint: 'retry' },
-                     { label: 'Cancel',         endpoint: 'move', status: 'cancelled' }],
-      done:         [{ label: 'Reopen',         endpoint: 'retry' },
-                     { label: 'Send to review', endpoint: 'move', status: 'human_review' }],
-      cancelled:    [{ label: 'Reopen',         endpoint: 'retry' }],
-    },
+    // Commands and configured destinations are owned by lifecycle.js. Keep
+    // presentation-only filtering here; no surface defines its own endpoints.
 
     // Endpoints already covered by the bespoke tooltip-bearing buttons in the
     // detail panel (Pause for in_progress, retry/restart for the parked
@@ -317,10 +299,10 @@ export function kontoraApp() {
       cancelled: ['retry'],
     },
 
-    // validMoves entries shown as action buttons in the detail panel sidebar.
+    // Shared commands shown as action buttons in the detail panel sidebar.
     detailMoves(ticket) {
       if (!this.ticketCanControl(ticket)) return [];
-      if (this.epicCanStart(ticket)) return [{ label: 'Start epic', endpoint: 'run' }];
+      if (this.epicCanStart(ticket)) return [this.lifecycleCommand(ticket, 'start')];
       if (ticket.kind === 'epic' && !this.epicIsAgent(ticket)) return [];
       var covered = this._detailCoveredMoves[this.executionActive(ticket) ? 'in_progress' : ticket.status] || [];
       return this.ticketMoves(ticket).filter(mv => !covered.includes(mv.endpoint));

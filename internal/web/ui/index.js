@@ -16,6 +16,9 @@ import { kontoraBoard } from './board.js';
 import { kontoraCreate } from './create.js';
 import { kontoraCompanion } from './companion.js';
 import { kontoraDetail } from './detail.js';
+import { kontoraDetailView } from './detail_view.js';
+import { kontoraDetailMarkup } from './detail_markup.js';
+import { kontoraLifecycle } from './lifecycle.js';
 import { kontoraEpics } from './epics.js';
 import { kontoraFilter } from './filter.js';
 import { kontoraMarkdown } from './markdown.js';
@@ -59,6 +62,9 @@ function kontora() {
     kontoraCreate(),
     kontoraAgentPicker(),
     kontoraDetail(),
+    kontoraDetailView(),
+    kontoraDetailMarkup(),
+    kontoraLifecycle(),
     kontoraBoard(),
     kontoraFilter(),
     kontoraTerminal(),

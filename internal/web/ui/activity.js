@@ -21,10 +21,10 @@ export function kontoraActivity() {
     // describes a finished run, so the last one is the most recently completed
     // stage.
     latestCompletedRun() {
-      var h = (this.outputSubject()?.history || []).filter(row => !row.imported);
-      if (!h.length) return null;
-      var last = h[h.length - 1];
-      return { stage: last.stage, run: last.run || 0 };
+      var runs = this.historyArtifactRuns().filter(row => !row.imported);
+      if (!runs.length) return null;
+      var last = runs[runs.length - 1];
+      return { stage: last.stage, run: last.run };
     },
 
     // The run in flight, or null when nothing is running. The run number counts
@@ -207,11 +207,31 @@ export function kontoraActivity() {
       return !!current && current.stage === stage && current.run === (run || 0);
     },
 
+    // Artifact indexes count occurrences, not the stored attempt/graph visit.
+    // Keep the original history index for cost lookup and never rewrite history.
+    historyArtifactRuns(ticket = this.outputSubject()) {
+      var counts = Object.create(null);
+      return (ticket?.history || []).map((h, historyIndex) => {
+        var run = counts[h.stage] || 0;
+        counts[h.stage] = run + 1;
+        return { stage: h.stage, run, key: h.stage + '#' + run,
+          historyIndex, history: h, imported: !!h.imported,
+          label: (h.node_visit_id ? this.historyLabel(h) : h.stage + ' · attempt ' + (run + 1)) + (h.imported ? ' · imported' : '') };
+      });
+    },
+
+    historyArtifactRun(historyIndex, ticket = this.outputSubject()) {
+      return this.historyArtifactRuns(ticket)[historyIndex]?.run ?? null;
+    },
+
+    activityHistoryRecord() {
+      return this.historyArtifactRuns().find(r => r.stage === this.activityStage && r.run === this.activityRun)?.history || null;
+    },
+
     outputRuns() {
       var t = this.outputSubject();
       if (!t) return [];
-      var runs = (t.history || []).filter(h => !h.imported).map(h => ({ stage: h.stage, run: h.run || 0,
-        key: h.stage + '#' + (h.run || 0), label: h.node_visit_id ? this.historyLabel(h) : h.stage + ' · attempt ' + ((h.run || 0) + 1) }));
+      var runs = this.historyArtifactRuns(t);
       var live = this.runningRun();
       if (live) runs.push({ ...live, key: live.stage + '#' + live.run,
         label: t.graph_execution ? live.stage + ' · visit ' + t.graph_execution.visit + ' · attempt ' + ((t.graph_execution.attempt || 0) + 1) + ' · live' : live.stage + ' · attempt ' + (live.run + 1) + ' · live' });
@@ -240,16 +260,28 @@ export function kontoraActivity() {
     },
 
     importedRun(stage, run) {
-      return (this.selectedTicket?.history || []).some(h => h.imported && h.stage === stage && (h.run || 0) === (run || 0));
+      return this.historyArtifactRuns().some(r => r.imported && r.stage === stage && r.run === (run || 0));
     },
 
     // Show the transcript for one run and bring the activity tab forward.
     openActivity(stage, run) {
-      if (this.isSecondary(this.selectedTicket) || this.importedRun(stage, run)) return;
+      if (!this.outputSubject()) return;
+      this._resetActivity();
       this._activityExplicit = true;
-      if (this.selectedEpic) this.epicSwitchTab('activity', false);
-      else this.activeTab = 'activity';
-      this.fetchActivity(stage, run);
+      // Set the target before changing panes so tab handlers cannot load the
+      // automatic target as well. Imported rows expose metadata, never files.
+      this.activityStage = stage || '';
+      this.activityRun = run || 0;
+      if (this.selectedEpic) {
+        this.epicSwitchTab('activity', false);
+        if (!this.importedRun(stage, run)) this.fetchActivity(stage, run);
+      } else if (this.isMobile) {
+        // The shared mobile handler owns editor/input/terminal cleanup and
+        // performs the one read of the explicit target set above.
+        this.mobileSwitchTab('activity');
+      } else {
+        this.switchTab('activity');
+      }
     },
 
     reconcileOutput(previous) {
@@ -401,10 +433,11 @@ export function kontoraActivity() {
       if (!t) return [];
       var self = this;
       var agg = Object.create(null);
-      (t.history || []).forEach(function (h) {
+      this.historyArtifactRuns(t).forEach(function (r) {
+        var h = r.history;
         var e = agg[h.stage] || (agg[h.stage] = { seconds: 0, runs: 0, last: null });
         e.runs++;
-        e.last = h;
+        e.last = r;
         e.seconds += runSeconds(h);
       });
 
@@ -438,7 +471,7 @@ export function kontoraActivity() {
         return {
           name: name,
           runs: a.runs,
-          run: a.last ? (a.last.run || 0) : 0,
+          run: a.last ? a.last.run : 0,
           seconds: seconds,
           state: running ? 'running' : (done ? 'done' : 'queued'),
           meta: running || done ? self.formatSeconds(seconds) : 'not started',
@@ -532,7 +565,9 @@ export function kontoraActivity() {
     diffEmptyText() {
       var t = this.selectedTicket;
       if (!t || !t.branch) return 'This ticket has no branch yet.';
-      if (!this.ticketChanges) return 'Reading the branch…';
+      if (this.ticketChangesLoading) return 'Reading the branch…';
+      if (this.ticketChangesError) return this.ticketChangesError;
+      if (!this.ticketChanges) return 'Changes have not been read yet.';
       if (this.executionActive(t)) {
         return 'Nothing committed on ' + t.branch + ' yet. The running stage can still hold uncommitted work in the worktree.';
       }

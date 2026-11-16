@@ -147,6 +147,29 @@ func TestSetStatus_Done_SetsCompletedAt(t *testing.T) {
 	assert.Equal(t, []string{"tst-001"}, rt.updated)
 }
 
+func TestSetStatus_ParksWithoutRetry(t *testing.T) {
+	for _, status := range []ticket.Status{ticket.StatusOpen, ticket.StatusPaused, ticket.StatusHumanReview, ticket.StatusDone, ticket.StatusCancelled, "waiting_external"} {
+		t.Run(string(status), func(t *testing.T) {
+			repo := newMemRepo()
+			repo.add("tst-001", "---\nid: tst-001\nstatus: paused\nkontora: true\npipeline: default\nstage: review\nattempt: 3\n---\n# Test\n")
+			if status == ticket.StatusPaused {
+				repo.add("tst-001", "---\nid: tst-001\nstatus: human_review\nkontora: true\npipeline: default\nstage: review\nattempt: 3\n---\n# Test\n")
+			}
+			cfg := testCfg()
+			cfg.Statuses = []string{"waiting_external"}
+			rt := &spyRuntime{}
+			svc := New(Static(cfg), repo, rt)
+			result, err := svc.SetStatus("tst-001", status)
+			require.NoError(t, err)
+			assert.Equal(t, string(status), result.Status)
+			stored := repo.tickets["tst-001"].Ticket
+			assert.Equal(t, "review", stored.Stage)
+			assert.Equal(t, 3, stored.Attempt)
+			assert.Empty(t, rt.enqueued, "a status move must not retry the stage")
+		})
+	}
+}
+
 func TestSetStatus_CancelsRunningAgent(t *testing.T) {
 	cases := []struct {
 		name   string

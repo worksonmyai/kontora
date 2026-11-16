@@ -115,6 +115,16 @@ test("settings markup methods belong to the merged component", async () => {
   }
 });
 
+for (const [selected, expected] of [[{ id: 'a' }, 'retry'], [{ id: 'b' }, null], [{ id: 'a', source: 'secondary' }, null], [null, null]]) {
+  test(`lifecycle feedback follows the selected identity: ${JSON.stringify(selected)}`, async () => {
+    await import(entry);
+    const merged = globalThis.kontora();
+    merged.lifecyclePending = { a: 'retry' };
+    merged.selectedTicket = selected;
+    assert.equal(merged.actionLoading, expected);
+  });
+}
+
 test("index.js merges every mixin the tree exports", async () => {
   await import(entry);
   const merged = globalThis.kontora();

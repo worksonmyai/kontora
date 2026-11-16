@@ -199,7 +199,7 @@ export function kontoraRelations() {
     _chainResumeEndpoints: { paused: 'retry', open: 'run' },
 
     // The move the resume pill would post, or null when there is nothing to
-    // offer. It reads validMoves rather than naming an endpoint of its own, so a
+    // offer. It reads ticketMoves rather than naming an endpoint of its own, so a
     // move the daemon would refuse is never on screen.
     chainResumeMove() {
       var holder = this.chainHolder();
@@ -333,8 +333,9 @@ export function kontoraRelations() {
       if (!this.relationKnown(ref)) return;
       var source = ref.source || this.selectedTicket?.source;
       var identity = { id: ref.id, ...(source ? { source: source } : {}) };
-      var t = this.sourceTickets(identity).find(function (x) { return x.id === ref.id; });
-      await this._paletteOpenTicket(t || { ...identity, title: ref.title, status: ref.status });
+      this.rememberDetailView();
+      await this.navigateDestination({ view: !this.isSecondary(identity) && ref.status === 'archived' ? 'archive' : 'board',
+        ticketId: ref.id, ...(source ? { source } : {}) });
     },
 
     // A pull request link, and the only chip that navigates. The path a number
@@ -371,7 +372,16 @@ export function kontoraRelations() {
       span.setAttribute('data-tip-e-body', tip.body);
       span.setAttribute('data-tip-e-hint', tip.hint);
       var self = this;
-      span.addEventListener('click', function () { self.openTicketRef(t); });
+      if (this.relationKnown(t)) {
+        span.setAttribute('role', 'link');
+        span.setAttribute('tabindex', '0');
+        span.addEventListener('click', function () { self.openTicketRef(t); });
+        span.addEventListener('keydown', function (event) {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          self.openTicketRef(t);
+        });
+      }
       return span;
     },
 

@@ -196,6 +196,34 @@ for (const [explicit, savedStage] of [[true, 'code'], [false, 'code'], [false, n
 }
 
 for (const mobile of [true, false]) {
+  for (const mode of ['notes', 'activity', 'diff']) {
+    test(`tab switches preserve each panel's scroll on ${mobile ? 'phone' : 'desktop'}: ${mode}`, async () => {
+      const fixture = integratedApp();
+      const { state, scroller } = fixture;
+      state.isMobile = mobile;
+      state.detailTab = state.activeTab = mode;
+      const switchTab = tab => mobile ? state.mobileSwitchTab(tab) : state.switchTab(tab);
+      switchTab('ticket');
+      await fixture.flush();
+      scroller.scrollTop = 23;
+      switchTab(mode);
+      fixture.completeReads();
+      await fixture.flush();
+      assert.equal(scroller.scrollTop, 85, 'returning restores the outgoing panel');
+      switchTab('ticket');
+      await fixture.flush();
+      assert.equal(scroller.scrollTop, 23, 'panels keep independent offsets');
+      state.rememberDetailView();
+      scroller.scrollTop = 0;
+      await state.restoreDetailView();
+      await fixture.flush();
+      assert.equal(scroller.scrollTop, 23);
+      switchTab(mode);
+      fixture.completeReads();
+      await fixture.flush();
+      assert.equal(scroller.scrollTop, 85, 'reopening retains the inactive panel');
+    });
+  }
   for (const mode of ['activity', 'diff']) {
     test(`delayed ${mode} restores scroll after rendering on ${mobile ? 'phone' : 'desktop'}`, async () => {
       const fixture = integratedApp();

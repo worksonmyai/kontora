@@ -10116,7 +10116,7 @@ test("an unmanaged ticket gets Initialize before its other moves", () => {
   const state = paletteState();
   state.palettePush("gol-3");
 
-  assert.deepEqual(rowTitles(groupIn(state, "Actions").items), ['Initialize', 'Move to Todo', 'Move to Paused', 'Move to Human Review', 'Move to Done', 'Move to Cancelled']);
+  assert.deepEqual(rowTitles(groupIn(state, "Actions").items), ['Initialize', 'Move to Todo', 'Move to Human Review', 'Move to Done', 'Move to Cancelled']);
 });
 
 test("the palette offers no Delete anywhere", () => {

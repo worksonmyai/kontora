@@ -1265,13 +1265,13 @@ func (d *Daemon) GetLogs(id string, stage string) (string, error) {
 // A fallback is marked stale when its bytes may describe a different run than
 // the one asked for. Legacy <stage>.log holds only the newest run: the ticket's
 // history records a newer run of the same stage, or the stage is running right
-// now and appending to the same file.
+// now and appending to the same file. Run indexes count stage occurrences because
+// legacy history rows can all store run 0.
 // Historical graph attempts use visit-specific logs. A fallback is stale if a
 // later attempt reused the same visit log or that visit is currently running.
 func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 	d.mu.Lock()
 	ts, ok := d.tickets[q.ID]
-	var newestRun int
 	var stageRunning bool
 	var nextRun int
 	var lr liveRun
@@ -1282,11 +1282,6 @@ func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 		return web.ActivityInfo{}, web.ErrLogNotFound
 	}
 	if ok {
-		for _, h := range ts.ticket.History {
-			if h.Stage == q.Stage && h.Run > newestRun {
-				newestRun = h.Run
-			}
-		}
 		_, graphStale, graphLog = cli.GraphRunLog(ts.ticket, expandTilde(d.config().LogsDir), q.Stage, q.Run)
 		stageRunning = ts.ticket.IsRunning() && ts.ticket.Stage == q.Stage
 		nextRun = stageRunIndex(ts.ticket, q.Stage)
@@ -1336,7 +1331,7 @@ func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 	if tape == nil {
 		info.Source = "log"
 		info.Content = content
-		info.Stale = q.Run < newestRun || stageRunning
+		info.Stale = q.Run < nextRun-1 || stageRunning
 		if graphLog {
 			info.Stale = graphStale
 		}

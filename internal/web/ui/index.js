@@ -12,6 +12,7 @@ import { kontoraApp } from './app.js';
 import { kontoraAutomations } from './automations.js';
 import { kontoraArchive, archiveDerive } from './archive.js';
 import { kontoraAssistant, assistantStream } from './assistant.js';
+import { kontoraAssistantMarkup } from './assistant_markup.js';
 import { kontoraBoard } from './board.js';
 import { kontoraCreate } from './create.js';
 import { kontoraCompanion } from './companion.js';
@@ -80,6 +81,7 @@ function kontora() {
     kontoraArchive(),
     kontoraEpics(),
     kontoraAssistant(),
+    kontoraAssistantMarkup(),
     kontoraCompanion(),
   );
 }

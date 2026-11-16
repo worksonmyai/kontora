@@ -6,6 +6,7 @@ import vm from "node:vm";
 import { webcrypto } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { kontoraDetailMarkup } from '../ui/detail_markup.js';
+import { kontoraAssistantMarkup } from '../ui/assistant_markup.js';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const htmlPath = path.join(dirname, "../static/index.html");
@@ -26,9 +27,9 @@ const uiSource = fs
 // Expand the shared, constant fragments at their actual mounting sites for
 // source assertions about both responsive shells (not runtime ticket content).
 function indexMarkup() {
-  const fragments = kontoraDetailMarkup();
+  const fragments = { ...kontoraDetailMarkup(), ...kontoraAssistantMarkup() };
   return fs.readFileSync(htmlPath, 'utf8').replace(
-    /x-html="(detail\w+Markup)"><\/div>/g,
+    /x-html="((?:detail|assistant)\w+Markup)"><\/div>/g,
     (_, name) => `>${fragments[name]}</div>`,
   );
 }
@@ -3805,14 +3806,15 @@ test("mobile sheets retain their dialog heading and actions without repeated tit
   assert.match(sheets, /role="dialog" aria-modal="true" aria-labelledby="mobile-sheet-title"/);
   assert.match(sheets, /<h2 id="mobile-sheet-title"[^>]*x-text="[^"]*schedule: 'Start later'[^"]*new: 'New ticket'/);
   assert.match(sheets, /@click="closeSheet\(\)" class="mobile-sheet-close" data-mobile-sheet-initial-focus>Close<\/button>/);
-  const creation = sheets.split('<template x-if="sheet.type===\'new\'">')[1];
+  const creation = html.slice(html.indexOf('id="new-view"'), html.indexOf('<!-- Live YAML frontmatter preview -->'));
   const schedule = sheets.split('<template x-if="sheet.type===\'schedule\' && ticketCanControl(sheet.ticket)">')[1]
     ?.split('<!-- assistant sheet')[0];
   assert.ok(creation);
   assert.ok(schedule);
-  assert.doesNotMatch(creation, />\s*New ticket\s*</i);
+  assert.equal((creation.match(/>\s*New ticket\s*</gi) || []).length, 1);
   assert.doesNotMatch(schedule, />\s*Start later\s*</i);
-  assert.match(creation, /@click="submitCreateTicketMobile\(\)"/);
+  assert.match(creation, /@submit.prevent="submitCreateTicket\(\)"/);
+  assert.doesNotMatch(sheets, /sheet.type==='new'/);
   assert.match(schedule, /@click="submitScheduleMobile\(sheet\.ticket\)"/);
   assert.match(sheets, /x-if="sheet.type==='actions' && ticketCanControl\(sheet\.ticket\)"/);
   assert.match(sheets, /x-for="\(a, ai\) in mobileSheetActions\(sheet\.ticket\)"/);
@@ -4057,7 +4059,7 @@ test("index.html shows the coding-agent request in both empty-board panels", () 
   }
 
   assert.equal([...elementWithId(html, "board-empty-desktop").matchAll(/@click="gotoView\('new'\)"/g)].length, 1);
-  assert.equal([...elementWithId(html, "board-empty-mobile").matchAll(/@click="openNewSheet\(\)"/g)].length, 1);
+  assert.equal([...elementWithId(html, "board-empty-mobile").matchAll(/@click="gotoView\('new'\)"/g)].length, 1);
 });
 
 test("the coding-agent setup request names the command that prints the brief", () => {
@@ -5616,9 +5618,7 @@ test("create and init pipeline choices keep preview strings separate from reques
     state.onPipelineChange();
     if (c.kindTransition) {
       const html = fs.readFileSync(htmlPath, 'utf8');
-      const handler = c.kindTransition === 'desktop'
-        ? html.match(/@click="(createForm\.kind = k\.value[^"]*)"/)[1]
-        : html.match(/<select x-model="createForm\.kind"[^>]*>/)[0].match(/@change="([^"]*)"/)?.[1] || '';
+      const handler = html.match(/@click="(createForm\.kind = k\.value[^"]*)"/)[1];
       const changeKind = new Function('state', 'k', `with (state) { ${handler} }`);
       state.createForm.kind = 'epic';
       state.createForm.path = '/other';
@@ -5628,7 +5628,7 @@ test("create and init pipeline choices keep preview strings separate from reques
       if (c.kindTransition === 'mobile') state.createForm.kind = '';
       changeKind(state, { value: '' });
       assert.equal(state.createForm.pipelineChoice, c.choice);
-      assert.equal(state.agentPickerPipeline(c.kindTransition === 'mobile' ? 'mobile-create' : 'create'), c.preview);
+      assert.equal(state.agentPickerPipeline('create'), c.preview);
       assert.match(state.agentPickerHint('create'), c.preview ? /each stage/ : /single run/);
     }
     assert.equal(state.createForm.pipeline, c.preview, JSON.stringify(c));
@@ -5662,7 +5662,7 @@ test("create and init pipeline choices keep preview strings separate from reques
     }
   }
   const html = fs.readFileSync(htmlPath, 'utf8');
-  assert.equal((html.match(/x-model="createForm.pipelineChoice"/g) || []).length, 2, 'desktop and mobile use choice tokens');
+  assert.equal((html.match(/x-model="createForm.pipelineChoice"/g) || []).length, 1, 'desktop and mobile share the full form');
   assert.match(html, /x-model="initForm.pipelineChoice" @change="onInitPipelineChange\(\)"/);
 });
 
@@ -9905,7 +9905,7 @@ test("the shared picker markup wires all hosts, ARIA, Popover, and fallback beha
   const html = indexMarkup();
 
   const hosts = [...html.matchAll(/x-data="\{ pickerHost: '([^']+)' \}" x-html="agentPickerControl"/g)].map((match) => match[1]);
-  assert.deepEqual(hosts.sort(), ["automations", "create", "edit", "edit", "init", "mobile-create", "settings-assistant", "settings-default"]);
+  assert.deepEqual(hosts.sort(), ["automations", "create", "edit", "edit", "init", "settings-assistant", "settings-default"]);
   assert.match(uiSource, /popover="manual" role="presentation"/);
   assert.match(uiSource, /role="listbox" tabindex="-1"/);
   assert.match(uiSource, /role="option" :aria-selected="row\.selected"/);
@@ -10692,7 +10692,7 @@ test("the palette animations are dropped under reduced motion", () => {
 });
 
 test("the UI sources keep no autocomplete leftovers", () => {
-  assert.equal(/searchOpen|suggestions|selectedIndex/.test(uiSource), false);
+  assert.equal(/\b(?:searchOpen|suggestions|selectedIndex)\b\s*[:=(]/.test(uiSource), false);
 });
 
 test("every color utility the page writes exists in the built app.css", () => {
@@ -14022,7 +14022,7 @@ test("one rule closes the tab row across the pane and the rail", () => {
   assert.match(html, /<div class="flex-1 min-w-0 px-6 pt-\[11px\]">\s*<div class="flex items-center gap-5">/);
   // The rail's header cell is a bare spacer: painting it would start the frame
   // colour a tab row above the pane's.
-  assert.match(html, /<div class="shrink-0 w-\[308px\] border-l border-surface-700\/50"><\/div>/);
+  assert.match(html, /<div class="ticket-detail-rail-cap shrink-0 w-\[308px\] border-l border-surface-700\/50"><\/div>/);
 });
 
 test("the commit rail starts level with the top of the card column", () => {
@@ -14540,7 +14540,7 @@ function fakeTips() {
       getElementById: (id) => cards[id],
       addEventListener(type, fn) { (handlers[type] = handlers[type] || []).push(fn); },
     },
-    window: { innerWidth: 1400 },
+    window: { innerWidth: 1400, addEventListener() {} },
     setTimeout,
     clearTimeout,
   };
@@ -14553,10 +14553,13 @@ function fakeTips() {
       getAttribute: (k) => (k in attrs ? attrs[k] : null),
       getBoundingClientRect: () => ({ left: 300, right: 400, top: 200, bottom: 220, width: 100, height: 20 }),
       closest: (sel) => (sel.slice(1, -1) in attrs ? el : null),
+      matches: () => attrs['data-tip-info'] !== undefined,
+      setAttribute: (key, value) => { attrs[key] = value; },
+      removeAttribute: key => { delete attrs[key]; },
     };
     return el;
   };
-  const fire = (type, target) => (handlers[type] || []).forEach((fn) => fn({ target }));
+  const fire = (type, target, extra = {}) => (handlers[type] || []).forEach((fn) => fn({ target, ...extra }));
   return { cards, chip, fire };
 }
 
@@ -14585,6 +14588,33 @@ test("a hover card drops on the click that opens the ticket, and returns on the 
   assert.equal(card.style.opacity, "1");
   assert.equal(card.children[0].children[1].textContent, "gra-3");
 });
+
+for (const attr of ['data-tip', 'data-tip-t', 'data-tip-e']) {
+  test(`information ${attr} opens on focus and touch without replacing existing descriptions`, () => {
+    const tips = fakeTips();
+    const id = ({ 'data-tip': 'global-tip', 'data-tip-t': 'global-tip-t', 'data-tip-e': 'global-tip-e' })[attr];
+    const control = tips.chip({ [attr]: 'Recorded explanation', 'data-tip-info': '', 'aria-describedby': 'existing-help' });
+    const card = tips.cards[id];
+    tips.fire('focusin', control);
+    assert.equal(card.style.opacity, '1');
+    assert.equal(card.attrs['aria-hidden'], 'false');
+    assert.equal(control.attrs['aria-describedby'], 'existing-help ' + id);
+    tips.fire('focusin', control);
+    tips.fire('focusout', control);
+    assert.equal(control.attrs['aria-describedby'], 'existing-help');
+    tips.fire('click', control);
+    tips.fire('mouseleave', control);
+    assert.equal(card.style.opacity, '1');
+    let consumed = false;
+    tips.fire('keydown', control, { key: 'Escape', preventDefault() { consumed = true; }, stopImmediatePropagation() {} });
+    assert.equal(card.style.opacity, '0');
+    assert.equal(consumed, true);
+    assert.equal(control.attrs['aria-describedby'], 'existing-help');
+    tips.fire('click', control);
+    tips.fire('click', control);
+    assert.equal(card.style.opacity, '0');
+  });
+}
 
 test("the hover card's title splits into a coloured tag and the name", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
@@ -15774,7 +15804,7 @@ test("the docked pane is desktop only and the phone gets the sheet instead", () 
 
   assert.match(html, /x-if="!isMobile && assistantOpen && !assistantRail"/);
   assert.match(html, /x-if="!isMobile && assistantOpen && assistantRail"/);
-  assert.match(html, /x-if="sheet\.type==='assistant'"/);
+  assert.match(html, /x-if="isMobile && sheet\.type==='assistant'"/);
   // A flex sibling of the views rather than an overlay, so the board narrows
   // and stays visible.
   assert.match(html, /id="assistant-pane"[\s\S]{0,200}?shrink-0/);
@@ -15830,7 +15860,7 @@ test("approving a parked write answers the gate and clears the card", async () =
 });
 
 test("approval labels distinguish deletion, writes and unclassified calls", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
+  const html = indexMarkup();
   const { state } = assistantState();
   for (const [kind, label] of [["delete", "delete"], ["write", "change"], ["unknown", "unclassified call"], ["unexpected", "unclassified call"]]) {
     state.assistantGate = { kind };
@@ -16083,7 +16113,7 @@ test("the poll splices the new suffix onto the events already held", () => {
 // sheet's send button spends most of its life in the enabled state, which is
 // the branch that would come out unstyled.
 test("the assistant send buttons do not mix a static style with a bound one", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
+  const html = indexMarkup();
 
   const tags = [...html.matchAll(/<button[^>]*sendAssistantMessage\(\)[^>]*>/g)].map((m) => m[0]);
   assert.equal(tags.length, 2, "expected the docked pane's send button and the sheet's");
@@ -16460,7 +16490,7 @@ test("deleting the open chat stops the pane saying it is working", async () => {
 });
 
 test("the tool being called is previewed in both copies and clears with the partial", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
+  const html = indexMarkup();
   assert.equal([...html.matchAll(/x-if="assistantPartialTool"/g)].length, 2);
   assert.equal([...html.matchAll(/x-text="assistantPartialTool"/g)].length, 2);
   assert.match(html, /id="assistant-partial-tool"/);
@@ -16506,7 +16536,7 @@ test("both transcripts latch the scroll on their own scroll event", () => {
 });
 
 test("the text being typed is in both the docked pane and the sheet", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
+  const html = indexMarkup();
 
   const at = (needle) => [...html.matchAll(new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))].map((m) => m.index);
   const rows = at('x-for="row in assistantThreadRows()"');
@@ -16602,7 +16632,7 @@ test("sending scrolls to the bottom whatever the reader was reading", async () =
 });
 
 test("the working row is in both the docked pane and the sheet", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
+  const html = indexMarkup();
 
   // A parked write is its own card with its own buttons. Two live states at
   // once would read as the agent still working on what it has already stopped
@@ -16636,10 +16666,11 @@ test("the poll re-arms only while something can still change", () => {
   state._armAssistantPoll();
   assert.equal(state._assistantPoll, null);
 
-  // Closing the pane stops it whatever the turn is doing.
+  // The closed-pane badge still needs approval and completion updates.
   state.assistantStreaming = true;
   state.closeAssistant();
-  assert.equal(state._assistantPoll, null);
+  assert.notEqual(state._assistantPoll, null);
+  state._stopAssistantPoll();
 });
 
 test("the slash menu opens on a leading slash and inserts the phrasing", () => {
@@ -16736,7 +16767,7 @@ test("no assistant agent replaces the composer with the configure hint", async (
 
   // The two are complementary templates, so the composer is not merely hidden:
   // it is not built, and neither is the input the pane would otherwise focus.
-  const html = fs.readFileSync(htmlPath, "utf8");
+  const html = indexMarkup();
   assert.match(html, /x-if="!assistantEnabled\(\) && !companionThread\(\) && assistantView === 'thread'"[\s\S]{0,200}?id="assistant-configure"/);
   const composer = html.slice(html.indexOf('<!-- Composer -->'));
   assert.match(composer.slice(0, 200), /x-if="\(assistantEnabled\(\) \|\| companionThread\(\)\) && assistantView === 'thread' && assistantThreadVisible\(\)"/);
@@ -16772,8 +16803,7 @@ const SCHED_ISO = new Date(2099, 8, 1, 9, 0, 0, 0).toISOString().replace(/\.\d{3
 function scheduleState() {
   const posted = [];
   const state = loadKontoraState({
-    // Only the writes are recorded: opening the create modal fetches the
-    // config, and that GET is not what these tests are asserting on.
+    // Opening New fetches config; only ticket writes belong in this log.
     fetch: async (url, opts) => {
       if (opts && opts.method === "POST") posted.push({ url, body: JSON.parse(opts.body) });
       return { ok: true, json: async () => ({ id: "kon-1", status: "open", kontora: true, scheduled_at: SCHED_ISO }) };
@@ -16786,12 +16816,10 @@ function scheduleState() {
 // Fills in the create form and switches Start at to "later", which is what
 // turns the text field into a schedule.
 async function createLater(state, text, entry = "desktop") {
-  if (entry === "mobile") {
-    state.isMobile = true;
-    await state.openNewSheet();
-  } else {
-    await state.openCreateModal();
-  }
+  state.isMobile = entry === "mobile";
+  await state.gotoView("new");
+  assert.equal(state.currentView, "new");
+  assert.equal(state.sheet, null, "New is a page at either width");
   state.createForm.title = "Later";
   state.createForm.path = "/repo";
   state.setCreateScheduleMode("later");
@@ -16803,18 +16831,23 @@ for (const entry of ["desktop", "mobile"]) {
   test(`the create form sends the instant its start-at field means: ${entry}`, async () => {
     const { state, posted } = scheduleState();
     await createLater(state, SCHED_LOCAL, entry);
-    const submit = () => entry === "mobile" ? state.submitCreateTicketMobile() : state.submitCreateTicket();
+    const form = state.createForm;
+    assert.equal(form.status, "open");
 
-    assert.equal(await submit(), true);
+    assert.equal(await state.submitCreateTicket(), true);
 
     assert.equal(posted.length, 1);
     assert.equal(posted[0].url, "/api/tickets");
     assert.equal(posted[0].body.scheduled_at, SCHED_ISO);
     assert.equal(posted[0].body.status, "open", "a schedule is what moves the ticket, so it starts open");
-    assert.equal(state.createForm.status, "open");
+    assert.equal(state._createDraftActive, false, "success consumes the draft");
     assert.equal(state.createSubmitting, false);
-    if (entry === "mobile") assert.equal(state.sheet, null);
-    else assert.equal(state.currentView, "board");
+    assert.equal(state.sheet, null);
+    assert.equal(state.currentView, "board");
+    await state.gotoView("new");
+    assert.notEqual(state.createForm, form);
+    assert.equal(state.createForm.title, "");
+    assert.equal(state.createForm.scheduleMode, "now");
   });
 }
 
@@ -16851,13 +16884,13 @@ for (const entry of ["desktop", "mobile"]) {
 
       if (bad) assert.ok(state.createScheduleError(), bad);
       assert.equal(state.createBlocked(), true, bad);
-      const result = entry === "mobile" ? await state.submitCreateTicketMobile() : await state.submitCreateTicket();
+      const result = await state.submitCreateTicket();
       assert.equal(result, false, bad);
       assert.equal(posted.length, 0, bad);
       assert.equal(state.createSubmitting, false, bad);
       assert.equal(state.createForm, form, bad);
-      if (entry === "mobile") assert.equal(state.sheet, sheet, bad);
-      else assert.equal(state.currentView, "new", bad);
+      assert.equal(state.sheet, sheet, bad);
+      assert.equal(state.currentView, "new", bad);
     }
   });
 
@@ -16867,7 +16900,7 @@ for (const entry of ["desktop", "mobile"]) {
     state.setCreateScheduleMode("now");
 
     assert.equal(state.createForm.scheduled_at, "", "leaving later drops the time rather than hiding it");
-    const result = entry === "mobile" ? await state.submitCreateTicketMobile() : await state.submitCreateTicket();
+    const result = await state.submitCreateTicket();
     assert.equal(result, true);
 
     assert.equal(posted[0].body.scheduled_at, undefined);
@@ -16875,57 +16908,64 @@ for (const entry of ["desktop", "mobile"]) {
   });
 }
 
-test("the mobile create input submits future times, clears to now and rejects invalid times", async () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
-  const mobile = html.slice(html.indexOf('<select x-model="createForm.kind"'));
-  const input = mobile.match(/<input\b[^>]*(?:(?:x-model|:value)="createForm\.scheduled_at"|aria-label="Start at")[^>]*>/)?.[0];
-  assert.ok(input, "the mobile create form has a schedule input");
-  const handler = input.match(/@(?:change|input)="([^"]*)"/)?.[1];
-  assert.ok(handler, "the schedule input updates the create schedule mode");
+test("Full New shares its schedule markup and submit path at both widths", async () => {
+  const html = htmlNoComments();
+  const page = elementWithId(html, "new-view");
+  assert.match(page, /@submit\.prevent="submitCreateTicket\(\)"/);
+  assert.match(page, /<fieldset\b[^>]*:disabled="createSubmitting"/);
+  assert.match(page, /:aria-busy="createSubmitting"/);
+  assert.match(page, /@click="setCreateScheduleMode\(m\)"/);
+  assert.match(page, /createSchedulePresets\(\)/);
+  assert.match(page, /createScheduleEcho\(\)/);
+  const input = elementWithId(page, "new-scheduled-at");
+  assert.match(input, /x-model="createForm\.scheduled_at"/);
+  assert.match(input, /type="text"/);
+  const handler = input.match(/@input="([^"]*)"/)?.[1];
+  assert.ok(handler);
   const change = new Function("state", "$event", `with (state) { ${handler} }`);
 
-  for (const value of [SCHED_LOCAL, "", "2099-09-01"]) {
-    const { state, posted } = scheduleState();
-    state.isMobile = true;
-    await state.openNewSheet();
-    Object.assign(state.createForm, { title: "Later", path: "/repo", scheduled_at: SCHED_LOCAL });
-    change(state, { target: { value: SCHED_LOCAL } });
-    assert.equal(state.createForm.scheduleMode, "later");
-    assert.equal(state.createScheduleISO(), SCHED_ISO);
-    state.createForm.scheduled_at = value;
-    change(state, { target: { value } });
-    const blocked = value === "2099-09-01";
-    assert.equal(state.createForm.scheduleMode, value ? "later" : "now");
-    assert.equal(state.createBlocked(), blocked);
-    const sheet = state.sheet;
-    assert.equal(await state.submitCreateTicketMobile(), !blocked);
-    assert.equal(posted.length, blocked ? 0 : 1);
-    if (blocked) {
-      assert.equal(state.sheet, sheet);
-      assert.ok(state.createScheduleError());
-    } else {
-      assert.equal(posted[0].body.scheduled_at, value ? SCHED_ISO : undefined);
-      assert.equal(posted[0].body.status, value ? "open" : "todo");
+  for (const entry of ["desktop", "mobile"]) {
+    for (const value of [SCHED_LOCAL, "24h", "", "2099-09-01"]) {
+      const { state, posted } = scheduleState();
+      await createLater(state, value, entry);
+      change(state, { target: { value } });
+      const blocked = !value || value === "2099-09-01";
+      assert.equal(state.createForm.scheduleMode, "later", "clearing text does not silently select now");
+      assert.equal(state.createBlocked(), blocked);
+      const form = state.createForm;
+      assert.equal(await state.submitCreateTicket(), !blocked);
+      assert.equal(posted.length, blocked ? 0 : 1);
+      if (blocked) {
+        assert.equal(state.createForm, form);
+        assert.equal(state.currentView, "new");
+      } else {
+        assert.equal(posted[0].body.status, "open");
+        if (value === SCHED_LOCAL) assert.equal(posted[0].body.scheduled_at, SCHED_ISO);
+        else assert.ok(posted[0].body.scheduled_at);
+      }
     }
   }
 });
 
 for (const entry of ["desktop", "mobile"]) {
-  test(`create errors belong to the form and reset when another form opens: ${entry}`, async () => {
+  test(`create errors belong to the preserved draft, not the route: ${entry}`, async () => {
     const { state } = scheduleState();
     assert.equal(state.createError, null);
     state.error = "Unrelated failure";
-    state.createError = "Old create failure";
-    state.createSubmitting = true;
-    if (entry === "mobile") { state.isMobile = true; await state.openNewSheet(); }
-    else await state.openCreateModal();
-    assert.equal(state.createError, null);
+    await createLater(state, SCHED_LOCAL, entry);
+    const form = state.createForm;
+    state.createError = "Create rejected";
+    state.closeCreateModal();
+    assert.equal(state.createError, "Create rejected");
+    await state.gotoView("new");
+    assert.equal(state.createForm, form);
+    assert.equal(state.createForm.scheduled_at, SCHED_LOCAL);
+    assert.equal(state.createError, "Create rejected");
     assert.equal(state.createSubmitting, false);
     assert.equal(state.error, "Unrelated failure");
-    state.createError = "Another create failure";
-    if (entry === "mobile") state.closeSheet();
-    else state.closeCreateModal();
-    assert.equal(state.createError, null);
+    assert.equal(state.resetCreateForm(), true);
+    assert.notEqual(state.createForm, form);
+    assert.equal(state.createError, null, "only a replacement draft clears its error");
   });
 }
 
@@ -16938,7 +16978,7 @@ for (const kind of ["", "epic"]) {
       if (entry === "mobile") { state.isMobile = true; await state.openNewSheet(); }
       else await state.openCreateModal();
       Object.assign(state.createForm, { title: "Draft", path: "/repo", kind });
-      const submit = () => entry === "mobile" ? state.submitCreateTicketMobile() : state.submitCreateTicket();
+      const submit = () => state.submitCreateTicket();
       const sheet = state.sheet;
       state.error = "Unrelated failure";
       ctx.fetch = async () => {
@@ -16951,11 +16991,14 @@ for (const kind of ["", "epic"]) {
       const form = state.createForm;
       assert.equal(await submit(), false);
       assert.equal(state.createError, failure === "http" ? "Create rejected"
-        : failure === "network" ? "Failed to create ticket: offline" : "Failed to create ticket");
+        : failure === "network" ? "Creation result unknown: offline. Check the board before submitting again." : "Failed to create ticket");
       assert.equal(state.error, "Unrelated failure");
-      if (entry === "mobile") assert.equal(state.sheet, sheet);
-      else assert.equal(state.currentView, "new");
+      assert.equal(state.sheet, sheet);
+      assert.equal(state.currentView, "new");
+      state.closeCreateModal();
+      await state.gotoView("new");
       assert.equal(state.createForm, form);
+      assert.ok(state.createError, "returning to the same draft remembers the failure");
       assert.equal(state.createSubmitting, false);
       ctx.fetch = async () => ({ ok: true });
       assert.equal(await submit(), true);
@@ -16974,12 +17017,12 @@ for (const entry of ["desktop", "mobile"]) {
       await createLater(state, SCHED_LOCAL, entry);
       state.createForm[missing] = " \t ";
       const sheet = state.sheet;
-      const result = entry === "mobile" ? await state.submitCreateTicketMobile() : await state.submitCreateTicket();
+      const result = await state.submitCreateTicket();
       assert.equal(result, false);
       assert.equal(posted.length, 0);
       assert.equal(state.createSubmitting, false);
-      if (entry === "mobile") assert.equal(state.sheet, sheet);
-      else assert.equal(state.currentView, "new");
+      assert.equal(state.sheet, sheet);
+      assert.equal(state.currentView, "new");
     }
   });
 
@@ -16990,7 +17033,7 @@ for (const entry of ["desktop", "mobile"]) {
     const gate = deferred();
     let posts = 0;
     ctx.fetch = () => { posts++; return gate.promise; };
-    const submit = () => entry === "mobile" ? state.submitCreateTicketMobile() : state.submitCreateTicket();
+    const submit = () => state.submitCreateTicket();
     const sheet = state.sheet;
     const first = submit();
     assert.equal(state.createSubmitting, true);
@@ -17073,7 +17116,8 @@ for (const phase of ['config', 'POST']) {
           pending.release();
           const result = await request;
           const success = reply.ok !== false && !reply.network && !reply.unreadable;
-          assert.equal(state.createForm, form);
+          if (phase === 'POST' && success) assert.equal(state._createDraftActive, false);
+          else assert.equal(state.createForm, form);
           assert.equal(state.sheet, sheet, 'the routed form does not own the other sheet');
           assert.equal(state.error, 'Unrelated failure');
           assert.equal(state.createSubmitting, false);
@@ -17088,7 +17132,7 @@ for (const phase of ['config', 'POST']) {
           } else {
             assert.equal(result, success);
             assert.equal(state.currentView, success ? 'board' : 'new');
-            assert.equal(state.createError, success ? null : reply.network ? 'Failed to create ticket: offline'
+            assert.equal(state.createError, success ? null : reply.network ? 'Creation result unknown: offline. Check the board before submitting again.'
               : reply.unreadable ? 'Failed to create ticket' : 'Create rejected');
           }
         });
@@ -17096,7 +17140,7 @@ for (const phase of ['config', 'POST']) {
     }
 
     for (const clear of ['primary deletion', 'secondary deletion', 'primary archive']) {
-      test(`New sheet keeps pending ${phase} ${reply.name} across SSE ${clear}`, async () => {
+      test(`routed New keeps pending ${phase} ${reply.name} across SSE ${clear}`, async () => {
         const sources = [];
         const { state, ctx } = loadKontoraContext({ EventSource: makeEventSourceFake(sources) });
         state.isMobile = true;
@@ -17120,13 +17164,14 @@ for (const phase of ['config', 'POST']) {
           await state.openNewSheet();
           Object.assign(state.createForm, { title: 'Draft', path: '/repo' });
           ctx.fetch = pending.fetch;
-          request = state.submitCreateTicketMobile();
+          request = state.submitCreateTicket();
         }
         await flushMicrotasks();
         const form = state.createForm;
         form.path = '/repo';
         const sheet = state.sheet;
-        const selected = state.selectedTicket;
+        // New closes detail on entry; a later selection cleanup must not own its request.
+        const selected = state.selectedTicket = clear === 'secondary deletion' ? secondary : primary;
         if (clear === 'secondary deletion') {
           sources[0].emit('ticket_deleted', primary);
           assert.equal(state.selectedTicket, selected, 'primary namesake deletion leaves the secondary selection');
@@ -17146,9 +17191,10 @@ for (const phase of ['config', 'POST']) {
         pending.release();
         const result = await request;
         const success = reply.ok !== false && !reply.network && !reply.unreadable;
-        assert.equal(state.createForm, form);
+        if (phase === 'POST' && success) assert.equal(state._createDraftActive, false);
+        else assert.equal(state.createForm, form);
         assert.equal(state.createSubmitting, false);
-        assert.equal(state.currentView, 'board');
+        assert.equal(state.currentView, phase === 'POST' && success ? 'board' : 'new');
         if (phase === 'config') {
           assert.equal(state.sheet, sheet);
           assert.equal(state.configCache, success ? data : null);
@@ -17159,8 +17205,8 @@ for (const phase of ['config', 'POST']) {
           }
         } else {
           assert.equal(result, success);
-          assert.equal(state.sheet, success ? null : sheet);
-          assert.equal(state.createError, success ? null : reply.network ? 'Failed to create ticket: offline'
+          assert.equal(state.sheet, sheet);
+          assert.equal(state.createError, success ? null : reply.network ? 'Creation result unknown: offline. Check the board before submitting again.'
             : reply.unreadable ? 'Failed to create ticket' : 'Create rejected');
         }
       });
@@ -17168,46 +17214,55 @@ for (const phase of ['config', 'POST']) {
   }
 }
 
-for (const delayed of ["response", "json", "failure", "http"]) {
-  for (const scenario of ["desktop:close", "desktop:reopen", "desktop:navigate", "desktop:destroy", "mobile:close", "mobile:reopen", "mobile:navigate", "mobile:replacement", "mobile:destroy"]) {
-    const [entry, supersession] = scenario.split(":");
-    test(`create config ignores delayed ${delayed} after ${scenario}`, async () => {
-      const gate = deferred();
-      const { state } = loadKontoraContext({ fetch: async () => {
-        if (delayed === "response") return gate.promise;
-        if (delayed === "failure") { await gate.promise; throw new Error("offline"); }
-        if (delayed === "http") { await gate.promise; return { ok: false }; }
-        return { ok: true, json: () => gate.promise };
-      } });
-      state.isMobile = entry === "mobile";
-      const open = () => entry === "mobile" ? state.openNewSheet() : state.openCreateModal();
-      const opening = open();
-      await flushMicrotasks();
-      const oldForm = state.createForm;
-      if (supersession === "close") {
-        if (entry === "mobile") state.closeSheet();
-        else state.closeCreateModal();
-      } else if (supersession === "navigate") await state.gotoView("stats");
-      else if (supersession === "destroy") state.destroy();
-      else if (supersession === "replacement") state.sheet = { type: 'new' };
-      else {
-        state.configCache = { projects: [{ path: "/repo", agent: "new-agent", pipeline: "new-pipeline" }] };
-        await open();
-      }
-      Object.assign(state.createForm, { path: "/repo", agent: "draft-agent", pipeline: "draft-pipeline" });
-      state.createError = "Current create failure";
-      state.error = "Current global failure";
-      const config = state.configCache;
-      const staleConfig = { projects: [{ path: "/repo", agent: "old-agent", pipeline: "old-pipeline" }] };
-      gate.resolve(delayed === "response" ? { ok: true, json: async () => staleConfig } : staleConfig);
-      await opening;
-      assert.equal(state.configCache, config);
-      assert.equal(state.createForm.agent, "draft-agent");
-      assert.equal(state.createForm.pipeline, "draft-pipeline");
-      assert.equal(state.createError, "Current create failure");
-      assert.equal(state.error, "Current global failure");
-      if (supersession === "reopen") assert.notEqual(state.createForm, oldForm);
-    });
+for (const entry of ['desktop', 'mobile']) {
+  for (const reply of pendingCreateCases.config) {
+    for (const change of ['close', 'reopen', 'navigate', 'overlay', 'replacement', 'generation', 'destroy']) {
+      test(`create config owns its draft across ${change}: ${entry}, ${reply.name}`, async () => {
+        const data = { projects: [{ path: '/repo', agent: 'project-agent', pipeline: 'project-pipeline' }] };
+        const pending = pendingCreateReply(reply, data);
+        const { state } = loadKontoraContext({ fetch: pending.fetch });
+        state.isMobile = entry === 'mobile';
+        state.openStats = () => {};
+        const opening = state.gotoView('new');
+        await flushMicrotasks();
+        const original = state.createForm;
+        Object.assign(original, { title: 'Draft', path: '/repo' });
+        if (change === 'close') state.closeCreateModal();
+        else if (change === 'navigate') await state.gotoView('stats');
+        else if (change === 'reopen') await state.gotoView('new');
+        else if (change === 'overlay') state.sheet = { type: 'navigation' };
+        else if (change === 'replacement') state.resetCreateForm();
+        else if (change === 'generation') state.invalidateCreateForm();
+        else state.destroy();
+        const stale = ['replacement', 'generation', 'destroy'].includes(change);
+        if (stale) Object.assign(state.createForm, { path: '/repo', agent: 'draft-agent', pipeline: 'draft-pipeline' });
+        state.createError = 'Current create failure';
+        state.error = 'Unrelated failure';
+        const form = state.createForm;
+        const sheet = state.sheet;
+        const view = state.currentView;
+        pending.release();
+        await opening;
+        const success = reply.ok !== false && !reply.network && !reply.unreadable;
+        assert.equal(state.createForm, form);
+        assert.equal(state.currentView, view);
+        assert.equal(state.sheet, sheet);
+        assert.equal(state.error, 'Unrelated failure');
+        assert.equal(state.configCache, !stale && success ? data : null);
+        assert.equal(state.createError, stale || success ? 'Current create failure' : 'Failed to load config');
+        if (stale) {
+          assert.equal(form.agent, 'draft-agent');
+          assert.equal(form.pipeline, 'draft-pipeline');
+        } else {
+          assert.equal(form, original, 'route and sheet changes retain the draft');
+          assert.equal(form.title, 'Draft');
+          if (success) {
+            assert.equal(form.agent, 'project-agent');
+            assert.equal(form.pipeline, 'project-pipeline');
+          }
+        }
+      });
+    }
   }
 }
 
@@ -17223,68 +17278,105 @@ for (const scenario of ["desktop:http", "desktop:network", "mobile:http", "mobil
     else await state.openCreateModal();
     assert.equal(state.createError, "Failed to load config");
     assert.equal(state.error, "Unrelated failure");
-    if (entry === "mobile") assert.equal(state.sheet?.type, "new");
-    else assert.equal(state.currentView, "new");
+    assert.equal(state.sheet, null);
+    assert.equal(state.currentView, "new");
   });
 }
 
-for (const outcome of ["success", "http", "network", "error JSON"]) {
-  for (const supersession of ["close", "reopen", "navigate", "mobile replacement", "destroy"]) {
-    test(`create POST ignores stale ${outcome} after ${supersession}`, async () => {
-      const { state, ctx } = loadKontoraContext();
-      state.configCache = {};
-      await createLater(state, SCHED_LOCAL, supersession === "mobile replacement" ? "mobile" : "desktop");
-      const gate = deferred();
-      ctx.fetch = async () => {
-        if (outcome === "error JSON") return { ok: false, json: () => gate.promise };
-        await gate.promise;
-        if (outcome === "network") throw new Error("offline");
-        return { ok: outcome === "success", json: async () => ({ error: "Old failure" }) };
-      };
-      const posting = state.submitCreateTicket();
-      await flushMicrotasks();
-      if (supersession === "close") state.closeCreateModal();
-      else if (supersession === "reopen") await state.openCreateModal();
-      else if (supersession === "navigate") await state.gotoView("board");
-      else if (supersession === "destroy") state._appDestroyed = true;
-      else state.sheet = { type: "actions", ticket: { id: "other" } };
-      state.createForm.title = "New draft";
-      state.createSubmitting = true;
-      state.createError = "New create failure";
-      state.error = "New global failure";
-      const form = state.createForm;
-      const sheet = state.sheet;
-      const view = state.currentView;
-      gate.resolve({ error: "Old failure" });
-      assert.equal(await posting, false);
-      assert.equal(state.createForm, form);
-      assert.equal(state.createForm.title, "New draft");
-      assert.equal(state.sheet, sheet);
-      assert.equal(state.currentView, view);
-      assert.equal(state.createSubmitting, true);
-      assert.equal(state.createError, "New create failure");
-      assert.equal(state.error, "New global failure");
-    });
+for (const entry of ['desktop', 'mobile']) {
+  for (const reply of pendingCreateCases.POST) {
+    for (const change of ['close', 'return', 'reopen', 'navigate', 'overlay']) {
+      test(`create POST retains ownership across ${change}: ${entry}, ${reply.name}`, async () => {
+        const { state, ctx } = loadKontoraContext();
+        state.configCache = {};
+        state.openStats = () => {};
+        await createLater(state, SCHED_LOCAL, entry);
+        const form = state.createForm;
+        const pending = pendingCreateReply(reply, { error: 'Create rejected' });
+        const posted = [];
+        ctx.fetch = (url, opts) => {
+          posted.push({ url, body: JSON.parse(opts.body) });
+          return pending.fetch();
+        };
+        state.error = 'Unrelated failure';
+        const posting = state.submitCreateTicket();
+        await flushMicrotasks();
+        const request = state._createRequest;
+        assert.ok(request);
+        if (change === 'close' || change === 'return') state.closeCreateModal();
+        if (change === 'return' || change === 'reopen') await state.gotoView('new');
+        else if (change === 'navigate') await state.gotoView('stats');
+        else if (change === 'overlay') state.sheet = { type: 'actions', ticket: { id: 'other' } };
+        const view = state.currentView;
+        const sheet = state.sheet;
+        assert.equal(state.createForm, form);
+        assert.equal(form.scheduled_at, SCHED_LOCAL);
+        assert.equal(state.createSubmitting, true);
+        assert.equal(state._createRequest, request);
+        assert.equal(state.invalidateCreateForm(), false, 'navigation cannot cancel a possibly accepted POST');
+        assert.equal(state.resetCreateForm(), false, 'a pending draft cannot be replaced');
+        assert.equal(await state.submitCreateTicket(), false);
+        assert.equal(posted.length, 1, 'returning to New must not duplicate the POST');
+        assert.equal(posted[0].url, '/api/tickets');
+        assert.equal(posted[0].body.scheduled_at, SCHED_ISO);
+        pending.release();
+        const success = reply.ok !== false && !reply.network;
+        assert.equal(await posting, success);
+        assert.equal(state.createSubmitting, false);
+        assert.equal(state._createRequest, null);
+        assert.equal(state.sheet, sheet, 'an unrelated sheet does not belong to the POST');
+        assert.equal(state.currentView, success && view === 'new' ? 'board' : view,
+          'success away from New must not navigate the unrelated view');
+        assert.equal(state.error, 'Unrelated failure');
+        const error = reply.network ? 'Creation result unknown: offline. Check the board before submitting again.'
+          : reply.unreadable ? 'Failed to create ticket' : 'Create rejected';
+        if (success) {
+          assert.equal(state._createDraftActive, false);
+          await state.gotoView('new');
+          assert.notEqual(state.createForm, form, 'the next visit starts a fresh draft after success');
+          assert.equal(state.createForm.title, '');
+          assert.equal(state.createForm.scheduled_at, '');
+        } else {
+          assert.equal(state.createForm, form);
+          assert.equal(state.createError, error);
+          await state.gotoView('new');
+          assert.equal(state.createForm, form);
+          assert.equal(state.createError, error, 'the same draft remembers failures reported while away');
+          assert.equal(form.title, 'Later');
+          assert.equal(form.scheduled_at, SCHED_LOCAL);
+        }
+      });
+    }
+
+    for (const change of ['replacement', 'generation', 'destroy', 'new owner']) {
+      test(`create POST ignores stale acknowledgement after ${change}: ${entry}, ${reply.name}`, async () => {
+        const { state, ctx } = loadKontoraContext();
+        state.configCache = {};
+        await createLater(state, SCHED_LOCAL, entry);
+        const pending = pendingCreateReply(reply, { error: 'Old failure' });
+        ctx.fetch = pending.fetch;
+        const posting = state.submitCreateTicket();
+        await flushMicrotasks();
+        if (change === 'destroy') state.destroy();
+        else if (change === 'generation') state._createGeneration++;
+        else state.createForm = { ...state.createForm, title: 'Replacement draft' };
+        const owner = change === 'new owner' ? state._createRequest = {} : null;
+        state.createError = 'Current create failure';
+        state.error = 'Unrelated failure';
+        const form = state.createForm;
+        const view = state.currentView;
+        pending.release();
+        assert.equal(await posting, false);
+        assert.equal(state.createForm, form);
+        assert.equal(state.currentView, view);
+        assert.equal(state.createError, 'Current create failure');
+        assert.equal(state.error, 'Unrelated failure');
+        assert.equal(state._createRequest, owner);
+        assert.equal(state.createSubmitting, change === 'new owner', 'only the matching request releases its pending state');
+      });
+    }
   }
 }
-
-test("closing create invalidates a POST even when the same draft object is reused", async () => {
-  const { state, ctx } = loadKontoraContext();
-  state.configCache = {};
-  await createLater(state, SCHED_LOCAL);
-  const gate = deferred();
-  ctx.fetch = () => gate.promise;
-  const posting = state.submitCreateTicket();
-  state.closeCreateModal();
-  state.currentView = "new";
-  state.createSubmitting = true;
-  state.createError = "Current failure";
-  gate.resolve({ ok: true });
-  assert.equal(await posting, false);
-  assert.equal(state.currentView, "new");
-  assert.equal(state.createSubmitting, true);
-  assert.equal(state.createError, "Current failure");
-});
 
 test("the frontmatter preview shows the schedule under the open it forces", async () => {
   const { state } = scheduleState();
@@ -17803,6 +17895,7 @@ test("pulling a ticket in and moving one out write the child's parent", async ()
   await state.openEpic("kon-e7c1");
   posted.length = 0;
 
+  state.tickets = state.tickets.concat([{ id: 'kon-solo', title: 'Standalone', status: 'open', kontora: true }]);
   await state.epicPullIn("kon-solo");
   await state.epicMoveOut("kon-9b31");
 
@@ -20801,7 +20894,7 @@ test("companion inbox distinguishes disabled storage, completion, and the change
 });
 
 test("desktop and mobile reuse the companion inbox, state text, evidence, and missing-agent hint", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
+  const html = indexMarkup();
   const { state } = companionState();
   for (const key of ["companionHeaderMarkup", "companionInboxMarkup", "companionEvidenceMarkup"]) {
     assert.equal(html.split(`x-html="${key}"`).length - 1, 2, key);

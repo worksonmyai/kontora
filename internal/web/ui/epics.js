@@ -55,6 +55,58 @@ export function kontoraEpics() {
     epicAddDraft: '',
     epicAddBusy: false,
     epicDragging: false,
+    epicCandidateQuery: '',
+    epicCandidateOpen: false,
+    epicRemoveTarget: null,
+    epicManagementErrors: Object.create(null),
+    epicMutationPending: Object.create(null),
+    _epicMutationTails: Object.create(null),
+    _epicNeedsRefresh: Object.create(null),
+    epicPickerMarkup: `
+      <div class="epic-management">
+        <button type="button" @click="epicCandidateOpen = !epicCandidateOpen" :aria-expanded="epicCandidateOpen" :disabled="!ticketCanControl(selectedEpic)">Add existing ticket</button>
+        <template x-if="epicCandidateOpen">
+        <div class="epic-candidate-picker">
+          <label>Search tickets
+            <input type="search" x-model="epicCandidateQuery" @keydown.escape.stop="epicCandidateOpen = false" placeholder="Title, ID, stage or agent">
+          </label>
+          <p x-show="!epicCandidates(selectedEpic, epicCandidateQuery).length">No matching tickets.</p>
+          <ul>
+            <template x-for="candidate in epicCandidates(selectedEpic, epicCandidateQuery)" :key="candidate.id">
+              <li><button type="button" @click="epicPullIn(candidate.id)" :disabled="epicMutationBusy(selectedEpic)">
+                <span x-text="candidate.id + ': ' + (candidate.title || candidate.id)"></span>
+                <span class="text-tx-3" x-text="statusLabel(candidate.status) + (candidate.parent?.id ? ' (currently in ' + candidate.parent.id + ')' : '')"></span>
+              </button></li>
+            </template>
+          </ul>
+        </div>
+        </template>
+        <p role="alert" x-show="epicManagementErrors[selectedEpic?.id]" x-text="epicManagementErrors[selectedEpic?.id]"></p>
+        <p class="text-tx-3" x-show="epicRetainedOrderRefs().length" x-text="'Stored order also retains: ' + epicRetainedOrderRefs().join(', ')"></p>
+      </div>`,
+    epicChildActionsMarkup: `
+      <div class="epic-child-controls" @click.stop x-show="ticketCanControl(r) && ticketCanControl(selectedEpic)">
+        <label>Move to
+          <select aria-label="Move child to status" :disabled="lifecycleBusy(r)" @change="epicChildCommand(r, $event.target.value); $event.target.value = ''">
+            <option value="">Choose status</option>
+            <template x-for="command in lifecycleDestinations(r)" :key="command.id">
+              <option :value="command.id" x-text="command.label"></option>
+            </template>
+          </select>
+        </label>
+        <template x-for="command in lifecycleActions(r)" :key="command.id">
+          <button type="button" @click="epicChildCommand(r, command)" :disabled="lifecycleBusy(r)" x-text="command.label"></button>
+        </template>
+        <button type="button" @click="epicMoveChild(r.id, -1)" :disabled="epicMutationBusy(selectedEpic) || r.ord === 1" :aria-label="'Move ' + r.id + ' up'">Move up</button>
+        <button type="button" @click="epicMoveChild(r.id, 1)" :disabled="epicMutationBusy(selectedEpic) || r.ord === g.count" :aria-label="'Move ' + r.id + ' down'">Move down</button>
+        <button type="button" @click="epicConfirmRemove(r.id)" :disabled="epicMutationBusy(selectedEpic)">Remove from epic</button>
+        <div x-show="epicRemoveTarget?.id === r.id && epicRemoveTarget?.owner === selectedEpic?.id" role="group" aria-label="Confirm removal from epic">
+          <p>Remove from this epic? The ticket itself is kept.</p>
+          <button type="button" @click="epicRemoveConfirmed()" :disabled="epicMutationBusy(selectedEpic)">Remove membership</button>
+          <button type="button" @click="epicRemoveTarget = null">Keep in epic</button>
+        </div>
+      </div>`,
+
     // The brief editor borrows editForm.body so _blockAnchor, _anchorEditor
     // and autoGrowBody work here unchanged rather than being written twice.
     // The two overlays never stand at once, and startEditing rebuilds editForm
@@ -397,6 +449,9 @@ export function kontoraEpics() {
       this.selectedEpic = epic;
       this.epicTab = 'children';
       this.epicAddDraft = '';
+      this.epicCandidateQuery = '';
+      this.epicCandidateOpen = false;
+      this.epicRemoveTarget = null;
       this.epicEditingBrief = false;
       ++this._editorGeneration;
       this.writeHash();
@@ -503,16 +558,118 @@ export function kontoraEpics() {
     // row was drawn.
     async epicApproveHolder() {
       var r = this.epicRollup(this.selectedEpic ? this.selectedEpic.id : '');
-      if (!r.holder) return;
+      if (!r.holder || r.holder.status !== 'human_review') return;
       return this.dispatchLifecycle(this.ticketKey(r.holder), 'move:done');
+    },
+
+    epicCandidates(epic, query = '') {
+      if (!epic || this.isSecondary(epic) || !this.ticketCanControl(epic)) return [];
+      var q = query.trim().toLowerCase();
+      return this.tickets.filter(t => !this.isSecondary(t) && this.ticketCanControl(t) &&
+        t.kind !== 'epic' && t.id !== epic.id && t.status !== 'archived' && t.parent?.id !== epic.id &&
+        (!q || this.ticketMatchesQuery(t, q, ['stage', 'agent'])))
+        .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    },
+
+    epicChildCommand(child, command) {
+      return this.dispatchLifecycle(this.ticketKey(child), command);
+    },
+
+    epicMutationBusy(epic) {
+      return !!this.epicMutationPending[typeof epic === 'string' ? epic : epic?.id];
+    },
+
+    _epicSelectedOwner() {
+      return this.ticketCanControl(this.selectedEpic) ? this.selectedEpic.id : null;
+    },
+
+    _epicOwner(id) {
+      return this.tickets.find(t => t.id === id && t.kind === 'epic' && !this.isSecondary(t)) || null;
+    },
+
+    _epicManagementError(owner, message) {
+      this.epicManagementErrors = { __proto__: null, ...this.epicManagementErrors, [owner]: message };
+      if (this.selectedEpic?.id === owner) this.error = message;
+    },
+
+    _epicEnqueue(owner, work) {
+      if (!owner) return Promise.resolve(false);
+      this.epicMutationPending = { __proto__: null, ...this.epicMutationPending, [owner]: (this.epicMutationPending[owner] || 0) + 1 };
+      var previous = this._epicMutationTails[owner] || Promise.resolve();
+      var next = previous.catch(() => false).then(async () => {
+        if (this._epicNeedsRefresh[owner]) {
+          try { await this.fetchTasks(); delete this._epicNeedsRefresh[owner]; }
+          catch (_) { return false; }
+        }
+        var epic = this._epicOwner(owner);
+        if (!epic || !this.ticketCanControl(epic)) return false;
+        return work(epic);
+      }).finally(() => {
+        this.epicMutationPending = { __proto__: null, ...this.epicMutationPending, [owner]: this.epicMutationPending[owner] - 1 };
+        if (this._epicMutationTails[owner] === next) delete this._epicMutationTails[owner];
+      });
+      this._epicMutationTails[owner] = next;
+      return next;
+    },
+
+    epicConfirmRemove(id) {
+      var owner = this._epicSelectedOwner();
+      if (owner) this.epicRemoveTarget = { owner: owner, id: id };
+    },
+
+    async epicRemoveConfirmed() {
+      var target = this.epicRemoveTarget;
+      if (!target) return false;
+      var ok = await this.epicMoveOut(target.id, target.owner);
+      if (ok && this.epicRemoveTarget === target) this.epicRemoveTarget = null;
+      return ok;
+    },
+
+    epicRetainedOrderRefs() {
+      var epic = this.selectedEpic;
+      if (!epic) return [];
+      var members = new Set(this.tickets.filter(t => t.parent?.id === epic.id && t.kind !== 'epic').map(t => t.id));
+      return (epic.child_order || []).filter(id => !members.has(id));
+    },
+
+    // Replace only slots owned by this displayed group. Raw nonmembers and
+    // other groups keep their positions; missing members are appended by created/id.
+    _epicSafeOrder(epic, groupIDs) {
+      var children = this._epicOrderChildren(epic, this.tickets.filter(t => t.parent?.id === epic.id && t.kind !== 'epic'));
+      var raw = (epic.child_order || []).slice();
+      if (new Set(raw).size !== raw.length) {
+        this._epicManagementError(epic.id, 'Stored child order has duplicate references. Refresh or correct the stored order before reordering.');
+        return null;
+      }
+      var present = new Set(raw);
+      children.forEach(c => { if (!present.has(c.id)) { raw.push(c.id); present.add(c.id); } });
+      var ids = new Set(groupIDs);
+      if (ids.size !== groupIDs.length || groupIDs.some(id => !children.some(c => c.id === id))) return null;
+      var at = 0;
+      return raw.map(id => ids.has(id) ? groupIDs[at++] : id);
+    },
+
+    epicMoveChild(id, delta) {
+      var owner = this._epicSelectedOwner();
+      return this.epicSaveOrder(epic => {
+        var children = this._epicOrderChildren(epic, this.tickets.filter(t => t.parent?.id === owner && t.kind !== 'epic'));
+        var child = children.find(c => c.id === id);
+        if (!child) return null;
+        var statuses = EPIC_GROUPS.find(g => g.statuses.includes(child.status))?.statuses || [child.status];
+        var ids = children.filter(c => statuses.includes(c.status)).map(c => c.id);
+        var at = ids.indexOf(id), to = at + delta;
+        if (to < 0 || to >= ids.length) return null;
+        [ids[at], ids[to]] = [ids[to], ids[at]];
+        return this._epicSafeOrder(epic, ids);
+      }, owner);
     },
 
     // One JSON request, with the failure reported the way moveTicketVia
     // reports one: the daemon's own message on this.error, and no throw, so a
     // refused drag leaves the page usable. Returns whether it landed.
-    async _epicRequest(method, url, body) {
-      if (this.isSecondary(this.selectedTicket) || this.isSecondary(this.selectedEpic)) return false;
-      this.error = null;
+    async _epicRequest(method, url, body, owner = this._epicSelectedOwner()) {
+      if (!owner || !this.ticketCanControl(this._epicOwner(owner))) return false;
+      this._epicManagementError(owner, null);
       try {
         var opts = { method: method };
         if (body !== undefined) {
@@ -522,33 +679,65 @@ export function kontoraEpics() {
         const res = await fetch(url, opts);
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          this.error = data.error || (method + ' ' + url + ' failed');
+          this._epicManagementError(owner, data.error || (method + ' ' + url + ' failed'));
           return false;
         }
         return true;
       } catch (e) {
-        this.error = 'Request failed: ' + e.message;
+        this._epicNeedsRefresh[owner] = true;
+        this._epicManagementError(owner, 'Result uncertain; refresh tickets before another change: ' + e.message);
+        // Never replay a mutation after a lost response.
+        try { await this.fetchTasks(); delete this._epicNeedsRefresh[owner]; } catch (_) {
+          this._epicManagementError(owner, 'Result uncertain; refresh tickets before trying again.');
+        }
         return false;
       }
     },
 
     // Write the epic's child order. One file, the epic's: membership is what
     // each child's parent says, so no child is touched.
-    async epicSaveOrder(ids) {
-      if (!this.selectedEpic) return false;
-      return this._epicRequest('PUT', '/api/tickets/' + encodeURIComponent(this.selectedEpic.id) + '/children', { children: ids });
+    epicSaveOrder(ids, owner = this._epicSelectedOwner(), group) {
+      return this._epicEnqueue(owner, async epic => {
+        var order = typeof ids === 'function' ? ids(epic)
+          : group !== undefined ? this._epicDropOrder(epic, group, ids) : this._epicSafeOrder(epic, ids);
+        if (!order) return false;
+        var touched = this._beginSnapshot();
+        try {
+          var ok = await this._epicRequest('PUT', '/api/tickets/' + encodeURIComponent(owner) + '/children', { children: order }, owner);
+          var current = this._epicOwner(owner);
+          // A newer stream update wins over this acknowledgement.
+          if (ok && current && !touched.has(owner)) {
+            // Keep older ticket snapshots from replacing the acknowledged order before the stream update arrives.
+            this._touchTicket(current);
+            current.child_order = order;
+            if (this.selectedEpic?.id === owner) {
+              this.selectedEpic.child_order = order;
+              ++this._epicUpdateSeq;
+            }
+            if (this._epicDetail?.id === owner) this._epicDetail.child_order = order;
+            this.recomputeBoard();
+          }
+          return ok;
+        } finally { this._endSnapshot(touched); }
+      });
     },
 
     // File an existing ticket under the open epic.
-    async epicPullIn(ticketID) {
-      if (!this.selectedEpic) return false;
-      return this._epicRequest('POST', '/api/tickets/' + encodeURIComponent(ticketID) + '/parent', { parent: this.selectedEpic.id });
+    epicPullIn(ticketID, owner = this._epicSelectedOwner()) {
+      return this._epicEnqueue(owner, epic => {
+        if (!this.epicCandidates(epic).some(t => t.id === ticketID)) return false;
+        return this._epicRequest('POST', '/api/tickets/' + encodeURIComponent(ticketID) + '/parent', { parent: owner }, owner);
+      });
     },
 
     // Take one child out of the epic. The ticket survives; it stops being part
     // of this brief.
-    async epicMoveOut(ticketID) {
-      return this._epicRequest('POST', '/api/tickets/' + encodeURIComponent(ticketID) + '/unparent');
+    epicMoveOut(ticketID, owner = this._epicSelectedOwner()) {
+      return this._epicEnqueue(owner, () => {
+        var child = this.tickets.find(t => t.id === ticketID && !this.isSecondary(t));
+        if (!child || child.parent?.id !== owner || !this.ticketCanControl(child)) return false;
+        return this._epicRequest('POST', '/api/tickets/' + encodeURIComponent(ticketID) + '/unparent', undefined, owner);
+      });
     },
 
     // The inline add row and "+ sub-ticket" both land here: one POST
@@ -556,16 +745,18 @@ export function kontoraEpics() {
     // submitCreateTicket posts for an ordinary ticket.
     async epicAddChild() {
       var title = this.epicAddDraft.trim();
-      if (!title || !this.selectedEpic || this.epicAddBusy) return;
+      if (!title || !this._epicSelectedOwner() || this.epicAddBusy) return;
+      var owner = this._epicSelectedOwner(), path = this.selectedEpic.path;
+      var navigation = this._navigationSeq;
       this.epicAddBusy = true;
       try {
-        var ok = await this._epicRequest('POST', '/api/tickets', {
+        var ok = await this._epicEnqueue(owner, () => this._epicRequest('POST', '/api/tickets', {
           title: title,
-          path: this.selectedEpic.path,
-          parent: this.selectedEpic.id,
+          path: path,
+          parent: owner,
           status: 'open',
-        });
-        if (ok) this.epicAddDraft = '';
+        }, owner));
+        if (ok && this.selectedEpic?.id === owner && navigation === this._navigationSeq && this.epicAddDraft.trim() === title) this.epicAddDraft = '';
       } finally {
         this.epicAddBusy = false;
       }
@@ -704,6 +895,7 @@ export function kontoraEpics() {
         dragClass: 'sortable-drag',
         onStart: function (evt) {
           self.epicDragging = true;
+          if (evt?.item) evt.item._epicDragOwner = self.selectedEpic?.id;
           if (evt?.item) evt.item._lifecycleDragState = self.lifecycleCommand?.(evt.item.dataset.childId, 'move:open')?.expected;
         },
         onEnd: async function (evt) {
@@ -712,9 +904,11 @@ export function kontoraEpics() {
           if (!childID) return;
           var from = evt.from.dataset.epicGroup;
           var to = evt.to.dataset.epicGroup;
-          var order = from === to ? self._epicOrderAfterDrop() : null;
+          var owner = evt.item._epicDragOwner;
+          var order = from === to ? self._epicOrderAfterDrop(evt.to) : null;
           self._epicRestoreRows();
           if (from !== to) {
+            if (self.selectedEpic?.id !== owner) return;
             var status = self._epicDropStatus(to);
             if (status) {
               if (evt.item._lifecycleDragState !== undefined) await self.moveTask(childID, status, evt.item._lifecycleDragState);
@@ -722,7 +916,7 @@ export function kontoraEpics() {
             }
             return;
           }
-          await self.epicSaveOrder(order);
+          await self.epicSaveOrder(order, owner, from);
         },
       }, function () {
         self.epicDragging = false;
@@ -735,12 +929,17 @@ export function kontoraEpics() {
       return g ? g.dropStatus : (this.configCache?.custom_statuses || []).includes(group) ? group : undefined;
     },
 
-    // The order to write after an in-group drop: every group's rows in the
-    // order they are now on screen, read out of the DOM rather than out of the
-    // model, because Sortable moved the nodes and the model has not caught up.
-    _epicOrderAfterDrop() {
+    _epicDropOrder(epic, group, ids) {
+      var statuses = EPIC_GROUPS.find(g => g.key === group)?.statuses || [group];
+      var members = this.tickets.filter(t => t.parent?.id === epic.id && t.kind !== 'epic' && statuses.includes(t.status));
+      if (members.length !== ids.length || members.some(t => !ids.includes(t.id))) return null;
+      return this._epicSafeOrder(epic, ids);
+    },
+
+    // Read only the moved group, then merge its permutation into the raw order.
+    _epicOrderAfterDrop(list) {
       var ids = [];
-      document.querySelectorAll('[data-epic-group] [data-child-id]').forEach(function (el) {
+      list.querySelectorAll('[data-child-id]').forEach(function (el) {
         var id = el.dataset.childId;
         if (id && ids.indexOf(id) < 0) ids.push(id);
       });

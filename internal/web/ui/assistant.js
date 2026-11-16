@@ -82,6 +82,8 @@ function assistantClampWidth(px) {
 }
 
 export function kontoraAssistant() {
+  let presentationBound = false;
+
   return {
     assistantOpen: assistantStored('kontora-assistant-open', '0') === '1',
     assistantRail: assistantStored('kontora-assistant-rail', '0') === '1',
@@ -125,11 +127,15 @@ export function kontoraAssistant() {
     _assistantCursor: 0,
     _assistantETag: '',
     _assistantLoadSeq: 0,
+    _assistantPendingSeq: null,
     _assistantSelectionSeq: 0,
     _assistantResize: null,
     _assistantTurnStart: null,
     _assistantTick: null,
     _assistantStick: true,
+    _assistantComposing: false,
+    _assistantCompositionEnding: false,
+    _assistantCompositionTimer: null,
 
     // A fetch that throws on a status the pane cannot use, so every caller can
     // catch one thing. 304 passes through: it is the poll's "nothing new",
@@ -202,6 +208,28 @@ export function kontoraAssistant() {
       return 'working… ' + m + 'm ' + String(s % 60).padStart(2, '0') + 's';
     },
 
+    // Presentation only. Opening or closing a shell never owns a server turn.
+    assistantLaunchLabel() {
+      if (this.assistantGate) return 'Approval';
+      if (this.assistantStreaming) return 'Working';
+      if (this.companionEnabled()) {
+        const unread = (this.companionSnapshot?.items || []).filter(item => !item.read).length;
+        if (unread) return 'Inbox ' + unread;
+      }
+      return '';
+    },
+
+    assistantLaunchHint() {
+      const label = this.assistantLaunchLabel();
+      if (label === 'Approval') return 'Assistant: waiting for your approval';
+      if (label === 'Working') return 'Assistant: ' + this.assistantWorkingLabel();
+      return label ? 'Assistant: ' + label + ' unread' : 'Open Assistant';
+    },
+
+    assistantComposerID(name) {
+      return (this.isMobile ? 'assistant-sheet-' : 'assistant-') + name;
+    },
+
     // --- scrolling -------------------------------------------------------
 
     _assistantScrollEl() {
@@ -238,7 +266,14 @@ export function kontoraAssistant() {
     // Fetch the assistant config and, when the pane was left open, the thread
     // it was left on. Called from the component's init.
     async initAssistant() {
+      if (this._appDestroyed) return;
+      if (!presentationBound && this.$watch) {
+        presentationBound = true;
+        // Alpine can remove the outgoing composer's blur handler before teardown dispatches blur.
+        this.$watch('isMobile', () => this.assistantCompositionReset());
+      }
       await this._assistantRefreshConfig();
+      if (this._appDestroyed) return;
       const last = assistantStored('kontora-assistant-thread', '');
       if (last && (this.assistantEnabled() || last.startsWith('k'))) {
         await this.assistantSelectThread(last, { quiet: true });
@@ -292,6 +327,7 @@ export function kontoraAssistant() {
         this.closeAssistant();
         return;
       }
+      this.assistantCompositionReset();
       this.assistantOpen = true;
       this.assistantRail = false;
       assistantStore('kontora-assistant-open', '1');
@@ -313,8 +349,9 @@ export function kontoraAssistant() {
       this.assistantOpen = false;
       this.assistantMenu = null;
       this.assistantAutonomyOpen = false;
+      this.assistantCompositionReset();
       assistantStore('kontora-assistant-open', '0');
-      this._stopAssistantPoll();
+      this._armAssistantPoll();
       this._stopAssistantTick();
       this._assistantCloseStream();
     },
@@ -322,6 +359,7 @@ export function kontoraAssistant() {
     // The phone has no room for a docked pane, so the same chat opens in the
     // bottom sheet the rest of the mobile layer uses.
     openAssistantSheet() {
+      this.assistantCompositionReset();
       this.assistantOpen = true;
       if (this.companionSnapshot?.enabled && !this.assistantThread) this.assistantView = 'inbox';
       this.sheet = { type: 'assistant' };
@@ -409,6 +447,7 @@ export function kontoraAssistant() {
         this.assistantThread = null;
         this.assistantMessages = [];
         this.assistantEvents = [];
+        this.assistantGate = null;
         this._assistantCursor = 0;
         this._assistantETag = '';
         assistantStore('kontora-assistant-thread', '');
@@ -439,7 +478,10 @@ export function kontoraAssistant() {
     },
 
     async assistantSelectThread(id, opts) {
+      if (this._appDestroyed) return false;
       const selectionSeq = ++this._assistantSelectionSeq;
+      this._assistantLoadSeq++;
+      this._stopAssistantPoll();
       const quiet = !!(opts && opts.quiet);
       // Before the fetch: a frame in flight for the old thread must not paint
       // into the new one.
@@ -450,23 +492,30 @@ export function kontoraAssistant() {
         const thread = await res.json();
         if (thread.purpose === 'companion') {
           if (!this.companionSnapshot) await this.companionRefresh();
-          if (!this.companionEnabled()) return false;
+          if (!this.companionEnabled()) {
+            if (!this._appDestroyed && selectionSeq === this._assistantSelectionSeq) this._armAssistantPoll();
+            return false;
+          }
         }
-        if (selectionSeq !== this._assistantSelectionSeq) return false;
+        if (this._appDestroyed || selectionSeq !== this._assistantSelectionSeq) return false;
         this._assistantAdopt(thread, thread.messages || []);
         this.assistantEvents = [];
         this._assistantCursor = 0;
         this._assistantETag = '';
         this.assistantView = 'thread';
         await this._loadAssistantActivity();
+        if (this._appDestroyed || selectionSeq !== this._assistantSelectionSeq) return false;
         if (this.assistantStreaming) this._assistantOpenStream();
         this._assistantScrollToEnd(true);
         return true;
       } catch (e) {
         // A thread the browser remembered but the daemon has dropped is not an
         // error worth showing: the pane simply opens empty.
-        if (selectionSeq !== this._assistantSelectionSeq) return false;
+        if (this._appDestroyed || selectionSeq !== this._assistantSelectionSeq) return false;
         if (!quiet) this.assistantError = String(e.message || e);
+        this._assistantSetStreaming(false);
+        this._stopAssistantPoll();
+        this.assistantGate = null;
         this.assistantThread = null;
         assistantStore('kontora-assistant-thread', '');
         return false;
@@ -482,6 +531,9 @@ export function kontoraAssistant() {
       }
       if (this.assistantThread && this.assistantThread.id === id) {
         this._assistantSelectionSeq++;
+        this._assistantLoadSeq++;
+        this._stopAssistantPoll();
+        this.assistantGate = null;
         // Through the setter, or the pane keeps counting for a chat that is
         // gone.
         this._assistantSetStreaming(false);
@@ -495,6 +547,9 @@ export function kontoraAssistant() {
     },
 
     _assistantAdopt(thread, messages) {
+      this._assistantLoadSeq++;
+      this._stopAssistantPoll();
+      this.assistantGate = null;
       this.assistantThread = thread;
       this.assistantMessages = messages || [];
       this._assistantSetStreaming(!!(thread && thread.running));
@@ -638,30 +693,29 @@ export function kontoraAssistant() {
 
     async _loadAssistantActivity() {
       const thread = this.assistantThread;
-      if (!thread) return;
+      if (this._appDestroyed || !thread) return;
+      this._stopAssistantPoll();
       const seq = ++this._assistantLoadSeq;
-      let res;
+      const current = () => !this._appDestroyed && seq === this._assistantLoadSeq && this.assistantThread?.id === thread.id;
+      this._assistantPendingSeq = seq;
       try {
         const headers = {};
         if (this._assistantETag) headers['If-None-Match'] = this._assistantETag;
-        res = await this._assistantFetch(
+        const res = await this._assistantFetch(
           '/api/assistant/threads/' + encodeURIComponent(thread.id) + '/activity?after=' + this._assistantCursor,
           { headers: headers },
         );
+        if (!current() || res.status === 304) return;
+        const data = await res.json();
+        if (!current()) return;
+        this._assistantETag = res.headers && res.headers.get ? (res.headers.get('ETag') || '') : '';
+        this._mergeAssistantActivity(data);
       } catch (e) {
-        this._armAssistantPoll();
-        return;
+        // Keep the last status until the daemon answers a later poll.
+      } finally {
+        if (this._assistantPendingSeq === seq) this._assistantPendingSeq = null;
+        if (current()) this._armAssistantPoll();
       }
-      if (seq !== this._assistantLoadSeq || !this.assistantThread || this.assistantThread.id !== thread.id) return;
-      if (res.status === 304) {
-        this._armAssistantPoll();
-        return;
-      }
-      const data = await res.json();
-      if (seq !== this._assistantLoadSeq || !this.assistantThread || this.assistantThread.id !== thread.id) return;
-      this._assistantETag = res.headers && res.headers.get ? (res.headers.get('ETag') || '') : '';
-      this._mergeAssistantActivity(data);
-      this._armAssistantPoll();
     },
 
     // Splice the new suffix onto the events already held. The daemon sends its
@@ -731,7 +785,7 @@ export function kontoraAssistant() {
     _assistantOpenStream() {
       if (typeof EventSource !== 'function') return;
       const thread = this.assistantThread;
-      if (!thread || !this.assistantOpen) return;
+      if (this._appDestroyed || !thread || !this.assistantOpen) return;
       if (assistantStream.es && assistantStream.threadID === thread.id) return;
       this._assistantCloseStream({ keepTries: true });
 
@@ -859,17 +913,27 @@ export function kontoraAssistant() {
       }
     },
 
-    // Re-arm while the turn is live or a write is waiting on the user. A chained
-    // timeout, not an interval: it cannot stack requests on a slow daemon.
+    // Closed panes still need approval and completion updates for the launch badge.
+    // Chain timeouts so a slow daemon cannot accumulate status requests.
     _armAssistantPoll(delay) {
       this._stopAssistantPoll();
-      if (!this.assistantOpen || !this.assistantThread) return;
+      if (this._appDestroyed || !this.assistantThread) return;
+      if (this._assistantPendingSeq === this._assistantLoadSeq) {
+        if (delay === undefined) return;
+        // A write needs a fresh snapshot, even if an older read is still pending.
+        this._assistantLoadSeq++;
+      }
       if (!this.assistantStreaming && !this.assistantGate && delay === undefined) return;
       const self = this;
-      this._assistantPoll = setTimeout(function () {
+      const seq = this._assistantLoadSeq;
+      const threadID = this.assistantThread.id;
+      const poll = setTimeout(function () {
+        if (self._assistantPoll !== poll) return;
         self._assistantPoll = null;
+        if (self._appDestroyed || seq !== self._assistantLoadSeq || self.assistantThread?.id !== threadID) return;
         self._loadAssistantActivity();
       }, delay === undefined ? ASSISTANT_POLL_MS : delay);
+      this._assistantPoll = poll;
     },
 
     _stopAssistantPoll() {
@@ -975,6 +1039,7 @@ export function kontoraAssistant() {
     // Open a menu when the caret sits on a "/" at the start of the draft or on
     // an "@" anywhere in it, and close it as soon as neither holds.
     assistantDraftChanged() {
+      if (this._assistantComposing) return;
       const draft = this.assistantDraft || '';
       if (this.companionThread()) { this.assistantMenu = null; return; }
       if (draft.startsWith('/')) {
@@ -1013,17 +1078,50 @@ export function kontoraAssistant() {
       if (!chosen) return false;
       this.assistantDraft = (this.assistantDraft || '').slice(0, menu.from) + chosen.insert;
       this.assistantMenu = null;
+      this.$nextTick?.(() => {
+        document.getElementById(this.assistantComposerID('input'))?.focus();
+      });
       return true;
     },
 
-    // Enter sends the message unless a menu is open, in which case it picks the
-    // highlighted row. Shift+Enter is always a newline.
+    assistantCompositionStart() {
+      this.assistantCompositionReset();
+      this._assistantComposing = true;
+      this.assistantMenu = null;
+    },
+
+    assistantCompositionEnd() {
+      this._assistantComposing = false;
+      this._assistantCompositionEnding = true;
+      // Safari can report compositionend before the confirming Enter keydown.
+      // Keep that key out of the send and suggestion paths until this task ends.
+      clearTimeout(this._assistantCompositionTimer);
+      this._assistantCompositionTimer = setTimeout(() => {
+        this._assistantCompositionTimer = null;
+        this._assistantCompositionEnding = false;
+        this.assistantDraftChanged();
+      }, 0);
+    },
+
+    assistantCompositionReset() {
+      clearTimeout(this._assistantCompositionTimer);
+      this._assistantCompositionTimer = null;
+      this._assistantComposing = false;
+      this._assistantCompositionEnding = false;
+    },
+
+    // Enter sends unless a suggestion is open. Shift+Enter stays a newline.
     assistantComposerKey(event) {
+      if (event.isComposing || event.keyCode === 229 || this._assistantComposing || this._assistantCompositionEnding) {
+        event.stopPropagation?.();
+        return;
+      }
+      if (event.key === 'Enter' && event.shiftKey) return;
       if (this.assistantMenu) {
         if (event.key === 'ArrowDown') { event.preventDefault(); this.moveAssistantMenu(1); return; }
         if (event.key === 'ArrowUp') { event.preventDefault(); this.moveAssistantMenu(-1); return; }
         if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); this.acceptAssistantMenu(); return; }
-        if (event.key === 'Escape') { event.preventDefault(); this.assistantMenu = null; return; }
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation?.(); this.assistantMenu = null; return; }
       }
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import { kontoraAutomations } from '../ui/automations.js';
 import { kontoraDetail } from '../ui/detail.js';
 import { deferred } from './settings_fixtures.mjs';
@@ -141,6 +142,65 @@ for (const writeRoute of [true, false]) {
     assert.equal(h.state.automationsEditing, false);
   });
 }
+
+test('Duplicate opens an unsaved paused definition without copying runtime identity', () => {
+  const h = harness();
+  const source = {
+    id: 'auto-original', key: 'original', revision: 12, name: 'Original', enabled: true,
+    prompt: 'Inspect {{ .Run.Number }}', path: '/repo', agent: 'coder', model: 'model-a',
+    timeout: '30m', schedule: '0 9 * * 1-5', timezone: 'Europe/Berlin',
+    workspace: 'worktree', overlap: 'queue', running: true, runs_total: 8,
+    current_run: { n: 9 }, spend_30d: 4.5,
+  };
+  const saved = structuredClone(source);
+  let requests = 0;
+  h.state.automationsRequest = () => { ++requests; throw new Error('Duplicate must not mutate'); };
+  assert.equal(h.state.automationsNew(source), true);
+  assert.equal(h.state.automationsSelected, null);
+  assert.equal(h.state.automationsEditing, true);
+  assert.equal(h.state.automationsDetail, false);
+  assert.equal(h.state.automationsDraft.name, 'Original (copy)');
+  assert.equal(h.state.automationsDraft.enabled, false);
+  for (const key of ['prompt', 'path', 'agent', 'model', 'timeout', 'schedule', 'timezone', 'workspace', 'overlap']) {
+    assert.equal(h.state.automationsDraft[key], source[key], key);
+  }
+  for (const key of ['id', 'key', 'revision', 'running', 'runs_total', 'current_run', 'spend_30d']) {
+    assert.equal(h.state.automationsDraft[key], undefined, key);
+  }
+  assert.equal(h.state.automationsCreate, null, 'no creation receipt before explicit save');
+  assert.equal(requests, 0);
+  assert.equal(h.location.hash, '#/automations/new');
+  assert.deepEqual(source, saved);
+});
+
+test('automation rail retains configuration, timezone, copy values and cost coverage', () => {
+  const h = harness();
+  h.state.configCache = { config_path: '/config/kontora.yaml', logs_dir: '/logs/' };
+  const row = { id: 'auto-a', key: 'a', path: '/repo', timezone: 'Europe/Berlin', created_at: '2026-01-01T00:00:00Z' };
+  const details = Object.fromEntries(h.state.automationsRailDetails(row));
+  assert.equal(details.config, '/config/kontora.yaml');
+  assert.equal(details.timezone, 'Europe/Berlin');
+  assert.equal(details.logs, '/logs/automations/a/');
+  assert.equal(details.id, 'auto-a');
+  const html = readFileSync(new URL('../static/index.html', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../static/automations.css', import.meta.url), 'utf8');
+  const rail = html.slice(html.indexOf('<details open class="automations-rail'), html.indexOf('</details>', html.indexOf('<details open class="automations-rail')));
+  assert.match(rail, /<summary[^>]*>Schedule and configuration<\/summary>/);
+  assert.match(rail, /next_runs/);
+  assert.match(rail, /automationsDateLabel\(fire, automationsRow\(\).timezone\)/);
+  assert.match(rail, /copyCmd\(pair\[1\]\)/);
+  assert.match(rail, /spend_30d/);
+  assert.match(rail, /priced_runs/);
+  assert.match(rail, /tracked_runs/);
+  assert.doesNotMatch(css, /automations-rail\s*\{[^}]*display:\s*none/);
+  assert.doesNotMatch(css, /automations-log-line[^}]*nth-child\(2\)[^}]*display:\s*none/);
+  assert.match(css, /@container automations \(max-width: 1100px\)/);
+  assert.match(css, /automations-detail-body[^}]*flex-direction: column/);
+  assert.match(css, /automations-table[^}]*last-child[^}]*position: sticky; right: 0/);
+  const mobile = html.slice(html.indexOf('class="automations-mobile-actions'), html.indexOf('class="automations-mobile-actions') + 1800);
+  assert.match(mobile, /@click="automationsNew\(automationsRow\(\)\)"[^>]*>Duplicate/);
+  assert.match(html, /x-text="line.source"/);
+});
 
 test('Edit without a row does not take navigation ownership', () => {
   const h = harness();

@@ -78,6 +78,7 @@ const (
 // the startup scan skips it. That is what a malformed deps: does today, which
 // is why the error names the line.
 type NotifyList struct {
+	// Nil leaves the ticket eligible for defaults. An empty non-nil list means Off.
 	Statuses []string
 }
 
@@ -106,11 +107,14 @@ func (n *NotifyList) UnmarshalYAML(value *yaml.Node) error {
 // ticket file itself is written from the raw node, so this only matters where a
 // ticket is re-encoded from its Go value.
 func (n NotifyList) MarshalYAML() (any, error) {
-	if len(n.Statuses) == 0 {
+	if n.Statuses == nil {
 		return nil, nil
 	}
 	return n.Statuses, nil
 }
+
+// IsZero keeps an explicit empty sequence when encoding an optional notify field.
+func (n NotifyList) IsZero() bool { return n.Statuses == nil }
 
 type Status string
 
@@ -316,8 +320,9 @@ type Ticket struct {
 	ArchiveNote  string     `yaml:"archive_note,omitempty"`
 
 	// Notify lists the statuses whose arrival this ticket asks to be told
-	// about, plus the pseudo-status "waiting". A ticket without the field is
-	// silent. Unless notifications.all_changes is enabled, only a transition
+	// about, plus the pseudo-status "waiting". An unset preference can receive
+	// defaults at an explicit start. An empty list stays Off.
+	// Unless notifications.all_changes is enabled, only a transition
 	// the daemon decided on its own sends: a person moving the ticket by hand,
 	// through the CLI or the dashboard, sends nothing.
 	Notify NotifyList `yaml:"notify,omitempty"`
@@ -466,6 +471,8 @@ func (t *Ticket) setFieldNode(key string, value any) error {
 	content := t.rawNode.Content
 	for i := 0; i < len(content)-1; i += 2 {
 		if content[i].Value == key {
+			// Aliases serialize by name, so replacement must retain the anchor.
+			valNode.Anchor = content[i+1].Anchor
 			*content[i+1] = valNode
 			return nil
 		}

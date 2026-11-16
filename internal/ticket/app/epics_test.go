@@ -28,6 +28,9 @@ func TestEpicActivation(t *testing.T) {
 		{name: "passive requires explicit start", req: InitRequest{}, wantErr: true},
 		{name: "open does not activate", req: InitRequest{Status: "open"}, wantErr: true},
 		{name: "explicit start", req: InitRequest{Status: "todo"}},
+		{name: "explicit Off", req: InitRequest{Status: "todo", Notify: []string{}}},
+		{name: "explicit statuses", req: InitRequest{Status: "todo", Notify: []string{"waiting"}}},
+		{name: "final requested path", req: InitRequest{Status: "todo", Path: other}},
 		{name: "marked draft", mode: "agent", req: InitRequest{Status: "open"}},
 		{name: "marked start", mode: "agent", req: InitRequest{}},
 		{name: "pipeline opt out", req: InitRequest{Status: "todo", Pipeline: "none"}},
@@ -52,7 +55,8 @@ func TestEpicActivation(t *testing.T) {
 			cfg.DefaultPipeline = "default" // never inherited by the supervisor
 			cfg.Pipelines["child"] = cfg.Pipelines["default"]
 			cfg.Projects = map[string]config.Project{
-				"repo": {Path: path, Pipeline: "default", EpicChildPipeline: "child", Agent: cfg.DefaultAgent},
+				"repo":  {Path: path, Pipeline: "default", EpicChildPipeline: "child", Agent: cfg.DefaultAgent, Notify: []string{"paused"}},
+				"other": {Path: other, Notify: []string{"done"}},
 			}
 			runtime := &spyRuntime{}
 			svc := New(Static(cfg), repo, runtime)
@@ -69,6 +73,11 @@ func TestEpicActivation(t *testing.T) {
 			assert.Empty(t, epic.Pipeline)
 			assert.Empty(t, epic.Stage)
 			assert.Equal(t, cfg.DefaultAgent, epic.Agent)
+			wantNotify := tc.req.Notify
+			if wantNotify == nil {
+				wantNotify = cfg.NotifyDefaultFor(epic.Path)
+			}
+			assert.Equal(t, wantNotify, epic.Notify.Statuses)
 			assert.Equal(t, []string{"epc-100"}, repo.saved)
 			if tc.req.Status != "open" {
 				assert.Equal(t, []string{"epc-100"}, runtime.enqueued)
@@ -76,6 +85,7 @@ func TestEpicActivation(t *testing.T) {
 			if tc.childPath != "" {
 				assert.Equal(t, ticket.StatusOpen, repo.tickets["child"].Ticket.Status)
 				assert.Equal(t, "default", repo.tickets["child"].Ticket.Pipeline)
+				assert.Nil(t, repo.tickets["child"].Ticket.Notify.Statuses)
 			}
 		})
 	}

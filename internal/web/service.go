@@ -337,7 +337,7 @@ type CreateTicketRequest struct {
 	// Parent files the new ticket under one.
 	Kind   string `json:"kind,omitempty"`
 	Parent string `json:"parent,omitempty"`
-	// Nil Notify inherits the project default for ordinary tickets;
+	// Nil Notify inherits project or global defaults for ordinary tickets;
 	// an empty list opts out.
 	// NotifyChannels overrides channel defaults when non-empty.
 	Notify         []string `json:"notify,omitzero"`
@@ -534,6 +534,7 @@ type ProjectInfo struct {
 	// the daemon does, because the init modal states the channel for a path
 	// that is still being typed.
 	NotifyChannels []string `json:"notify_channels,omitempty"`
+	Notify         []string `json:"notify,omitzero"`
 }
 
 // AgentInfo describes one configured agent. Model and Effort are defaults
@@ -572,6 +573,7 @@ type ConfigInfo struct {
 	// never in the config struct to begin with.
 	Channels        []string `json:"channels,omitempty"`
 	DefaultChannels []string `json:"default_channels,omitempty"`
+	DefaultNotify   []string `json:"default_notify,omitzero"`
 }
 
 type TicketInfo struct {
@@ -657,7 +659,7 @@ type TicketInfo struct {
 	// Notify and NotifyChannels are the ticket's own notification fields, not
 	// the resolved ones: an empty NotifyChannels defers to the project and the
 	// global default, and the dashboard resolves those from ConfigInfo.
-	Notify         []string `json:"notify,omitempty"`
+	Notify         []string `json:"notify,omitzero"`
 	NotifyChannels []string `json:"notify_channels,omitempty"`
 
 	// Ready reports that no dependency holds the ticket back, and Blockers names

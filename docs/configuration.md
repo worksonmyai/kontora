@@ -1010,7 +1010,7 @@ projects:
 | `branch_prefix` | no | Overrides the top-level `branch_prefix` for this repository. |
 | `branch_naming` | no | Overrides the top-level [`branch_naming`](#branch-naming) mode for this repository. |
 | `hooks` | no | Commands run at this repository's lifecycle events, after the top-level ones (see [hooks](#hooks)). |
-| `notify` | no | Status list written into new ordinary tickets unless creation supplies an explicit list. Accepts known statuses and `waiting`, not `none`. Does not apply to epics or initialization. |
+| `notify` | no | Optional status default for ordinary creation and explicit initialization/starts. Applies only without a request or saved choice. Overrides global `notifications.default_statuses`; `[]` means Off. Accepts known statuses and `waiting`, not `none`. |
 | `notify_channels` | no | Overrides `notifications.default` for tickets in this repository. The sole entry `none` silences the project (see [notifications](#notifications)). |
 
 `pipeline`, `epic_child_pipeline` and `agent` supply creation and initialization
@@ -1027,10 +1027,11 @@ rule. Changing it renames nothing: existing IDs stay as they are.
 Kontora writes pipeline and agent defaults into frontmatter at creation or initialization.
 Creation includes `kontora new`, `POST /api/tickets`, and the TUI and web forms.
 Initialization includes `kontora init` and `POST /api/tickets/{id}/init`.
-Project `notify` is written only at creation, including `kontora new` and
-`POST /api/tickets`. An explicit empty list skips this default. Changing the
-project list does not change existing tickets. Uploads, transferred tickets,
-and files written by hand do not receive this default.
+Notification defaults also apply at explicit starts, including older or imported
+tickets without a saved choice. Project `notify` overrides the global status
+default; `notify: []` means Off, not inheritance. Epic creation skips notification
+defaults; explicit activation applies them only to the supervisor.
+See [notification defaults](#notification-defaults) for precedence and compatibility.
 
 For an ordinary ticket, pipeline selection uses the first applicable value:
 
@@ -1539,12 +1540,11 @@ answered. Missing source identifiers can also limit question tracking.
 
 ## notifications
 
-Where a ticket's status notifications can go. Nothing is sent unless a ticket
-asks for it: this section only names the channels, and each ticket names the
-statuses it wants to hear about in its own
-[`notify:`](tickets.md#notifications) frontmatter. A ticket without that field
-is silent whatever is configured here. A project's `notify` list can supply
-that field when an ordinary ticket is created.
+Configure status defaults and delivery channels separately. Each ticket stores
+its subscriptions in [`notify:`](tickets.md#notifications) frontmatter. Kontora
+copies defaults at ordinary creation and explicit initialization/starts, not at
+delivery time. `notifications.default` names channels; `default_statuses` names
+statuses and is initially unset.
 
 ```yaml
 notifications:
@@ -1562,6 +1562,7 @@ notifications:
       headers:
         X-Team: platform
   default: [tg]
+  default_statuses: [paused, human_review, waiting] # Optional: when it needs me.
 ```
 
 | Field | Required | Default | Description |
@@ -1570,9 +1571,44 @@ notifications:
 | `all_changes` | no | `false` | Also notify for status changes made by commands, API calls, dashboard actions, and file edits. First sightings and derived epic statuses stay silent. Reloads live. |
 | `channels` | no | `{}` | Map of channel name to a delivery target. The name is what a ticket or a project refers to. |
 | `default` | no | `[]` | Channels a notification goes to when neither the ticket nor its project names one. |
+| `default_statuses` | no | unset | Optional status default after project `notify`. Accepts known statuses and `waiting`, not `none`, even as a custom status. `[]` means Off. |
 | `timeout` | no | `10s` | Bound on one delivery attempt. |
 | `attempts` | no | `3` | How many attempts one notification gets. Between 1 and 10; `1` sends once and does not retry. `0` is refused. |
 | `backoff` | no | `1s` | Wait before the second attempt, doubled for each one after it. |
+
+### Notification defaults
+
+Status selection uses the first applicable value, without merging lists:
+
+1. The explicit request, including `[]` for Off.
+2. The ticket's saved `notify`, including `[]`.
+3. The matching project's `notify`, including `[]`.
+4. Global `notifications.default_statuses`.
+5. No subscription.
+
+Missing, null, or blank ticket statuses are unset and eligible for defaults.
+`notify: []` is persistent Off. Config export preserves omitted and empty status
+lists for both project and global defaults.
+
+Defaults apply at ordinary creation, initialization, and explicit execution requests:
+run, retry, move to `todo`, skip to another stage, workflow restart, and
+reviewer-requested rework or annotation runs. Older and imported tickets qualify
+if their statuses are unset. Initialization uses the final requested path.
+Epic creation is excluded; activation applies defaults only to the supervisor.
+
+Daemon startup, imports, config reloads, automatic pickup, stage progression,
+and wakes do not add subscriptions. Changing defaults does not replace saved choices.
+Settings edits the global preference with the same presets and custom statuses
+as the start dialog. Valid changes reload without a restart.
+
+Status defaults do not change routing, `enabled`, or `all_changes`.
+They validate without configured channels, but delivery still needs a route.
+`waiting` still covers only live Pi questions, not Claude questions or durable workflow wakes.
+
+Older versions removed the field when you chose Off. Kontora cannot recover that
+choice: those tickets inherit defaults at their next explicit start unless you select Off again.
+Upgrade all participating clients and daemons before relying on persistent Off.
+Older writers can delete `notify: []`; older config loaders reject `default_statuses`.
 
 ### Channel fields
 

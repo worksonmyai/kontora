@@ -26,6 +26,7 @@ notifications:
       url: https://example.com/ingest
       method: put
   default: [tg]
+  default_statuses: [paused, human_review, waiting]
 
 projects:
   work-repo:

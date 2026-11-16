@@ -6,7 +6,7 @@
 
 // The three answers the row offers. `custom` is not among them: it is what the
 // statuses read as when they match none of these, not a fourth thing to pick.
-const NOTIFY_MODES = [
+export const NOTIFY_MODES = [
   { key: 'off', label: 'off', statuses: [] },
   { key: 'needs', label: 'when it needs me', statuses: ['paused', 'human_review', 'waiting'] },
   { key: 'done', label: 'when it is finished', statuses: ['human_review', 'done'] },
@@ -30,6 +30,11 @@ function sameSet(a, b) {
   return a.length === b.length && a.every(x => b.includes(x));
 }
 
+export function notifyModeFor(statuses) {
+  var mode = NOTIFY_MODES.find(m => sameSet(m.statuses, statuses || []));
+  return mode ? mode.key : 'custom';
+}
+
 export function kontoraNotify() {
   return {
     _notifySaves: Object.create(null),
@@ -38,7 +43,7 @@ export function kontoraNotify() {
     _notifyDraftInitial: '',
 
     _notifySignature(form) {
-      return JSON.stringify([form?.notify || [], form?.notifyChannels || []]);
+      return JSON.stringify([form?.notify || [], form?.notifyChannels || [], !!form?.notifyUnset]);
     },
 
     _notifyOwns(owner) {
@@ -57,7 +62,7 @@ export function kontoraNotify() {
     // ones, and the pseudo-status `waiting`, which is in NOTIFY_STATUSES
     // because a blocked agent is the thing people most want to hear about.
     notifyStatuses() {
-      var custom = (this.configCache?.custom_statuses || []).filter(s => !NOTIFY_STATUSES.includes(s));
+      var custom = (this.configCache?.custom_statuses || []).filter(s => s !== NOTIFY_SILENCE && !NOTIFY_STATUSES.includes(s));
       return NOTIFY_STATUSES.concat(custom);
     },
 
@@ -66,9 +71,7 @@ export function kontoraNotify() {
     // the moment a chip is toggled, and then the control claims one thing while
     // the echo line below it says another.
     notifyModeOf(form) {
-      var list = (form && form.notify) || [];
-      var mode = NOTIFY_MODES.find(m => sameSet(m.statuses, list));
-      return mode ? mode.key : 'custom';
+      return notifyModeFor(form && form.notify);
     },
 
     // A mode replaces the status list outright. The channels are left alone, so
@@ -77,6 +80,8 @@ export function kontoraNotify() {
       var mode = NOTIFY_MODES.find(m => m.key === key);
       if (!mode) return;
       form.notify = mode.statuses.slice();
+      form.notifyFollowsDefaults = false;
+      form.notifyUnset = false;
       this.notifyChanged(form);
     },
 
@@ -87,7 +92,9 @@ export function kontoraNotify() {
     notifyToggleStatus(form, status) {
       form.notify = this.notifyStatusOn(form, status)
         ? form.notify.filter(s => s !== status)
-        : form.notify.concat([status]);
+        : (form.notify || []).concat([status]);
+      form.notifyFollowsDefaults = false;
+      form.notifyUnset = false;
       this.notifyChanged(form);
     },
 
@@ -136,7 +143,8 @@ export function kontoraNotify() {
     // convention as the new-ticket page's frontmatter preview.
     notifyEcho(form) {
       var list = (form && form.notify) || [];
-      if (!list.length) return 'no notify: field written';
+      if (form?.notifyUnset) return 'no notify: field written';
+      if (form?.notifyFollowsDefaults) return 'notify: resolved from defaults at start';
       return 'notify: [' + list.join(', ') + ']';
     },
 
@@ -267,6 +275,7 @@ export function kontoraNotify() {
       this.notifySaved = false;
       this.notifyDraft = {
         notify: (this.selectedTicket.notify || []).slice(),
+        notifyUnset: this.selectedTicket.notify == null,
         notifyChannels: (this.selectedTicket.notify_channels || []).slice(),
         path: this.selectedTicket.path || '',
         autosave: true,
@@ -285,10 +294,7 @@ export function kontoraNotify() {
       this.notifyError = null;
     },
 
-    // Every change PATCHes at once, the way the detail edit form's selects do.
-    // Both fields go on every request: they are edited together, and sending
-    // only the one that changed would need a second copy of the draft to
-    // compare against.
+    // A channel edit must not turn an unset status preference into Off.
     async saveNotify() {
       var t = this.selectedTicket;
       if (!this.notifyCanEdit() || !this.notifyDraft) return false;
@@ -304,7 +310,7 @@ export function kontoraNotify() {
       var owner = { key, epoch: this._notifyEditorEpoch, detail: this._ticketDetailSeq,
         submission: ++this._notifySubmission, signature: this._notifySignature(this.notifyDraft) };
       state.pending = { t, owner, payload: {
-        notify: (this.notifyDraft.notify || []).slice(),
+        notify: this.notifyDraft.notifyUnset ? undefined : (this.notifyDraft.notify || []).slice(),
         notify_channels: (this.notifyDraft.notifyChannels || []).slice(),
       } };
       this.notifySaving = true;

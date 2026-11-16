@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chromium, webkit } from 'playwright';
 import { expect } from 'playwright/test';
+import * as yaml from '../static/vendor/yaml@2.8.1/yaml.mjs';
 
 const require = createRequire(import.meta.url);
 assert.equal(require('playwright/package.json').version, '1.65.0');
@@ -429,6 +430,7 @@ function fixtures(options = {}) {
       if (!response || response.status === 204 || response.body?.code === 'config_saved_reload_failed') {
         rawConfig = body.content;
         configWrites.push(rawConfig);
+        if (options.settingsNotificationReload) config.default_notify = yaml.parse(rawConfig).notifications?.default_statuses;
       }
       if (response && response.status !== 204) {
         expectedHTTPFailures.push(base + path);
@@ -5417,18 +5419,259 @@ describe('start-dialog notification availability', () => {
     await inViewport(link);
   }
 
-  async function start(page, fixture, dialog) {
+  async function start(page, fixture, dialog, priorSettingsWrites = 0) {
+    assert.equal(fixture.mutations.length, priorSettingsWrites, 'Notification choices must not autosave before init');
+    assert.equal(settingsWrites(fixture).length, priorSettingsWrites);
     const [response] = await Promise.all([
       page.waitForResponse(r => r.url() === base + '/api/tickets/kon-draft/init' && r.request().method() === 'POST'),
       dialog.getByRole('button', { name: 'start ticket', exact: true }).click(),
     ]);
     assert.equal(response.status(), 200);
     await dialog.waitFor({ state: 'hidden' });
-    assert.equal(fixture.mutations.length, 1, 'Notification choices must not autosave before init');
-    const mutation = fixture.mutations[0];
+    assert.equal(fixture.mutations.length, priorSettingsWrites + 1, 'Only the init request may write after Settings');
+    const mutation = fixture.mutations.at(-1);
     assert.equal(mutation.method, 'POST');
     assert.equal(mutation.path, '/api/tickets/kon-draft/init');
     return { notify: mutation.body.notify, notify_channels: mutation.body.notify_channels };
+  }
+
+  test('same Start dialog keeps a newer reload after an older config response', async t => {
+    await withPage(t, 1280, 'dark', async (page, fixture) => {
+      await openTicket(page, 'kon-draft');
+      let release;
+      const pending = new Promise(resolve => { release = resolve; });
+      let reads = 0;
+      await page.route('**/api/config', async route => {
+        const old = ++reads === 1;
+        if (old) await pending;
+        await route.fulfill({ json: old ? { ...fixture.config, default_notify: [], default_channels: ['ops'] } : fixture.config });
+      });
+      try {
+        await page.evaluate(() => {
+          const state = Alpine.$data(document.body);
+          state.configCache = null;
+          window.__openingStart = state.openInitModal(state.selectedTicket);
+        });
+        const dialog = page.getByRole('dialog', { name: /Primary draft$/ });
+        await visible(dialog);
+        await expect.poll(() => reads).toBe(1);
+        await reloadConfig(page, fixture, { default_notify: ['done'], default_channels: [] });
+        await expect.poll(() => choices(page)).toEqual({ notify: ['done'], notify_channels: [] });
+        release();
+        await page.evaluate(() => window.__openingStart);
+        await expect.poll(() => choices(page)).toEqual({ notify: ['done'], notify_channels: [] });
+        await dialog.getByRole('button', { name: 'start ticket', exact: true }).click();
+        await visible(dialog.getByText('Choose a notification channel, configure an inherited route, or turn notifications off.', { exact: true }));
+        assert.equal(fixture.mutations.length, 0);
+        await dialog.getByRole('radio', { name: 'off', exact: true }).click();
+        assert.deepEqual(await start(page, fixture, dialog), { notify: [], notify_channels: [] });
+      } finally { release(); }
+    }, { config: { channels: ['ops'], default_channels: ['ops'] } });
+  });
+
+  test('Start and rail notification choosers exclude reserved none', async t => {
+    await withPage(t, 1280, 'dark', async page => {
+      const dialog = await openStartDialog(page);
+      await dialog.getByRole('button', { name: 'custom', exact: true }).click();
+      await expect(dialog.locator('.notify-chip[data-status="none"]')).toHaveCount(0);
+      await visible(dialog.locator('.notify-chip[data-status="awaiting_data"]'));
+      await page.evaluate(() => Alpine.$data(document.body).closeInitModal());
+      await page.locator('[x-text="notifyRailLabel()"]:visible').click();
+      await page.getByRole('button', { name: 'custom', exact: true }).filter({ visible: true }).click();
+      await expect(page.locator('.notify-chip[data-status="none"]')).toHaveCount(0);
+      await visible(page.locator('.notify-chip[data-status="awaiting_data"]:visible'));
+    }, { config: { channels: ['ops'], default_channels: ['ops'], custom_statuses: ['none', 'awaiting_data'] } });
+  });
+
+  const needsMe = ['paused', 'human_review', 'waiting'];
+  const finished = ['human_review', 'done'];
+  const repository = '/fixtures/repository-with-a-long-name';
+
+  async function followsDefaults(page) {
+    return page.evaluate(() => Alpine.$data(document.body).initForm.notifyFollowsDefaults);
+  }
+
+  async function reloadConfig(page, fixture, patch) {
+    Object.assign(fixture.config, patch);
+    const response = page.waitForResponse(r => r.url() === base + '/api/config' && r.request().method() === 'GET');
+    await page.evaluate(() => window.__fixtureSSE.forEach(es => es.emit('config_reloaded')));
+    assert.equal((await response).status(), 200);
+    await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).configCache)).toEqual(fixture.config);
+  }
+
+  for (const [name, stored, global, project, expected, follows] of [
+    ['missing ticket preference', {}, needsMe, {}, needsMe, true],
+    ['null ticket preference', { notify: null }, needsMe, {}, needsMe, true],
+    ['no global preference', {}, undefined, {}, [], true],
+    ['global Off', {}, [], {}, [], true],
+    ['project preference', {}, needsMe, { notify: ['done'] }, ['done'], true],
+    ['project null inherits global', {}, needsMe, { notify: null }, needsMe, true],
+    ['project Off', {}, needsMe, { notify: [] }, [], true],
+    ['stored Off', { notify: [] }, needsMe, { notify: ['done'] }, [], false],
+    ['stored custom preference', { notify: ['waiting'] }, needsMe, { notify: [] }, ['waiting'], false],
+  ]) test(`notification defaults preselect and submit / ${name}`, async t => {
+    await withPage(t, 390, 'dark', async (page, fixture) => {
+      const dialog = await openStartDialog(page);
+      await expect.poll(() => choices(page)).toEqual({ notify: expected, notify_channels: [] });
+      assert.equal(await followsDefaults(page), follows);
+      if (!expected.length) await expect(dialog.getByRole('radio', { name: 'off', exact: true })).toHaveAttribute('aria-checked', 'true');
+      if (expected === needsMe) await expect(dialog.getByRole('radio', { name: 'when it needs me', exact: true })).toHaveAttribute('aria-checked', 'true');
+      for (const status of expected) await expect(dialog.locator(`.notify-chip[data-status="${status}"]`)).toHaveAttribute('aria-pressed', 'true');
+      assert.deepEqual(fixture.mutations, []);
+      assert.deepEqual(await start(page, fixture, dialog), { notify: follows ? undefined : expected, notify_channels: [] });
+      assert.equal(Object.hasOwn(fixture.mutations[0].body, 'notify'), !follows, 'Inherited statuses must be omitted, not serialized as Off');
+    }, { ticket: stored, config: { channels: ['ops'], default_channels: ['ops'], default_notify: global,
+      projects: [{ name: 'Fixture repository', path: repository, ...project }] } });
+  });
+
+  for (const width of [390, 1280]) test(`Settings notification preset reloads into an unset start dialog / ${width}px`, async t => {
+    await withPage(t, width, 'dark', async (page, fixture) => {
+      await routeTo(page, '#/settings/notifications');
+      const modes = settingsView(page).getByRole('radiogroup', { name: 'Default notification statuses', exact: true });
+      await modes.getByRole('radio', { name: 'when it needs me', exact: true }).click();
+      await expect(modes.getByRole('radio', { name: 'when it needs me', exact: true })).toHaveAttribute('aria-checked', 'true');
+      await settingsButton(page, 'save & reload').click();
+      await page.waitForFunction(() => !Alpine.$data(document.body).settingsSaving);
+      assert.equal(settingsWrites(fixture).length, 1);
+      const saved = yaml.parseDocument(fixture.rawConfig, { intAsBigInt: true });
+      assert.deepEqual(saved.getIn(['notifications', 'default_statuses']).toJSON(), needsMe);
+      saved.deleteIn(['notifications', 'default_statuses']);
+      assert.equal(String(saved), String(yaml.parseDocument(settingsRaw, { intAsBigInt: true })),
+        'Saving notification statuses must preserve unrelated YAML nodes, comments and aliases');
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).configCache.default_notify)).toEqual(needsMe);
+      await routeTo(page, '#/');
+      await routeTo(page, '#/settings/notifications');
+      await expect(modes.getByRole('radio', { name: 'when it needs me', exact: true })).toHaveAttribute('aria-checked', 'true');
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsDirty()), false);
+      const dialog = await openStartDialog(page);
+      await expect.poll(() => choices(page)).toEqual({ notify: needsMe, notify_channels: [] });
+      await expect(dialog.getByRole('radio', { name: 'when it needs me', exact: true })).toHaveAttribute('aria-checked', 'true');
+      assert.equal(await followsDefaults(page), true);
+      assert.deepEqual(await start(page, fixture, dialog, 1), { notify: undefined, notify_channels: [] });
+      assert.equal(Object.hasOwn(fixture.mutations.at(-1).body, 'notify'), false);
+      assert.equal(fixture.mutations.length, 2);
+    }, { rawConfig: settingsRaw, settingsNotificationReload: true,
+      config: { channels: ['hook', 'telegram'], default_channels: ['hook'] } });
+  });
+
+  test('untouched notification defaults follow path and configuration changes', async t => {
+    const projects = [
+      { name: 'Fixture repository', path: repository },
+      { name: 'Finished project', path: '/fixtures/finished', notify: finished },
+      { name: 'Silent project', path: '/fixtures/silent', notify: [] },
+    ];
+    await withPage(t, 1280, 'dark', async (page, fixture) => {
+      const dialog = await openStartDialog(page);
+      await expect.poll(() => choices(page)).toEqual({ notify: needsMe, notify_channels: [] });
+      for (const [path, expected] of [
+        ['/fixtures/finished', finished], ['/fixtures/silent', []], ['/fixtures/unmatched', needsMe],
+      ]) {
+        await dialog.locator('#init-path').fill(path);
+        await expect.poll(() => choices(page)).toEqual({ notify: expected, notify_channels: [] });
+        assert.equal(await followsDefaults(page), true);
+      }
+      await reloadConfig(page, fixture, { default_notify: ['waiting'] });
+      await expect.poll(() => choices(page)).toEqual({ notify: ['waiting'], notify_channels: [] });
+      await dialog.locator('#init-path').fill(repository);
+      await reloadConfig(page, fixture, { projects: [{ ...projects[0], notify: ['done'] }, ...projects.slice(1)] });
+      await expect.poll(() => choices(page)).toEqual({ notify: ['done'], notify_channels: [] });
+      assert.equal(await followsDefaults(page), true);
+      assert.deepEqual(await start(page, fixture, dialog), { notify: undefined, notify_channels: [] });
+      assert.equal(Object.hasOwn(fixture.mutations[0].body, 'notify'), false);
+      assert.equal(fixture.mutations[0].body.path, repository);
+    }, { config: { projects, channels: ['ops'], default_channels: ['ops'], default_notify: needsMe } });
+  });
+
+  for (const choice of ['stored Off', 'stored statuses', 'preset', 'custom', 'explicit Off']) {
+    test(`path and configuration changes preserve explicit notification choices / ${choice}`, async t => {
+      const stored = choice === 'stored Off' ? { notify: [] } : choice === 'stored statuses' ? { notify: ['waiting'] } : {};
+      const expected = choice === 'preset' ? finished : choice === 'custom' ? [...needsMe, 'done']
+        : choice === 'stored statuses' ? ['waiting'] : [];
+      await withPage(t, 1280, 'dark', async (page, fixture) => {
+        const dialog = await openStartDialog(page);
+        await expect.poll(() => choices(page)).toEqual({ notify: stored.notify ?? needsMe, notify_channels: [] });
+        if (choice === 'preset') await dialog.getByRole('radio', { name: 'when it is finished', exact: true }).click();
+        if (choice === 'explicit Off') await dialog.getByRole('radio', { name: 'off', exact: true }).click();
+        if (choice === 'custom') {
+          await dialog.getByRole('button', { name: 'custom', exact: true }).click();
+          await dialog.locator('.notify-chip[data-status="done"]').click();
+        }
+        assert.equal(await followsDefaults(page), false);
+        await dialog.locator('#init-path').fill('/fixtures/other');
+        await expect.poll(() => choices(page)).toEqual({ notify: expected, notify_channels: [] });
+        await reloadConfig(page, fixture, { default_notify: ['cancelled'],
+          projects: [...fixture.config.projects, { name: 'Other', path: '/fixtures/other', notify: ['open'] }] });
+        await expect.poll(() => choices(page)).toEqual({ notify: expected, notify_channels: [] });
+        assert.equal(await followsDefaults(page), false);
+        assert.deepEqual(await start(page, fixture, dialog), { notify: expected, notify_channels: [] });
+        assert.equal(Object.hasOwn(fixture.mutations[0].body, 'notify'), true);
+      }, { ticket: stored, config: { channels: ['ops'], default_channels: ['ops'], default_notify: needsMe } });
+    });
+  }
+
+  test('channel-only start edits keep following status defaults and omit notify', async t => {
+    await withPage(t, 390, 'dark', async (page, fixture) => {
+      const dialog = await openStartDialog(page);
+      await expect.poll(() => choices(page)).toEqual({ notify: needsMe, notify_channels: [] });
+      await dialog.getByRole('button', { name: 'ops', exact: true }).click();
+      assert.equal(await followsDefaults(page), true);
+      await dialog.locator('#init-path').fill('/fixtures/other');
+      await expect.poll(() => choices(page)).toEqual({ notify: finished, notify_channels: ['ops'] });
+      await reloadConfig(page, fixture, { projects: [fixture.config.projects[0]], default_notify: ['waiting'] });
+      await expect.poll(() => choices(page)).toEqual({ notify: ['waiting'], notify_channels: ['ops'] });
+      assert.equal(await followsDefaults(page), true);
+      assert.deepEqual(await start(page, fixture, dialog), { notify: undefined, notify_channels: ['ops'] });
+      assert.equal(Object.hasOwn(fixture.mutations[0].body, 'notify'), false);
+    }, { config: { channels: ['ops', 'team'], default_channels: ['team'], default_notify: needsMe,
+      projects: [{ name: 'Fixture repository', path: repository }, { name: 'Other', path: '/fixtures/other', notify: finished }] } });
+  });
+
+  test('enabled global default without channels stays selected until explicit Off recovery', async t => {
+    await withPage(t, 390, 'dark', async (page, fixture) => {
+      const dialog = await openStartDialog(page);
+      await expect.poll(() => choices(page)).toEqual({ notify: needsMe, notify_channels: [] });
+      await unavailableControls(dialog);
+      await noChannelGuidance(dialog);
+      await expect(dialog.getByRole('radio', { name: 'when it needs me', exact: true })).toHaveAttribute('aria-checked', 'true');
+      await expect(dialog.getByRole('radio', { name: 'off', exact: true })).toHaveAttribute('aria-checked', 'false');
+      await dialog.getByRole('button', { name: 'start ticket', exact: true }).click();
+      await visible(dialog.getByText('Choose a notification channel, configure an inherited route, or turn notifications off.', { exact: true }));
+      assert.deepEqual(fixture.mutations, []);
+      assert.equal(fixture.requests.includes('POST /api/tickets/kon-draft/init'), false);
+      assert.equal(await followsDefaults(page), true);
+      await dialog.getByRole('radio', { name: 'off', exact: true }).click();
+      assert.equal(await followsDefaults(page), false);
+      assert.deepEqual(await start(page, fixture, dialog), { notify: [], notify_channels: [] });
+      assert.equal(Object.hasOwn(fixture.mutations[0].body, 'notify'), true);
+    }, { config: { channels: [], default_channels: [], default_notify: needsMe } });
+  });
+
+  for (const folder of ['primary', source]) for (const stored of ['unset', 'null', 'Off']) {
+    test(`channel-only rail edits preserve status intent / ${folder} / ${stored}`, async t => {
+      const record = ticket('kon-draft', 'Channel-only fixture', { source: folder,
+        ...(stored === 'Off' ? { notify: [] } : stored === 'null' ? { notify: null } : {}) });
+      await withPage(t, 1280, 'dark', async (page, fixture) => {
+        await openTicket(page, record.id, folder);
+        await page.locator('[x-text="notifyRailLabel()"]:visible').click();
+        const editor = page.locator('.notify-seg').filter({ visible: true });
+        await visible(editor);
+        const path = detailPath(folder, record.id);
+        for (const [channel, expected] of [['ops', ['ops']], ['inherit · team', []]]) {
+          const response = page.waitForResponse(r => r.url() === base + path && r.request().method() === 'PUT');
+          await page.getByRole('button', { name: channel, exact: true }).filter({ visible: true }).click();
+          assert.equal((await response).status(), 200);
+          await page.waitForFunction(() => !Alpine.$data(document.body).notifySaving);
+          const mutation = fixture.mutations.at(-1);
+          assert.equal(mutation.path, path);
+          assert.equal(Object.hasOwn(mutation.body, 'notify'), stored === 'Off');
+          assert.deepEqual(mutation.body, stored === 'Off' ? { notify: [], notify_channels: expected } : { notify_channels: expected });
+          const saved = fixture.records.get(`${folder}/${record.id}`);
+          assert.equal(Object.hasOwn(saved, 'notify'), stored !== 'unset');
+          assert.deepEqual(saved.notify, record.notify);
+        }
+        assert.equal(fixture.mutations.length, 2);
+      }, { records: [record], config: { channels: ['ops', 'team'], default_channels: ['team'], default_notify: needsMe } });
+    });
   }
 
   for (const width of [1280, 390]) {
@@ -5503,6 +5746,25 @@ describe('start-dialog notification availability', () => {
     }, { config: { channels: ['ops'], default_channels: [] }, ticket: { notify: [], notify_channels: [] } });
   });
 
+  test('pending configuration blocks an unset start until global defaults are visible', async t => {
+    await withPage(t, 390, 'dark', async (page, fixture) => {
+      const dialog = await openStartDialog(page);
+      await unavailableControls(dialog, true);
+      assert.equal(await followsDefaults(page), true);
+      assert.deepEqual(await choices(page), { notify: [], notify_channels: [] });
+      await dialog.getByRole('button', { name: 'start ticket', exact: true }).click();
+      await visible(dialog.getByText('Waiting for notification configuration. Close and reopen this dialog if loading does not finish.', { exact: true }));
+      assert.deepEqual(fixture.mutations, []);
+      assert.equal(fixture.requests.includes('POST /api/tickets/kon-draft/init'), false);
+      fixture.releaseConfig();
+      await expect.poll(() => choices(page)).toEqual({ notify: needsMe, notify_channels: [] });
+      await expect(dialog.getByRole('radio', { name: 'when it needs me', exact: true })).toHaveAttribute('aria-checked', 'true');
+      assert.equal(await followsDefaults(page), true);
+      assert.deepEqual(await start(page, fixture, dialog), { notify: undefined, notify_channels: [] });
+      assert.equal(Object.hasOwn(fixture.mutations[0].body, 'notify'), false);
+    }, { configRetryPending: true, config: { channels: ['ops'], default_channels: ['ops'], default_notify: needsMe } });
+  });
+
   for (const pending of [true, false]) {
     test(`${pending ? 'pending' : 'failed'} config disables even Off without changing initial choices`, async t => {
       const initial = { notify: ['paused'], notify_channels: ['ops'] };
@@ -5516,7 +5778,10 @@ describe('start-dialog notification availability', () => {
         assert.match(await help.innerText(), /loading/i);
         assert.equal(await help.getByRole('link').isVisible(), false);
         assert.deepEqual(await choices(page), initial);
+        await dialog.getByRole('button', { name: 'start ticket', exact: true }).click();
+        await visible(dialog.getByText('Waiting for notification configuration. Close and reopen this dialog if loading does not finish.', { exact: true }));
         assert.deepEqual(fixture.mutations, []);
+        assert.equal(fixture.requests.includes('POST /api/tickets/kon-draft/init'), false);
         if (pending) {
           fixture.releaseConfig();
         } else {

@@ -77,12 +77,7 @@ export function kontoraCreate() {
       var current = this._createContext();
       if (!this.configCache) {
         try {
-          const res = await fetch('/api/config');
-          if (!current()) return;
-          if (!res.ok) throw new Error('Failed to load config');
-          const config = await res.json();
-          if (!current()) return;
-          this.configCache = config;
+          await this.loadConfigCache({ current });
         } catch (e) {
           if (!current()) return;
           this.createError = 'Failed to load config';
@@ -502,36 +497,41 @@ export function kontoraCreate() {
         branch: ticket.branch || '',
         autoBranch: ticket.auto_branch || '',
         ticketPath: ticket.path || '',
-        // The ticket's own fields, not the resolved ones: the row edits what
-        // gets written, and an empty channel list is the ticket deferring to
-        // its project rather than naming nothing.
         notify: (ticket.notify || []).slice(),
+        notifyFollowsDefaults: ticket.notify == null,
         notifyChannels: (ticket.notify_channels || []).slice(),
       };
       var form = this.initForm;
+      var currentForm = () => this.initModal && form === this.initForm && navigation === this._navigationSeq;
       this.initNotifyOpen = false;
       this.initError = null;
       this.initModal = true;
       if (!this.configCache) {
         try {
-          const res = await fetch('/api/config');
-          if (res.ok) this.configCache = await res.json();
+          await this.loadConfigCache({ current: currentForm });
         } catch (e) {
-          this.initError = 'Failed to load config';
+          if (currentForm()) this.initError = 'Failed to load config';
         }
       }
-      if (!this.initModal || form !== this.initForm) return;
+      if (!currentForm()) return;
+      this.syncInitNotifyDefaults();
       // ticket.agent can be a resolved stage value. Use it only for a stored
       // override; otherwise show the project agent Init will apply.
       this._initInherited = this.projectDefaultsFor(this.initForm.path, this.initForm.epicChild);
       this._initAgentFollowsProject = !ticket.agent_override;
       var agent = ticket.agent_override ? ticket.agent : this._initInherited.agent;
       await this.$nextTick();
-      if (!this.initModal || form !== this.initForm) return;
+      if (!currentForm()) return;
       this.initForm.pipelineChoice = ticket.pipeline ? 'pipeline:' + ticket.pipeline : 'inherit';
       this.onInitPipelineChange();
       this.initForm.agent = agent;
       document.getElementById(ticket.kind === 'epic' ? 'init-agent' : 'init-pipeline')?.focus();
+    },
+
+    syncInitNotifyDefaults() {
+      if (!this.configCache || !this.initForm.notifyFollowsDefaults) return;
+      var project = this.projectForPath(this.initForm.path);
+      this.initForm.notify = (project?.notify ?? this.configCache.default_notify ?? []).slice();
     },
 
     initPickNotifyMode(key) {
@@ -547,6 +547,7 @@ export function kontoraCreate() {
     },
 
     onInitPathChange() {
+      this.syncInitNotifyDefaults();
       this._initInherited = this.projectDefaultsFor(this.initForm.path, this.initForm.epicChild);
       this.onInitPipelineChange();
       if (this._initAgentFollowsProject) this.initForm.agent = this._initInherited.agent;
@@ -627,6 +628,11 @@ export function kontoraCreate() {
     async submitInitTicket() {
       if (!this.initForm.path || this.initSubmitting) return;
       this.initError = null;
+      if (!this.configCache) {
+        this.initError = 'Waiting for notification configuration. Close and reopen this dialog if loading does not finish.';
+        return;
+      }
+      this.syncInitNotifyDefaults();
       var routeError = this.notifyRouteError(this.initForm);
       if (routeError) {
         this.initError = routeError;
@@ -644,7 +650,7 @@ export function kontoraCreate() {
           path: form.path,
           agent: form.agent || 'none',
           branch: (form.branch || '').trim() || undefined,
-          notify: (form.notify || []).slice(),
+          notify: form.notifyFollowsDefaults ? undefined : (form.notify || []).slice(),
           notify_channels: (form.notifyChannels || []).slice(),
         } });
         if (form === this.initForm) {

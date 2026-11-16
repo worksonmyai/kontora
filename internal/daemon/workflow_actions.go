@@ -128,6 +128,9 @@ func (d *Daemon) WorkflowRestart(id string) error {
 		if err := t.SetField("attempt", 0); err != nil {
 			return err
 		}
+		if _, err := app.ApplyNotifyDefaults(cfg, t); err != nil {
+			return err
+		}
 		if after.Status == ticket.StatusDone {
 			if err := t.SetField("completed_at", time.Now()); err != nil {
 				return err

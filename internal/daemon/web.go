@@ -401,6 +401,7 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 			Agent:             p.Agent,
 			BranchPrefix:      p.BranchPrefix,
 			NotifyChannels:    p.NotifyChannels,
+			Notify:            p.Notify,
 		}
 	}
 	return web.ConfigInfo{
@@ -423,6 +424,7 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 		// and the browser only ever needs to say where a notification lands.
 		Channels:        slices.Sorted(maps.Keys(cfg.Notifications.Channels)),
 		DefaultChannels: cfg.Notifications.Default,
+		DefaultNotify:   cfg.Notifications.DefaultStatuses,
 	}
 }
 
@@ -664,9 +666,12 @@ func (d *Daemon) RunTicket(id string) error {
 		default:
 			return fmt.Errorf("%w: cannot run ticket in status %s (must be open or todo)", web.ErrInvalidState, t.Status)
 		}
-		// One save carries both edits, so no watcher ever sees the ticket todo with
-		// the schedule still on it.
+		changed, err := app.ApplyNotifyDefaults(d.config(), t)
+		if err != nil {
+			return err
+		}
 		if t.Status == ticket.StatusOpen || t.ScheduledAt != "" {
+			changed = true
 			if err := t.SetField("status", string(ticket.StatusTodo)); err != nil {
 				return err
 			}
@@ -676,6 +681,8 @@ func (d *Daemon) RunTicket(id string) error {
 			if err := t.ClearSchedule(); err != nil {
 				return err
 			}
+		}
+		if changed {
 			return repo.Save(st)
 		}
 		// Enqueue and pickup must see this read even when no write was needed.

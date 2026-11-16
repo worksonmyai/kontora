@@ -13,6 +13,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/prompt"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -321,6 +322,9 @@ func (d *Daemon) parkForAnnotation(id string) error {
 	// returns to paused, and the reason it paused still applies.
 	if err := t2.SetField("attempt", 0); err != nil {
 		return fmt.Errorf("reset attempt: %w", err)
+	}
+	if _, err := app.ApplyNotifyDefaults(d.config(), t2); err != nil {
+		return err
 	}
 	// A reviewer submitted these annotations, so this parking is a request.
 	if err := d.writeTicketLocked(t2, filePath, notify.OriginRequest); err != nil {

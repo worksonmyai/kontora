@@ -106,7 +106,7 @@ func (s *Service) initEpic(st *StoredTicket, req InitRequest) (Result, error) {
 	if err := t.SetField("epic_execution", ticket.EpicExecutionAgent); err != nil {
 		return Result{}, err
 	}
-	if err := applyInitFields(t, req, "", agent); err != nil {
+	if err := applyInitFields(s.cfg(), t, req, "", agent); err != nil {
 		return Result{}, err
 	}
 	if err := s.validateExecution(t); err != nil {

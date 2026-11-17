@@ -37,7 +37,8 @@ function harness() {
     parentNode = null;
     dataset = {};
     _attrs = new Map();
-    scrollWidth = 100; clientWidth = 80; scrollLeft = 0;
+    scrollWidth = 100; clientWidth = 80; clientLeft = 0; scrollLeft = 0;
+    scrollCalls = [];
     scrollHeight = 100; clientHeight = 80; scrollTop = 0;
     constructor(tag = 'div', attrs = {}) {
       super(); this.tagName = this.nodeName = tag.toUpperCase(); this.ownerDocument = document;
@@ -102,6 +103,15 @@ function harness() {
     querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
     getElementsByTagName(tag) { return this.querySelectorAll(tag); }
     getBoundingClientRect() { return { top: 0, left: 0, right: 80, bottom: 80, width: 80, height: 80 }; }
+    getClientRects() {
+      for (let el = this; el; el = el.parentNode) if (el.style.display === 'none') return [];
+      return this.isConnected ? [this.getBoundingClientRect()] : [];
+    }
+    scrollBy(options) {
+      this.scrollCalls.push({ ...options });
+      this.scrollLeft = Math.max(0, Math.min(this.scrollWidth - this.clientWidth, this.scrollLeft + (options.left || 0)));
+      this.scrollTop += options.top || 0;
+    }
     cloneNode(deep) {
       const n = new Element(this.tagName, Object.fromEntries(this._attrs));
       n.dataset = { ...this.dataset };
@@ -144,8 +154,11 @@ function harness() {
   ctx.Alpine = window.Alpine;
   ctx.Alpine.magic('nextTick', () => (cb) => ticks.push(cb));
   vm.runInContext(source('ui/board.js').replaceAll('export function ', 'function ') + '\n' + source('ui/epics.js').replace(/^import .*;\n/m, '').replaceAll('export function ', 'function '), ctx);
+  vm.runInContext(source('ui/activity.js').replace(/^import .*;\n/gm, '').replaceAll('export function ', 'function ').replaceAll('export const ', 'const '), ctx);
   const state = ctx.kontoraBoard();
-  Object.assign(state, ctx.kontoraEpics(), {
+  Object.assign(state, ctx.kontoraEpics(), ctx.kontoraActivity(), {
+    ticketKey(ticket) { return ticket?.source && ticket.source !== 'primary' ? encodeURIComponent(ticket.source) + '/' + encodeURIComponent(ticket.id) : ticket?.id; },
+    selectedTicket: null, _ticketDetailSeq: 0, detailLoading: false,
     isMobile: false, _rendered: {}, _dirtyCols: {}, _boardInit: true,
     columns: [{ key: 'open', statuses: ['open'] }, { key: 'done', statuses: ['done'] }], paints: [], moves: [], orders: [], flushed: 0,
     renderColumn(key) { this.paints.push(key); },
@@ -162,7 +175,7 @@ function harness() {
   }
   function destroy(el) { ctx.Alpine.destroyTree(el); el.remove(); }
   function flush() { while (ticks.length) ticks.splice(0).forEach((cb) => cb()); }
-  return { ctx, state, root, Element, document, window, mount, destroy, flush, frames, observers, errors,
+  return { ctx, state, root, Element, document, window, mount, destroy, flush, frames, ticks, observers, errors,
     runFrames() { const batch = [...frames.values()]; frames.clear(); batch.forEach((cb) => cb()); },
   };
 }
@@ -437,6 +450,304 @@ test('normal board drop still posts exactly once after a cancelled drag', () => 
   assert.deepEqual(h.state.moves, [['ticket', 'done']]);
   assert.equal(h.state._dragging, false);
   h.destroy(from); h.destroy(replacement);
+  assert.deepEqual(h.errors, []);
+});
+
+// Drain Alpine's promises and scheduler; captured callbacks would miss watcher disposal and input races.
+async function settle(h) {
+  for (let i = 0; i < 4; i++) { await Promise.resolve(); h.flush(); }
+}
+
+function ribbon(h, stages = ['plan', 'build', 'ship']) {
+  const root = new h.Element('div', { 'x-data': 'stageRibbonOwner()' });
+  const viewport = new h.Element('div', { class: 'stage-ribbon-viewport' });
+  Object.assign(viewport, { clientWidth: 300, clientLeft: 2, scrollWidth: 900, scrollTop: 17 });
+  const reads = [];
+  viewport.getBoundingClientRect = () => {
+    reads.push(viewport);
+    return { left: 100, right: 404, top: 20, bottom: 100, width: 304, height: 80 };
+  };
+  const cards = stages.map((stage, i) => {
+    const card = new h.Element('button', { 'data-stage': stage });
+    card.getBoundingClientRect = () => {
+      reads.push(card);
+      const left = 102 + i * 300 - viewport.scrollLeft;
+      return { left, right: left + 136, width: 136, top: 20, bottom: 100, height: 80 };
+    };
+    viewport.appendChild(card);
+    return card;
+  });
+  root.appendChild(viewport); h.root.appendChild(root);
+  const firstObserver = h.observers.length;
+  h.ctx.Alpine.initTree(root);
+  return { root, viewport, cards, reads, data: h.ctx.Alpine.$data(root), observers: h.observers.slice(firstObserver) };
+}
+
+function poisonRibbon(r) {
+  const fail = () => { throw new Error('detached ribbon geometry'); };
+  for (const el of [r.root, r.viewport, ...r.cards]) {
+    el.getBoundingClientRect = fail;
+    el.getClientRects = fail;
+    for (const key of ['clientWidth', 'clientLeft', 'scrollWidth', 'scrollLeft']) {
+      Object.defineProperty(el, key, { get: fail, configurable: true });
+    }
+  }
+}
+
+test('shipped Alpine ribbon replacement releases frames, nextTicks, observers, listeners and watchers', async () => {
+  const h = harness(), state = h.ctx.Alpine.$data(h.root);
+  state.selectedTicket = { id: 'ticket', stage: 'ship' };
+  const baseline = h.window.count();
+  for (let i = 0; i < 40; i++) {
+    const old = ribbon(h);
+    for (const type of ['pointerdown', 'wheel', 'touchstart', 'keydown', 'focusin']) assert.equal(old.root.listeners.get(type)?.size, 1);
+    assert.equal(old.viewport.count(), 1);
+    assert.equal(old.observers.length, 2);
+    assert.ok(old.observers.every((o) => o.connected));
+    if (i % 2) await settle(h); // alternate queued nextTick and queued RAF teardown
+    const staleFrames = [...h.frames.values()];
+    const staleListeners = [old.root, old.viewport, h.window].flatMap((el) =>
+      [...el.listeners.values()].flatMap((set) => [...set]));
+    const replacement = ribbon(h);
+    state._ticketDetailSeq++; // leave a real watcher delivery queued at teardown
+    // Alpine reports destroy errors asynchronously, so call the hook directly to expose disposer failures.
+    assert.doesNotThrow(() => old.data.destroy());
+    h.destroy(old.root); h.ctx.Alpine.destroyTree(old.root); old.data.destroy();
+    poisonRibbon(old);
+    staleFrames.forEach((cb) => cb());
+    old.observers.forEach((o) => o.cb());
+    staleListeners.forEach((cb) => cb({ type: 'resize' }));
+    await settle(h);
+    assert.equal(h.frames.size, 1, 'only the replacement can schedule a frame');
+    assert.equal(old.root.count(), 0);
+    assert.equal(old.viewport.count(), 0);
+    assert.ok(old.observers.every((o) => !o.connected));
+    assert.equal(h.window.count(), baseline + 1);
+    h.runFrames();
+    assert.equal(replacement.viewport.scrollCalls.length, 1);
+    replacement.observers.forEach((o) => o.cb());
+    replacement.viewport.dispatchEvent({ type: 'scroll' });
+    h.window.dispatchEvent({ type: 'resize' });
+    assert.equal(h.frames.size, 1, 'observer/scroll/resize bursts coalesce');
+    const pending = [...h.frames.values()];
+    assert.doesNotThrow(() => replacement.data.destroy());
+    h.destroy(replacement.root); replacement.data.destroy();
+    poisonRibbon(replacement);
+    pending.forEach((cb) => cb());
+    replacement.observers.forEach((o) => o.cb());
+    replacement.data.ribbonScroll(1);
+    await settle(h);
+    assert.equal(h.frames.size, 0);
+    assert.equal(h.window.count(), baseline);
+    assert.equal(replacement.root.count(), 0);
+    assert.equal(replacement.viewport.count(), 0);
+    assert.ok(replacement.observers.every((o) => !o.connected));
+    state.selectedTicket = { id: 'ticket-' + i, stage: 'build' };
+    state._ticketDetailSeq++;
+    state.detailLoading = !state.detailLoading;
+    await Promise.resolve();
+    assert.equal(h.ticks.length, 0, 'destroy must stop the reactive watcher, not merely guard its callback');
+    await settle(h);
+    assert.equal(h.frames.size, 0);
+    state.detailLoading = false;
+  }
+  assert.deepEqual(h.errors, []);
+});
+
+test('ribbon reveal waits for delayed detail hydration through the actual Alpine watcher', async () => {
+  const h = harness(), state = h.ctx.Alpine.$data(h.root);
+  Object.assign(state, { selectedTicket: { id: 'ticket', stage: 'ship' }, detailLoading: true, _ticketDetailSeq: 1 });
+  const r = ribbon(h);
+  await settle(h); h.runFrames();
+  assert.equal(r.viewport.scrollCalls.length, 0);
+  state.selectedTicket = { id: 'ticket', stage: 'ship', history: [{ stage: 'plan' }] };
+  r.observers.forEach((o) => o.cb());
+  await settle(h); h.runFrames();
+  assert.equal(r.viewport.scrollCalls.length, 0, 'partial detail must not consume the pending reveal');
+  state.detailLoading = false;
+  await settle(h);
+  assert.equal(h.frames.size, 1, 'loading completion alone wakes the watcher');
+  h.runFrames();
+  assert.deepEqual(r.viewport.scrollCalls, [{ left: 439, behavior: 'instant' }]);
+  assert.equal(r.viewport.scrollTop, 17, 'reveal must not scroll vertical ancestors');
+  assert.equal(r.data.ribbonOverflow, true);
+  assert.equal(r.data.ribbonEarlier, true);
+  assert.equal(r.data.ribbonLater, true);
+  r.observers.forEach((o) => o.cb()); h.runFrames();
+  assert.equal(r.viewport.scrollCalls.length, 1);
+  assert.doesNotThrow(() => r.data.destroy()); h.destroy(r.root);
+  assert.deepEqual(h.errors, []);
+});
+
+test('ribbon defers initial reveal while hidden, zero-width or mobile and never measures a detached root', async () => {
+  for (const blocked of ['hidden', 'zero-width', 'mobile', 'detached']) {
+    const h = harness(), state = h.ctx.Alpine.$data(h.root);
+    state.selectedTicket = { id: 'ticket', stage: 'ship' };
+    const r = ribbon(h);
+    if (blocked === 'hidden') r.viewport.style.display = 'none';
+    if (blocked === 'zero-width') r.viewport.clientWidth = 0;
+    if (blocked === 'mobile') state.isMobile = true;
+    if (blocked === 'detached') r.root.remove();
+    await settle(h); h.runFrames();
+    assert.equal(r.viewport.scrollCalls.length, 0, blocked);
+    assert.ok(!r.reads.some((el) => r.cards.includes(el)), 'no target geometry while unavailable');
+    if (blocked === 'mobile' || blocked === 'detached') assert.equal(r.reads.length, 0);
+    r.viewport.style.display = ''; r.viewport.clientWidth = 300; state.isMobile = false;
+    if (blocked === 'detached') h.root.appendChild(r.root);
+    r.observers.forEach((o) => o.cb()); h.window.dispatchEvent({ type: 'resize' });
+    assert.equal(h.frames.size, 1);
+    h.runFrames();
+    assert.equal(r.viewport.scrollCalls.length, 1, 'pending reveal survives temporary unavailability');
+    assert.doesNotThrow(() => r.data.destroy()); h.destroy(r.root);
+    assert.deepEqual(h.errors, []);
+  }
+});
+
+test('same-stage payload replacements preserve manual position; ticket, detail sequence and stage changes reveal', async () => {
+  const h = harness(), state = h.ctx.Alpine.$data(h.root);
+  state.selectedTicket = { id: 'ticket', stage: 'ship' };
+  const r = ribbon(h);
+  await settle(h); h.runFrames();
+  r.viewport.scrollLeft = 0;
+  r.data.ribbonHovered = 'plan'; r.data.ribbonFocused = 'build';
+  state.selectedTicket = { id: 'ticket', stage: 'ship', history: [{ stage: 'build' }], status: 'running' };
+  state.detailLoading = true;
+  await settle(h); h.runFrames();
+  state.detailLoading = false;
+  await settle(h); h.runFrames();
+  r.observers.forEach((o) => o.cb()); h.runFrames();
+  assert.equal(r.viewport.scrollCalls.length, 1);
+  assert.equal(r.viewport.scrollLeft, 0);
+  assert.equal(r.data.ribbonHovered, 'plan'); assert.equal(r.data.ribbonFocused, 'build');
+  for (const { transition, readout } of [
+    { transition: () => { state._ticketDetailSeq++; }, readout: '' },
+    { transition: () => { state.selectedTicket = { id: 'other', stage: 'ship' }; }, readout: '' },
+    { transition: () => { state.selectedTicket.source = 'secondary'; }, readout: '' },
+    { transition: () => { state.selectedTicket.stage = 'build'; }, readout: 'plan' },
+  ]) {
+    const count = r.viewport.scrollCalls.length;
+    r.viewport.scrollLeft = 0;
+    r.data.ribbonHovered = 'plan'; r.data.ribbonFocused = 'plan';
+    transition();
+    await settle(h); h.runFrames();
+    assert.equal(r.viewport.scrollCalls.length, count + 1);
+    assert.equal(r.data.ribbonHovered, readout); assert.equal(r.data.ribbonFocused, readout);
+  }
+  assert.doesNotThrow(() => r.data.destroy()); h.destroy(r.root);
+  assert.deepEqual(h.errors, []);
+});
+
+for (const input of ['pointerdown', 'wheel', 'touchstart', 'keydown', 'focusin']) {
+  test(`ribbon ${input} cancels initial/queued reveals and wins the pre-watcher transition race`, async () => {
+    for (const phase of ['nextTick', 'frame', 'before-watcher', 'loading', 'loading-stage-correction', 'loading-staged-correction']) {
+      const h = harness(), state = h.ctx.Alpine.$data(h.root);
+      state.selectedTicket = { id: 'ticket', stage: 'ship' };
+      const r = ribbon(h);
+      if (phase === 'frame') await settle(h);
+      if (phase === 'before-watcher' || phase.startsWith('loading')) {
+        await settle(h); h.runFrames();
+        r.viewport.scrollLeft = 0;
+        if (phase.startsWith('loading')) {
+          state.detailLoading = true;
+          state._ticketDetailSeq++;
+          await settle(h); h.runFrames();
+        } else state.selectedTicket = { id: 'next', stage: 'ship' };
+      }
+      const count = r.viewport.scrollCalls.length;
+      r.root.dispatchEvent({ type: input });
+      if (phase.includes('correction')) {
+        state.selectedTicket = { id: 'ticket', stage: 'build' };
+        if (phase === 'loading-staged-correction') {
+          await settle(h); h.runFrames();
+          assert.equal(r.viewport.scrollCalls.length, count, phase);
+        }
+      }
+      if (phase.startsWith('loading')) state.detailLoading = false;
+      await settle(h); h.runFrames();
+      r.observers.forEach((o) => o.cb()); h.runFrames();
+      assert.equal(r.viewport.scrollCalls.length, count, phase);
+      assert.equal(r.viewport.scrollLeft, 0, phase);
+      state.selectedTicket.stage = state.selectedTicket.stage === 'ship' ? 'build' : 'ship';
+      await settle(h); h.runFrames();
+      assert.equal(r.viewport.scrollCalls.length, count + 1, 'an actual stage transition after hydration can reveal again');
+      r.viewport.scrollLeft = 0;
+      state._ticketDetailSeq++;
+      await settle(h); h.runFrames();
+      assert.equal(r.viewport.scrollCalls.length, count + 2, 'a new opening can reveal again');
+      assert.doesNotThrow(() => r.data.destroy()); h.destroy(r.root);
+      assert.deepEqual(h.errors, []);
+    }
+  });
+}
+
+test('ribbon navigation cancels a not-yet-delivered reveal and updates horizontal overflow state', async () => {
+  const h = harness(), state = h.ctx.Alpine.$data(h.root);
+  state.selectedTicket = { id: 'ticket', stage: 'ship' };
+  const r = ribbon(h);
+  state._ticketDetailSeq++;
+  r.data.ribbonScroll(1);
+  await settle(h); h.runFrames();
+  assert.deepEqual(r.viewport.scrollCalls, [{ left: 268, behavior: 'instant' }]);
+  assert.equal(r.data.ribbonEarlier, true); assert.equal(r.data.ribbonLater, true);
+  r.data.ribbonScroll(1); r.data.ribbonScroll(1); h.runFrames();
+  assert.equal(r.viewport.scrollLeft, 600);
+  assert.equal(r.data.ribbonLater, false);
+  r.data.ribbonScroll(-1); r.data.ribbonScroll(-1); r.data.ribbonScroll(-1); h.runFrames();
+  assert.equal(r.viewport.scrollLeft, 0);
+  assert.equal(r.data.ribbonEarlier, false);
+  assert.equal(r.viewport.scrollTop, 17);
+  assert.ok(r.viewport.scrollCalls.every((call) => call.behavior === 'instant' && !('top' in call)));
+  assert.doesNotThrow(() => r.data.destroy()); h.destroy(r.root);
+  assert.deepEqual(h.errors, []);
+});
+
+test('ribbon reveals left-clipped and oversized cards but leaves fully visible cards alone', async () => {
+  for (const scenario of ['left-clipped', 'oversized', 'visible']) {
+    const h = harness(), state = h.ctx.Alpine.$data(h.root);
+    state.selectedTicket = { id: 'ticket', stage: 'build' };
+    const r = ribbon(h);
+    if (scenario === 'left-clipped') r.viewport.scrollLeft = 400;
+    if (scenario === 'oversized') {
+      r.cards[1].getBoundingClientRect = () => ({ left: 402, right: 852, width: 450 });
+    }
+    if (scenario === 'visible') r.viewport.scrollLeft = 200;
+    await settle(h); h.runFrames();
+    const expected = scenario === 'left-clipped' ? -103 : 297;
+    assert.deepEqual(r.viewport.scrollCalls, scenario === 'visible' ? [] : [{ left: expected, behavior: 'instant' }]);
+    assert.equal(r.viewport.scrollTop, 17);
+    assert.doesNotThrow(() => r.data.destroy()); h.destroy(r.root);
+    assert.deepEqual(h.errors, []);
+  }
+});
+
+test('ribbon queries hydrated cards on nextTick rather than keeping a stale target node', async () => {
+  const h = harness(), state = h.ctx.Alpine.$data(h.root);
+  state.selectedTicket = { id: 'ticket', stage: 'ship' };
+  const r = ribbon(h);
+  const stale = r.cards[2]; stale.remove();
+  stale.getBoundingClientRect = () => { throw new Error('stale card geometry'); };
+  const hydrated = new h.Element('button', { 'data-stage': 'ship' });
+  hydrated.getBoundingClientRect = () => ({ left: 702, right: 838, width: 136 });
+  h.ticks.push(() => r.viewport.appendChild(hydrated));
+  await settle(h); h.runFrames();
+  assert.deepEqual(r.viewport.scrollCalls, [{ left: 439, behavior: 'instant' }]);
+  assert.doesNotThrow(() => r.data.destroy()); h.destroy(r.root);
+  assert.deepEqual(h.errors, []);
+});
+
+test('ribbon missing graph targets are harmless and stage names need no selector escaping', async () => {
+  const h = harness(), state = h.ctx.Alpine.$data(h.root);
+  state.selectedTicket = { id: 'graph', stage: 'router', graph_definition: { nodes: [{ id: 'router', type: 'decision' }] } };
+  const r = ribbon(h, ['plan', 'build["x"]', 'ship']);
+  await settle(h); h.runFrames();
+  assert.equal(r.viewport.scrollCalls.length, 0);
+  assert.equal(r.data.ribbonOverflow, true);
+  assert.equal(r.data.ribbonEarlier, false); assert.equal(r.data.ribbonLater, true);
+  assert.ok(!r.reads.some((el) => r.cards.includes(el)));
+  state.selectedTicket.stage = 'build["x"]';
+  await settle(h); h.runFrames();
+  assert.equal(r.viewport.scrollCalls.length, 1);
+  assert.doesNotThrow(() => r.data.destroy()); h.destroy(r.root);
   assert.deepEqual(h.errors, []);
 });
 

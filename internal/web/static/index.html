@@ -2000,22 +2000,30 @@
       </details>
 
       <!-- Stage ribbon: one segment per stage, grown by its real duration -->
-      <div class="shrink-0 px-6 pb-[13px] border-b border-surface-700/60 flex items-end gap-5"
+      <div class="stage-ribbon shrink-0 px-6 pb-[13px] border-b border-surface-700/60"
+           x-data="stageRibbonOwner()"
            x-show="!isSecondary(selectedTicket) && (stageRibbon().length > 0 || ribbonMeters().length > 0)">
-        <div class="flex-1 flex gap-1 items-stretch min-w-0"
-             :class="['todo', 'open'].includes(selectedTicket?.status) ? 'opacity-60' : ''">
+        <div class="stage-ribbon-stages">
+          <div class="stage-ribbon-viewport" role="region" aria-label="Ticket stages"
+               :class="['todo', 'open'].includes(selectedTicket?.status) ? 'opacity-60' : ''">
           <template x-for="seg in stageRibbon()" :key="seg.name">
-            <div class="flex flex-col gap-[7px] min-w-[136px] basis-0"
+            <button type="button" class="stage-ribbon-card flex flex-col gap-[7px] min-w-[136px] basis-0"
+                 :data-stage="seg.name"
+                 :aria-label="[seg.name, seg.state, seg.runs > 1 ? seg.runs + ' runs' : '', seg.meta, costTooltip(seg.cost)].filter(Boolean).join(', ')"
+                 :aria-disabled="!(seg.state === 'running' || (seg.state === 'done' && seg.runs))"
+                 :aria-current="seg.state === 'running' ? 'step' : null"
+                 @mouseenter="ribbonHovered = seg.name" @mouseleave="ribbonHovered = ''"
+                 @focus="ribbonFocused = seg.name; ribbonHovered = ''" @blur="ribbonFocused = ''"
                  :style="'flex-grow:' + seg.seconds"
                  :class="[seg.state === 'queued' ? 'opacity-50' : '',
                           seg.state === 'done' && seg.runs ? 'cursor-pointer' : '',
                           activityStage && activeTab === 'activity' && activityStage !== seg.name ? 'opacity-40' : '']"
                  @click="clickRibbon(seg)">
               <div class="flex flex-col gap-[2px] min-w-0">
-                <span class="font-mono text-[11.5px] whitespace-nowrap"
+                <span class="stage-ribbon-label font-mono text-[11.5px] whitespace-nowrap"
                       :class="seg.state === 'running' ? 'text-st-progress font-bold' : (seg.state === 'done' ? 'text-tx-2' : 'text-tx-3')">
-                  <span x-show="seg.state === 'done'" aria-hidden="true">✓ </span><span x-text="seg.name"></span><span
-                        x-show="seg.runs > 1" class="text-surface-600" x-text="' ×' + seg.runs"></span>
+                  <span x-show="seg.state === 'done'" class="shrink-0" aria-hidden="true">✓ </span><span class="stage-ribbon-name" x-text="seg.name"></span><span
+                        x-show="seg.runs > 1" class="shrink-0 text-surface-600" x-text="' ×' + seg.runs"></span>
                 </span>
                 <span class="font-mono text-[10.5px] text-surface-600 whitespace-nowrap" x-text="seg.meta"></span>
                 <span x-show="costLabel(seg.cost)" :title="costTooltip(seg.cost)"
@@ -2030,10 +2038,25 @@
               <template x-if="seg.state !== 'running'">
                 <div class="h-[5px] rounded-[3px]" :class="seg.state === 'done' ? 'bg-st-done/50' : 'bg-surface-700'"></div>
               </template>
-            </div>
+            </button>
           </template>
+          </div>
+          <div class="stage-ribbon-navigation" x-show="ribbonOverflow || ribbonHovered || ribbonFocused">
+            <span class="stage-ribbon-readout font-mono text-[11.5px] text-tx-2"
+                  x-text="ribbonHovered || ribbonFocused"></span>
+            <div class="stage-ribbon-controls" x-show="ribbonOverflow">
+              <button type="button" class="stage-ribbon-nav" aria-label="Earlier stages"
+                      :disabled="!ribbonEarlier" @click="ribbonScroll(-1)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+              </button>
+              <button type="button" class="stage-ribbon-nav" aria-label="Later stages"
+                      :disabled="!ribbonLater" @click="ribbonScroll(1)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+              </button>
+            </div>
+          </div>
         </div>
-        <div class="shrink-0 flex items-end gap-[18px] pl-5 border-l border-surface-700/70"
+        <div class="stage-ribbon-totals pl-5 border-l border-surface-700/70"
              x-show="ribbonMeters().length">
           <template x-for="m in ribbonMeters()" :key="m.k">
             <div class="flex flex-col gap-[3px]">
@@ -2043,7 +2066,7 @@
           </template>
         </div>
         <span x-show="!ribbonMeters().length && !selectedTicket?.history?.length"
-              class="shrink-0 font-mono text-[10.5px] text-surface-600 pl-5 border-l border-surface-700/70">no runs yet</span>
+              class="stage-ribbon-empty font-mono text-[10.5px] text-surface-600 pl-5 border-l border-surface-700/70">no runs yet</span>
       </div>
 
       <!-- Body: content column + fixed-width rail. The tab bar and the rail's

@@ -3954,7 +3954,10 @@ func currentRunLog(path string, materialized bool, start int64) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if !materialized && start > 0 && start <= int64(len(data)) {
+	if !materialized && start > 0 {
+		if start >= int64(len(data)) {
+			return "", nil
+		}
 		return string(data[start:]), nil
 	}
 	return string(data), nil

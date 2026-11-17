@@ -598,9 +598,18 @@ and a recommended default. Save answers immediately. Do not silently weaken
 requirements or replace required real-device evidence with emulation. If no
 authorized work remains, submit blocked. Retry requires explicit operator action;
 saving an answer, reading a notification, or dismissing attention does not restart
-execution. Publication and off-machine writes remain prohibited, including through
-children, scripts, or tools; read-only lookups are allowed. These authority limits
-are agent instructions, not an OS security boundary.
+execution. Publication requires explicit user approval for the specific action
+and destination, including actions through children, scripts, or tools. Reuse
+applicable recorded approval. Approval for a work-branch push or draft pull request
+does not authorize merging, deployment, unrelated publication, or another destination.
+Read-only lookups remain allowed. These authority limits are agent instructions,
+not an OS security boundary.
+
+Record local environment limitations once and use approved CI when it covers the
+missing checks. An operator's verification deferral permits intermediate stages
+to complete without bypassing review, fix, or commit stages. Record each missing
+check, its execution location, and the exact commit or tree it verifies. Missing
+verification remains unverified; a draft pull request is not acceptance.
 Supervisor prompts prohibit changing, clearing or replacing child pipelines and
 editing pipeline definitions, stage definitions or project pipeline defaults.
 Supervisors must omit pipeline overrides when creating children. They must not bypass the

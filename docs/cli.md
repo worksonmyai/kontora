@@ -509,6 +509,12 @@ Graph logs retain each invocation at `<node>.<visit-id>.<invocation-id>.log`,
 with fallback to older visit logs. Probe diagnostics use `waits/<wait-id>/<poll-id>.log`
 under the ticket's log directory; the wait projection includes the log reference and a truncated output excerpt.
 
+Live raw stage logs captured through tmux are limited to 16 MiB (16,777,216 bytes) per file.
+Kontora keeps the first bytes and drains later terminal output without writing it.
+Existing bytes count toward the limit; capture truncates an oversized raw log to 16 MiB when it opens the file.
+If capture encounters a file error, Kontora discards further raw output but continues draining the terminal.
+The limit does not cap structured session JSONL, activity sidecars, or logs materialized from session records after the agent exits.
+
 ### `kontora activity [--stage NAME] [--run N] TICKET_ID`
 
 Prints one stage run's structured transcript: the agent's messages and tool calls, one per line. Falls back to the plaintext log for agents that write no session record. Needs a running daemon. Goes through the [pager](#environment-variables) when one is set and stdout is a terminal.

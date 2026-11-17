@@ -172,12 +172,12 @@ func ListWindows(sessionName string) ([]string, error) {
 	return windows, nil
 }
 
-// PipePaneTo configures a ticket's tmux window to tee PTY output to logPath.
+// PipePaneTo captures raw PTY output up to 16 MiB, then drains without writing.
 func PipePaneTo(sessionName, ticketID, logPath string) error {
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
-		return fmt.Errorf("creating log directory: %w", err)
+	pipeCmd, err := paneLogCommand(logPath)
+	if err != nil {
+		return err
 	}
-	pipeCmd := fmt.Sprintf("cat >> %s", shellQuote(logPath))
 	out, err := exec.Command("tmux", "pipe-pane", "-t", WindowTarget(sessionName, ticketID), pipeCmd).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tmux pipe-pane: %s: %w", strings.TrimSpace(string(out)), err)

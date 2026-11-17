@@ -389,6 +389,11 @@ Legacy runs overwrite `<stage>.log`, so it holds only the newest one.
 Graph logs retain `<node>.<visit-id>.<invocation-id>.log`, with older visit-log fallback.
 The activity sidecar is per run.
 
+Live raw stage logs captured through tmux keep at most 16 MiB per file.
+Existing bytes count toward the limit; capture truncates an oversized raw log to 16 MiB when it opens the file.
+Kontora drains further terminal output without writing it, including after a capture file error.
+The limit does not cap structured session JSONL, activity sidecars, or logs materialized from session records after the agent exits.
+
 ## Legacy failures
 
 A stage fails when the agent exits non-zero, when it exceeds the stage timeout,

@@ -202,8 +202,9 @@ func (w identityTmux) Signal(channel string) {
 	_ = w.id.command(ctx, "wait-for", "-S", channel).Run()
 }
 func (w identityTmux) pipePane(logPath string) error {
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+	pipeCmd, err := paneLogCommand(logPath)
+	if err != nil {
 		return err
 	}
-	return w.run("pipe-pane", "-t", w.id.WindowID, "cat >> "+shellQuote(logPath))
+	return w.run("pipe-pane", "-t", w.id.WindowID, pipeCmd)
 }

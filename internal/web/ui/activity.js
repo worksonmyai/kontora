@@ -1,5 +1,6 @@
 import { runSeconds } from './format.js';
 import { statsCompact } from './stats.js';
+import { resourceOwner } from './board.js';
 
 // Tape events the activity transcript renders at once, counted back from the
 // newest. A whole 5000-event tape is 60,000 elements: 660ms to mount and 135ms
@@ -425,6 +426,114 @@ export function kontoraActivity() {
     },
 
     // ---- stage ribbon ------------------------------------------------------
+
+    stageRibbonOwner() {
+      var owner = resourceOwner(function (alive) {
+        var self = this, root = this.$el;
+        var viewport = root.querySelector('.stage-ribbon-viewport');
+        var frame = null, seen = null, pending = null, openKey = null, cancelledHydration = null;
+        function openingKey() {
+          return JSON.stringify([self.ticketKey(self.selectedTicket), self._ticketDetailSeq]);
+        }
+        function signature() {
+          return JSON.stringify([
+            self.ticketKey(self.selectedTicket),
+            self._ticketDetailSeq,
+            self.selectedTicket?.stage || '',
+          ]);
+        }
+        function visible() {
+          return alive() && root.isConnected && viewport.isConnected && !self.isMobile &&
+            viewport.getClientRects().length > 0 && viewport.clientWidth > 0;
+        }
+        function measure() {
+          if (!visible()) return;
+          var max = viewport.scrollWidth - viewport.clientWidth;
+          self.ribbonOverflow = max > 1;
+          self.ribbonEarlier = viewport.scrollLeft > 1;
+          self.ribbonLater = max - viewport.scrollLeft > 1;
+        }
+        function update() {
+          frame = null;
+          if (!visible()) return;
+          if (pending && pending.signature === signature() && !self.detailLoading) {
+            var target = [...viewport.querySelectorAll('[data-stage]')]
+              .find(el => el.dataset.stage === pending.stage);
+            pending = null;
+            if (target) {
+              var bounds = viewport.getBoundingClientRect();
+              var selected = target.getBoundingClientRect();
+              var left = bounds.left + viewport.clientLeft + 3;
+              var right = bounds.left + viewport.clientLeft + viewport.clientWidth - 3;
+              var delta = selected.width > right - left || selected.left < left
+                ? selected.left - left : Math.max(0, selected.right - right);
+              // Revealing a stage must not move focus or vertical ancestors.
+              if (delta) viewport.scrollBy({ left: delta, behavior: 'instant' });
+            }
+          }
+          measure();
+        }
+        function schedule() {
+          if (!alive() || frame !== null) return;
+          frame = requestAnimationFrame(update);
+        }
+        function sync() {
+          if (!alive()) return;
+          var next = signature();
+          var key = openingKey();
+          if (key !== openKey) {
+            openKey = key;
+            self.ribbonHovered = '';
+            self.ribbonFocused = '';
+          }
+          if (next !== seen) {
+            seen = next;
+            pending = key === cancelledHydration ? null : { signature: next, stage: self.selectedTicket?.stage || '' };
+          }
+          if (!self.detailLoading) cancelledHydration = null;
+          self.$nextTick(() => { if (alive() && next === signature()) schedule(); });
+        }
+        function cancelReveal() {
+          pending = null;
+          // Hydration can correct a stale list stage without execution advancing.
+          if (self.detailLoading) cancelledHydration = openingKey();
+          // Input can arrive before Alpine delivers a changed-target watcher.
+          seen = signature();
+        }
+        self.ribbonScroll = function (direction) {
+          cancelReveal();
+          if (!visible()) return;
+          viewport.scrollBy({ left: direction * Math.max(136, viewport.clientWidth - 32), behavior: 'instant' });
+          schedule();
+        };
+        var stop = Alpine.watch(() => JSON.stringify([signature(), self.detailLoading]), sync);
+        var inputEvents = ['pointerdown', 'wheel', 'touchstart', 'keydown', 'focusin'];
+        inputEvents.forEach(type => root.addEventListener(type, cancelReveal, { passive: true }));
+        viewport.addEventListener('scroll', schedule, { passive: true });
+        window.addEventListener('resize', schedule);
+        var mo = new MutationObserver(schedule);
+        mo.observe(viewport, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['style', 'data-stage'] });
+        var ro = new ResizeObserver(schedule);
+        ro.observe(viewport);
+        sync();
+        return function () {
+          stop();
+          mo.disconnect();
+          ro.disconnect();
+          inputEvents.forEach(type => root.removeEventListener(type, cancelReveal));
+          viewport.removeEventListener('scroll', schedule);
+          window.removeEventListener('resize', schedule);
+          if (frame !== null) cancelAnimationFrame(frame);
+          frame = null;
+          pending = null;
+          self.ribbonScroll = function () {};
+        };
+      });
+      return Object.assign(owner, {
+        ribbonOverflow: false, ribbonEarlier: false, ribbonLater: false,
+        ribbonHovered: '', ribbonFocused: '', ribbonScroll() {},
+      });
+    },
 
     // One segment per known stage, sized by the summed duration of its runs.
     // History and cost can name stages removed from the current pipeline.

@@ -3613,6 +3613,325 @@ for (const width of [390, 1280]) {
   }
 }
 
+const ribbonStages = Array.from({ length: 12 }, (_, i) => i === 2 ? 'UnbrokenStageName'.repeat(10) :
+  `stage-${String(i + 1).padStart(2, '0')}-${'long-descriptive-stage-name-'.repeat(i === 0 ? 5 : 2)}`);
+const ribbonRetired = 'retired-historical-stage-with-a-long-name';
+const ribbonCostOnly = 'cost-only-stage-with-no-local-transcript';
+function desktopRibbonFixtures(extra = {}) {
+  const history = ribbonStages.slice(0, 10).map((stage, i) => ({ stage, run: 0, agent: 'fixture-agent',
+    started_at: stamp, completed_at: new Date(Date.parse(stamp) + (i === 1 ? 7200 : i * 3) * 1000).toISOString(), exit_code: 0 }));
+  history.push({ ...history[1], run: 1, completed_at: stamp, exit_code: 1 });
+  history.push({ stage: ribbonRetired, run: 0, started_at: stamp, completed_at: stamp, exit_code: 0 });
+  const record = ticket('kon-ribbon', 'Desktop stage ribbon regression fixture', { status: 'in_progress',
+    stage: ribbonStages[10], stages: ribbonStages, started_at: stamp, attempt: 1, branch: 'fixture/ribbon',
+    can_edit: false, history, ...extra });
+  return { records: [record], thinLists: true,
+    config: { pipeline_infos: [{ name: 'standard', stages: ribbonStages, max_retries: ribbonStages.map(() => 3) }] },
+    costs: { [record.id]: { id: record.id, cost_usd: '12.34', tracked_runs: 14, priced_runs: 13,
+      stages: [{ name: ribbonStages[1], cost_usd: '12.00', tracked_runs: 2, priced_runs: 2 },
+        { name: ribbonCostOnly, cost_usd: '0.34', tracked_runs: 1, priced_runs: 1 }], runs: [] } } };
+}
+const desktopRibbon = page => page.locator('.stage-ribbon:visible');
+const ribbonViewport = page => desktopRibbon(page).getByRole('region', { name: 'Ticket stages', exact: true });
+const ribbonCard = (page, stage) => ribbonViewport(page).locator(`.stage-ribbon-card[data-stage=${JSON.stringify(stage)}]`);
+async function ribbonFrames(page) {
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+async function ribbonRevealed(page, stage) {
+  await expect.poll(() => ribbonCard(page, stage).evaluate(el => {
+    const card = el.getBoundingClientRect(), clip = el.closest('.stage-ribbon-viewport').getBoundingClientRect();
+    return card.left >= clip.left - 1 && card.right <= clip.right + 1;
+  }), { message: `Reveal the full stage control: ${stage}` }).toBe(true);
+}
+async function ribbonBoundary(page, direction) {
+  const button = desktopRibbon(page).getByRole('button', { name: direction === 'start' ? 'Earlier stages' : 'Later stages', exact: true });
+  for (let i = 0; i < 40 && await button.isEnabled(); i++) {
+    const before = await ribbonViewport(page).evaluate(el => el.scrollLeft);
+    await button.click();
+    await expect.poll(() => ribbonViewport(page).evaluate(el => el.scrollLeft)).not.toBe(before);
+    await ribbonFrames(page);
+  }
+  await expect(button).toBeDisabled();
+  const position = await ribbonViewport(page).evaluate(el => ({ left: el.scrollLeft, end: el.scrollWidth - el.clientWidth }));
+  assert.ok(Math.abs(position.left - (direction === 'start' ? 0 : position.end)) <= 2, JSON.stringify(position));
+}
+async function ribbonScreenshot(page, label) {
+  const directory = join(tmpdir(), 'kontora-stage-ribbon-browser');
+  await mkdir(directory, { recursive: true });
+  const path = join(directory, `${engine}-${label}.png`);
+  const png = await page.screenshot({ path, animations: 'disabled' });
+  assert.equal(png.subarray(1, 4).toString(), 'PNG');
+  assert.ok(png.length > 10000, `Empty ribbon screenshot: ${path}`);
+}
+async function ribbonGeometry(page) {
+  await inViewport(ribbonViewport(page));
+  await inViewport(desktopRibbon(page).locator('.stage-ribbon-totals'));
+  const geometry = await desktopRibbon(page).evaluate(root => {
+    const viewport = root.querySelector('.stage-ribbon-viewport'), totals = root.querySelector('.stage-ribbon-totals');
+    const clip = viewport.getBoundingClientRect(), meters = totals.getBoundingClientRect();
+    const cards = [...viewport.querySelectorAll('.stage-ribbon-card')].map(el => el.getBoundingClientRect());
+    return { wraps: getComputedStyle(root).flexWrap,
+      clippedTotals: viewport.contains(totals), clippedReadout: viewport.contains(root.querySelector('.stage-ribbon-readout')),
+      overlap: clip.left < meters.right - 1 && clip.right > meters.left + 1 && clip.top < meters.bottom - 1 && clip.bottom > meters.top + 1,
+      widths: cards.map(card => card.width), overlappingCards: cards.some((card, i) => i && card.left < cards[i - 1].right - 1) };
+  });
+  assert.equal(geometry.wraps, 'wrap', 'Totals must be able to wrap instead of squeezing the scroll region');
+  assert.equal(geometry.clippedTotals, false); assert.equal(geometry.clippedReadout, false);
+  assert.equal(geometry.overlap, false); assert.equal(geometry.overlappingCards, false);
+  assert.ok(geometry.widths.every(width => width >= 135), `Zero/short runs retain usable widths: ${JSON.stringify(geometry.widths)}`);
+  await noPageOverflow(page);
+}
+
+describe('desktop stage ribbon browser regressions', () => {
+  for (const width of [768, 1024, 1280]) for (const theme of themes) for (const sidebar of [false, true]) {
+    test(`desktop stage ribbon geometry and browsing / ${width}px / ${theme} / sidebar ${sidebar}`, { timeout: 60000 }, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        // Keep elapsed-label width stable for the narrow wrapping assertion.
+        await page.clock.setFixedTime(new Date('2026-11-16T23:59:00Z'));
+        await page.evaluate(() => { Alpine.$data(document.body).now = Date.now(); });
+        await openTicket(page, 'kon-ribbon');
+        await ribbonRevealed(page, ribbonStages[10]);
+        await expect(ribbonViewport(page).locator('.stage-ribbon-card')).toHaveCount(14);
+        await ribbonGeometry(page);
+        const cards = await ribbonViewport(page).locator('.stage-ribbon-card').evaluateAll(els => els.map(el => ({
+          tag: el.tagName, name: el.dataset.stage, label: el.getAttribute('aria-label'), type: el.type,
+        })));
+        for (const card of cards) {
+          assert.equal(card.tag, 'BUTTON'); assert.equal(card.type, 'button');
+          assert.ok(card.label.includes(card.name), `Full accessible name: ${card.name}`);
+        }
+        await expect(ribbonCard(page, ribbonStages[1])).toContainText('×2');
+        await expect(ribbonCard(page, ribbonStages[0])).toContainText('0s');
+        await expect(ribbonCard(page, ribbonStages[1])).toContainText('2h');
+        for (const name of [ribbonStages[11], ribbonCostOnly]) await expect(ribbonCard(page, name)).toHaveAttribute('aria-disabled', 'true');
+        const totals = desktopRibbon(page).locator('.stage-ribbon-totals');
+        await expect(totals).toContainText('$12.34'); await expect(totals).toContainText('2 / 4');
+        await page.mouse.move(0, 0); await ribbonFrames(page);
+        const before = await totals.boundingBox();
+        await ribbonBoundary(page, 'start');
+        await expect(desktopRibbon(page).getByRole('button', { name: 'Later stages', exact: true })).toBeEnabled();
+        await ribbonCard(page, ribbonStages[0]).hover();
+        const readout = desktopRibbon(page).locator('.stage-ribbon-readout');
+        await expect(readout).toHaveText(ribbonStages[0]); await inViewport(readout);
+        if ((width === 768 && sidebar) || (width === 1280 && !sidebar)) {
+          await ribbonScreenshot(page, `${theme}-${width}-sidebar-${sidebar}-readout`);
+        }
+        if (width === 768 && sidebar) {
+          const clip = await ribbonViewport(page).boundingBox(), meters = await totals.boundingBox();
+          assert.ok(meters.y >= clip.y + clip.height, 'At narrow desktop width totals wrap below the ribbon');
+        }
+        const ellipsis = await ribbonCard(page, ribbonStages[0]).locator('.stage-ribbon-name').evaluate(el => ({
+          overflow: el.scrollWidth > el.clientWidth, ellipsis: getComputedStyle(el).textOverflow,
+        }));
+        assert.deepEqual(ellipsis, { overflow: true, ellipsis: 'ellipsis' });
+        await ribbonCard(page, ribbonStages[1]).focus();
+        await expect(readout).toHaveText(ribbonStages[1]);
+        await page.mouse.move(0, 0);
+        await ribbonCard(page, ribbonStages[0]).focus();
+        await expect(readout).toHaveText(ribbonStages[0]);
+        await ribbonBoundary(page, 'end');
+        await expect(desktopRibbon(page).getByRole('button', { name: 'Earlier stages', exact: true })).toBeEnabled();
+        const after = await totals.boundingBox();
+        for (const axis of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(before[axis] - after[axis]) <= 1, `Totals moved on ${axis}: ${JSON.stringify({ before, after })}`);
+        await ribbonGeometry(page);
+        await ribbonScreenshot(page, `${theme}-${width}-sidebar-${sidebar}`);
+        if (width === 1280) {
+          await page.setViewportSize({ width: 1920, height: 900 }); await ribbonFrames(page);
+          await ribbonGeometry(page);
+          await ribbonScreenshot(page, `${theme}-1920-sidebar-${sidebar}`);
+        }
+        assert.deepEqual(fixture.mutations, []);
+      }, { ...desktopRibbonFixtures(), sidebar });
+    });
+  }
+
+  for (const theme of themes) test(`desktop stage ribbon keyboard actions / ${theme}`, async t => {
+    await withPage(t, 1024, theme, async (page, fixture) => {
+      await openTicket(page, 'kon-ribbon'); await ribbonRevealed(page, ribbonStages[10]);
+      await terminalGridFits(page);
+      await ribbonCard(page, ribbonStages[1]).focus(); await ribbonFrames(page);
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(stage => {
+        const app = Alpine.$data(document.body);
+        return app.activeTab === 'activity' && app.activityStage === stage && app.activityRun === 1 && !app.activityLoading;
+      }, ribbonStages[1]);
+      assert.ok(fixture.artifactReads.some(read => read.stage === ribbonStages[1] && read.run === 1), 'Retry opens the latest transcript, not run zero');
+      await ribbonCard(page, ribbonStages[10]).focus(); await ribbonFrames(page);
+      await page.keyboard.press('Space');
+      await page.waitForFunction(() => Alpine.$data(document.body).activeTab === 'session' && Alpine.$data(document.body).terminalConnected);
+      await terminalGridFits(page);
+      for (const [name, previous] of [[ribbonStages[11], ribbonStages[10]], [ribbonCostOnly, ribbonRetired]]) {
+        const card = ribbonCard(page, name);
+        await expect(card).toHaveAttribute('aria-disabled', 'true');
+        await ribbonCard(page, previous).focus(); await page.keyboard.press('Tab');
+        await expect(card).toBeFocused();
+        await ribbonRevealed(page, name);
+        await expect(desktopRibbon(page).locator('.stage-ribbon-readout')).toHaveText(name);
+        const outline = await card.evaluate(el => ({ width: getComputedStyle(el).outlineWidth, style: getComputedStyle(el).outlineStyle }));
+        assert.deepEqual(outline, { width: '2px', style: 'solid' });
+        if (name === ribbonCostOnly) await ribbonScreenshot(page, `${theme}-keyboard-focus`);
+        const before = { reads: fixture.artifactReads.length, sockets: fixture.sockets.length, inputs: fixture.messages.filter(message => message.type === 'input').length };
+        await page.keyboard.press('Enter'); await page.keyboard.press('Space'); await ribbonFrames(page);
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).activeTab), 'session');
+        assert.deepEqual({ reads: fixture.artifactReads.length, sockets: fixture.sockets.length, inputs: fixture.messages.filter(message => message.type === 'input').length }, before,
+          'Unavailable keyboard actions must not fetch output, reconnect or send terminal commands');
+      }
+      assert.deepEqual(fixture.mutations, []); assert.deepEqual(fixture.enqueued, []);
+    }, { ...desktopRibbonFixtures(), sidebar: true });
+  });
+
+  for (const manualBrowse of [false, true]) test(`desktop stage ribbon initial reveal waits for hydrated detail / manual browsing ${manualBrowse}`, async t => {
+    await withPage(t, 1024, 'dark', async (page, fixture) => {
+      const held = fixture.holdDetail('primary', 'kon-ribbon');
+      await page.evaluate(() => { location.hash = '#/t/kon-ribbon'; });
+      await held.started;
+      await visible(ribbonViewport(page)); await ribbonFrames(page);
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).detailLoading), true);
+      assert.equal(await ribbonViewport(page).evaluate(el => el.scrollLeft), 0, 'A thin list must not consume the initial reveal');
+      const before = await page.evaluate(() => {
+        window.__ribbonFocus = document.activeElement;
+        return { y: window.scrollY, ancestors: [...document.querySelectorAll('.stage-ribbon, .stage-ribbon-stages')].map(el => el.scrollTop) };
+      });
+      if (manualBrowse) {
+        await ribbonViewport(page).evaluate(el => {
+          el.dispatchEvent(new WheelEvent('wheel', { deltaX: 80, bubbles: true }));
+          el.scrollLeft = 80;
+        });
+        await ribbonFrames(page);
+        assert.equal(await ribbonViewport(page).evaluate(el => el.scrollLeft), 80);
+      }
+      const full = structuredClone(fixture.records.get('primary/kon-ribbon'));
+      full.stage = ribbonRetired;
+      held.release({ value: full }); await held.done; await ready(page); await ribbonFrames(page);
+      if (manualBrowse) {
+        assert.equal(await ribbonViewport(page).evaluate(el => el.scrollLeft), 80, 'A corrected list stage must not restart a cancelled opening reveal');
+      } else {
+        await ribbonRevealed(page, ribbonRetired);
+        assert.ok(await ribbonViewport(page).evaluate(el => el.scrollLeft) > 0);
+      }
+      assert.deepEqual(await page.evaluate(() => ({ y: window.scrollY,
+        ancestors: [...document.querySelectorAll('.stage-ribbon, .stage-ribbon-stages')].map(el => el.scrollTop) })), before);
+      assert.equal(await page.evaluate(() => document.activeElement === window.__ribbonFocus), true, 'Automatic reveal does not move focus');
+      if (manualBrowse) {
+        await page.evaluate(stage => { Alpine.$data(document.body).selectedTicket.stage = stage; }, ribbonCostOnly);
+        await ribbonRevealed(page, ribbonCostOnly);
+      }
+      assert.deepEqual(fixture.mutations, []);
+    }, desktopRibbonFixtures());
+  });
+
+  test('desktop stage ribbon same-stage snapshots ticks and resizes preserve manual browsing', { timeout: 60000 }, async t => {
+    await withPage(t, 1024, 'light', async (page, fixture) => {
+      await openTicket(page, 'kon-ribbon'); await ribbonRevealed(page, ribbonStages[10]);
+      await ribbonBoundary(page, 'start');
+      await ribbonViewport(page).evaluate(el => {
+        el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        el.scrollLeft = 80;
+      });
+      await ribbonFrames(page);
+      const manual = await ribbonViewport(page).evaluate(el => el.scrollLeft);
+      assert.equal(manual, 80);
+      const record = fixture.records.get('primary/kon-ribbon');
+      for (let i = 0; i < 3; i++) {
+        record.attempt = i;
+        await page.evaluate(record => {
+          const app = Alpine.$data(document.body);
+          app.now += 1000;
+          window.__fixtureSSE.filter(stream => !stream.closed && stream.url === '/api/events').forEach(stream => stream.emit('ticket_updated', record));
+        }, record);
+        await ribbonFrames(page);
+        assert.equal(await ribbonViewport(page).evaluate(el => el.scrollLeft), manual, 'Same-stage updates and elapsed ticks must not recenter');
+      }
+      await page.evaluate(() => {
+        const app = Alpine.$data(document.body);
+        app.ticketCost = { ...app.ticketCost, cost_usd: '24.68' };
+      });
+      await ribbonFrames(page);
+      assert.equal(await ribbonViewport(page).evaluate(el => el.scrollLeft), manual, 'Cost updates must not reveal again');
+      const snapshot = fixture.holdSnapshot();
+      await page.evaluate(() => window.__fixtureSSE.filter(stream => !stream.closed && stream.url === '/api/events').forEach(stream => stream.emit('open')));
+      await snapshot.started; snapshot.release(); await snapshot.done; await ribbonFrames(page);
+      assert.equal(await ribbonViewport(page).evaluate(el => el.scrollLeft), manual, 'Same-stage list hydration must not reveal again');
+      for (const width of [768, 1280, 1920, 1024]) {
+        await page.setViewportSize({ width, height: 900 }); await ribbonFrames(page);
+        assert.equal(await ribbonViewport(page).evaluate(el => el.scrollLeft), manual, 'Resize preserves manual browsing');
+        await ribbonGeometry(page);
+      }
+      for (let i = 0; i < 2; i++) {
+        await page.getByRole('button', { name: /^(Show|Hide) sidebar$/ }).filter({ visible: true }).click();
+        await ribbonFrames(page);
+        assert.equal(await ribbonViewport(page).evaluate(el => el.scrollLeft), manual, 'Sidebar layout preserves manual browsing');
+      }
+      record.stage = ribbonStages[11];
+      await page.evaluate(record => window.__fixtureSSE.filter(stream => !stream.closed && stream.url === '/api/events').forEach(stream => stream.emit('ticket_updated', record)), record);
+      await ribbonRevealed(page, ribbonStages[11]);
+      assert.ok(await ribbonViewport(page).evaluate(el => el.scrollLeft) > 0, 'Actual stage transitions reveal the new stage');
+      assert.deepEqual(fixture.mutations, []);
+    }, desktopRibbonFixtures());
+  });
+
+  test('desktop stage ribbon user input cancels queued transition reveals', async t => {
+    await withPage(t, 1024, 'dark', async (page, fixture) => {
+      await openTicket(page, 'kon-ribbon'); await ribbonRevealed(page, ribbonStages[10]);
+      await ribbonBoundary(page, 'start');
+      for (const [i, type] of ['pointerdown', 'wheel', 'touchstart', 'keydown'].entries()) {
+        // Dispatch input before Alpine's watcher runs to test cancellation without a touch device.
+        await page.evaluate(({ type, stage }) => {
+          Alpine.$data(document.body).selectedTicket.stage = stage;
+          const viewport = document.querySelector('.stage-ribbon-viewport');
+          const event = type === 'keydown' ? new KeyboardEvent(type, { key: 'ArrowLeft', bubbles: true })
+            : type === 'pointerdown' ? new PointerEvent(type, { bubbles: true })
+            : type === 'wheel' ? new WheelEvent(type, { deltaX: -100, bubbles: true })
+            : new Event(type, { bubbles: true });
+          viewport.dispatchEvent(event);
+        }, { type, stage: ribbonStages[i % 2 ? 10 : 11] });
+        await ribbonFrames(page);
+        assert.equal(await ribbonViewport(page).evaluate(el => el.scrollLeft), 0, `${type} cancels queued reveal`);
+      }
+      await page.evaluate(stage => { Alpine.$data(document.body).selectedTicket.stage = stage; }, ribbonRetired);
+      await ribbonRevealed(page, ribbonRetired);
+      assert.deepEqual(fixture.mutations, []);
+    }, desktopRibbonFixtures());
+  });
+
+  test('desktop stage ribbon rapid switches close reopen breakpoint and missing graph target', { timeout: 60000 }, async t => {
+    const options = desktopRibbonFixtures();
+    const graph = ticket('kon-ribbon-graph', 'Graph ends outside the ribbon', { status: 'paused', stage: 'stop',
+      graph_definition: { version: 2, entry: 'code', nodes: [{ id: 'code', type: 'agent', template: 'implement' }, { id: 'stop', type: 'end', status: 'paused' }], edges: [] },
+      graph_execution: { execution_id: 'exec', revision: 2, current_node: 'stop', visit_id: 'exec.1', visit: 1 },
+      history: [{ stage: 'code', run: 0, node_visit_id: 'exec.1', started_at: stamp, completed_at: stamp, exit_code: 0 }] });
+    options.records.push(graph);
+    await withPage(t, 1280, 'dark', async (page, fixture) => {
+      const held = fixture.holdDetail('primary', 'kon-ribbon');
+      await page.evaluate(() => { location.hash = '#/t/kon-ribbon'; }); await held.started;
+      await page.evaluate(() => { location.hash = '#/t/kon-ribbon-graph'; });
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).selectedTicket?.id)).toBe(graph.id);
+      held.release(); await held.done; await ready(page); await ribbonFrames(page);
+      await expect(ribbonViewport(page).locator('.stage-ribbon-card')).toHaveCount(1);
+      await expect(ribbonCard(page, 'code')).toBeVisible();
+      assert.equal(await ribbonCard(page, 'stop').count(), 0, 'Graph end nodes are not executable ribbon targets');
+      assert.equal(await ribbonViewport(page).evaluate(el => el.scrollLeft), 0);
+      await expect(desktopRibbon(page).getByRole('button', { name: 'Earlier stages', exact: true })).toBeHidden();
+      await expect(desktopRibbon(page).getByRole('button', { name: 'Later stages', exact: true })).toBeHidden();
+      await openTicket(page, 'kon-ribbon'); await ribbonRevealed(page, ribbonStages[10]);
+      await ribbonBoundary(page, 'start');
+      await page.evaluate(stage => {
+        Alpine.$data(document.body).selectedTicket.stage = stage;
+        location.hash = '#/';
+      }, ribbonStages[11]);
+      await page.waitForFunction(() => !Alpine.$data(document.body).selectedTicket); await ready(page);
+      await openTicket(page, 'kon-ribbon'); await ribbonRevealed(page, ribbonStages[10]);
+      await page.setViewportSize({ width: 767, height: 900 });
+      await expect(page.locator('.stage-ribbon')).toBeHidden();
+      await page.setViewportSize({ width: 768, height: 900 }); await ribbonFrames(page);
+      await ribbonGeometry(page);
+      await openTicket(page, graph.id); await ribbonFrames(page);
+      assert.equal(await ribbonViewport(page).evaluate(el => el.scrollLeft), 0, 'Old reveal work must not leak into another ticket');
+      assert.deepEqual(fixture.mutations, []);
+    }, options);
+  });
+});
+
 describe('embedded responsive browser UI', { concurrency: 4 }, () => {
   for (const width of [320, 390]) for (const theme of themes) {
     test(`board chrome and status navigation ${width}px / ${theme}`, async t => {
@@ -6265,7 +6584,9 @@ describe('kon91cx core detail workflows', () => {
           return () => { window.__fixtureRestorationWatches.active--; stop(); };
         };
       });
-      await openTicket(page, 'kon-evidence'); await detailPanel(page, panel);
+      await openTicket(page, 'kon-evidence');
+      const mountedWatches = await page.evaluate(() => window.__fixtureRestorationWatches.active);
+      await detailPanel(page, panel);
       if (panel === 'Output') {
         await page.getByRole('combobox', { name: 'Run', exact: true }).filter({ visible: true }).selectOption('code#1');
         const follow = page.getByRole('button', { name: /follow/i }).filter({ visible: true }).first();
@@ -6286,9 +6607,11 @@ describe('kon91cx core detail workflows', () => {
         await visible(page.getByText(last, { exact: true }).filter({ visible: true }));
         await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).detailViewScrollers().map(el => el.scrollTop))).toEqual(positions);
         const watches = await page.evaluate(() => window.__fixtureRestorationWatches);
-        assert.ok(watches.started > 0);
-        assert.equal(watches.active, 0, 'Restoration releases the shipped Alpine watcher');
+        assert.ok(watches.started > mountedWatches);
+        assert.equal(watches.active, mountedWatches, 'Restoration releases its watcher while mounted owners keep theirs');
       } finally { held.release(); }
+      await backToBoard(page);
+      assert.equal(await page.evaluate(() => window.__fixtureRestorationWatches.active), 0, 'Closing releases all owned watchers');
       assert.deepEqual(fixture.mutations, []);
     }, { records: [ticket('kon-evidence', 'Delayed restorable evidence', { status: 'done', stage: 'code', history: coreHistory() })],
       artifacts: { 'kon-evidence/code/1': Array.from({ length: 80 }, (_, i) => ({ kind: 'text', text: `Delayed activity row ${i}` })) },

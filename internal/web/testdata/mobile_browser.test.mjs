@@ -208,6 +208,7 @@ function fixtures(options = {}) {
     custom_statuses: [], stages: ['plan', 'code'], channels: [], default_channels: [], ...options.config };
   const requests = [], mutations = [], sockets = [], socketRoutes = [], messages = [], violations = [], expectedHTTPFailures = [];
   const descriptionWrites = [], pendingResizes = [], enqueued = [], artifactReads = [];
+  const terminalMarkers = new Map();
   const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, activityEvents: null, bracketedPaste: false,
     descriptionWait: null, descriptionFailure: null, holdResizes: false,
     epicWait: null, epicFailure: null, assistantMessageFailure: null, assistantGateWait: null,
@@ -759,7 +760,9 @@ function fixtures(options = {}) {
         // Do not call connectToServer(): there is no terminal server at all.
         const snapshot = (cols, rows) => {
           if (paneStream) ws.send(JSON.stringify({ type: 'reset', cols, rows }));
-          ws.send(Buffer.from('Offline fixture terminal\r\n$ ' + (behavior.bracketedPaste ? '\x1b[?2004h' : '')));
+          const marker = terminalMarkers.get(ws);
+          ws.send(Buffer.from('Offline fixture terminal\r\n$ ' + (behavior.bracketedPaste ? '\x1b[?2004h' : '')
+            + (marker ? `\x1b[${rows};1H${marker}` : '')));
         };
         ws.onMessage(message => {
           try {
@@ -813,7 +816,7 @@ function fixtures(options = {}) {
       };
     });
   }
-  return { install, api, config, configWrites, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig, descriptionWrites, pendingResizes,
+  return { install, api, config, configWrites, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig, descriptionWrites, pendingResizes, terminalMarkers,
     holdSnapshot, holdDetail, holdRead, pendingSnapshot, releaseReads, enqueued, artifactReads,
     get rawConfig() { return rawConfig; }, set rawConfig(content) { rawConfig = content; } };
 }
@@ -3128,6 +3131,7 @@ async function terminalGridFits(page, fixture, minRows = 1) {
     const index = fixture.sockets.findLastIndex(socket => socket.href === url);
     assert.ok(index >= 0, 'The connected socket must be intercepted');
     const marker = `last-row-${++markerSequence}`;
+    fixture.terminalMarkers.set(fixture.socketRoutes[index], marker);
     fixture.socketRoutes[index].send(Buffer.from(`\x1b[2J\x1b[${rows};1H${marker}`));
     await wait(marker);
   }
@@ -4481,6 +4485,11 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await terminalGridFits(page, fixture);
         const ws = fixture.socketRoutes.at(-1);
         const { cols, rows } = await page.evaluate(() => ({ cols: window.termState.term.cols, rows: window.termState.term.rows }));
+        await page.evaluate(({ cols, rows }) => {
+          for (let i = 0; i < 2; i++) window.termState.ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+        }, { cols, rows });
+        await page.waitForFunction(() => window.termState.term.buffer.active.getLine(0)?.translateToString(true) === 'Offline fixture terminal');
+        await page.waitForFunction(terminalGrid, { marker: fixture.terminalMarkers.get(ws) });
         const inputCount = () => fixture.messages.filter(message => message.type === 'input').length;
         const before = inputCount();
         const marker = 'queries-processed';
@@ -5620,6 +5629,7 @@ describe('phone inline terminal and focused description', { concurrency: 2 }, ()
           await terminalGridFits(page, fixture, 8);
           const { rows, cols } = await page.evaluate(() => ({ rows: termState.term.rows, cols: termState.term.cols }));
           const marker = `delayed-last-${++markerSequence}`;
+          fixture.terminalMarkers.set(fixture.socketRoutes.at(-1), marker);
           fixture.socketRoutes.at(-1).send(Buffer.from(`\x1b[2J\x1b[${rows};1H${marker}`));
           await page.waitForFunction(terminalGrid, { marker, minRows: 8 });
           fixture.behavior.holdResizes = true;

@@ -306,11 +306,7 @@ export function kontoraPalette() {
       // a ticket already in this epic has nothing to pull.
       if (scoped && this.paletteScopeKind === 'epic-pull') {
         var self = this;
-        var candidates = this.tickets.filter(function (t) {
-          if (t.kind === 'epic' || t.id === scoped.id) return false;
-          if (t.parent && t.parent.id === scoped.id) return false;
-          return !q || self._paletteMatches(t, q);
-        });
+        var candidates = this.epicCandidates(scoped, q);
         var pullable = this._paletteRank(candidates).slice(0, PALETTE_MAX_TICKETS);
         if (pullable.length) {
           groups.push({
@@ -318,7 +314,7 @@ export function kontoraPalette() {
             hint: this.parseTitleTag(scoped).rest,
             items: pullable.map(function (t) {
               var row = self._paletteTicketRow(t);
-              return Object.assign({}, row, { id: 'pull:' + t.id, kind: 'epicpull' });
+              return Object.assign({}, row, { id: 'pull:' + t.id, kind: 'epicpull', epicOwner: scoped.id });
             }),
           });
         }
@@ -551,7 +547,7 @@ export function kontoraPalette() {
       if (row.kind === 'scheduledrill') { this.palettePush(row.ticketId, 'schedule'); return; }
       if (row.kind === 'epicpull') {
         this.closePalette();
-        await this.epicPullIn(row.ticketId);
+        await this.epicPullIn(row.ticketId, row.epicOwner);
         return;
       }
       if (row.kind === 'schedule' || row.kind === 'scheduleclear' || row.kind === 'schedulerun') {

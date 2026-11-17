@@ -1,6 +1,6 @@
 // The phone-width layer, gated on isMobile: a status tab strip and card list
 // for the board, a full-screen tabbed detail, and
-// bottom sheets for actions and the new-ticket form. It reuses the desktop
+// bottom sheets for actions and navigation. It reuses the desktop
 // board's ticket data and operations — only the layout and a few view-state
 // fields (activeColumn, detailTab, sheet) are its own.
 import { isoWithOffset, localScheduleText, parseScheduleInput, pickerToScheduleText, schedulePresets } from './format.js';
@@ -288,6 +288,17 @@ export function kontoraMobile() {
         event.stopImmediatePropagation();
         this.closeAgentPicker(true);
         return;
+      }
+      if (this.sheet.type === 'assistant') {
+        if (event.isComposing || event.keyCode === 229 || this._assistantComposing || this._assistantCompositionEnding) return;
+        if (event.key === 'Escape' && (this.assistantMenu || this.assistantAutonomyOpen)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          this.assistantMenu = null;
+          this.assistantAutonomyOpen = false;
+          return;
+        }
+        if (event.key === 'Tab' && this.assistantMenu && event.target?.matches('textarea[aria-autocomplete="list"]')) return;
       }
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -638,37 +649,22 @@ export function kontoraMobile() {
       this._syncMobileSheet();
     },
     async openNewSheet() {
-      if (this._appDestroyed) return;
-      const owner = lifecycle;
-      this.closeAgentPicker(false);
-      this.resetCreateForm();
-      this.sheet = { type: 'new' };
-      const sheet = this.sheet;
-      const form = this.createForm;
-      this._syncMobileSheet();
-      await this.loadCreateConfig();
-      return lifecycle === owner && !this._appDestroyed && this.sheet === sheet && this.createForm === form;
+      if (this._appDestroyed) return false;
+      return this.gotoView('new');
+    },
+
+    mobileNavigationCount(view) {
+      if (view === 'board') return (this.tickets || []).length;
+      if (view === 'automations') return (this.automations || []).length;
+      if (view === 'archive') return (this.archiveRows || []).length;
+      if (view === 'settings' && (this.settingsDirty() || this._settingsHasDrafts())) return 'Unsaved changes';
+      if (view === 'new' && this.createSubmitting) return 'Creating…';
+      return '';
     },
     closeSheet(restoreFocus = true) {
       this.closeAgentPicker(false);
-      if (this.sheet?.type === 'new') this.invalidateCreateForm();
       this.sheet = null;
       this._releaseMobileSheetFocus(restoreFocus);
-    },
-
-    onMobileCreateSchedulePicked(value) {
-      this.createForm.scheduled_at = value;
-      this.setCreateScheduleMode(value ? 'later' : 'now');
-    },
-
-    async submitCreateTicketMobile() {
-      const sheet = this.sheet;
-      if (sheet?.type !== 'new' || this.createSubmitting) return false;
-      const form = this.createForm;
-      const owner = lifecycle;
-      const ok = await this.submitCreateTicket();
-      if (ok === true && lifecycle === owner && !this._appDestroyed && this.sheet === sheet && this.createForm === form) this.closeSheet();
-      return ok === true;
     },
 
     // Action rows for the actions sheet, status by status. Each row closes the

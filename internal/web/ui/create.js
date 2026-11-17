@@ -1,8 +1,6 @@
 import { localScheduleText, parseScheduleInput, pickerToScheduleText, scheduleEchoParts, schedulePresets } from './format.js';
 
-// The empty create form. Three places reset it — the desktop modal, the phone
-// sheet and the component's initial state — and a field added in only two of
-// them is a field the third silently drops.
+// Shared by the routed New page and the component's initial state.
 export function newCreateForm() {
   return { title: '', path: '', pipeline: '', pipelineChoice: 'inherit', agent: '', status: 'todo', body: '', branch: '', base_branch: '', scheduled_at: '', scheduleMode: 'now', kind: '', parent: '' };
 }
@@ -34,43 +32,50 @@ function cleanProjectPath(raw) {
   return parts.join('/') || '.';
 }
 
-// The create-ticket modal and the init-from-an-existing-file modal.
+// The full New page and the init-from-an-existing-file modal.
 export function kontoraCreate() {
   return {
     createError: null,
     _createGeneration: 0,
+    _createDraftActive: false,
+    _createRequest: null,
+    _createRequestSeq: 0,
 
     resetCreateForm() {
-      this.invalidateCreateForm();
+      if (!this.invalidateCreateForm()) return false;
       this.createForm = newCreateForm();
       this.createTouched = { pipeline: false, agent: false };
+      this._createDraftActive = true;
+      return true;
     },
 
     invalidateCreateForm() {
+      // Leaving New cannot cancel a POST that the server may already accept.
+      if (this._createRequest || this.createSubmitting) return false;
       this._createGeneration++;
       this.createError = null;
       this.createSubmitting = false;
+      return true;
     },
 
     _createContext() {
       var form = this.createForm;
       var generation = this._createGeneration;
-      // Only the New sheet or routed New page owns creation. Background
-      // selections and unrelated sheets can change while its request is pending.
-      var owner = this.sheet?.type === 'new' ? this.sheet : 'new';
-      return () => !this._appDestroyed && form === this.createForm && generation === this._createGeneration &&
-        (owner === 'new' ? this.currentView === 'new' : this.sheet === owner);
+      return () => !this._appDestroyed && form === this.createForm && generation === this._createGeneration;
     },
 
     async openCreateModal(navigation = ++this._navigationSeq) {
+      if (this._appDestroyed || navigation !== this._navigationSeq) return false;
+      if (this.currentView === 'new' && (this._createDraftActive || this._createRequest)) return true;
       this.closeAgentPicker(false);
       if (this.selectedEpic && await this.closeEpic(false) === false) return;
       if (navigation !== this._navigationSeq) return;
       if (this.selectedTicket) this.closeDetail(false);
-      this.resetCreateForm();
+      if (!this._createDraftActive && !this._createRequest) this.resetCreateForm();
       this.currentView = 'new';
       this.writeHash();
       await this.loadCreateConfig();
+      return true;
     },
 
     async loadCreateConfig() {
@@ -83,12 +88,11 @@ export function kontoraCreate() {
           this.createError = 'Failed to load config';
         }
       }
-      if (current()) this.onCreatePathChange();
+      if (current() && !this._createRequest) this.onCreatePathChange();
     },
 
     closeCreateModal() {
       this.closeAgentPicker(false);
-      this.invalidateCreateForm();
       this.currentView = 'board';
       this.writeHash();
     },
@@ -358,9 +362,13 @@ export function kontoraCreate() {
     },
 
     async submitCreateTicket() {
-      if (this.createSubmitting) return false;
+      if (this._createRequest || this.createSubmitting) return false;
       if (!(this.createForm.title || '').trim() || !(this.createForm.path || '').trim() || this.createBlocked()) return false;
+      this.closeAgentPicker(false);
       var current = this._createContext();
+      var request = this._createRequest = ++this._createRequestSeq;
+      var created = false;
+      this._createDraftActive = true;
       this.createSubmitting = true;
       this.createError = null;
       try {
@@ -374,7 +382,8 @@ export function kontoraCreate() {
           if (this.createForm.branch) body.branch = this.createForm.branch;
           if (this.createForm.base_branch) body.base_branch = this.createForm.base_branch;
           if (this.createForm.body) body.body = this.createForm.body;
-          return await this._submitCreate(body, current);
+          created = await this._submitCreate(body, current);
+          return created;
         }
         var pipeline = this.pipelineOverride(this.createForm.pipelineChoice);
         if (pipeline !== undefined) body.pipeline = pipeline;
@@ -390,12 +399,21 @@ export function kontoraCreate() {
         if (this.createForm.body) body.body = this.createForm.body;
         if (this.createForm.branch) body.branch = this.createForm.branch;
         if (this.createForm.base_branch) body.base_branch = this.createForm.base_branch;
-        return await this._submitCreate(body, current);
+        created = await this._submitCreate(body, current);
+        return created;
       } catch (e) {
-        if (current()) this.createError = 'Failed to create ticket: ' + e.message;
+        if (current()) this.createError = 'Creation result unknown: ' + e.message + '. Check the board before submitting again.';
         return false;
       } finally {
-        if (current()) this.createSubmitting = false;
+        if (this._createRequest === request) {
+          this._createRequest = null;
+          this.createSubmitting = false;
+          if (created && current()) {
+            this.resetCreateForm();
+            this._createDraftActive = false;
+            if (this.currentView === 'new') this.closeCreateModal();
+          }
+        }
       }
     },
 
@@ -412,7 +430,6 @@ export function kontoraCreate() {
         if (current()) this.createError = data?.error || 'Failed to create ticket';
         return false;
       }
-      if (this.sheet?.type !== 'new') this.closeCreateModal();
       return true;
     },
 

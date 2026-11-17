@@ -640,6 +640,7 @@ export function kontoraAutomations() {
     automationsRailDetails(row) {
       return [ ['id', row.id], ['key', row.key], ['agent', row.agent || 'default'], ['model', row.model || 'agent default'], ['path', row.path],
         ['workspace', row.workspace === 'repo' ? 'repo checkout' : 'fresh worktree per run'], ['overlap', row.overlap], ['timeout', row.timeout],
+        ['timezone', row.timezone], ['config', this.automationsConfigPath()],
         ['logs', this.automationsLogDir(row)], ['created', this.automationsDateLabel(row.created_at, row.timezone)] ];
     },
     automationsDispose() {

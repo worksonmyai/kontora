@@ -25,7 +25,7 @@ func TestStaticIndexJS(t *testing.T) {
 
 func TestSettingsJS(t *testing.T) {
 	bundle := writeBundle(t)
-	for _, name := range []string{"settings.test.mjs", "settings_picker.test.mjs", "settings_routes.test.mjs", "automations.test.mjs", "graph.test.mjs", "wait_projection.test.mjs", "review_15_deployment_checkout_regression.test.mjs", "detail_view.test.mjs", "lifecycle.test.mjs", "evidence_data.test.mjs"} {
+	for _, name := range []string{"settings.test.mjs", "settings_picker.test.mjs", "settings_routes.test.mjs", "automations.test.mjs", "graph.test.mjs", "wait_projection.test.mjs", "review_15_deployment_checkout_regression.test.mjs", "detail_view.test.mjs", "lifecycle.test.mjs", "evidence_data.test.mjs", "epic_management.test.mjs", "creation_navigation.test.mjs", "assistant_presentation.test.mjs"} {
 		t.Run(name, func(t *testing.T) {
 			cmd := nodeTest(t, name)
 			cmd.Env = append(os.Environ(), "KONTORA_BUNDLE="+bundle)
@@ -103,7 +103,9 @@ func TestMobileBrowserJS(t *testing.T) {
 		t.Run(engine, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 12*time.Minute)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, "node", "--test", filepath.Join(filepath.Dir(thisFile), "testdata", "mobile_browser.test.mjs"))
+			cmd := exec.CommandContext(ctx, "node", "--test",
+				filepath.Join(filepath.Dir(thisFile), "testdata", "mobile_browser.test.mjs"),
+				filepath.Join(filepath.Dir(thisFile), "testdata", "tooltips_browser.test.mjs"))
 			cmd.Env = append(os.Environ(), "KONTORA_BROWSER_URL="+server.URL, "KONTORA_BROWSER_ASSETS="+string(manifest), "KONTORA_BROWSER_ENGINE="+engine)
 			out, runErr := cmd.CombinedOutput()
 			if runErr != nil {

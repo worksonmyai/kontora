@@ -1,15 +1,36 @@
+/* Hallmark · scope: app · project tokens retained · Chromium fixtures checked · v2.0.0 */
+.automations-view { container: automations / inline-size; }
 .automations-view button:disabled { opacity: .5; cursor: not-allowed; }
+.automations-view :is(button, a, input, textarea, select, summary):focus-visible { outline: 2px solid rgb(var(--accent)); outline-offset: 2px; }
+.automations-view .automations-rail-summary { padding: 12px 16px; min-height: 44px; border-bottom: 1px solid rgb(var(--surface-700)); color: rgb(var(--tx-2)); font: 13px var(--font-body); cursor: pointer; }
+.automations-view .automations-rail dl { grid-template-columns: 72px minmax(0, 1fr); }
+.automations-view .automations-table :is(th, td):nth-child(2) { position: sticky; left: 0; z-index: 1; background: rgb(var(--surface-frame)); }
+.automations-view .automations-table :is(th, td):last-child { position: sticky; right: 0; z-index: 1; background: rgb(var(--surface-frame)); }
+.automations-view .automations-table td:last-child { overflow: visible; }
+.automations-view .automations-table td:last-child button { min-width: 36px; min-height: 36px; }
+.automations-view .automations-table td:nth-child(3) > button { min-height: 36px; }
 .automations-view .automations-table { border-collapse: collapse; }
 .automations-view .automations-table td { overflow: hidden; }
-.automations-view .automations-action { height: 28px; padding: 0 10px; border: 1px solid rgb(var(--edge-input)); border-radius: 7px; background: rgb(var(--surface-900)); font: 11.5px 'JetBrains Mono', monospace; }
+.automations-view .automations-action { height: 28px; padding: 0 10px; border: 1px solid rgb(var(--edge-input)); border-radius: 7px; background: rgb(var(--surface-900)); font: 11.5px var(--font-technical); }
 .automations-view .automations-mobile-actions { display: none; }
 .automations-view .automations-log-line > * { min-width: 0; }
-.automations-view .automations-run-strip button { min-width: 3px; min-height: 5px; height: 5px; }
+.automations-view .automations-run-mark { min-width: 3px; height: 5px; }
 .automations-view .automations-editor :is(input, textarea):focus { outline: 1px solid rgba(var(--accent), .4); }
-@media (max-width: 1100px) {
-  .automations-view .automations-rail { display: none; }
+@container automations (min-width: 1101px) {
+  .automations-view .automations-editor > aside { display: flex; }
+}
+@container automations (max-width: 1100px) {
+  .automations-view .automations-editor > aside { display: none; }
+  .automations-view .automations-detail { overflow-y: auto; }
+  .automations-view .automations-detail-body { flex-direction: column; min-height: 180px; overflow-y: auto; overscroll-behavior: contain; }
+  .automations-view .automations-detail-main { flex: none; height: 65svh; min-height: 280px; }
+  .automations-view .automations-rail { flex: none; width: 100%; overflow: visible; border-left: 0; border-top: 1px solid rgb(var(--surface-700)); }
   .automations-view .automations-run-strip { flex-wrap: wrap; }
   .automations-view .automations-meters { border-left: 0; padding-left: 0; }
+}
+@media (pointer: coarse) {
+  .automations-view .automations-table td:last-child button { min-width: 44px; min-height: 44px; }
+  .automations-view .automations-table td:nth-child(3) > button { min-height: 44px; }
 }
 @media (max-width: 767px) {
   .automations-view { width: 100%; min-height: 0; }
@@ -18,6 +39,14 @@
   .automations-view .automations-detail { overflow-y: auto; }
   .automations-view .automations-run-strip > :first-child { flex-basis: 100%; }
   .automations-view .automations-meters { width: 100%; justify-content: space-between; gap: 10px; }
-  .automations-view .automations-log-line { grid-template-columns: 54px minmax(0, 1fr); gap: 6px; }
-  .automations-view .automations-log-line > :nth-child(2) { display: none; }
+  .automations-view .automations-action { min-height: 44px; }
+  .automations-view :is(button, a, summary) { touch-action: manipulation; }
+  .automations-view .automations-editor :is(input, textarea) { font-size: 16px; }
+  .automations-view .automations-detail > :is(div, header) { flex-shrink: 0; }
+  .automations-view .automations-detail > .automations-detail-body { flex-shrink: 1; }
+  .automations-view .automations-log-line { grid-template-columns: 54px minmax(0, 1fr); gap: 2px 6px; padding-bottom: 8px; }
+  .automations-view .automations-log-line > :nth-child(2) { overflow-wrap: anywhere; }
+  .automations-view .automations-log-line > :nth-child(3) { grid-column: 1 / -1; }
+  .automations-view .automations-table td:last-child button { min-width: 44px; min-height: 44px; }
+  .automations-view .automations-table td:nth-child(3) > button { min-height: 44px; }
 }

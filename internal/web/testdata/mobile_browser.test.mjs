@@ -1,8 +1,10 @@
 // Run through make test-browser against embedded assets, never a daemon.
+// Management cases: KONTORA_BROWSER_TEST_FILTER='management parity'.
 import assert from 'node:assert/strict';
 import { after, before, describe, test as nodeTest } from 'node:test';
 import { createRequire } from 'node:module';
-import { mkdir } from 'node:fs/promises';
+import { createServer, request as httpRequest } from 'node:http';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chromium, webkit } from 'playwright';
@@ -22,6 +24,14 @@ function test(name, options, run) {
   return nodeTest(name, { ...options, skip: options?.skip || (browserFilter && !new RegExp(browserFilter).test(name)) }, run);
 }
 const widths = [320, 390, 767, 768, 769, 1023, 1024, 1280];
+// Targeted phase matrix, deliberately not a width × theme × scenario product.
+const parityMatrix = {
+  epic: [[390, 'dark'], [1280, 'light']],
+  delayedEpic: [[767, 'light'], [769, 'dark']],
+  creation: [[320, 'light'], [768, 'dark'], [1280, 'dark']],
+  assistant: [[390, 'dark'], [1024, 'light'], [1280, 'light']],
+  automation: [[390, 'light'], [1100, 'dark'], [1101, 'light'], [1280, 'dark']],
+};
 const themes = ['dark', 'light'];
 const source = 'secondary';
 const sourcePath = '/fixtures/team-tickets';
@@ -200,6 +210,7 @@ function fixtures(options = {}) {
   const descriptionWrites = [], pendingResizes = [], enqueued = [], artifactReads = [];
   const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, activityEvents: null, bracketedPaste: false,
     descriptionWait: null, descriptionFailure: null, holdResizes: false,
+    epicWait: null, epicFailure: null, assistantMessageFailure: null, assistantGateWait: null,
     changesWait: null, changesFailure: null, lifecycleWait: null, lifecycleFailure: null, noteWait: null,
     automationFailure: null, automationReadFailure: null, automationWait: null, automationsAvailable: true, loseCreate: false, loseRun: false,
     unavailableFolder: false, sourcesFailure: false, configFailure: options.configFailure || false,
@@ -447,21 +458,59 @@ function fixtures(options = {}) {
       const body = request.postDataJSON();
       assert.ok(body.title && body.path, 'Creation requires title and path');
       const created = ticket(`kon-created-${mutations.length}`, body.title, { ...body, description: body.body || '', description_tail: '', body: body.body || '' });
+      if (body.parent) {
+        assert.equal(records.get(key('primary', body.parent))?.kind, 'epic');
+        created.parent = { id: body.parent };
+      }
       put(created);
+      if (created.status === 'todo') enqueued.push({ id: created.id, action: 'create' });
       mutations.push({ method, path, body, ticket: structuredClone(created) });
       return json(route, created, 201);
     }
-    const assistantMatch = path.match(/^\/api\/assistant\/threads\/([^/]+)(?:\/(activity|stream|stop))?$/);
+    const gateMatch = path.match(/^\/api\/assistant\/gate\/([^/]+)$/);
+    if (gateMatch && method === 'POST') {
+      const thread = [...assistantThreads.values()].find(t => t.gate?.id === decodeURIComponent(gateMatch[1]));
+      assert.ok(thread, 'Approval must name a recorded pending gate');
+      const body = request.postDataJSON();
+      assert.deepEqual(Object.keys(body), ['decision']);
+      assert.ok(['approve', 'skip'].includes(body.decision));
+      if (behavior.assistantGateWait) await behavior.assistantGateWait;
+      delete thread.gate;
+      mutations.push({ method, path, body });
+      return route.fulfill({ status: 204 });
+    }
+    const assistantMatch = path.match(/^\/api\/assistant\/threads\/([^/]+)(?:\/(activity|stream|stop|messages))?$/);
     if (assistantMatch) {
       const id = decodeURIComponent(assistantMatch[1]), action = assistantMatch[2];
       const thread = assistantThreads.get(id);
       assert.ok(thread, `Unknown assistant thread: ${id}`);
       if (method === 'GET' && !action) return json(route, thread);
+      if (method === 'DELETE' && !action) {
+        assert.equal(request.postData(), null);
+        assistantThreads.delete(id);
+        mutations.push({ method, path });
+        return route.fulfill({ status: 204 });
+      }
+      if (method === 'POST' && action === 'messages') {
+        const body = request.postDataJSON();
+        assert.ok(body.text?.trim());
+        assert.ok(['read', 'ask', 'auto'].includes(body.autonomy));
+        assert.equal(typeof body.context, 'string');
+        if (behavior.assistantMessageFailure) {
+          expectedHTTPFailures.push(base + path);
+          return json(route, { error: behavior.assistantMessageFailure }, 503);
+        }
+        thread.messages.push({ n: thread.messages.length + 1, text: body.text, at: stamp });
+        thread.turns++;
+        mutations.push({ method, path, body });
+        return route.fulfill({ status: 204 });
+      }
       if (method === 'GET' && action === 'activity') {
         const after = url.searchParams.get('after');
         assert.ok(after !== null && /^\d+$/.test(after), 'Assistant activity requires a numeric cursor');
         return json(route, { running: thread.running, autonomy: thread.autonomy, messages: thread.messages,
-          evidence: thread.evidence, offset: 0, tape: { events: [{ kind: 'text', text: `Recorded reply for ${thread.title}.` }] },
+          evidence: thread.evidence, gate: thread.gate, offset: 0,
+          tape: { events: thread.events || [{ kind: 'text', text: `Recorded reply for ${thread.title}.` }] },
           partial: thread.running ? 'An explanation is still running.' : '', partial_gen: thread.running ? 1 : 0 });
       }
       if (method === 'GET' && action === 'stream') {
@@ -480,6 +529,42 @@ function fixtures(options = {}) {
         mutations.push({ method, path });
         return route.fulfill({ status: 204 });
       }
+    }
+    // Membership is stored on the child; ordering writes only the epic. Like
+    // SetChildOrder, retain existing nonmembers, reject unresolved references,
+    // and never infer membership from child_order. Held replies capture owners.
+    const epicMatch = path.match(/^\/api\/tickets\/([^/]+)\/(parent|unparent|children)$/);
+    if (epicMatch) {
+      const record = records.get(key('primary', decodeURIComponent(epicMatch[1])));
+      assert.ok(record, 'Epic operation requires an existing primary ticket');
+      const action = epicMatch[2], body = request.postData() ? request.postDataJSON() : undefined;
+      assert.equal(method, action === 'children' ? 'PUT' : 'POST');
+      const failure = behavior.epicFailure;
+      if (behavior.epicWait) await behavior.epicWait;
+      const refuse = error => {
+        expectedHTTPFailures.push(base + path);
+        return json(route, { error }, 400);
+      };
+      if (failure) return refuse(failure);
+      const before = structuredClone(record);
+      if (action === 'children') {
+        assert.deepEqual(Object.keys(body), ['children']);
+        assert.equal(record.kind, 'epic');
+        assert.ok(Array.isArray(body.children));
+        if (body.children.some(id => id === record.id || !records.has(key('primary', id)))) return refuse('Unknown or invalid retained order reference');
+        record.child_order = [...new Set(body.children)];
+      } else if (action === 'parent') {
+        assert.deepEqual(Object.keys(body), ['parent']);
+        const parent = records.get(key('primary', body.parent));
+        if (record.kind === 'epic' || parent?.kind !== 'epic') return refuse('Epics cannot nest; parent must be an epic');
+        record.parent = { id: parent.id, title: parent.title, status: parent.status, kind: 'epic' };
+      } else {
+        assert.equal(body, undefined, 'Unparent takes no body');
+        delete record.parent;
+      }
+      mutations.push({ method, path, body, before, ticket: structuredClone(record) });
+      // Relation endpoints acknowledge identity, not a replacement ticket.
+      return json(route, { id: record.id });
     }
     const noteMatch = path.match(/^\/api(?:\/sources\/([^/]+))?\/tickets\/([^/]+)\/(note|notes\/([^/]+)(?:\/reactions(?:\/([^/]+))?)?)$/);
     if (noteMatch) {
@@ -728,7 +813,7 @@ function fixtures(options = {}) {
       };
     });
   }
-  return { install, config, configWrites, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig, descriptionWrites, pendingResizes,
+  return { install, api, config, configWrites, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig, descriptionWrites, pendingResizes,
     holdSnapshot, holdDetail, holdRead, pendingSnapshot, releaseReads, enqueued, artifactReads,
     get rawConfig() { return rawConfig; }, set rawConfig(content) { rawConfig = content; } };
 }
@@ -775,6 +860,9 @@ async function withPage(t, width, theme, run, options = {}) {
     await run(page, fixture);
   } catch (error) {
     t.diagnostic(error.stack || error.message);
+    if (t.name.startsWith('management parity')) {
+      await parityCapture(t, page, `failed-${t.name.split(' / ')[0].replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+    }
     throw error;
   } finally {
     fixture.releaseConfig();
@@ -943,7 +1031,7 @@ async function settingsKeyboardFocus(locator) {
 }
 
 // Runs only against the embedded asset server and the deny-by-default fixture.
-describe('Settings configuration workflows', () => {
+describe('Settings configuration workflows', { concurrency: 2 }, () => {
   for (const width of [1440, 390]) for (const theme of themes) {
     const options = { rawConfig: settingsRaw };
     test(`Settings all sections, read-only workflows, contrast and IDs / ${width}px / ${theme}`, { timeout: 60000 }, async t => {
@@ -1073,12 +1161,16 @@ describe('Settings configuration workflows', () => {
     test(`Settings unfinished stage drafts hide clean-state reassurance / ${width}px / ${theme}`, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
         await routeTo(page, '#/settings/stages');
-        const clean = settingsView(page).getByText('No unsaved changes', { exact: true });
+        const clean = settingsView(page).getByRole('navigation', { name: 'Settings sections', includeHidden: true }).getByText('No unsaved changes', { exact: true });
+        const compactStatus = settingsView(page).getByRole('region', { name: 'Configuration location and unsaved changes', includeHidden: true }).getByRole('status', { includeHidden: true });
         await expect(clean).not.toHaveCSS('display', 'none');
+        await expect(compactStatus).toHaveText('No unsaved changes');
         await settingsButton(page, 'add stage').click();
         await page.getByRole('textbox', { name: 'New stage name', exact: true }).fill('qa');
         assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsDirty()), false);
         await expect(clean).toHaveCSS('display', 'none');
+        await expect(compactStatus).toHaveText('Unsaved changes');
+        if (width <= 1100) await expect(compactStatus).toBeVisible();
         await settingsButton(page, 'save & reload').click();
         await visible(settingsView(page).getByRole('alert').filter({ hasText: 'Add or cancel unfinished rows before saving.' }));
         assert.equal(settingsWrites(fixture).length, 0);
@@ -1088,6 +1180,7 @@ describe('Settings configuration workflows', () => {
         await guard.getByRole('button', { name: 'keep editing', exact: true }).click();
         await settingsButton(page, 'discard').click();
         await expect(clean).not.toHaveCSS('display', 'none');
+        await expect(compactStatus).toHaveText('No unsaved changes');
         await expect(page.getByRole('textbox', { name: 'New stage name', exact: true })).toBeHidden();
         assert.equal(settingsWrites(fixture).length, 0);
       }, options);
@@ -1507,7 +1600,7 @@ describe('Settings configuration workflows', () => {
   });
 });
 
-describe('Settings final review regressions', () => {
+describe('Settings final review regressions', { concurrency: 2 }, () => {
   for (const width of [390, 1280]) test(`Settings review legacy human_review search has unique DOM identities / ${width}px`, async t => {
     await withPage(t, width, 'dark', async (page, fixture) => {
       await routeTo(page, '#/settings/statuses');
@@ -1914,7 +2007,8 @@ describe('API-backed Automations', { concurrency: 2 }, () => {
         await routeTo(page, '#/automations/auto-review'); await automationDetailReady(page, 'auto-review');
         const detail = page.locator('.automations-detail');
         assert.match(await detail.locator('.automations-meters').innerText(), /214[\s\S]*95%[\s\S]*4m 12s/);
-        assert.equal(await detail.locator('.automations-run-strip button').count(), 24);
+        assert.equal(await detail.locator('.automations-run-mark').count(), 24);
+        assert.equal(await detail.locator('.automations-run-strip button').count(), 0, 'Runs open through the labelled list controls, not tiny chart targets');
         assert.match(await detail.locator('.automations-run-strip').innerText(), /8 complete · 8 failed · 8 skipped/);
         assert.match(await detail.locator('tbody tr').first().innerText(), /#29[\s\S]*complete[\s\S]*schedule[\s\S]*4m 12s[\s\S]*0[\s\S]*\$0.31[\s\S]*Fixture result for run 29/);
         await automationButton(page, 'show more').click(); await page.waitForFunction(() => Alpine.$data(document.body).automationsHistory.length === 29);
@@ -2064,11 +2158,11 @@ describe('mobile polish fixture evidence', () => {
         await model(page, 'createForm.title').fill('Fixture creation error remains readable');
         await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
         fixture.behavior.createFailure = 'Fixture error: repository permission denied; draft retained. Please retry.';
-        await page.getByRole('button', { name: 'create ticket', exact: true }).filter({ visible: true }).click();
+        await page.getByRole('button', { name: 'Create and queue', exact: true }).filter({ visible: true }).click();
         await visible(page.locator('[x-text="createError"]').filter({ visible: true }));
         await mobileCapture(page, width, theme, 'create-error');
         if (width < 768) {
-          await closeCaptureSheet(page);
+          await page.getByRole('button', { name: 'Return to board', exact: true }).click();
           await page.getByRole('button', { name: 'Assistant', exact: true }).filter({ visible: true }).click();
           const assistant = page.getByRole('dialog', { name: 'Assistant', exact: true });
           await mobileCapture(page, width, theme, 'assistant-inbox-empty');
@@ -2076,7 +2170,7 @@ describe('mobile polish fixture evidence', () => {
           await visible(assistant.getByText('No chats yet.', { exact: true }));
           await mobileCapture(page, width, theme, 'assistant-history-empty');
           await assistant.getByRole('button', { name: 'Chat', exact: true }).click();
-          await page.getByRole('textbox', { name: 'Message the assistant', exact: true }).fill('Unsent fixture draft');
+          await page.getByLabel('Message the assistant', { exact: true }).fill('Unsent fixture draft');
           await mobileCapture(page, width, theme, 'assistant-chat');
           await closeCaptureSheet(page);
         }
@@ -2700,22 +2794,24 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
         await polishTypography(assistant); await polishControls(assistant);
         await assistant.getByRole('button', { name: 'Chat', exact: true }).click();
         await polishControls(assistant);
-        await immediateFocus(assistant.getByRole('textbox', { name: 'Message the assistant', exact: true }));
+        await immediateFocus(assistant.getByLabel('Message the assistant', { exact: true }));
         await polishMotion(page, reducedMotion);
         await closeCaptureSheet(page);
         for (const name of ['Open navigation', 'New ticket']) {
           await page.getByRole('button', { name, exact: true }).filter({ visible: true }).click();
           const heading = name === 'Open navigation' ? 'Navigation' : 'New ticket';
-          const dialog = page.getByRole('dialog', { name: heading, exact: true });
+          const dialog = heading === 'New ticket' ? page.locator('#new-view') : page.getByRole('dialog', { name: heading, exact: true });
           await visible(dialog);
           assert.equal(await dialog.getByRole('heading', { name: heading, exact: true }).count(), 1);
-          assert.equal(await dialog.getByText(heading, { exact: true }).count(), 1, 'Sheet content does not repeat its accessible heading');
-          await polishTypography(dialog);
+          assert.equal(await dialog.getByText(heading, { exact: true }).count(), 1, 'Content does not repeat its heading');
+          // The full New page keeps the shared form's technical typography;
+          // mobile-label/mobile-prose roles belong to sheets, not that page.
+          if (heading !== 'New ticket') await polishTypography(dialog);
           await polishControls(dialog);
-          await immediateFocus(dialog.getByRole('button', { name: 'Close', exact: true }));
+          await immediateFocus(dialog.getByRole('button', { name: heading === 'New ticket' ? 'Return to board' : 'Close', exact: true }));
           await polishMotion(page, reducedMotion);
           if (heading === 'New ticket') {
-            const submit = dialog.getByRole('button', { name: 'create ticket', exact: true });
+            const submit = dialog.getByRole('button', { name: 'Create and queue', exact: true });
             assert.equal(await submit.isDisabled(), true);
             assert.ok(await submit.evaluate(el => parseFloat(getComputedStyle(el).opacity) < 1 || getComputedStyle(el).cursor === 'not-allowed'), 'Disabled state differs beyond color');
             await immediateFocus(model(page, 'createForm.title'));
@@ -2726,11 +2822,11 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
             const error = dialog.getByRole('alert');
             await visible(error);
             assert.equal(await error.textContent(), fixture.behavior.createFailure);
-            assert.match(await error.evaluate(el => getComputedStyle(el).fontFamily), /DM Sans/, 'Error prose uses the body face');
-            assert.ok(await error.evaluate(el => parseFloat(getComputedStyle(el).fontSize) >= 16), 'Error prose remains readable');
+            assert.ok(await error.evaluate(el => parseFloat(getComputedStyle(el).fontSize) >= 14), 'Full-page validation remains readable');
             await polishControls(dialog);
           }
-          await closeCaptureSheet(page);
+          if (heading === 'New ticket') await dialog.getByRole('button', { name: 'Return to board', exact: true }).click();
+          else await closeCaptureSheet(page);
         }
         await openTicket(page, 'kon-draft');
         await detail.getByRole('button', { name: 'Actions', exact: true }).click();
@@ -2769,14 +2865,25 @@ async function automationToken(locator, property, token) {
 function near(actual, expected, label) { assert.ok(Math.abs(actual - expected) <= 1, `${label}: ${actual}, expected ${expected}`); }
 
 describe('desktop automation handoff', { concurrency: 2 }, () => {
-  for (const width of [1280, 1600]) for (const theme of themes) {
+  // With the 220px sidebar, 1320/1321 straddle the rail's 1100px container boundary.
+  for (const width of [1280, 1320, 1321, 1600]) for (const theme of themes) {
     test(`visible sidebar, list/detail/editor geometry and tokens / ${width}px / ${theme}`, { timeout: 45000 }, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
         await routeTo(page, '#/automations');
+        // Reserve a classic scrollbar gutter at the boundary, including on overlay-scrollbar hosts.
+        if (width === 1320) await page.addStyleTag({ content: '.automations-detail-body { scrollbar-gutter: stable; }' });
         const sidebar = page.locator('#main-content > aside:visible'), view = page.locator('.automations-view');
         await inViewport(sidebar); near((await sidebar.boundingBox()).width, 220, 'sidebar');
         assert.equal(await sidebar.locator('nav > button').nth(1).getAttribute('aria-current'), 'page');
-        const row = view.locator('.automations-table tbody tr').first(); near((await row.boundingBox()).height, 36, 'list row');
+        // Cell padding and collapsed borders add 3px to the 36px action targets.
+        const row = view.locator('.automations-table tbody tr').first(); near((await row.boundingBox()).height, 39, 'list row');
+        for (const name of ['Run Repository review', 'Edit Repository review', 'Open Repository review']) {
+          const action = row.getByRole('button', { name, exact: true });
+          const box = await action.boundingBox();
+          assert.ok(box.width >= 36 && box.height >= 36, `${name} keeps a reachable action target`);
+          await inViewport(action);
+          await action.click({ trial: true });
+        }
         near((await view.locator('.automations-table thead tr').boundingBox()).height, 28, 'table header');
         const toggle = row.getByRole('switch'); near((await toggle.boundingBox()).width, 1.75 * 17, 'row switch'); near((await toggle.boundingBox()).height, 17, 'row switch');
         await automationToken(view, 'backgroundColor', '--surface-frame');
@@ -2786,10 +2893,28 @@ describe('desktop automation handoff', { concurrency: 2 }, () => {
         assert.equal(new URL(page.url()).hash, '#/automations');
         await row.getByRole('button', { name: /Fixture repository.*Repository review/ }).click(); await automationDetailReady(page, 'auto-review');
         const detail = view.locator('.automations-detail'), rail = detail.locator('.automations-rail');
-        near((await detail.boundingBox()).x, 220, 'detail retains sidebar'); near((await rail.boundingBox()).width, 308, 'detail rail'); await inViewport(rail);
+        near((await detail.boundingBox()).x, 220, 'detail retains sidebar');
+        near((await detail.boundingBox()).width, width - 220, 'detail fills available width');
+        const stacked = width - 220 <= 1100, body = detail.locator('.automations-detail-body');
+        await expect(body).toHaveCSS('flex-direction', stacked ? 'column' : 'row');
+        // The stacked rail fills the scrollport, which excludes classic scrollbar gutters.
+        const scrollport = await body.evaluate(el => ({ x: el.getBoundingClientRect().left + el.clientLeft, width: el.clientWidth }));
+        const railBox = await rail.boundingBox();
+        near(railBox.width, stacked ? scrollport.width : 308, 'responsive detail rail');
+        if (stacked) {
+          near(railBox.x, scrollport.x, 'stacked rail starts at the scrollport edge');
+          // The stacked rail is taller than the remaining viewport.
+          // Its contents must remain scroll-reachable rather than constrained to a side-rail height.
+          for (const control of await rail.locator('summary, button:visible').all()) {
+            await control.scrollIntoViewIfNeeded(); await inViewport(control);
+            await control.click({ trial: true });
+          }
+          const spend = rail.getByText('19 of 20 runs priced', { exact: true });
+          await spend.scrollIntoViewIfNeeded(); await inViewport(spend);
+        } else await inViewport(rail);
         near((await detail.locator('h1').evaluate(el => parseFloat(getComputedStyle(el).fontSize))), 19, 'identity title');
         near((await detail.locator('tbody tr').first().boundingBox()).height, 32, 'run row');
-        near((await detail.locator('.automations-run-strip button').first().boundingBox()).height, 5, 'run strip');
+        near((await detail.locator('.automations-run-mark').first().boundingBox()).height, 5, 'run strip');
         await automationToken(detail.locator('tbody tr').nth(0).locator('td').nth(1), 'color', '--ok');
         await automationToken(detail.locator('tbody tr').nth(1).locator('td').nth(1), 'color', 'hsl(var(--st-cancel))');
         await automationToken(detail.locator('tbody tr').nth(2).locator('td').nth(1), 'color', '--tx-faint');
@@ -3395,7 +3520,7 @@ function observationOptions(options = {}) {
 const assistantSurface = page => page.locator('#assistant-pane:visible, #assistant-sheet:visible');
 async function openAssistantControl(page) {
   if (!await assistantSurface(page).isVisible()) {
-    await page.getByRole('button', { name: 'Assistant', exact: true }).filter({ visible: true }).click();
+    await page.getByRole('button', { name: 'Assistant', exact: true }).filter({ visible: true }).and(page.locator(':not([inert], [inert] *)')).first().click();
   }
   await visible(assistantSurface(page).getByRole('navigation', { name: 'Assistant views', exact: true }));
 }
@@ -3420,7 +3545,7 @@ async function ordinaryChatNavigation(page) {
   const surface = assistantSurface(page);
   const tabs = surface.getByRole('navigation', { name: 'Assistant views', exact: true });
   await tabs.getByRole('button', { name: 'Chat', exact: true }).click();
-  await visible(surface.getByRole('textbox', { name: 'Message the assistant', exact: true }));
+  await visible(surface.getByLabel('Message the assistant', { exact: true }));
   assert.equal(await tabs.getByRole('button', { name: 'Chat', exact: true }).getAttribute('aria-pressed'), 'true');
   await tabs.getByRole('button', { name: 'History', exact: true }).click();
   assert.equal(await tabs.getByRole('button', { name: 'History', exact: true }).getAttribute('aria-pressed'), 'true');
@@ -3473,7 +3598,7 @@ for (const width of [390, 1280]) {
             assert.equal(await page.evaluate(() => Alpine.$data(document.body).companionSnapshot), null);
             assert.ok(fixture.requests.includes(`GET /api/assistant/threads/${companionThreadID}`));
             await tabs.getByRole('button', { name: 'Chat', exact: true }).click();
-            await visible(surface.getByRole('textbox', { name: 'Message the assistant', exact: true }));
+            await visible(surface.getByLabel('Message the assistant', { exact: true }));
             await tabs.getByRole('button', { name: 'History', exact: true }).click();
             await observationHidden(page);
             release();
@@ -3528,7 +3653,7 @@ for (const width of [390, 1280]) {
         await page.getByRole('button', { name: 'Expand the assistant', exact: true }).click();
       }
       await observationHidden(page);
-      assert.equal(await surface.getByRole('textbox', { name: 'Message the assistant', exact: true }).count(), 0);
+      assert.equal(await surface.getByLabel('Message the assistant', { exact: true }).count(), 0);
       const stop = surface.getByRole('navigation', { name: 'Assistant views', exact: true }).getByRole('button', { name: 'Stop', exact: true });
       await inViewport(stop);
       fixture.behavior.assistantStopFailure = 'The running explanation could not be stopped.';
@@ -3590,7 +3715,7 @@ for (const width of [390, 1280]) {
         await visible(surface.getByRole('button', { name: new RegExp('^' + ordinaryTitle) }));
         await tabs.getByRole('button', { name: 'Chat', exact: true }).click();
         if (state === 'missing agent') await visible(surface.getByText('Configure an assistant agent.', { exact: true }));
-        else await visible(surface.getByRole('textbox', { name: 'Message the assistant', exact: true }));
+        else await visible(surface.getByLabel('Message the assistant', { exact: true }));
         await tabs.getByRole('button', { name: 'Inbox', exact: true }).click();
         if (width === 1280) {
           await page.getByRole('button', { name: 'Collapse the assistant to a rail', exact: true }).click();
@@ -3606,7 +3731,7 @@ for (const width of [390, 1280]) {
         await observationHidden(page);
         await tabs.getByRole('button', { name: 'Chat', exact: true }).click();
         if (state === 'missing agent') await visible(surface.getByText('Configure an assistant agent.', { exact: true }));
-        else await visible(surface.getByRole('textbox', { name: 'Message the assistant', exact: true }));
+        else await visible(surface.getByLabel('Message the assistant', { exact: true }));
         assert.deepEqual(fixture.mutations, []);
       }, options);
     });
@@ -4603,7 +4728,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await model(page, 'createForm.title').fill('Created in browser');
           await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
           await model(page, 'createForm.body').fill('Browser acceptance criteria.');
-          const submit = page.getByRole('button', { name: 'create ticket', exact: true });
+          const submit = page.getByRole('button', { name: 'Create and queue', exact: true });
           await submit.scrollIntoViewIfNeeded();
           await inViewport(submit);
           await Promise.all([
@@ -4622,15 +4747,20 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await visible(page.getByRole('heading', { name: /Created in browser$/ }));
         });
         await t.test('scheduled creation validates the input and persists an open ticket', async () => {
+          const priorWrites = fixture.mutations.length;
           await routeTo(page, '#/new');
           await model(page, 'createForm.title').fill('Scheduled browser fixture');
           await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
           await page.getByRole('button', { name: 'later', exact: true }).click();
           await model(page, 'createForm.scheduled_at').fill('not a time');
-          const submit = page.getByRole('button', { name: 'schedule ticket', exact: true });
-          assert.ok(await submit.isDisabled(), 'Invalid schedules cannot be submitted');
+          assert.equal(new URL(page.url()).hash, '#/new', 'Scheduling uses the full New route');
+          const submit = page.locator('#new-view').getByRole('button', { name: 'Schedule ticket', exact: true });
+          await expect(submit).toBeDisabled();
+          assert.equal(fixture.mutations.length, priorWrites, 'Invalid schedules cannot be submitted');
           await model(page, 'createForm.scheduled_at').fill('2099-09-01 09:00');
+          await expect(submit).toBeEnabled();
           await submit.scrollIntoViewIfNeeded();
+          await inViewport(submit);
           await Promise.all([
             page.waitForResponse(r => r.url() === base + '/api/tickets' && r.request().method() === 'POST'),
             submit.click(),
@@ -4638,6 +4768,13 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           const mutation = fixture.mutations.find(m => m.body.title === 'Scheduled browser fixture');
           assert.equal(mutation?.body.status, 'open');
           assert.equal(mutation.body.scheduled_at, '2099-09-01T09:00:00Z');
+          await page.waitForURL('**/#/');
+          await page.reload({ waitUntil: 'domcontentloaded' });
+          await openTicket(page, mutation.ticket.id);
+          await visible(page.getByRole('heading', { name: /Scheduled browser fixture$/ }));
+          const saved = await page.evaluate(() => ({ status: Alpine.$data(document.body).selectedTicket.status, scheduled_at: Alpine.$data(document.body).selectedTicket.scheduled_at }));
+          assert.deepEqual(saved, { status: 'open', scheduled_at: mutation.body.scheduled_at });
+          assert.equal(fixture.mutations.length, priorWrites + 1, 'Scheduled creation persists without an init, run or queue mutation');
         });
         await t.test('combined board card selection keeps namesakes distinct', async () => {
           await backToBoard(page);
@@ -4942,43 +5079,40 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       await withPage(t, 390, theme, async (page, fixture) => {
         const opener = page.getByRole('button', { name: 'New ticket', exact: true }).filter({ visible: true });
         await opener.click();
-        const dialog = page.getByRole('dialog', { name: 'New ticket', exact: true });
-        const submit = dialog.getByRole('button', { name: 'create ticket', exact: true });
+        await page.waitForURL('**/#/new');
+        const dialog = page.locator('#new-view');
+        const submit = dialog.locator('button[type="submit"]');
         assert.ok(await submit.isDisabled());
         await page.setViewportSize({ width: 390, height: 340 });
         await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--mobile-vv-height') === '340px');
-        await dialog.getByRole('button', { name: 'Close', exact: true }).focus();
-        await page.keyboard.press('Shift+Tab');
+        await dialog.getByRole('button', { name: 'Return to board', exact: true }).focus();
         await inViewport(page.locator(':focus'));
-        assert.equal(await page.locator(':focus').textContent(), 'cancel');
         await page.setViewportSize({ width: 390, height: 900 });
         assert.ok(await model(page, 'createForm.title').getAttribute('required') !== null);
         await model(page, 'createForm.title').fill('Native scheduled fixture');
         await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
-        const date = page.getByLabel('Start at', { exact: true });
-        await date.fill('2099-09-01T09:00');
+        await dialog.getByRole('button', { name: 'later', exact: true }).click();
+        const date = page.getByRole('textbox', { name: 'Start date or duration', exact: true });
+        await date.fill('2099-09-01 09:00');
         await date.blur();
         await model(page, 'createForm.body').fill('Keep this draft while the viewport shrinks.');
         await page.setViewportSize({ width: 390, height: 340 });
         await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--mobile-vv-height') === '340px');
         assert.equal(await page.evaluate(() => Alpine.$data(document.body).isMobile), true);
-        await dialog.getByRole('button', { name: 'Close', exact: true }).focus();
-        await page.keyboard.press('Shift+Tab');
-        await inViewport(page.locator(':focus'));
-        assert.ok(await submit.evaluate(el => el === document.activeElement));
+        await submit.focus();
         await submit.scrollIntoViewIfNeeded();
         await inViewport(submit);
         assert.equal(await model(page, 'createForm.body').inputValue(), 'Keep this draft while the viewport shrinks.');
-        const picker = page.locator('#mobile-new-agent');
+        const picker = page.locator('#new-agent');
         await picker.scrollIntoViewIfNeeded();
         await picker.click();
-        const panel = page.locator('#agent-picker-mobile-create');
+        const panel = page.locator('#agent-picker-create');
         await visible(panel);
         await inViewport(panel);
         await page.waitForFunction(() => !!document.activeElement?.closest('[data-agent-picker-panel]'));
         await page.keyboard.press('Escape');
-        await page.waitForFunction(() => !document.querySelector('#agent-picker-mobile-create')?.matches(':popover-open'));
-        assert.ok(await dialog.isVisible(), 'Escape closes the top-layer picker first');
+        await page.waitForFunction(() => !document.querySelector('#agent-picker-create')?.matches(':popover-open'));
+        assert.ok(await dialog.isVisible(), 'Escape closes the picker, not the New page');
         assert.ok(await picker.evaluate(el => el === document.activeElement));
         fixture.behavior.createFailure = '<img src=x onerror=alert(1)> Request failed';
         await submit.scrollIntoViewIfNeeded();
@@ -4992,7 +5126,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         assert.equal(fixture.mutations.length, 0);
         fixture.behavior.createFailure = null;
         await submit.click();
-        await dialog.waitFor({ state: 'hidden' });
+        await page.waitForURL('**/#/');
         const scheduled = fixture.mutations.find(m => m.body.title === 'Native scheduled fixture');
         assert.equal(scheduled.body.scheduled_at, '2099-09-01T09:00:00Z');
         assert.equal(scheduled.body.status, 'open');
@@ -5000,48 +5134,30 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await opener.click();
         await model(page, 'createForm.title').fill('Cleared phone schedule');
         await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
-        await date.fill('2099-09-01T09:00');
+        await dialog.getByRole('button', { name: 'later', exact: true }).click();
+        await date.fill('2099-09-01 09:00');
         await date.blur();
-        await date.fill('');
-        await date.blur();
+        await dialog.getByRole('button', { name: 'now', exact: true }).click();
+        await page.locator('#new-status').selectOption('todo');
         await submit.click();
-        await dialog.waitFor({ state: 'hidden' });
+        await page.waitForURL('**/#/');
         const cleared = fixture.mutations.find(m => m.body.title === 'Cleared phone schedule');
         assert.equal(cleared.body.status, 'todo');
         assert.equal('scheduled_at' in cleared.body, false);
         await opener.click();
         await model(page, 'createForm.title').fill('Epic ignores old schedule');
         await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
-        await date.fill('2099-09-01T09:00');
+        await dialog.getByRole('button', { name: 'later', exact: true }).click();
+        await date.fill('2099-09-01 09:00');
         await date.blur();
-        await model(page, 'createForm.kind').selectOption('epic');
+        await dialog.getByRole('button', { name: 'epic', exact: true }).click();
         await submit.click();
-        await dialog.waitFor({ state: 'hidden' });
+        await page.waitForURL('**/#/');
         const epic = fixture.mutations.find(m => m.body.title === 'Epic ignores old schedule');
         assert.equal(epic.body.status, 'open');
         assert.equal('scheduled_at' in epic.body, false);
         assert.equal('pipeline' in epic.body, false);
-        await opener.click();
-        await model(page, 'createForm.title').fill('Pending old form');
-        await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
-        let release;
-        fixture.behavior.createWait = new Promise(resolve => { release = resolve; });
-        const request = page.waitForRequest(r => r.url() === base + '/api/tickets' && r.method() === 'POST');
-        await submit.click();
-        await request;
-        await dialog.getByRole('button', { name: 'Close', exact: true }).click();
-        await opener.click();
-        await model(page, 'createForm.title').fill('Replacement draft');
-        const response = page.waitForResponse(r => r.url() === base + '/api/tickets' && r.request().method() === 'POST');
-        release();
-        await response;
-        await page.evaluate(() => new Promise(resolve => Alpine.nextTick(resolve)));
-        assert.equal(await model(page, 'createForm.title').inputValue(), 'Replacement draft');
-        assert.ok(await dialog.isVisible());
-        assert.equal(await error.isVisible(), false);
-        await page.keyboard.press('Escape');
-        await dialog.waitFor({ state: 'hidden' });
-        assert.ok(await opener.evaluate(el => el === document.activeElement));
+        // Pending submissions and repeated New entry are covered by the full-New matrix.
         await page.setViewportSize({ width: 390, height: 900 });
         await openTicket(page, 'kon-draft');
         await page.getByRole('button', { name: 'Actions', exact: true }).click();
@@ -5116,11 +5232,11 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await visible(thread);
           assert.equal(await thread.evaluate(el => getComputedStyle(el).display), 'flex');
           assert.ok((await thread.boundingBox()).height > 0);
-          const composer = page.getByRole('textbox', { name: 'Message the assistant', exact: true });
+          const composer = page.getByLabel('Message the assistant', { exact: true });
           await composer.fill('A recoverable unsent draft');
           await composer.scrollIntoViewIfNeeded();
           await inViewport(composer);
-          const send = dialog.getByRole('button', { name: 'send', exact: true });
+          const send = dialog.getByRole('button', { name: 'Send', exact: true });
           await send.scrollIntoViewIfNeeded();
           await inViewport(send);
           await dialog.getByRole('button', { name: 'History', exact: true }).click();
@@ -5278,7 +5394,7 @@ async function focusedEditorGeometry(page, height, top = 0, error = false) {
   }
 }
 
-describe('phone inline terminal and focused description', () => {
+describe('phone inline terminal and focused description', { concurrency: 2 }, () => {
   for (const width of [320, 390, 402]) for (const theme of themes) {
     test(`long subject IDs keep terminal Done visible / ${width}px / ${theme}`, async t => {
       const records = ['ticket', 'epic'].map((kind, i) => ticket('grafanaassistantobservabilityfrontend-123' + i, liveTitle,
@@ -5550,7 +5666,7 @@ describe('phone inline terminal and focused description', () => {
   }
 });
 
-describe('focused phone description save lifecycle', () => {
+describe('focused phone description save lifecycle', { concurrency: 2 }, () => {
   for (const width of [320, 390, 402]) for (const theme of themes) {
     test(`focused editor geometry and acknowledged saves / ${width}px / ${theme}`, { timeout: 45000 }, async t => {
       const original = 'Original native description.\n\n' + 'Long description paragraph with selectable text.\n'.repeat(100);
@@ -5692,7 +5808,7 @@ describe('focused phone description save lifecycle', () => {
   });
 });
 
-describe('start-dialog notification availability', () => {
+describe('start-dialog notification availability', { concurrency: 2 }, () => {
   async function openStartDialog(page) {
     await openTicket(page, 'kon-draft');
     await page.getByRole('button', { name: /^(queue(?: ticket)?|initialize|start)$/i }).filter({ visible: true }).first().click();
@@ -5788,17 +5904,19 @@ describe('start-dialog notification availability', () => {
     }, { config: { channels: ['ops'], default_channels: ['ops'] } });
   });
 
-  test('Start and rail notification choosers exclude reserved none', async t => {
-    await withPage(t, 1280, 'dark', async page => {
+  for (const width of [390, 1280]) test(`Start and rail notification choosers exclude reserved none / ${width}px`, async t => {
+    await withPage(t, width, 'dark', async (page, fixture) => {
       const dialog = await openStartDialog(page);
       await dialog.getByRole('button', { name: 'custom', exact: true }).click();
       await expect(dialog.locator('.notify-chip[data-status="none"]')).toHaveCount(0);
       await visible(dialog.locator('.notify-chip[data-status="awaiting_data"]'));
-      await page.evaluate(() => Alpine.$data(document.body).closeInitModal());
-      await page.locator('[x-text="notifyRailLabel()"]:visible').click();
-      await page.getByRole('button', { name: 'custom', exact: true }).filter({ visible: true }).click();
-      await expect(page.locator('.notify-chip[data-status="none"]')).toHaveCount(0);
-      await visible(page.locator('.notify-chip[data-status="awaiting_data"]:visible'));
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
+      const metadata = await openDetailNotifications(page);
+      await metadata.getByRole('button', { name: 'Custom', exact: true }).click();
+      await expect(metadata.locator('.notify-chip[data-status="none"]')).toHaveCount(0);
+      await visible(metadata.locator('.notify-chip[data-status="awaiting_data"]'));
+      assert.deepEqual(fixture.mutations, [], 'Opening either chooser does not save a preference');
     }, { config: { channels: ['ops'], default_channels: ['ops'], custom_statuses: ['none', 'awaiting_data'] } });
   });
 
@@ -5965,19 +6083,19 @@ describe('start-dialog notification availability', () => {
     }, { config: { channels: [], default_channels: [], default_notify: needsMe } });
   });
 
-  for (const folder of ['primary', source]) for (const stored of ['unset', 'null', 'Off']) {
-    test(`channel-only rail edits preserve status intent / ${folder} / ${stored}`, async t => {
+  for (const width of [390, 1280]) for (const folder of ['primary', source]) for (const stored of ['unset', 'null', 'Off']) {
+    test(`channel-only rail edits preserve status intent / ${folder} / ${stored} / ${width}px`, async t => {
       const record = ticket('kon-draft', 'Channel-only fixture', { source: folder,
         ...(stored === 'Off' ? { notify: [] } : stored === 'null' ? { notify: null } : {}) });
-      await withPage(t, 1280, 'dark', async (page, fixture) => {
+      await withPage(t, width, 'dark', async (page, fixture) => {
         await openTicket(page, record.id, folder);
-        await page.locator('[x-text="notifyRailLabel()"]:visible').click();
-        const editor = page.locator('.notify-seg').filter({ visible: true });
+        const metadata = await openDetailNotifications(page);
+        const editor = metadata.getByRole('radiogroup', { name: 'notify me', exact: true });
         await visible(editor);
         const path = detailPath(folder, record.id);
         for (const [channel, expected] of [['ops', ['ops']], ['inherit · team', []]]) {
           const response = page.waitForResponse(r => r.url() === base + path && r.request().method() === 'PUT');
-          await page.getByRole('button', { name: channel, exact: true }).filter({ visible: true }).click();
+          await metadata.getByRole('button', { name: channel, exact: true }).click();
           assert.equal((await response).status(), 200);
           await page.waitForFunction(() => !Alpine.$data(document.body).notifySaving);
           const mutation = fixture.mutations.at(-1);
@@ -6186,6 +6304,15 @@ async function detailPanel(page, name) {
   const label = phone ? name : ({ Ticket: 'ticket', Notes: 'notes', Changes: /^Changes(?:\s+\d+)?$/, Output: 'activity' })[name];
   await page.getByRole('button', { name: label, exact: true }).filter({ visible: true }).first().click();
 }
+async function openDetailNotifications(page) {
+  await detailPanel(page, 'Ticket');
+  const metadata = page.locator('[data-detail-metadata]:visible');
+  const disclosure = metadata.locator('details').filter({ has: page.locator('summary', { hasText: /^Details$/ }) });
+  if (await disclosure.getAttribute('open') === null) await disclosure.locator('summary').click();
+  await metadata.locator('[x-text="notifyRailLabel()"]:visible').click();
+  await expect(metadata.getByRole('radiogroup', { name: 'notify me', exact: true })).toBeVisible();
+  return metadata;
+}
 async function phoneOutputView(page, view) {
   const output = page.locator('.mobile-detail-tabs').getByRole('button', { name: 'Output', exact: true });
   if (await output.getAttribute('aria-pressed') !== 'true') await output.click();
@@ -6206,7 +6333,7 @@ const coreHistory = () => [
 const coreChanges = { base: 'main', branch: 'fixture/core', commits: [{ sha: 'b0123456789', subject: 'Independent Changes fixture commit' }],
   files: [{ path: 'internal/core-fixture.go', added: 17, deleted: 4 }] };
 
-describe('kon91cx core detail workflows', () => {
+describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
   test('kon91cx lifecycle fixture contract table', async t => {
     await withPage(t, 390, 'dark', async (page, fixture) => {
       for (const [action, body, status, enqueue] of [
@@ -6744,5 +6871,664 @@ describe('kon91cx core detail workflows', () => {
       }
       assert.equal(fixture.mutations.length, 0);
     }, { records: polishRecords(), sidebar: width >= 768 });
+  });
+});
+
+// Optional Hallmark bridge: KONTORA_PHASES_BRIDGE_MS=300000 with filter
+// 'management parity rendered fixture bridge'. The generated bridge.json gives the URL.
+// This exposes only the in-memory fixture and embedded loopback assets, never
+// a daemon/store; mutation endpoints are deliberately read-only here.
+async function parityFixtureBridge() {
+  // Snapshot trusted embedded assets before listening. Requests can select bodies, never outbound URLs.
+  const embedded = new Map(await Promise.all([...assets].map(async path => {
+    const response = await fetch(base + path, { redirect: 'error' });
+    assert.equal(response.status, 200, `Embedded asset failed: ${path}`);
+    let body = Buffer.from(await response.arrayBuffer());
+    if (path === '/') {
+      const setup = `<script>localStorage.setItem('kontora-assistant-thread', '${ordinaryThreadID}');localStorage.setItem('kontora-assistant-open','0');localStorage.setItem('kontora-sidebar-hidden','1');</script>`;
+      body = Buffer.from(body.toString().replace('<head>', '<head>' + setup));
+    }
+    return [path, { body, contentType: response.headers.get('content-type') || 'application/octet-stream' }];
+  })));
+  const fixture = fixtures({ ...parityAssistantOptions(), records: parityEpicRecords() });
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, base);
+      assert.equal(url.origin, base);
+      assert.ok(!req.headers.host || /^127\.0\.0\.1:\d+$/.test(req.headers.host));
+      if (url.pathname.startsWith('/api/')) {
+        const preview = req.method === 'POST' && url.pathname === '/api/automations/preview';
+        if (req.method !== 'GET' && !preview) {
+          res.writeHead(405, { 'Content-Type': 'application/json' });
+          return res.end('{"error":"Rendered fixture bridge is read only"}');
+        }
+        const chunks = []; for await (const chunk of req) chunks.push(chunk);
+        const body = Buffer.concat(chunks).toString() || null;
+        return await fixture.api({
+          request: () => ({ method: () => req.method, postData: () => body, postDataJSON: () => JSON.parse(body), headers: () => req.headers }),
+          fulfill: ({ status = 200, contentType = 'application/json', body = '', headers = {} }) => {
+            res.writeHead(status, { 'Content-Type': contentType, ...headers }); res.end(body);
+          },
+          abort: () => { res.writeHead(503); res.end('Fixture read failed'); },
+        }, url);
+      }
+      assert.equal(req.method, 'GET');
+      const asset = embedded.get(url.pathname);
+      assert.ok(asset && (!url.search || /^\?v=[0-9a-f]+$/.test(url.search)), `Unknown embedded asset: ${url.pathname}${url.search}`);
+      res.writeHead(200, { 'Content-Type': asset.contentType });
+      res.end(asset.body);
+    } catch (error) {
+      if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Fixture bridge rejected request: ' + error.message);
+    }
+  });
+  server.on('upgrade', (_req, socket) => socket.destroy()); // No live terminal transport.
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  return { url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise(resolve => {
+    server.close(resolve); server.closeAllConnections();
+  }) };
+}
+
+test('rendered fixture bridge serves allowlisted bodies without request-time fetches', async t => {
+  const expected = await fetch(base + '/app.js').then(response => response.text());
+  const bridge = await parityFixtureBridge();
+  const outbound = [];
+  const fetchMock = t.mock.method(globalThis, 'fetch', async url => {
+    outbound.push(String(url));
+    throw new Error('A bridge request must not fetch an asset');
+  });
+  const request = (path, method = 'GET') => new Promise((resolve, reject) => {
+    const req = httpRequest(bridge.url, { path, method }, res => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() }));
+      res.on('error', reject);
+    });
+    req.on('error', reject); req.end();
+  });
+  try {
+    for (const path of ['/app.js', '/app.js?v=abcdef']) {
+      const response = await request(path);
+      assert.equal(response.status, 200, path);
+      assert.equal(response.body, expected, path);
+    }
+    const index = await request('/');
+    assert.equal(index.status, 200);
+    assert.match(index.body, /localStorage.setItem\('kontora-assistant-thread'/);
+    for (const path of ['/missing.js', '/app.js?url=http://127.0.0.1:9/',
+      'http://127.0.0.1:9/app.js', '//127.0.0.1:9/app.js']) {
+      assert.ok((await request(path)).status >= 400, path);
+    }
+    assert.equal((await request('/api/tickets', 'POST')).status, 405);
+    assert.deepEqual(outbound, [], 'Request paths and queries cannot select an outbound URL');
+  } finally {
+    fetchMock.mock.restore();
+    await bridge.close();
+  }
+});
+
+let parityCaptureDirectory;
+async function parityCapture(t, page, surface) {
+  parityCaptureDirectory ||= mkdtemp(join(tmpdir(), `kontora-management-${engine}-`));
+  const directory = await parityCaptureDirectory;
+  const { width, height } = page.viewportSize();
+  const path = join(directory, `${surface}-${width}x${height}.png`);
+  await page.screenshot({ path, animations: 'disabled' });
+  t.diagnostic(`Phase 5–7 capture: ${path}`);
+  return path;
+}
+
+function parityEpicRecords() {
+  return [
+    ticket('kon-order', 'Release epic with retained order', { kind: 'epic', epic_mode: 'passive',
+      child_order: ['kon-outside', 'kon-open-b', 'kon-review', 'kon-open-a'] }),
+    ticket('kon-other', 'Other epic owns its own order', { kind: 'epic', epic_mode: 'passive', child_order: ['kon-other-child'] }),
+    ticket('kon-outside', 'Stored nonmember stays outside'),
+    ticket('kon-open-a', 'Alpha child', { parent: { id: 'kon-order' }, stage: 'code', agent: 'draft-only',
+      history: [{ stage: 'plan', started_at: stamp, completed_at: '2026-10-01T10:01:02Z', exit_code: 0 }] }),
+    ticket('kon-open-b', 'Beta child', { parent: { id: 'kon-order' }, created_at: '2026-10-01T09:00:00Z' }),
+    ticket('kon-unordered', 'Unordered child', { parent: { id: 'kon-order' }, created_at: '2026-10-02T10:00:00Z' }),
+    ticket('kon-review', 'Approval holder', { parent: { id: 'kon-order' }, status: 'human_review', stage: 'code' }),
+    ticket('kon-other-child', 'Other epic child', { parent: { id: 'kon-other' } }),
+    ticket('kon-candidate', 'Searchable existing ticket'),
+  ];
+}
+const parityChild = (page, id) => page.locator('.epic-mobile-child:visible, .epic-managed-row:visible').filter({ hasText: id });
+async function parityChildActions(page, id) {
+  const row = parityChild(page, id);
+  const details = row.locator('details.epic-child-actions');
+  if (await details.getAttribute('open') === null) await details.locator('summary').click();
+  return row;
+}
+async function parityTicketEvent(page, fixture, id) {
+  const record = structuredClone(fixture.records.get(`primary/${id}`));
+  await page.evaluate(record => window.__fixtureSSE.filter(s => !s.closed && s.url === '/api/events')
+    .forEach(s => s.emit('ticket_updated', record)), record);
+}
+
+function parityAssistantOptions() {
+  return { savedThread: ordinaryThreadID,
+    assistantConfig: { enabled: true, agent: 'fixture-agent', autonomy: 'ask' },
+    assistantThreads: [{ id: ordinaryThreadID, title: 'Recorded parity chat', turns: 2, writes: 1, running: false, autonomy: 'ask',
+      messages: [{ n: 1, text: 'Inspect the release safely.', at: stamp, error: 'Recorded turn failed: fixture quota.' }],
+      events: [
+        { kind: 'model', model: 'fixture-reasoning-model', time: stamp },
+        { kind: 'tool', id: 'inspect-result', tool: 'read_ticket', arg: 'kon-draft', time: stamp, result: 'Recorded tool result: primary draft remains open.' },
+        { kind: 'tool', id: 'inspect-error', tool: 'inspect_missing', arg: 'kon-missing', time: stamp,
+          is_error: true, result: 'Recorded tool error: ticket does not exist.' },
+        { kind: 'text', text: 'Recorded explanation, not a live daemon response.', time: stamp },
+      ], gate: { id: 'fixture-gate', kind: 'write', tool: 'move_ticket', arg: 'kon-draft → open' } },
+    { id: 'b0123456789abcdef', title: 'Disposable history chat', turns: 3, writes: 2, running: false, autonomy: 'read', messages: [] }],
+  };
+}
+
+const parityBridgeMS = Number(process.env.KONTORA_PHASES_BRIDGE_MS || 0);
+test('management parity rendered fixture bridge', { skip: !parityBridgeMS, timeout: Math.min(parityBridgeMS, 600000) + 30000 }, async t => {
+  assert.ok(Number.isFinite(parityBridgeMS) && parityBridgeMS > 0);
+  const bridge = await parityFixtureBridge();
+  parityCaptureDirectory ||= mkdtemp(join(tmpdir(), `kontora-management-${engine}-`));
+  const manifest = join(await parityCaptureDirectory, 'bridge.json');
+  await writeFile(manifest, JSON.stringify({ url: bridge.url, expires: new Date(Date.now() + Math.min(parityBridgeMS, 600000)),
+    routes: ['#/e/kon-order', '#/automations/auto-review', '#/new', '#/t/kon-draft'], readOnly: true }, null, 2));
+  t.diagnostic(`Rendered fixture bridge: ${manifest}`);
+  try {
+    const context = await browser.newContext({ viewport: { width: 390, height: 900 }, serviceWorkers: 'block' });
+    try {
+      await context.route('**/*', route => {
+        assert.equal(new URL(route.request().url()).origin, bridge.url, 'Bridge cannot contact external resources');
+        return route.continue();
+      });
+      const page = await context.newPage();
+      await page.goto(bridge.url + '/#/e/kon-order'); await ready(page);
+      await visible(parityChild(page, 'kon-open-a'));
+      await parityCapture(t, page, 'bridge-rendered-epic');
+      const blocked = await fetch(bridge.url + '/api/tickets', { method: 'POST', body: '{}' });
+      assert.equal(blocked.status, 405);
+      await new Promise(resolve => setTimeout(resolve, Math.min(parityBridgeMS, 600000)));
+    } finally { await context.close(); }
+  } finally { await bridge.close(); }
+});
+
+describe('mobile management and Assistant real-control parity', { concurrency: 2 }, () => {
+  for (const [width, theme] of parityMatrix.epic) test(`management parity epic membership raw order and holder / ${width}px / ${theme}`, async t => {
+    await withPage(t, width, theme, async (page, fixture) => {
+      await routeTo(page, '#/e/kon-order');
+      await visible(parityChild(page, 'kon-open-a'));
+      await parityCapture(t, page, `epic-overview-${theme}`);
+      const row = await parityChildActions(page, 'kon-open-a');
+      assert.match(await row.innerText(), /code[\s\S]*draft-only[\s\S]*1m/);
+      await row.getByRole('button', { name: 'Move kon-open-a up', exact: true }).click();
+      await expect.poll(() => fixture.mutations.filter(m => m.path.endsWith('/children')).length).toBe(1);
+      assert.deepEqual(fixture.records.get('primary/kon-order').child_order,
+        ['kon-outside', 'kon-open-a', 'kon-review', 'kon-open-b', 'kon-unordered']);
+      for (const id of ['kon-open-a', 'kon-open-b', 'kon-unordered', 'kon-review']) assert.equal(fixture.records.get(`primary/${id}`).parent.id, 'kon-order');
+      assert.equal(fixture.records.get('primary/kon-outside').parent, undefined);
+      await visible(page.getByText('Stored order also retains: kon-outside', { exact: true }).filter({ visible: true }));
+      const add = page.getByRole('button', { name: 'Add existing ticket', exact: true }).filter({ visible: true });
+      await add.click();
+      await page.getByRole('searchbox').filter({ visible: true }).fill('Searchable existing');
+      const candidate = page.locator('.epic-candidate-picker').getByRole('button', { name: /kon-candidate.*Searchable existing ticket/ }).filter({ visible: true });
+      await candidate.click();
+      await expect.poll(() => fixture.records.get('primary/kon-candidate').parent?.id).toBe('kon-order');
+      await parityTicketEvent(page, fixture, 'kon-candidate');
+      await page.getByRole('searchbox').filter({ visible: true }).fill('');
+      await expect(candidate).toHaveCount(0);
+      await add.click();
+      const child = await parityChildActions(page, 'kon-candidate');
+      await child.getByRole('button', { name: 'Remove from epic', exact: true }).click();
+      const confirm = child.getByRole('group', { name: 'Confirm removal from epic', exact: true });
+      await visible(confirm.getByText('Remove from this epic? The ticket itself is kept.', { exact: true }));
+      await confirm.getByRole('button', { name: 'Keep in epic', exact: true }).click();
+      assert.equal(fixture.requests.filter(r => r.endsWith('/unparent')).length, 0);
+      await child.getByRole('button', { name: 'Remove from epic', exact: true }).click();
+      await confirm.getByRole('button', { name: 'Remove membership', exact: true }).click();
+      await expect.poll(() => fixture.records.get('primary/kon-candidate').parent).toBe(undefined);
+      assert.ok(fixture.records.has('primary/kon-candidate'), 'Unparent must not delete the ticket');
+      await parityTicketEvent(page, fixture, 'kon-candidate');
+      await expect(parityChild(page, 'kon-candidate')).toHaveCount(0);
+      const move = (await parityChildActions(page, 'kon-open-a')).getByRole('combobox', { name: 'Move child to status', exact: true });
+      await move.selectOption('move:cancelled');
+      await expect.poll(() => fixture.records.get('primary/kon-open-a').status).toBe('cancelled');
+      assert.equal(fixture.records.get('primary/kon-open-a').stage, 'code');
+      await parityTicketEvent(page, fixture, 'kon-open-a');
+      const markDone = page.getByRole('button', { name: /^(Mark done|approve holder)$/i }).filter({ visible: true }).first();
+      await markDone.click();
+      await expect.poll(() => fixture.records.get('primary/kon-review').status).toBe('done');
+      assert.deepEqual(fixture.mutations.filter(m => m.path.endsWith('/move')).map(m => [m.path, m.body]), [
+        ['/api/tickets/kon-open-a/move', { status: 'cancelled' }], ['/api/tickets/kon-review/move', { status: 'done' }],
+      ]);
+      assert.deepEqual(fixture.enqueued, []);
+      await noPageOverflow(page);
+      await parityCapture(t, page, `epic-${theme}`);
+    }, { records: parityEpicRecords(), hasTouch: width < 768 });
+  });
+
+  for (const [width, theme] of parityMatrix.delayedEpic) test(`management parity delayed epic owner failure and breakpoint / ${width}px / ${theme}`, async t => {
+    await withPage(t, width, theme, async (page, fixture) => {
+      const held = deferred();
+      try {
+        await routeTo(page, '#/e/kon-order');
+        fixture.behavior.epicWait = held.promise;
+        const row = await parityChildActions(page, 'kon-open-a');
+        await Promise.all([
+          page.waitForRequest(r => r.url() === base + '/api/tickets/kon-order/children'),
+          row.getByRole('button', { name: 'Move kon-open-a up', exact: true }).click(),
+        ]);
+        await expect(page.getByRole('button', { name: 'Move kon-open-a down', exact: true }).filter({ visible: true })).toBeDisabled();
+        await routeTo(page, '#/e/kon-other');
+        await page.setViewportSize({ width: width < 768 ? 769 : 767, height: 560 });
+        await visible(parityChild(page, 'kon-other-child'));
+        held.resolve();
+        await expect.poll(() => fixture.mutations.filter(m => m.path.endsWith('/children')).length).toBe(1);
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).epicMutationPending['kon-order'] || 0)).toBe(0);
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedEpic.id), 'kon-other');
+        assert.deepEqual(await page.evaluate(() => [...Alpine.$data(document.body).selectedEpic.child_order]), ['kon-other-child']);
+        assert.deepEqual(fixture.records.get('primary/kon-other').child_order, ['kon-other-child']);
+        assert.deepEqual(fixture.records.get('primary/kon-order').child_order,
+          ['kon-outside', 'kon-open-a', 'kon-review', 'kon-open-b', 'kon-unordered']);
+        fixture.behavior.epicWait = null;
+        await routeTo(page, '#/e/kon-order');
+        // A removed reference can remain in raw storage. The fixture must
+        // reject it like Resolve(), not quietly turn ordering into membership.
+        fixture.records.get('primary/kon-order').child_order.push('kon-missing-order');
+        await parityTicketEvent(page, fixture, 'kon-order');
+        await visible(page.getByText('Stored order also retains: kon-outside, kon-missing-order', { exact: true }).filter({ visible: true }));
+        await (await parityChildActions(page, 'kon-open-a')).getByRole('button', { name: 'Move kon-open-a down', exact: true }).click();
+        await visible(page.getByText('Unknown or invalid retained order reference', { exact: true }).filter({ visible: true }).first());
+        assert.equal(fixture.requests.filter(r => r.endsWith('/children')).length, 2, 'Failure is not automatically replayed');
+        assert.deepEqual(fixture.records.get('primary/kon-order').child_order,
+          ['kon-outside', 'kon-open-a', 'kon-review', 'kon-open-b', 'kon-unordered', 'kon-missing-order']);
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).epicMutationPending['kon-order'] || 0)).toBe(0);
+        const membershipHeld = deferred();
+        fixture.behavior.epicWait = membershipHeld.promise;
+        try {
+          await page.getByRole('button', { name: 'Add existing ticket', exact: true }).filter({ visible: true }).click();
+          await page.getByRole('searchbox').filter({ visible: true }).fill('Searchable existing');
+          await Promise.all([
+            page.waitForRequest(r => r.url() === base + '/api/tickets/kon-candidate/parent'),
+            page.getByRole('button', { name: /kon-candidate.*Searchable existing ticket/ }).filter({ visible: true }).click(),
+          ]);
+          await routeTo(page, '#/e/kon-other');
+          membershipHeld.resolve();
+          await expect.poll(() => fixture.records.get('primary/kon-candidate').parent?.id).toBe('kon-order');
+          assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedEpic.id), 'kon-other');
+          await parityTicketEvent(page, fixture, 'kon-candidate');
+          await expect(parityChild(page, 'kon-candidate')).toHaveCount(0);
+          assert.equal(fixture.requests.filter(r => r.endsWith('/parent')).length, 1);
+          assert.deepEqual(fixture.records.get('primary/kon-other').child_order, ['kon-other-child']);
+        } finally { membershipHeld.resolve(); }
+        await noPageOverflow(page);
+      } finally { held.resolve(); }
+    }, { records: parityEpicRecords(), hasTouch: true });
+  });
+
+  test('management parity invalid retained order and delayed membership keep original owner / 390px / light', async t => {
+    const records = parityEpicRecords();
+    records.find(r => r.id === 'kon-order').child_order.push('kon-missing-order');
+    await withPage(t, 390, 'light', async (page, fixture) => {
+      await routeTo(page, '#/e/kon-order');
+      const original = structuredClone(fixture.records.get('primary/kon-order').child_order);
+      await (await parityChildActions(page, 'kon-open-a')).getByRole('button', { name: 'Move kon-open-a up', exact: true }).click();
+      await visible(page.getByText('Unknown or invalid retained order reference', { exact: true }).filter({ visible: true }).first());
+      assert.deepEqual(fixture.records.get('primary/kon-order').child_order, original);
+      assert.equal(fixture.mutations.length, 0);
+      const held = deferred(); fixture.behavior.epicWait = held.promise;
+      try {
+        await page.getByRole('button', { name: 'Add existing ticket', exact: true }).filter({ visible: true }).click();
+        await page.getByRole('searchbox').filter({ visible: true }).fill('Searchable existing');
+        await Promise.all([
+          page.waitForRequest(r => r.url() === base + '/api/tickets/kon-candidate/parent'),
+          page.getByRole('button', { name: /kon-candidate.*Searchable existing ticket/ }).filter({ visible: true }).click(),
+        ]);
+        await routeTo(page, '#/e/kon-other');
+        held.resolve();
+        await expect.poll(() => fixture.records.get('primary/kon-candidate').parent?.id).toBe('kon-order');
+        await parityTicketEvent(page, fixture, 'kon-candidate');
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedEpic.id), 'kon-other');
+        await expect(parityChild(page, 'kon-candidate')).toHaveCount(0);
+        assert.equal(fixture.requests.filter(r => r.endsWith('/parent')).length, 1);
+        assert.deepEqual(fixture.records.get('primary/kon-order').child_order, original);
+        assert.deepEqual(fixture.records.get('primary/kon-other').child_order, ['kon-other-child']);
+      } finally { held.resolve(); }
+      assert.deepEqual(fixture.enqueued, []);
+      await noPageOverflow(page);
+    }, { records, hasTouch: true });
+  });
+
+  for (const [width, theme] of parityMatrix.creation) test(`management parity full New pending reentry and nonexecuting Open / ${width}px / ${theme}`, async t => {
+    await withPage(t, width, theme, async (page, fixture) => {
+      const newButton = () => page.getByRole('button', { name: /^(New ticket|New)$/i }).filter({ visible: true }).first();
+      await newButton().click();
+      await page.waitForURL('**/#/new');
+      await visible(page.locator('#new-title'));
+      await expect(page.getByRole('button', { name: 'Create and queue', exact: true })).toBeDisabled();
+      await page.locator('#new-title').fill('Pending full New owns this draft');
+      await page.locator('#new-body').fill('No replacement or cancellation while POST is pending.');
+      await page.locator('#new-path').fill('/fixtures/repository-with-a-long-name');
+      await expect(page.locator('#new-pipeline')).toHaveValue('inherit');
+      await page.locator('#new-status').selectOption('open');
+      await page.locator('#new-branch').fill('fixture/manual-branch');
+      await page.locator('#new-base-branch').fill('release');
+      await expect(page.getByRole('button', { name: 'Create ticket', exact: true }).filter({ visible: true })).toBeEnabled();
+      await page.getByRole('button', { name: 'later', exact: true }).filter({ visible: true }).click();
+      await page.getByRole('textbox', { name: 'Start date or duration', exact: true }).fill('2099-09-01 09:00');
+      await expect(page.locator('#new-status')).toBeDisabled();
+      await page.getByRole('button', { name: 'now', exact: true }).filter({ visible: true }).click();
+      await page.locator('#new-status').selectOption('open');
+      await page.setViewportSize({ width, height: 540 });
+      await page.locator('#new-title').scrollIntoViewIfNeeded();
+      await noPageOverflow(page);
+      await parityCapture(t, page, `full-new-${theme}`);
+      await page.locator('#new-status').scrollIntoViewIfNeeded();
+      await parityCapture(t, page, `full-new-options-${theme}`);
+      await page.locator('#new-base-branch').scrollIntoViewIfNeeded();
+      await parityCapture(t, page, `full-new-branches-${theme}`);
+      const held = deferred();
+      fixture.behavior.createWait = held.promise;
+      try {
+        await Promise.all([
+          page.waitForRequest(r => r.url() === base + '/api/tickets' && r.method() === 'POST'),
+          page.getByRole('button', { name: 'Create ticket', exact: true }).filter({ visible: true }).click(),
+        ]);
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).createSubmitting)).toBe(true);
+        // Returning to the board cannot cancel a server POST.
+        await page.getByRole('button', { name: 'Return to board', exact: true }).click();
+        await newButton().click();
+        await page.waitForURL('**/#/new');
+        await newButton().click();
+        await expect(page.locator('#new-title')).toHaveValue('Pending full New owns this draft');
+        await expect(page.locator('#new-body')).toHaveValue('No replacement or cancellation while POST is pending.');
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).createSubmitting)).toBe(true);
+        assert.equal(fixture.requests.filter(r => r === 'POST /api/tickets').length, 1);
+        assert.ok(!await page.getByText(/cancelled|canceled/i).filter({ visible: true }).count());
+        held.resolve();
+        await expect.poll(() => fixture.mutations.filter(m => m.path === '/api/tickets').length).toBe(1);
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).createSubmitting)).toBe(false);
+        const created = fixture.mutations.find(m => m.path === '/api/tickets');
+        assert.equal(created.body.status, 'open');
+        assert.equal(created.body.branch, 'fixture/manual-branch');
+        assert.equal(created.body.base_branch, 'release');
+        assert.equal('scheduled_at' in created.body, false);
+        assert.equal(created.ticket.execution_active || false, false);
+        assert.deepEqual(fixture.enqueued, []);
+        assert.ok(!fixture.requests.some(r => /POST .*\/(run|retry|init)$/.test(r)));
+      } finally { held.resolve(); }
+    }, { hasTouch: width < 768 });
+  });
+
+  test('management parity phone filter shortcuts stay touch-scrollable in a short viewport', async t => {
+    const projects = Array.from({ length: 8 }, (_, i) => ({ name: `Project ${i + 1}`, path: `/fixtures/project-${i + 1}` }));
+    const agents = Array.from({ length: 12 }, (_, i) => `agent-${i + 1}`);
+    await withPage(t, 320, 'dark', async page => {
+      await page.setViewportSize({ width: 320, height: 540 });
+      const shortcuts = page.locator('.mobile-filter-shortcuts');
+      await shortcuts.locator('summary').tap();
+      const list = shortcuts.locator(':scope > div');
+      const geometry = await list.evaluate(el => ({ scroll: el.scrollHeight, height: el.clientHeight }));
+      assert.ok(geometry.scroll > geometry.height, JSON.stringify(geometry));
+      const board = await page.locator('.mobile-board-layer').boundingBox();
+      assert.ok(board.height >= 100, JSON.stringify(board));
+      const last = shortcuts.getByRole('button', { name: 'agent-12', exact: true });
+      await last.scrollIntoViewIfNeeded();
+      await inViewport(last);
+      await last.tap();
+      await expect(page.getByRole('textbox', { name: 'Filter tickets', exact: true })).toHaveValue(/agent:=agent-12/);
+      await last.press('Tab');
+      await page.keyboard.press('Shift+Tab');
+      await expect(last).toBeFocused();
+      await last.press('Enter');
+      await expect(last).toHaveAttribute('aria-pressed', 'false');
+      await shortcuts.locator('summary').tap();
+      await expect(list).toBeHidden();
+    }, { hasTouch: true, config: { projects, agents } });
+  });
+
+  test('management parity phone filter shortcuts upload entry and settings context / 320px / light', async t => {
+    await withPage(t, 320, 'light', async (page, fixture) => {
+      const filter = page.getByRole('textbox', { name: 'Filter tickets', exact: true });
+      const shortcuts = page.locator('.mobile-filter-shortcuts');
+      await shortcuts.locator('summary').click();
+      await shortcuts.getByRole('button', { name: 'Fixture repository', exact: true }).click();
+      await expect(filter).toHaveValue(/project:/);
+      await shortcuts.getByRole('button', { name: 'fixture-agent', exact: true }).click();
+      await expect(filter).toHaveValue(/agent:=fixture-agent/);
+      await expect(shortcuts.getByRole('button', { name: 'fixture-agent', exact: true })).toHaveAttribute('aria-pressed', 'true');
+      await filter.fill('no-fixture-ticket-can-match-this');
+      await expect(page.getByRole('status').filter({ hasText: /^0 matched$/ })).toBeVisible();
+      await page.getByRole('button', { name: 'Clear filter', exact: true }).filter({ visible: true }).click();
+      await expect(filter).toHaveValue('');
+      await expect(page.getByRole('status').filter({ hasText: /^[1-9]\d* matched$/ })).toBeVisible();
+      await shortcuts.locator('summary').click();
+      const [chooser] = await Promise.all([
+        page.waitForEvent('filechooser'),
+        page.getByRole('button', { name: 'Upload .md', exact: true }).click(),
+      ]);
+      assert.equal(chooser.isMultiple(), true);
+      await chooser.setFiles([]); // Cancel the real file input; no upload mutation.
+      await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
+      const navigation = page.getByRole('navigation', { name: 'Main navigation', exact: true });
+      await visible(navigation.getByRole('button', { name: /^Dashboard\s+\d+$/ }));
+      await navigation.getByRole('button', { name: 'Settings', exact: true }).click();
+      await ready(page);
+      await visible(page.locator('.settings-mobile-context').getByText('/fixtures/config.yaml', { exact: true }));
+      await noPageOverflow(page);
+      assert.deepEqual(fixture.mutations, []);
+    }, { hasTouch: true });
+  });
+
+  for (const [from, to] of [[390, 1280], [1280, 390]]) test(`management parity Assistant native composition resets across breakpoint replacement / ${from}-${to}`, { skip: engine !== 'chromium' }, async t => {
+    const options = parityAssistantOptions();
+    delete options.assistantThreads[0].gate;
+    await withPage(t, from, 'dark', async (page, fixture) => {
+      await openAssistantControl(page);
+      const composer = assistantSurface(page).getByRole('combobox', { name: 'Message the assistant', exact: true });
+      await composer.focus();
+      const cdp = await page.context().newCDPSession(page);
+      try {
+        await cdp.send('Input.imeSetComposition', { text: '日本', selectionStart: 2, selectionEnd: 2 });
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body)._assistantComposing)).toBe(true);
+        await page.setViewportSize({ width: to, height: 900 });
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).isMobile)).toBe(to < 768);
+        await openAssistantControl(page);
+        const replacement = assistantSurface(page).getByRole('combobox', { name: 'Message the assistant', exact: true });
+        await visible(replacement);
+        await expect(replacement).toHaveValue('日本');
+        await replacement.fill('/sta');
+        await visible(assistantSurface(page).getByRole('listbox', { name: 'Composer suggestions', exact: true }));
+        await replacement.press('Enter');
+        await expect(replacement).toHaveValue('What is running right now? Summarise the board.');
+        assert.equal(fixture.requests.filter(r => r.includes('/messages') && r.startsWith('POST')).length, 0);
+        await replacement.press('Enter');
+        await expect.poll(() => fixture.mutations.filter(m => m.path.endsWith('/messages')).length).toBe(1);
+      } finally { await cdp.detach(); }
+    }, options);
+  });
+
+  test('management parity Assistant launch badge follows a hidden desktop turn', async t => {
+    const options = parityAssistantOptions();
+    options.assistantThreads[0].running = true;
+    delete options.assistantThreads[0].gate;
+    await withPage(t, 1280, 'light', async (page, fixture) => {
+      await openAssistantControl(page);
+      const trigger = page.locator('#assistant-trigger');
+      await expect(trigger).toHaveAttribute('data-assistant-state', 'Working');
+      await assistantSurface(page).getByRole('button', { name: 'Close the assistant', exact: true }).click();
+      const thread = fixture.assistantThreads.get(ordinaryThreadID);
+      thread.gate = { id: 'hidden-gate', kind: 'write', tool: 'move_ticket', arg: 'kon-draft' };
+      await expect(trigger).toHaveAttribute('data-assistant-state', 'Approval', { timeout: 6000 });
+      thread.running = false;
+      delete thread.gate;
+      await expect(trigger).not.toHaveAttribute('data-assistant-state', /^(Approval|Working)$/, { timeout: 6000 });
+      await expect(assistantSurface(page)).toHaveCount(0);
+      assert.ok(!fixture.requests.some(r => r.startsWith('POST') && /\/(stop|messages)$/.test(r)));
+    }, options);
+  });
+
+  for (const [width, theme] of parityMatrix.assistant) test(`management parity Assistant recorded tools history approval and composition / ${width}px / ${theme}`, async t => {
+    await withPage(t, width, theme, async (page, fixture) => {
+      await openTicket(page, 'kon-draft');
+      await openAssistantControl(page);
+      const surface = assistantSurface(page), composer = surface.getByRole('combobox', { name: 'Message the assistant', exact: true });
+      await visible(surface.getByText('fixture-reasoning-model', { exact: true }));
+      await visible(surface.getByText('Recorded turn failed: fixture quota.', { exact: true }));
+      await visible(surface.locator('.assistant-context').getByText('kon-draft', { exact: true }));
+      await visible(surface.getByText('fixture-agent', { exact: true }));
+      await composer.fill('Unsent composition draft');
+      const input = await composer.elementHandle();
+      const host = await surface.locator('[id$="-thread"]').elementHandle();
+      for (const [tool, result] of [['read_ticket', 'Recorded tool result: primary draft remains open.'], ['inspect_missing', 'Recorded tool error: ticket does not exist.']]) {
+        const row = surface.locator('.assistant-tool-row').filter({ hasText: tool });
+        const toggle = row.getByRole('button');
+        await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+        await visible(row.getByText(result, { exact: true }));
+        await visible(toggle.getByText('10:00:00', { exact: true }));
+      }
+      const proposal = surface.locator('[id$="-proposal"]');
+      await visible(proposal.getByText('move_ticket', { exact: true }));
+      await visible(proposal.getByText('kon-draft → open', { exact: true }));
+      await parityCapture(t, page, `assistant-recorded-${theme}`);
+      const gateHeld = deferred(); fixture.behavior.assistantGateWait = gateHeld.promise;
+      try {
+        await proposal.getByRole('button', { name: width === 1024 ? 'Skip' : 'Approve', exact: true }).click();
+        await expect(proposal).toHaveCount(0);
+        gateHeld.resolve();
+        await expect.poll(() => fixture.mutations.filter(m => m.path === '/api/assistant/gate/fixture-gate').length).toBe(1);
+        assert.deepEqual(fixture.mutations[0].body, { decision: width === 1024 ? 'skip' : 'approve' });
+        await expect.poll(() => page.evaluate(() => !Alpine.$data(document.body).assistantGate)).toBe(true);
+        assert.ok(await composer.evaluate((el, prior) => el === prior, input), 'Recorded updates must not recreate the composer');
+        assert.ok(await surface.locator('[id$="-thread"]').evaluate((el, prior) => el === prior, host), 'Recorded updates must not recreate the transcript host');
+        await expect(composer).toHaveValue('Unsent composition draft');
+      } finally { gateHeld.resolve(); }
+      await composer.dispatchEvent('compositionstart', { data: '日' });
+      await composer.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true, keyCode: 229, bubbles: true });
+      await composer.evaluate(el => {
+        el.dispatchEvent(new CompositionEvent('compositionend', { data: '日本', bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+      });
+      assert.equal(fixture.requests.filter(r => r.includes('/messages') && r.startsWith('POST')).length, 0);
+      await expect(composer).toHaveValue('Unsent composition draft');
+      await composer.fill('/sta');
+      const suggestions = surface.getByRole('listbox', { name: 'Composer suggestions', exact: true });
+      await visible(suggestions);
+      await composer.press('Escape');
+      await expect(suggestions).toBeHidden();
+      await visible(surface);
+      await composer.fill('/sta');
+      await visible(suggestions);
+      await composer.press(width < 768 ? 'Tab' : 'Enter');
+      await expect(composer).toHaveValue('What is running right now? Summarise the board.');
+      assert.equal(fixture.requests.filter(r => r.includes('/messages') && r.startsWith('POST')).length, 0, 'Selecting a suggestion is not sending');
+      await composer.fill('Inspect @kon-dra');
+      await surface.getByRole('option', { name: /kon-draft.*Primary draft/ }).click();
+      await expect(composer).toHaveValue('Inspect @kon-draft ');
+      await surface.getByRole('button', { name: 'ask first', exact: true }).click();
+      await visible(surface.getByText('holds every change for your approval', { exact: true }));
+      await surface.getByRole('button', { name: /read only.*answers questions, changes nothing/ }).click();
+      await page.setViewportSize({ width, height: 540 });
+      if (width < 768) await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--mobile-vv-height') === '540px');
+      await composer.scrollIntoViewIfNeeded();
+      await inViewport(composer);
+      await parityCapture(t, page, `assistant-composition-short-${theme}`);
+      await surface.getByRole('button', { name: 'Send', exact: true }).click();
+      await expect.poll(() => fixture.mutations.filter(m => m.path.endsWith('/messages')).length).toBe(1);
+      const sent = fixture.mutations.find(m => m.path.endsWith('/messages'));
+      assert.equal(sent.body.text, 'Inspect @kon-draft');
+      assert.equal(sent.body.autonomy, 'read');
+      assert.match(sent.body.context, /kon-draft/);
+      await surface.getByRole('button', { name: 'History', exact: true }).click();
+      await visible(surface.getByText('3 turns, 2 changes', { exact: true }));
+      const remove = surface.getByRole('button', { name: 'Delete Disposable history chat', exact: true });
+      await remove.scrollIntoViewIfNeeded();
+      assert.equal(await remove.evaluate(el => getComputedStyle(el).opacity), '1', 'Delete is visible without hover');
+      await remove.click();
+      await expect.poll(() => fixture.assistantThreads.has('b0123456789abcdef')).toBe(false);
+      await expect(surface.getByRole('button', { name: /Disposable history chat/ })).toHaveCount(0);
+      await noPageOverflow(page);
+    }, { ...parityAssistantOptions(), hasTouch: width < 768 });
+  });
+
+  for (const [width, theme] of parityMatrix.automation) test(`management parity automation narrow rail log sources and paused duplicate / ${width}px / ${theme}`, async t => {
+    await withPage(t, width, theme, async (page, fixture) => {
+      // Start with an enabled source: inheriting its enabled flag must fail.
+      fixture.definitions.get('auto-review').enabled = true;
+      const original = structuredClone(fixture.definitions.get('auto-review'));
+      await routeTo(page, '#/automations');
+      await page.getByRole('button', { name: 'Open Repository review', exact: true }).click();
+      await automationDetailReady(page, 'auto-review');
+      const detail = page.locator('.automations-detail'), rail = detail.locator('.automations-rail');
+      await rail.scrollIntoViewIfNeeded();
+      await visible(rail);
+      if (await rail.getAttribute('open') === null) await rail.locator('summary').click();
+      const railText = await rail.innerText();
+      assert.match(railText, /Europe\/Berlin/);
+      assert.equal(await rail.locator('time').count(), 4);
+      assert.match(railText, /fixture-agent[\s\S]*sonnet/);
+      assert.match(railText, /12.34[\s\S]*19 of 20 runs priced/);
+      for (const label of ['auto-review', '/fixtures/config.yaml']) await visible(rail.getByRole('button', { name: label, exact: true }));
+      const copy = rail.getByRole('button', { name: '/fixtures/config.yaml', exact: true });
+      await copy.click();
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).copiedCmd)).toBe('/fixtures/config.yaml');
+      await rail.locator('summary').click();
+      await expect(rail.locator('time').first()).toBeHidden();
+      await rail.locator('summary').click();
+      await rail.locator('summary').scrollIntoViewIfNeeded();
+      await parityCapture(t, page, `automation-detail-${theme}`);
+      await rail.getByText('19 of 20 runs priced', { exact: true }).scrollIntoViewIfNeeded();
+      await parityCapture(t, page, `automation-spend-${theme}`);
+      await automationButton(page, '#29').click();
+      await visible(detail.getByText('Inspect repository', { exact: true }));
+      const lines = detail.locator('.automations-log-line');
+      await expect(lines.first().locator('span').first()).toHaveText('kontora');
+      await expect(lines.nth(1).locator('span').first()).toHaveText('agent');
+      assert.notEqual(await lines.first().locator('span').first().evaluate(el => getComputedStyle(el).display), 'none');
+      await lines.first().scrollIntoViewIfNeeded();
+      await inViewport(lines.first().locator('span').first());
+      await parityCapture(t, page, `automation-log-${theme}`);
+      await automationButton(page, '← all runs').click();
+      const before = fixture.mutations.length;
+      const duplicate = page.getByRole('button', { name: /^duplicate$/i }).filter({ visible: true });
+      if (!await duplicate.isVisible()) {
+        await automationButton(page, 'More automation actions').click();
+        await page.getByRole('menuitem', { name: 'duplicate', exact: true }).click();
+      } else await duplicate.click();
+      await page.waitForURL('**/#/automations/new');
+      await expect(model(page, 'automationsDraft.name')).toHaveValue('Repository review (copy)');
+      await expect(model(page, 'automationsDraft.prompt')).toHaveValue('Review recent changes. {{ .Run.Number }}');
+      await expect(page.getByRole('switch', { name: 'Runs on schedule', exact: true })).toHaveAttribute('aria-checked', 'false');
+      await automationPreviewReady(page);
+      assert.equal(fixture.mutations.length, before, 'Duplicate opens only an unsaved draft');
+      assert.equal(fixture.definitions.size, 1);
+      assert.deepEqual(fixture.definitions.get('auto-review'), original, 'Duplicate must not pause or change the source automation');
+      assert.ok(!fixture.requests.some(r => r === 'POST /api/automations' || /POST .*\/run$/.test(r)));
+      await noPageOverflow(page);
+    }, { hasTouch: width < 768 || width === 1100 });
+  });
+
+  for (const [width, theme] of [[390, 'dark'], [1280, 'light']]) test(`information focus touch and dismissal / ${width}px / ${theme}`, async t => {
+    await withPage(t, width, theme, async (page, fixture) => {
+      await routeTo(page, '#/stats');
+      const control = page.locator('.stats-kpi[data-tip-info][data-tip-t]').filter({ hasText: 'tokens' }).first();
+      await expect(control).toHaveAttribute('tabindex', '0');
+      await expect.poll(async () => control.getAttribute('aria-label')).toBe(await control.getAttribute('data-tip-t'));
+      await control.scrollIntoViewIfNeeded();
+      await control.focus();
+      const tip = page.locator('#global-tip-t');
+      await expect(tip).toHaveAttribute('role', 'tooltip');
+      await expect(tip).toHaveAttribute('aria-hidden', 'false');
+      await expect(control).toHaveAttribute('aria-describedby', 'global-tip-t');
+      await page.keyboard.press('Escape');
+      await expect(tip).toHaveAttribute('aria-hidden', 'true');
+      await expect(control).toBeFocused();
+      if (width < 768) await control.tap();
+      else await page.keyboard.press('Enter');
+      await expect(tip).toHaveAttribute('aria-hidden', 'false');
+      await inViewport(tip);
+      await page.keyboard.press('Escape');
+      await expect(tip).toHaveAttribute('aria-hidden', 'true');
+      assert.equal(new URL(page.url()).hash, '#/stats');
+      assert.deepEqual(fixture.mutations, []);
+    }, { hasTouch: width < 768 });
   });
 });

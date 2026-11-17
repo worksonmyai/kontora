@@ -1635,7 +1635,7 @@ export function kontoraSettings() {
       if (view === 'stats') { this.currentView = 'stats'; this.openStats(); this.writeHash(); return; }
       if (view === 'archive') { this.currentView = 'archive'; this.openArchive(); this.writeHash(); return; }
       if (view === 'settings') { await this.openSettings(); this.writeHash(); return; }
-      if (view === 'new') { await this.openCreateModal(navigation); this.writeHash(); return; }
+      if (view === 'new') return this.openCreateModal(navigation);
       this.currentView = 'board';
       if (typeof destination === 'string') this.writeHash();
       var retained = this.selectedTicket || this.selectedEpic;

@@ -476,6 +476,70 @@ for (const completion of ['success', 'failure']) {
   });
 }
 
+for (const view of ['Chat', 'History']) {
+  for (const stage of ['response', 'body', 'error']) {
+    test(`${view} restores running thread updates after canceling selection at ${stage}`, async t => {
+      const { state, requests, flush, reply } = activityHarness(t);
+      const original = globalThis.EventSource;
+      const streams = [];
+      globalThis.EventSource = class {
+        constructor(url) { this.url = url; this.closed = false; streams.push(this); }
+        addEventListener() {}
+        close() { this.closed = true; }
+      };
+      t.after(() => {
+        if (original === undefined) delete globalThis.EventSource;
+        else globalThis.EventSource = original;
+      });
+      state.assistantView = 'history';
+      let historyLoads = 0;
+      state.assistantLoadThreads = () => { historyLoads++; };
+      state._armAssistantPoll();
+      state._assistantOpenStream();
+      const selection = state.assistantSelectThread('thread-2');
+      assert.equal(state._assistantPoll, null);
+      assert.equal(streams[0].closed, true);
+      let finishBody;
+      if (stage === 'body') {
+        requests[0].resolve({ json: () => new Promise(resolve => { finishBody = resolve; }) });
+        await flush();
+      }
+      if (view === 'Chat') state.assistantShowChat();
+      else state.assistantShowHistory();
+      const poll = state._assistantPoll;
+      assert.notEqual(poll, null, 'presentation resumes polling without waiting for the canceled selection');
+      assert.equal(streams.length, 2);
+      assert.equal(streams[1].url, '/api/assistant/threads/thread-1/stream');
+      assert.equal(streams[1].closed, false);
+      assert.equal(historyLoads, view === 'History' ? 1 : 0);
+      if (stage === 'body') finishBody({ id: 'thread-2', running: false });
+      else if (stage === 'error') requests[0].reject(new Error('stale selection'));
+      else reply(requests[0], { id: 'thread-2', running: false });
+      assert.equal(await selection, false);
+      assert.equal(state.assistantThread.id, 'thread-1');
+      assert.equal(state.assistantView, view === 'Chat' ? 'thread' : 'history');
+      assert.equal(state.assistantError, null);
+      assert.equal(state._assistantPoll, poll, 'stale callbacks cannot replace the recovered poll');
+      assert.equal(streams.length, 2);
+      t.mock.timers.tick(1500);
+      assert.equal(requests.length, 2);
+      assert.match(requests[1].path, /\/thread-1\/activity\?after=0$/);
+      reply(requests[1], { running: true, gate: { id: 'approval-1' } });
+      await flush();
+      assert.equal(state.assistantLaunchLabel(), 'Approval');
+      t.mock.timers.tick(1500);
+      assert.equal(requests.length, 3);
+      reply(requests[2], { running: false, messages: [{ n: 1, text: 'Finished' }] });
+      await flush();
+      assert.equal(state.assistantStreaming, false);
+      assert.equal(state.assistantGate, null);
+      assert.equal(state.assistantMessages[0].text, 'Finished');
+      assert.equal(state._assistantPoll, null);
+      assert.equal(streams[1].closed, true);
+    });
+  }
+}
+
 test('deleting the selected thread clears approval and background polling', async t => {
   const { state, requests } = activityHarness(t);
   state.assistantGate = { id: 'gate-1' };

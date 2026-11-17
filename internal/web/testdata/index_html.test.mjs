@@ -11431,16 +11431,19 @@ test("the running stage animates and returns to the live session on click", () =
   assert.equal(state.activeTab, "session");
 });
 
-test("clicking a finished segment loads that run's transcript", () => {
-  const asked = [];
-  const state = pageState(TAPE_TICKET, { fetchActivity: (stage, run) => asked.push([stage, run]) });
-
-  const review = state.stageRibbon()[1];
-  state.clickRibbon(review);
-
-  assert.equal(state.activeTab, "activity");
-  // The segment addresses the newest run of the stage it stands for.
-  assert.deepEqual(asked, [["review", 1]]);
+test("ribbon actions open recorded runs and ignore unavailable stages", () => {
+  for (const { name, seg, expected } of [
+    { name: 'latest recorded run', expected: [['review', 1]] },
+    { name: 'queued stage', seg: { name: 'queued', state: 'queued', runs: 0 }, expected: [] },
+    { name: 'done without runs', seg: { name: 'unrecorded', state: 'done', runs: 0 }, expected: [] },
+  ]) {
+    const asked = [];
+    const state = pageState(TAPE_TICKET, { fetchActivity: (stage, run) => asked.push([stage, run]) });
+    const tab = state.activeTab;
+    state.clickRibbon(seg || state.stageRibbon()[1]);
+    assert.deepEqual(asked, expected, name);
+    assert.equal(state.activeTab, expected.length ? 'activity' : tab, name);
+  }
 });
 
 test("meters follow the ticket's status", () => {
@@ -13412,6 +13415,21 @@ test('both detail shells retain the parent crumb, readable chain and expandable 
 test("index.html renders the ribbon, transcript and rail the page needs", () => {
   const html = indexMarkup();
 
+  const ribbon = html.slice(html.indexOf('<!-- Stage ribbon:'), html.indexOf('<!-- Body: content column'));
+  assert.match(ribbon, /x-data="stageRibbonOwner\(\)"/);
+  assert.match(ribbon, /class="stage-ribbon-viewport" role="region" aria-label="Ticket stages"/);
+  assert.match(ribbon, /<button type="button" class="stage-ribbon-card/);
+  assert.match(ribbon, /:aria-label="\[seg.name,/);
+  assert.match(ribbon, /:aria-disabled="!\(seg.state === 'running' \|\| \(seg.state === 'done' && seg.runs\)\)"/);
+  assert.match(ribbon, /@click="clickRibbon\(seg\)"/);
+  assert.match(ribbon, /@focus="ribbonFocused = seg.name; ribbonHovered = ''" @blur="ribbonFocused = ''"/);
+  assert.match(ribbon, /@mouseenter="ribbonHovered = seg.name" @mouseleave="ribbonHovered = ''"/);
+  assert.match(ribbon, /class="stage-ribbon-name" x-text="seg.name"/);
+  assert.match(ribbon, /stage-ribbon-readout[\s\S]*?x-text="ribbonHovered \|\| ribbonFocused"/);
+  for (const [label, direction, boundary] of [['Earlier', '-1', 'Earlier'], ['Later', '1', 'Later']]) {
+    assert.match(ribbon, new RegExp(`aria-label="${label} stages"\\s+:disabled="!ribbon${boundary}" @click="ribbonScroll\\(${direction}\\)"`));
+  }
+  assert.doesNotMatch(ribbon, /@keydown|scrollIntoView|command\(/);
   // flex-grow carries the duration; the floor and basis stay in Tailwind.
   assert.match(html, /:style="'flex-grow:' \+ seg\.seconds"/);
   assert.match(html, /min-w-\[136px\] basis-0/);

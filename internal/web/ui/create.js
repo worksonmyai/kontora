@@ -382,7 +382,8 @@ export function kontoraCreate() {
           if (this.createForm.branch) body.branch = this.createForm.branch;
           if (this.createForm.base_branch) body.base_branch = this.createForm.base_branch;
           if (this.createForm.body) body.body = this.createForm.body;
-          return created = await this._submitCreate(body, current);
+          created = await this._submitCreate(body, current);
+          return created;
         }
         var pipeline = this.pipelineOverride(this.createForm.pipelineChoice);
         if (pipeline !== undefined) body.pipeline = pipeline;
@@ -398,7 +399,8 @@ export function kontoraCreate() {
         if (this.createForm.body) body.body = this.createForm.body;
         if (this.createForm.branch) body.branch = this.createForm.branch;
         if (this.createForm.base_branch) body.base_branch = this.createForm.base_branch;
-        return created = await this._submitCreate(body, current);
+        created = await this._submitCreate(body, current);
+        return created;
       } catch (e) {
         if (current()) this.createError = 'Creation result unknown: ' + e.message + '. Check the board before submitting again.';
         return false;

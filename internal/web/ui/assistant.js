@@ -431,6 +431,8 @@ export function kontoraAssistant() {
     assistantShowHistory() {
       this._assistantSelectionSeq++;
       this.assistantView = 'history';
+      this._armAssistantPoll();
+      if (this.assistantStreaming) this._assistantOpenStream();
       return this.assistantLoadThreads();
     },
 
@@ -453,6 +455,8 @@ export function kontoraAssistant() {
         assistantStore('kontora-assistant-thread', '');
       }
       this.assistantView = 'thread';
+      this._armAssistantPoll();
+      if (this.assistantStreaming) this._assistantOpenStream();
     },
 
     async assistantNewThread() {

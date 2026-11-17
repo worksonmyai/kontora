@@ -196,6 +196,7 @@ for (const mode of ['todo', 'open', 'scheduled', 'epic', 'inherit', 'none', 'exp
     globalThis.fetch = async (url, options) => { body = JSON.parse(options.body); return { ok: true }; };
     try {
       assert.equal(await state.submitCreateTicket(), true);
+      assert.equal(state.createForm.title, '', 'successful ticket and epic creation must clear the draft');
       assert.equal(body.status, ['open', 'scheduled', 'epic'].includes(mode) ? 'open' : 'todo');
       assert.equal(body.branch, 'work');
       assert.equal(body.base_branch, 'main');

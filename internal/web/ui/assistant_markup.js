@@ -23,6 +23,10 @@ const ASSISTANT_HISTORY = `
 </template>`;
 
 const ASSISTANT_TRANSCRIPT = `
+<div x-show="assistantReadError" x-cloak role="status" class="font-mono text-[11px] text-warn">
+  <span x-text="'Transcript updates unavailable. ' + assistantReadError"></span>
+  <button type="button" x-show="assistantReadRetryable && assistantReadRetries > 4" @click="assistantRetryActivity()" class="underline">Retry</button>
+</div>
 <div x-show="companionThread()" x-html="companionEvidenceMarkup"></div>
 <template x-if="!assistantMessages.length && !assistantEvents.length">
   <div class="m-auto max-w-[300px] text-center flex flex-col gap-2">
@@ -121,7 +125,7 @@ const ASSISTANT_COMPOSER = `
         <button type="button" id="assistant-autonomy" x-show="!companionThread()" @click="assistantAutonomyOpen = !assistantAutonomyOpen" class="font-mono text-[11px] h-[24px] px-2 rounded-[6px] bg-surface-900 border border-edge-input text-tx-3 hover:text-tx-2 flex items-center gap-1.5" :aria-expanded="assistantAutonomyOpen ? 'true' : 'false'" x-text="assistantAutonomyLabel()"></button>
         <div x-show="assistantAutonomyOpen" x-cloak @click.outside="assistantAutonomyOpen = false" class="assistant-autonomy-menu absolute left-0 bottom-full mb-1 w-[220px] rounded-[9px] border border-surface-700 bg-surface-850 py-1 z-10">
           <template x-for="mode in assistantAutonomies()" :key="mode.key">
-            <button type="button" @click="setAssistantAutonomy(mode.key)" class="w-full text-left px-2.5 py-1.5 hover:bg-surface-800 transition-colors" :class="assistantAutonomy === mode.key ? 'bg-surface-800' : ''">
+            <button type="button" @click="setAssistantAutonomy(mode.key)" class="w-full text-left px-2.5 py-1.5 hover:bg-surface-800 transition-colors" :class="assistantEffectiveAutonomy() === mode.key ? 'bg-surface-800' : ''">
               <span class="block font-mono text-[11.5px] text-tx-2" x-text="mode.label"></span>
               <span class="block text-[10.5px] leading-[1.4] text-surface-600" x-text="mode.hint"></span>
             </button>
@@ -130,7 +134,7 @@ const ASSISTANT_COMPOSER = `
       </div>
       <span class="assistant-agent font-mono text-[10px] text-tx-faint truncate min-w-0" x-text="assistantAgent ? assistantAgent.agent : ''"></span>
       <button type="button" x-show="assistantStreaming" @click="stopAssistantTurn()" class="ml-auto font-mono text-[11px] h-[24px] px-2.5 rounded-[6px] bg-surface-900 border border-edge-input text-tx-3 hover:text-err">Stop</button>
-      <button type="button" id="assistant-send" x-show="!assistantStreaming" @click="sendAssistantMessage()" :disabled="!assistantDraft.trim() || (companionThread() && !companionCanAsk())" class="ml-auto font-mono text-[11.5px] h-[24px] px-3 rounded-[6px] bg-accent text-accent-fg hover:bg-accent-bright disabled:opacity-40">Send</button>
+      <button type="button" id="assistant-send" x-show="!assistantStreaming" @click="sendAssistantMessage()" :disabled="assistantSending || !assistantDraft.trim() || (companionThread() && !companionCanAsk())" class="ml-auto font-mono text-[11.5px] h-[24px] px-3 rounded-[6px] bg-accent text-accent-fg hover:bg-accent-bright disabled:opacity-40">Send</button>
     </div>
   </div>
 </template>`;

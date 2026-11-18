@@ -64,8 +64,11 @@ export async function settingsState(text = settingsFixture, globals = {}) {
     clockHM: () => '12:00', ...globals });
   const notifySource = fs.readFileSync(new URL('../ui/notify.js', import.meta.url), 'utf8')
     .replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
-  vm.runInContext(notifySource + '\n' + source + '\nthis.makeSettings = kontoraSettings;', context);
-  const state = context.makeSettings();
+  const ticketsSource = fs.readFileSync(new URL('../ui/tickets.js', import.meta.url), 'utf8')
+    .replace(/^export /gm, '');
+  vm.runInContext(ticketsSource + '\n' + notifySource + '\n' + source
+    + '\nthis.makeSettings = kontoraSettings; this.makeTickets = kontoraTickets;', context);
+  const state = Object.assign(context.makeTickets(), context.makeSettings());
   Object.assign(state, { _settingsYAML: yaml, _navigationSeq: 0, currentView: 'settings',
     $nextTick: fn => Promise.resolve().then(fn), closeAgentPicker() {},
     assistantAutonomies: () => [], ...globals.state });

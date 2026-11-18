@@ -958,6 +958,9 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, companion.ErrStorageUnavailable):
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrAssistantActivityUnavailable):
+		w.Header().Set("Retry-After", "1")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrAssistantAtCapacity):
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrAssistantStale):

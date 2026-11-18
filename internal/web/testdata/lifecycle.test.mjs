@@ -175,6 +175,70 @@ test('epic execution drains the actual brief debounce and retains failed drafts'
   }
 });
 
+for (const boundary of ['initially read-only', 'permission revoked', 'detail permission revoked', 'supervisor started']) {
+  test(`epic brief retains forbidden drafts without trapping navigation: ${boundary}`, async t => {
+    const a = app();
+    a.tickets[0] = { ...a.tickets[0], kind: 'epic', epic_execution: 'agent', can_edit: boundary !== 'initially read-only' };
+    a.selectedEpic = a._epicDetail = { ...a.tickets[0], description: 'old' };
+    a.editForm = { body: 'old' }; a._editorGeneration = 1;
+    a._loadEditorDraft(a.selectedEpic, { description: 'old' });
+    a._blockAnchor = () => null; a._anchorEditor = () => {}; a.$nextTick = fn => fn();
+    a.epicBeginBriefEdit({ target: null });
+    assert.equal(a.epicEditingBrief, boundary !== 'initially read-only');
+    a.editForm.body = 'retained brief';
+    a._epicBriefDebounce = setTimeout(() => assert.fail('forbidden debounce ran'), 1000);
+    t.after(() => clearTimeout(a._epicBriefDebounce));
+    let writes = 0;
+    t.mock.method(globalThis, 'fetch', async (_url, options) => {
+      if (!options) return { ok: true, json: async () => ({ ...a.tickets[0], description: 'old' }) };
+      writes++;
+      return { ok: false, json: async () => ({ error: 'forbidden' }) };
+    });
+    if (boundary === 'supervisor started') a.tickets[0] = { ...a.tickets[0], status: 'in_progress', execution_active: true };
+    else a.tickets[0] = { ...a.tickets[0], can_edit: false };
+    if (boundary === 'detail permission revoked') {
+      a.boardEntryChanged = () => false; a.reconcileOutput = () => {};
+      await a.epicFetchDetail('a');
+    } else a.epicRefreshSelected();
+    assert.equal(a._epicBriefDebounce, null);
+    assert.equal(a.epicEditingBrief, false);
+    assert.equal(await a.lifecycleDraftBarrier('a'), false);
+    a.closeTerminal = () => {}; a._resetActivity = () => {};
+    assert.equal(await a.closeEpic(false), true);
+    assert.equal(a.selectedEpic, null);
+    assert.equal(a._editorSaves.a.draft.description, 'retained brief');
+    assert.equal(writes, 0);
+    a._loadEditorDraft({ id: 'a' }, { description: 'old' });
+    assert.equal(a._editorSaves.a.draft.description, 'retained brief');
+    a._destroyEditorRetirements();
+  });
+}
+
+test('epic permission loss during a brief write retains later typing without another PUT', async t => {
+  const a = app(), ack = deferred(), calls = [];
+  a.tickets[0] = { ...a.tickets[0], kind: 'epic', epic_execution: 'agent', can_edit: true };
+  a.selectedEpic = a._epicDetail = { ...a.tickets[0], description: 'old' };
+  a.editForm = { body: 'submitted' }; a._editorGeneration = 1;
+  a._loadEditorDraft(a.selectedEpic, { description: 'old' });
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    calls.push(options?.method || 'GET');
+    if (options) await ack.promise;
+    return { ok: true, json: async () => ({ ...a.tickets[0], description: 'submitted' }) };
+  });
+  const save = a.epicFlushBrief();
+  await until(() => calls.length === 1);
+  a.editForm.body = 'newer retained text';
+  a.tickets[0] = { ...a.tickets[0], can_edit: false };
+  a._epicUpdateSeq++;
+  a.epicRefreshSelected();
+  ack.resolve();
+  assert.equal(await save, false);
+  assert.deepEqual(calls, ['PUT', 'GET']);
+  assert.equal(a._editorSaves.a.draft.description, 'newer retained text');
+  assert.equal(a.selectedEpic.can_edit, false);
+  a._destroyEditorRetirements();
+});
+
 test('notification barrier waits a targeted pending save and blocks a failed acknowledgement', async () => {
   for (const [ok, message] of [[true, null], [false, 'Notification save denied'], [false, null]]) {
     const a = Object.assign(app(), kontoraNotify()); const pending = deferred();

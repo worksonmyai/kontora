@@ -35,6 +35,8 @@ const parityMatrix = {
 const themes = ['dark', 'light'];
 const source = 'secondary';
 const sourcePath = '/fixtures/team-tickets';
+const secondSource = 'secondary-two';
+const secondSourcePath = '/fixtures/other-team-tickets';
 const unavailablePath = '/fixtures/' + 'unavailable-folder-'.repeat(12);
 const longID = 'kon-' + 'long-identifier-'.repeat(12);
 const tail = '\n## Notes\n\nProtected note identity: browser-note-1\n\n## Audit\nDo not edit this tail.\n';
@@ -174,6 +176,42 @@ function listProjection(record) {
   return result;
 }
 
+// Deterministic populated windows; range names and fields match stats.Result.
+// Opt in to avoid multiplying the existing empty-chart browser matrix.
+function populatedStats(range = '90d') {
+  const count = { '1d': 1, '1w': 7, '30d': 35, '90d': 98, all: 182 }[range];
+  assert.ok(count, `Unknown Stats fixture range: ${range}`);
+  const end = Date.UTC(2026, 10, 18), dayMS = 86400000;
+  const date = time => new Date(time).toISOString().slice(0, 10);
+  const start = end - (count - 1) * dayMS;
+  const days = Array.from({ length: count }, (_, i) => ({ date: date(start + i * dayMS), runs: count === 1 ? 120 : (i % 5 + 2) * 4 }));
+  const unit = count === 1 ? 'hour' : count <= 7 ? 'day' : 'week';
+  const bucketCount = unit === 'hour' ? 24 : unit === 'day' ? count : Math.ceil((count + (new Date(start).getUTCDay() + 6) % 7) / 7);
+  const bucketStart = unit === 'week' ? start - ((new Date(start).getUTCDay() + 6) % 7) * dayMS : start;
+  const buckets = Array.from({ length: bucketCount }, (_, i) => ({
+    start: unit === 'hour' ? `${date(end)}T${String(i).padStart(2, '0')}:00` : date(bucketStart + i * dayMS * (unit === 'week' ? 7 : 1)),
+    done: i % 4 + 1, cancelled: i % 3 === 0 ? 1 : 0,
+    tokens_in: (i + 1) * 1000, tokens_out: (i + 1) * 100,
+    tokens_cache_create: (i + 1) * 100, tokens_cache_read: (i + 1) * 200,
+  }));
+  const sum = key => buckets.reduce((n, b) => n + b[key], 0);
+  const runs = days.reduce((n, d) => n + d.runs, 0), tokens = sum('tokens_in') + sum('tokens_out');
+  const busiest = days.reduce((best, day) => day.runs >= best.runs ? day : best);
+  return { window: { days: count, unit, buckets: buckets.length, from: date(start), to: date(end) }, days, buckets,
+    totals: { shipped: sum('done'), shipped_this_week: 4, runs, median_cycle_ms: 3600000, median_cycle_delta_ms: -60000,
+      first_pass_pct: 75, first_pass_visits: 3, tokens_in: sum('tokens_in'), tokens_out: sum('tokens_out'),
+      tokens_cache_create: sum('tokens_cache_create'), tokens_cache_read: sum('tokens_cache_read'), tokens_delta_pct: 12,
+      busiest_day: busiest.date, busiest_day_runs: busiest.runs },
+    live: { running: 1, slots: 3, queued: 2, oldest_wait_ms: 60000, in_review: 1, busy: ['fixture-agent'] },
+    stages: [{ name: 'plan', p50_ms: 60000, p90_ms: 120000, share: 25, runs: 1, complete: 1, failed: 0, unknown: 0,
+      waiting: 0, blocked: 0, protocol_error: 0, runner_failed: 0, retry_pct: 0, tokens: tokens / 4, tokens_p90: tokens / 4, token_share: 25, token_runs: 1 },
+    { name: 'code', p50_ms: 180000, p90_ms: 240000, share: 75, runs: runs - 1, complete: runs - 2, failed: 1, unknown: 0,
+      waiting: 0, blocked: 0, protocol_error: 0, runner_failed: 1, retry_pct: 25, tokens: tokens * 3 / 4, tokens_p90: tokens / 2, token_share: 75, token_runs: runs - 1 }],
+    agents: [{ name: 'fixture-agent', model: 'fixture-model', runs, first_pass_pct: 75, first_pass_visits: 3,
+      median_ms: 120000, tokens_per_run: Math.round(tokens / runs), retries_per_ticket: 0.25 }],
+    projects: [{ name: 'Fixture repository', done: sum('done'), median_cycle_ms: 3600000 }] };
+}
+
 // Keys include source and id so a primary PUT cannot save a secondary namesake.
 function fixtures(options = {}) {
   const records = new Map();
@@ -186,6 +224,15 @@ function fixtures(options = {}) {
   put(ticket('kon-draft', 'Secondary namesake', { source, kontora: false,
     can_control: false, can_claim: false, refusal_reason: 'Fixture is edit-only',
     description: 'Secondary-only description.\n', body: 'Secondary-only description.\n' + tail }));
+  if (options.secondSecondary) {
+    put(ticket('kon-draft', 'Second secondary namesake', { source: secondSource, kontora: false,
+      can_control: false, can_claim: false, description: 'Other secondary-only description.\n', body: 'Other secondary-only description.\n' + tail }));
+    for (const folder of [source, secondSource]) {
+      Object.assign(records.get(key(folder, 'kon-draft')), { summary: 'Shared summary references kon-reference.',
+        history: [{ stage: 'code', run: 0, completed_at: stamp, exit_code: 0, summary: 'Shared summary references kon-reference.' }] });
+      put(ticket('kon-reference', `${folder} reference target`, { source: folder, kontora: false, can_control: false }));
+    }
+  }
   put(ticket('kon-live', liveTitle, { status: 'in_progress', stage: 'code', stages: ['plan', 'code', 'test'], started_at: stamp,
     branch: liveBranch, agent: liveAgent, can_edit: false,
     history: [{ stage: 'plan', run: 0, agent: liveAgent, started_at: stamp, completed_at: stamp, exit_code: 0 }] }));
@@ -209,11 +256,22 @@ function fixtures(options = {}) {
     custom_statuses: [], stages: ['plan', 'code'], channels: [], default_channels: [], ...options.config };
   const requests = [], mutations = [], sockets = [], socketRoutes = [], messages = [], violations = [], expectedHTTPFailures = [];
   const descriptionWrites = [], pendingResizes = [], enqueued = [], artifactReads = [];
+  const uploads = [], stylesheetRequests = [], authNavigations = [];
+  const rawOutputs = new Map(Object.entries(options.rawOutputs || {
+    'kon-done/code/0': 'Recorded occurrence zero: failed code visit.\n',
+    'kon-done/code/1': 'Recorded occurrence one: completed code visit.\n',
+    'kon-live/code/0': 'Live code registration: unrecorded running output.\n',
+  }));
+  let mintedNotes = 0, createdThreads = 0;
   const terminalMarkers = new Map();
   const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, activityEvents: null, bracketedPaste: false,
     descriptionWait: null, descriptionFailure: null, holdResizes: false,
     epicWait: null, epicFailure: null, assistantMessageFailure: null, assistantGateWait: null,
     changesWait: null, changesFailure: null, lifecycleWait: null, lifecycleFailure: null, noteWait: null,
+    noteDispatchWait: null, noteFailure: null, noteLoseResponse: false,
+    assistantCreateWait: null, assistantCreateFailure: null, assistantMissingThreads: new Set(options.assistantMissingThreads || []),
+    uploadWait: null, uploadResponse: options.uploadResponse || null, stylesheetFailures: options.stylesheetFailures || 0, rawFailures: new Map(),
+    authRequired: options.authRequired || false, authToken: 'fixture-token',
     automationFailure: null, automationReadFailure: null, automationWait: null, automationsAvailable: true, loseCreate: false, loseRun: false,
     unavailableFolder: false, sourcesFailure: false, configFailure: options.configFailure || false,
     rawConfigUnavailable: options.rawConfigUnavailable || false, rawReadWait: null, configRefreshWait: null,
@@ -243,10 +301,13 @@ function fixtures(options = {}) {
   const active = record => record.execution_active ?? (record.status === 'in_progress');
   const json = (route, value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
   const heldReads = [], readQueues = new Map();
-  function holdRead(path) {
-    const started = deferred(), response = deferred(), done = deferred();
-    const held = { path, started: started.promise, done: done.promise, claimed: false,
-      release: result => response.resolve(result || {}), response, signalStarted: started.resolve, signalDone: done.resolve };
+  function holdRead(path, { delayBody = false } = {}) {
+    const started = deferred(), response = deferred(), done = deferred(), body = deferred(), decoding = deferred();
+    const held = { path, started: started.promise, done: done.promise, decoding: decoding.promise, claimed: false,
+      decodeID: delayBody ? String(heldReads.length) : null, body,
+      releaseBody: () => body.resolve(), signalDecoding: decoding.resolve,
+      release: result => response.resolve(structuredClone(result || {})), response, signalStarted: started.resolve, signalDone: done.resolve };
+    if (!delayBody) held.releaseBody();
     heldReads.push(held);
     if (!readQueues.has(path)) readQueues.set(path, []);
     readQueues.get(path).push(held);
@@ -256,6 +317,7 @@ function fixtures(options = {}) {
   const holdDetail = (folder, id = 'kon-draft') => holdRead(detailPath(folder, id));
   const pendingSnapshot = options.pendingSnapshot ? holdSnapshot(options.pendingSnapshot) : null;
   async function readResponse(route, path, value) {
+    const failureURL = route.request().url?.() || base + path;
     const held = readQueues.get(path)?.shift();
     if (!held) return json(route, value);
     const snapshot = structuredClone(value);
@@ -264,19 +326,23 @@ function fixtures(options = {}) {
     try {
       const result = await held.response.promise;
       if (result.failure === 'network') {
-        expectedHTTPFailures.push(base + path);
+        expectedHTTPFailures.push(failureURL);
         return await route.abort('failed');
       }
       if (result.failure === 'http') {
-        expectedHTTPFailures.push(base + path);
+        expectedHTTPFailures.push(failureURL);
         return await json(route, { error: 'Fixture detail read failed' }, 503);
       }
-      if (result.failure === 'json') return await route.fulfill({ contentType: 'application/json', body: '{invalid json' });
-      return await json(route, result.value ?? snapshot);
+      const headers = { ...result.headers, ...(held.decodeID === null ? {} : { 'X-Fixture-Decode': held.decodeID }) };
+      if (result.failure === 'json') return await route.fulfill({ contentType: 'application/json', body: '{invalid json', headers });
+      const status = result.status || 200;
+      if (status >= 400) expectedHTTPFailures.push(failureURL);
+      return await route.fulfill({ status, contentType: 'application/json', headers,
+        body: status === 304 || status === 204 ? '' : JSON.stringify(result.value ?? snapshot) });
     } finally { held.signalDone(); }
   }
   async function releaseReads() {
-    for (const held of heldReads) held.release();
+    for (const held of heldReads) { held.release(); held.releaseBody(); }
     await Promise.all(heldReads.filter(held => held.claimed).map(held => held.done));
   }
 
@@ -290,6 +356,10 @@ function fixtures(options = {}) {
       : /^\/api\/assistant\/threads\/[^/]+\/activity$/.test(path) ? ['after']
       : /\/(logs|activity)$/.test(path) ? ['stage', 'run', 'offset', 'limit', 'after', 'log_tail_bytes'] : [];
     assert.ok([...url.searchParams.keys()].every(k => allowedQuery.includes(k)), `Unexpected query: ${url}`);
+    if (behavior.authRequired && method === 'GET' && ['/api/config', '/api/tickets', '/api/assistant'].includes(path)) {
+      expectedHTTPFailures.push(base + path);
+      return json(route, { error: 'Fixture authentication required' }, 401);
+    }
     if (path === '/api/automations' && method === 'GET') return json(route, { available: behavior.automationsAvailable,
       error: behavior.automationsAvailable ? undefined : 'Automation store locked', definitions: [...definitions.values()] });
     if (path === '/api/automations/preview' && method === 'POST') {
@@ -300,7 +370,22 @@ function fixtures(options = {}) {
         expectedHTTPFailures.push(base + path);
         return json(route, { error: 'Invalid timezone' }, 400);
       }
-      return json(route, { occurrences: fires, human: 'Every weekday at 09:00' });
+      // Explicit authoritative parser cases, not a permissive catch-all. Unknown
+      // inputs still fail strict interception rather than silently validating.
+      const rejected = new Map([
+        ['0 9 * *', 'cron takes 5 fields'],
+        ['61 9 * * *', 'minute out of range'],
+        ['0 9 31 2 *', 'schedule has no occurrences'],
+        ['not a schedule', 'invalid schedule'],
+      ]);
+      if (rejected.has(schedule.schedule)) {
+        expectedHTTPFailures.push(base + path);
+        return json(route, { error: rejected.get(schedule.schedule) }, 400);
+      }
+      assert.ok(new Set(['0 9 * * 1-5', '0 * * * *', '0 */6 * * *', '0 9 * * *',
+        '0 3 * * *', '0 10 * * 1', '30m', '1.5h', '0.5h']).has(schedule.schedule),
+      `Unmodelled authoritative preview schedule: ${schedule.schedule}`);
+      return json(route, { occurrences: fires, human: schedule.schedule === '1.5h' ? 'Every 1h30m' : 'Every weekday at 09:00' });
     }
     if (path === '/api/automations' && method === 'POST') {
       if (behavior.automationWait) await behavior.automationWait;
@@ -390,7 +475,7 @@ function fixtures(options = {}) {
           }
           if (configWait) await configWait;
           if (behavior.configRefreshWait) await behavior.configRefreshWait;
-          return json(route, config);
+          return readResponse(route, path, config);
         case '/api/ticket-sources':
           if (behavior.sourcesFailure) {
             expectedHTTPFailures.push(base + path);
@@ -399,11 +484,15 @@ function fixtures(options = {}) {
           return json(route, [
             { id: 'primary', path: '/fixtures/primary', available: true },
             { id: source, path: sourcePath, available: true },
+            ...(options.secondSecondary ? [{ id: secondSource, path: secondSourcePath, available: true }] : []),
             ...(behavior.unavailableFolder ? [{ id: 'unavailable', path: unavailablePath, available: false, error: 'Fixture folder unavailable' }] : []),
           ]);
         case '/api/tickets': return readResponse(route, path, { tickets: list('primary'), running_agents: list('primary').filter(active).length });
         case `/api/sources/${source}/tickets`: return readResponse(route, path, list(source));
-        case '/api/assistant': return json(route, behavior.assistantConfig);
+        case `/api/sources/${secondSource}/tickets`:
+          assert.ok(options.secondSecondary, 'Second secondary source must be explicitly enabled');
+          return readResponse(route, path, list(secondSource));
+        case '/api/assistant': return readResponse(route, path, behavior.assistantConfig);
         case '/api/assistant/threads': return json(route, { threads: [...assistantThreads.values()].map(({ messages, ...thread }) => thread) });
         case '/api/assistant/companion':
           if (behavior.companionWait) await behavior.companionWait;
@@ -420,7 +509,8 @@ function fixtures(options = {}) {
             return json(route, { error: 'No config file' }, 501);
           }
           return json(route, { content: rawConfig });
-        case '/api/stats': return json(route, { totals: { done: 1, runs: 2, first_pass_pct: 50 }, live: {}, days: [], buckets: [], stages: [], agents: [], projects: [] });
+        case '/api/stats': return readResponse(route, path, options.populatedStats ? populatedStats(url.searchParams.get('range') || '90d')
+          : { totals: { done: 1, runs: 2, first_pass_pct: 50 }, live: {}, days: [], buckets: [], stages: [], agents: [], projects: [] });
         case '/api/tickets/archived': return json(route, { tickets: [records.get('primary/kon-archived')] });
       }
     }
@@ -451,6 +541,29 @@ function fixtures(options = {}) {
       }
       return route.fulfill({ status: 204 });
     }
+    if (method === 'POST' && path === '/api/tickets/upload') {
+      assert.equal(request.headers()['x-kontora-confirm'], 'upload-tickets');
+      const contentType = request.headers()['content-type'];
+      assert.match(contentType, /^multipart\/form-data; boundary=/);
+      const form = await new Response(request.postDataBuffer(), { headers: { 'Content-Type': contentType } }).formData();
+      const files = [];
+      for (const [field, file] of form) {
+        assert.equal(field, 'files'); assert.equal(typeof file, 'object'); assert.match(file.name, /\.md$/i);
+        files.push({ name: file.name, type: file.type, content: await file.text() });
+      }
+      assert.ok(files.length, 'Upload must contain Markdown files');
+      uploads.push({ path, files });
+      const response = structuredClone(behavior.uploadResponse);
+      if (behavior.uploadWait) await behavior.uploadWait;
+      if (response?.failure === 'network') { expectedHTTPFailures.push(base + path); return route.abort('failed'); }
+      if (response) {
+        if (response.status >= 400) expectedHTTPFailures.push(base + path);
+        return route.fulfill(response);
+      }
+      // Deliberately no invented ticket import: callers provide the success
+      // receipt (and records) they need. Failed requests never mutate records.
+      return json(route, { created: [], errors: files.map(file => ({ file: file.name, error: 'Fixture import not configured' })) });
+    }
     if (method === 'POST' && path === '/api/tickets') {
       if (behavior.createWait) await behavior.createWait;
       if (behavior.createFailure) {
@@ -469,6 +582,19 @@ function fixtures(options = {}) {
       mutations.push({ method, path, body, ticket: structuredClone(created) });
       return json(route, created, 201);
     }
+    if (method === 'POST' && path === '/api/assistant/threads') {
+      const body = request.postDataJSON();
+      assert.deepEqual(Object.keys(body), ['autonomy']); assert.ok(['read', 'ask', 'auto'].includes(body.autonomy));
+      const captured = structuredClone(body), failure = structuredClone(behavior.assistantCreateFailure);
+      if (behavior.assistantCreateWait) await behavior.assistantCreateWait;
+      if (failure) { expectedHTTPFailures.push(base + path); return json(route, { error: failure.error }, failure.status); }
+      const id = 'c' + String(++createdThreads).padStart(15, '0');
+      assert.ok(!assistantThreads.has(id), 'Fixture thread identities must be unique');
+      const thread = { id, title: 'New fixture chat', autonomy: captured.autonomy, turns: 0, writes: 0,
+        running: false, messages: [], events: [], created_at: stamp, updated_at: stamp };
+      assistantThreads.set(id, thread); mutations.push({ method, path, body: captured });
+      return json(route, thread, 201);
+    }
     const gateMatch = path.match(/^\/api\/assistant\/gate\/([^/]+)$/);
     if (gateMatch && method === 'POST') {
       const thread = [...assistantThreads.values()].find(t => t.gate?.id === decodeURIComponent(gateMatch[1]));
@@ -485,8 +611,12 @@ function fixtures(options = {}) {
     if (assistantMatch) {
       const id = decodeURIComponent(assistantMatch[1]), action = assistantMatch[2];
       const thread = assistantThreads.get(id);
+      if (behavior.assistantMissingThreads.has(id)) {
+        expectedHTTPFailures.push(base + path);
+        return json(route, { error: 'Assistant thread not found' }, 404);
+      }
       assert.ok(thread, `Unknown assistant thread: ${id}`);
-      if (method === 'GET' && !action) return json(route, thread);
+      if (method === 'GET' && !action) return readResponse(route, path, thread);
       if (method === 'DELETE' && !action) {
         assert.equal(request.postData(), null);
         assistantThreads.delete(id);
@@ -510,7 +640,7 @@ function fixtures(options = {}) {
       if (method === 'GET' && action === 'activity') {
         const after = url.searchParams.get('after');
         assert.ok(after !== null && /^\d+$/.test(after), 'Assistant activity requires a numeric cursor');
-        return json(route, { running: thread.running, autonomy: thread.autonomy, messages: thread.messages,
+        return readResponse(route, path, { running: thread.running, autonomy: thread.autonomy, messages: thread.messages,
           evidence: thread.evidence, gate: thread.gate, offset: 0,
           tape: { events: thread.events || [{ kind: 'text', text: `Recorded reply for ${thread.title}.` }] },
           partial: thread.running ? 'An explanation is still running.' : '', partial_gen: thread.running ? 1 : 0 });
@@ -574,15 +704,33 @@ function fixtures(options = {}) {
       const record = records.get(key(folder, decodeURIComponent(noteMatch[2])));
       assert.ok(record, 'Notes require an existing source-qualified ticket');
       const body = request.postData() ? request.postDataJSON() : {};
+      if (behavior.noteDispatchWait) await behavior.noteDispatchWait;
+      const failure = behavior.noteFailure && (!behavior.noteFailure.path || behavior.noteFailure.path === path) ? behavior.noteFailure : null;
+      if (failure || record.can_edit === false) {
+        expectedHTTPFailures.push(base + path);
+        return json(route, { error: failure?.error || 'Fixture ticket is read-only' }, failure?.status || 403);
+      }
       const notes = record.notes ||= [];
-      const note = notes.find(n => n.id === decodeURIComponent(noteMatch[4] || ''));
+      const resolveNote = ref => notes.find(n => n.id === ref);
+      const mint = note => {
+        if (note.id.startsWith('#')) {
+          const oldID = note.id;
+          do { note.id = `minted${++mintedNotes}fx`; } while (notes.some(n => n !== note && n.id === note.id));
+          for (const reply of notes) if (reply.parent_id === oldID) reply.parent_id = note.id;
+        }
+        return note.id;
+      };
+      const note = resolveNote(decodeURIComponent(noteMatch[4] || ''));
       if (noteMatch[3] === 'note' && method === 'POST') {
         assert.ok(body.text?.trim());
-        if (body.parent) assert.ok(notes.some(n => n.id === body.parent));
-        notes.push({ id: `n${notes.length + 1}fx`, author: config.author || 'Browser author', author_kind: 'human',
-          at: stamp, text: body.text, ...(body.parent ? { parent_id: body.parent } : {}), reactions: [] });
+        const parent = body.parent ? resolveNote(body.parent) : null;
+        if (body.parent) { assert.ok(parent); mint(parent); }
+        let id; do { id = `n${++mintedNotes}fx`; } while (notes.some(n => n.id === id));
+        notes.push({ id, author: config.author || 'Browser author', author_kind: 'human',
+          at: stamp, text: body.text, ...(parent ? { parent_id: parent.id } : {}), reactions: [] });
       } else {
         assert.ok(note, 'Conversation operation requires an existing note');
+        if (noteMatch[3].includes('/reactions') || method === 'PATCH') mint(note);
         if (noteMatch[3].includes('/reactions')) {
           const emoji = noteMatch[5] ? decodeURIComponent(noteMatch[5]) : body.emoji;
           const actor = body.actor || url.searchParams.get('actor') || config.author || 'Browser author';
@@ -606,6 +754,9 @@ function fixtures(options = {}) {
           record.notes = notes.filter(n => n !== note && n.parent_id !== note.id);
         }
       }
+      // ParseNotes exposes legacy references by their position in the whole
+      // accepted note list. Deletion can therefore change #N without a mint.
+      record.notes.forEach((note, index) => { if (note.id.startsWith('#')) note.id = `#${index}`; });
       // Notes update the protected tail, never the description. Retain its audit suffix.
       const audit = record.description_tail.slice(record.description_tail.indexOf('## Audit'));
       record.description_tail = '\n## Notes\n\n' + record.notes.map(n => `**${n.at} · ${n.author} · ${n.id}**\n\n${n.text}`).join('\n\n') + '\n\n' + audit;
@@ -613,6 +764,9 @@ function fixtures(options = {}) {
       mutations.push({ method, path, body, ticket: structuredClone(record) });
       const snapshot = structuredClone(record);
       if (behavior.noteWait) await behavior.noteWait;
+      if (behavior.noteLoseResponse && (!behavior.noteLoseResponse.path || behavior.noteLoseResponse.path === path)) {
+        expectedHTTPFailures.push(base + path); return route.abort('failed');
+      }
       return json(route, snapshot);
     }
     const match = path.match(/^\/api(?:\/sources\/([^/]+))?\/tickets\/([^/]+)(?:\/(cost|chain|changes|logs|activity|move|pause|retry|init|run))?$/);
@@ -629,6 +783,10 @@ function fixtures(options = {}) {
       if (method === 'PUT' && !action) {
         const body = request.postDataJSON();
         assert.ok(!('body' in body), 'Description edits must not replace the protected tail');
+        if (record.can_edit === false) {
+          expectedHTTPFailures.push(base + path);
+          return json(route, { error: 'Fixture ticket is read-only' }, 403);
+        }
         if ('description' in body) {
           descriptionWrites.push({ method, path, body });
           const failure = behavior.descriptionFailure;
@@ -663,7 +821,23 @@ function fixtures(options = {}) {
             }
             return readResponse(route, path, options.changes?.[id] || { base: 'main', branch: record.branch || '', files: [], commits: [] });
           }
-          case 'logs': return json(route, { content: `${id} ${url.searchParams.get('stage') || 'code'} fixture log revision ${behavior.outputRevision}\n` });
+          case 'logs': {
+            if (!options.distinctRaw) return readResponse(route, path, { content: `${id} ${url.searchParams.get('stage') || 'code'} fixture log revision ${behavior.outputRevision}\n` });
+            const stage = url.searchParams.get('stage');
+            const runText = url.searchParams.get('run');
+            assert.ok(stage, 'Distinct raw fixtures require a stage');
+            assert.ok(runText === null || /^(0|[1-9]\d*)$/.test(runText), 'Raw run must be a nonnegative occurrence');
+            const occurrences = (record.history || []).filter(h => h.stage === stage);
+            const latest = active(record) && record.stage === stage ? occurrences.length : occurrences.length - 1;
+            const run = runText === null ? latest : Number(runText), outputKey = `${id}/${stage}/${run}`;
+            const failure = behavior.rawFailures.get(outputKey);
+            artifactReads.push({ id, stage, run, raw: true });
+            if (failure || occurrences[run]?.imported || !rawOutputs.has(outputKey)) {
+              expectedHTTPFailures.push(url.href);
+              return json(route, { error: failure?.error || 'Exact raw run output unavailable' }, failure?.status || 404);
+            }
+            return readResponse(route, path, { content: rawOutputs.get(outputKey) });
+          }
           case 'activity': {
             const stage = url.searchParams.get('stage'), run = Number(url.searchParams.get('run') || 0);
             artifactReads.push({ id, stage, run });
@@ -719,6 +893,24 @@ function fixtures(options = {}) {
   }
 
   async function install(context) {
+    // Delay JSON decoding, not arbitrary app state. Headers and wire bytes have
+    // already arrived; tests release this second boundary independently.
+    await context.exposeBinding('__fixtureDecode', async (_source, id) => {
+      const held = heldReads.find(read => read.decodeID === id);
+      assert.ok(held, `Unknown decode gate: ${id}`);
+      held.signalDecoding(); await held.body.promise;
+    });
+    await context.addInitScript(() => {
+      const nativeFetch = window.fetch;
+      window.fetch = async (...args) => {
+        const response = await nativeFetch(...args), id = response.headers.get('X-Fixture-Decode');
+        if (id !== null) {
+          const json = response.json.bind(response);
+          response.json = async () => { await window.__fixtureDecode(id); return json(); };
+        }
+        return response;
+      };
+    });
     // Install BOTH interception layers before creating/navigating the page.
     // No catch-all API success, external fallthrough, service worker or live WS.
     await context.route('**/*', async route => {
@@ -732,9 +924,31 @@ function fixtures(options = {}) {
           return await route.continue();
         }
         if (url.pathname.startsWith('/api/')) return await api(route, url);
+        if (url.pathname === '/' && url.searchParams.has('token')) {
+          assert.equal(request.method(), 'GET'); assert.ok(request.isNavigationRequest());
+          assert.deepEqual([...url.searchParams.keys()], ['token']);
+          const token = url.searchParams.get('token'), accepted = token === behavior.authToken;
+          authNavigations.push({ token, accepted });
+          if (accepted) {
+            behavior.authRequired = false;
+            // No fragment in Location: browser redirect inheritance is real.
+            return await route.fulfill({ status: 303, headers: { Location: '/' }, body: '' });
+          }
+          // The real server still serves index.html for a rejected token. Fetch
+          // only that fixed embedded asset, never the token-bearing URL.
+          const response = await route.fetch({ url: base + '/', maxRedirects: 0 });
+          return await route.fulfill({ response });
+        }
         assert.equal(request.method(), 'GET');
         // index.html names its scripts and stylesheets with a ?v= content hash.
         assert.ok(assets.has(url.pathname) && (!url.search || /^\?v=[0-9a-f]+$/.test(url.search)), `Unknown asset: ${url}`);
+        if (url.pathname === '/vendor/xterm@5.5.0/xterm.css') {
+          stylesheetRequests.push(url.href);
+          if (behavior.stylesheetFailures > 0) {
+            behavior.stylesheetFailures--; expectedHTTPFailures.push(url.href);
+            return await route.fulfill({ status: 503, contentType: 'text/css', body: '' });
+          }
+        }
         return await route.continue();
       } catch (error) {
         violations.push(error.message);
@@ -819,6 +1033,7 @@ function fixtures(options = {}) {
   }
   return { install, api, config, configWrites, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig, descriptionWrites, pendingResizes, terminalMarkers,
     holdSnapshot, holdDetail, holdRead, pendingSnapshot, releaseReads, enqueued, artifactReads,
+    uploads, stylesheetRequests, authNavigations, rawOutputs,
     get rawConfig() { return rawConfig; }, set rawConfig(content) { rawConfig = content; } };
 }
 
@@ -1983,7 +2198,10 @@ describe('API-backed Automations', { concurrency: 2 }, () => {
         for (const name of ['every hour', 'every 6h', 'daily 09:00', 'weekdays 09:00', 'nightly 03:00', 'mondays 10:00']) {
           await automationButton(page, name).click(); assert.equal(await automationButton(page, name).getAttribute('aria-pressed'), 'true');
         }
+        const malformedPreview = page.waitForResponse(r => r.url() === base + '/api/automations/preview'
+          && r.request().postDataJSON().schedule === '0 9 * *');
         await model(page, 'automationsDraft.schedule').fill('0 9 * *');
+        assert.equal((await malformedPreview).status(), 400, 'Nonempty malformed input reaches authoritative preview');
         await visible(view.getByText(/cron takes 5 fields/));
         await model(page, 'automationsDraft.schedule').fill('30m');
         await model(page, 'automationsDraft.timezone').fill('Invalid/Zone');
@@ -5163,6 +5381,10 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       route: async (pattern, callback) => { assert.equal(pattern, '**/*'); handler = callback; },
       routeWebSocket: async () => {},
       addInitScript: async () => {},
+      exposeBinding: async (name, callback) => {
+        assert.equal(name, '__fixtureDecode');
+        assert.equal(typeof callback, 'function');
+      },
     });
     const local = `blob:${base}/01234567-89ab-4cde-8f01-23456789abcd`;
     for (const { url, method, navigation, allowed } of [
@@ -7630,6 +7852,680 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       assert.equal(fixture.mutations.length, 0);
     }, { records: polishRecords(), sidebar: width >= 768 });
   });
+});
+
+// Phases 1–3 exercise the compiled application through real controls. evaluate
+// below only observes state or delivers fixture events; it never invokes app actions.
+const audit32Notes = page => page.locator('.detail-notes:visible');
+async function audit32ConfigEvent(page) {
+  await page.evaluate(() => window.__fixtureSSE.filter(s => !s.closed && s.url === '/api/events')
+    .forEach(s => s.emit('config_reloaded')));
+}
+async function audit32Assistant(page) {
+  await page.getByRole('button', { name: 'Assistant', exact: true }).filter({ visible: true }).click();
+  const pane = page.locator('#assistant-pane:visible, #assistant-sheet:visible');
+  await visible(pane);
+  await pane.getByRole('button', { name: 'Chat', exact: true }).click();
+  return pane;
+}
+
+for (const outcome of ['accepted', 'refused', 'uncertain']) test(`audit32-notes queued source-owned command navigation reopen / ${outcome}`, async t => {
+  const folder = source, path = `/api/sources/${folder}/tickets/kon-draft`;
+  const gate = deferred();
+  await withPage(t, 390, 'light', async (page, fixture) => {
+    try {
+      await openTicket(page, 'kon-draft', folder); await detailPanel(page, 'Notes');
+      fixture.behavior.noteDispatchWait = gate.promise;
+      await audit32Notes(page).getByRole('button', { name: 'React to this note', exact: true }).click();
+      await expect.poll(() => fixture.requests.includes(`POST ${path}/notes/stable-note/reactions`)).toBe(true);
+      const text = `Accepted ${outcome} note belongs to secondary`;
+      await model(page, 'noteDraft').fill(text);
+      await audit32Notes(page).getByRole('button', { name: 'Add note', exact: true }).click();
+      await openTicket(page, 'kon-draft', secondSource); await detailPanel(page, 'Notes');
+      await model(page, 'noteDraft').fill('Newer namesake draft');
+      assert.ok(!fixture.requests.includes(`POST ${path}/note`), 'Add waits behind reaction');
+      if (outcome === 'refused') fixture.behavior.noteFailure = { path: path + '/note', status: 403, error: 'Fixture permission revoked' };
+      if (outcome === 'uncertain') fixture.behavior.noteLoseResponse = { path: path + '/note' };
+      gate.resolve();
+      await expect.poll(() => fixture.requests.filter(r => r === `POST ${path}/note`).length).toBe(1);
+      await expect(model(page, 'noteDraft')).toHaveValue('Newer namesake draft');
+      assert.equal(fixture.records.get(`${secondSource}/kon-draft`).notes?.length || 0, 0);
+      assert.equal(fixture.records.get('primary/kon-draft').notes?.length || 0, 0);
+      await openTicket(page, 'kon-draft', folder); await detailPanel(page, 'Notes');
+      assert.equal(fixture.records.get(`${folder}/kon-draft`).notes[0].reactions.length, 1, 'Only the queued add is refused or loses its acknowledgement');
+      assert.equal(fixture.requests.filter(r => r === `POST ${path}/note`).length, 1, 'Reopening never replays a POST');
+      if (outcome === 'accepted') {
+        await expect(audit32Notes(page).getByText(text, { exact: true })).toBeVisible();
+        await expect(audit32Notes(page).getByRole('region', { name: 'Recoverable note draft' })).toHaveCount(0);
+      } else {
+        const retained = audit32Notes(page).getByRole('region', { name: 'Recoverable note draft' });
+        await expect(retained.getByLabel('Retained note text')).toHaveText(text);
+        await expect(retained).toContainText(outcome === 'refused' ? /permission revoked/ : /uncertain|check|acknowledg/i);
+        if (outcome === 'uncertain') await expect(audit32Notes(page).locator('.ticket-prose').getByText(text, { exact: true })).toBeVisible();
+        await retained.getByRole('button', { name: 'Restore to editor (not sent)', exact: true }).click();
+        await expect(model(page, 'noteDraft')).toHaveValue(text);
+        assert.equal(fixture.requests.filter(r => r === `POST ${path}/note`).length, 1);
+      }
+    } finally { gate.resolve(); fixture.behavior.noteDispatchWait = null; }
+  }, { secondSecondary: true, config: { author: 'Browser author' }, records: [ticket('kon-draft', 'Secondary conversation', {
+    source: folder, kontora: false, can_control: false,
+    notes: [{ id: 'stable-note', at: stamp, author: 'Browser author', text: 'Original source-owned note', reactions: [] }],
+  })] });
+});
+
+for (const width of [390, 1280]) test(`audit32-notes identical unsent reply keeps its own parent after navigation / ${width}px`, async t => {
+  const gate = deferred();
+  await withPage(t, width, 'light', async (page, fixture) => {
+    try {
+      await openTicket(page, 'kon-draft'); await detailPanel(page, 'Notes');
+      const notes = audit32Notes(page);
+      await notes.locator('article').filter({ hasText: 'First parent' }).getByRole('button', { name: 'Reply', exact: true }).click();
+      await model(page, 'noteReplyDraft').fill('Identical reply text');
+      fixture.behavior.noteDispatchWait = gate.promise;
+      await model(page, 'noteReplyDraft').press('Control+Enter');
+      await expect.poll(() => fixture.requests.includes('POST /api/tickets/kon-draft/note')).toBe(true);
+      await notes.locator('article').filter({ hasText: 'Second parent' }).getByRole('button', { name: 'Reply', exact: true }).click();
+      await model(page, 'noteReplyDraft').fill('Identical reply text');
+      await openTicket(page, 'kon-done');
+      gate.resolve();
+      await expect.poll(() => fixture.mutations.filter(m => m.path.endsWith('/note')).length).toBe(1);
+      await openTicket(page, 'kon-draft'); await detailPanel(page, 'Notes');
+      const retained = audit32Notes(page).getByRole('region', { name: 'Recoverable note draft' });
+      await expect(retained.getByLabel('Retained note text')).toHaveText('Identical reply text');
+      await retained.getByRole('button', { name: 'Restore to editor (not sent)', exact: true }).click();
+      await expect(model(page, 'noteReplyDraft')).toHaveValue('Identical reply text');
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).noteReplyOn), 'second');
+      assert.equal(fixture.mutations.filter(m => m.path.endsWith('/note')).length, 1);
+      assert.equal(fixture.records.get('primary/kon-draft').notes.at(-1).parent_id, 'first');
+    } finally { gate.resolve(); fixture.behavior.noteDispatchWait = null; }
+  }, { config: { author: 'Browser author' }, ticket: { notes: [
+    { id: 'first', at: stamp, author: 'Browser author', text: 'First parent', reactions: [] },
+    { id: 'second', at: stamp, author: 'Browser author', text: 'Second parent', reactions: [] },
+  ] } });
+});
+
+test('audit32-notes reopen waits for accepted tail before detail hydration', async t => {
+  const gate = deferred();
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    try {
+      await openTicket(page, 'kon-draft', source); await detailPanel(page, 'Notes');
+      fixture.behavior.noteDispatchWait = gate.promise;
+      await audit32Notes(page).getByRole('button', { name: 'React to this note', exact: true }).click();
+      const path = `/api/sources/${source}/tickets/kon-draft`;
+      await expect.poll(() => fixture.requests.includes(`POST ${path}/notes/stable-note/reactions`)).toBe(true);
+      await model(page, 'noteDraft').fill('Accepted before reopening');
+      await audit32Notes(page).getByRole('button', { name: 'Add note', exact: true }).click();
+      await openTicket(page, 'kon-draft', secondSource);
+      const reads = fixture.requests.filter(r => r === 'GET ' + path).length;
+      await page.evaluate(folder => { location.hash = `#/s/${folder}/t/kon-draft`; }, source);
+      await expect.poll(() => page.evaluate(() => {
+        const app = Alpine.$data(document.body);
+        return app.selectedTicket?.source === 'secondary' && app.detailLoading;
+      })).toBe(true);
+      assert.equal(fixture.requests.filter(r => r === 'GET ' + path).length, reads, 'No stale pre-command hydration');
+      gate.resolve();
+      await ready(page); await detailPanel(page, 'Notes');
+      await expect(audit32Notes(page).getByText('Accepted before reopening', { exact: true })).toBeVisible();
+      assert.equal(fixture.requests.filter(r => r === `POST ${path}/note`).length, 1);
+      assert.equal(fixture.records.get(`${source}/kon-draft`).notes.length, 2);
+      assert.equal(fixture.records.get(`${secondSource}/kon-draft`).notes?.length || 0, 0);
+    } finally { gate.resolve(); fixture.behavior.noteDispatchWait = null; }
+  }, { secondSecondary: true, config: { author: 'Browser author' }, records: [ticket('kon-draft', 'Secondary queued conversation', {
+    source, kontora: false, can_control: false,
+    notes: [{ id: 'stable-note', at: stamp, author: 'Browser author', text: 'Existing note', reactions: [] }],
+  })] });
+});
+
+for (const width of [390, 1280]) test(`audit32-notes queued legacy reply follows minted identity / ${width}px`, async t => {
+  const gate = deferred();
+  await withPage(t, width, 'dark', async (page, fixture) => {
+    try {
+      await openTicket(page, 'kon-draft'); await detailPanel(page, 'Notes');
+      await audit32Notes(page).getByRole('button', { name: 'Reply', exact: true }).click();
+      await model(page, 'noteReplyDraft').fill('Reply keeps its original parent');
+      fixture.behavior.noteDispatchWait = gate.promise;
+      await audit32Notes(page).getByRole('button', { name: 'React to this note', exact: true }).click();
+      await expect.poll(() => fixture.requests.includes('POST /api/tickets/kon-draft/notes/%230/reactions')).toBe(true);
+      await model(page, 'noteReplyDraft').press('Control+Enter');
+      gate.resolve();
+      await expect.poll(() => fixture.records.get('primary/kon-draft').notes.length).toBe(2);
+      const notes = fixture.records.get('primary/kon-draft').notes;
+      assert.match(notes[0].id, /^[^#]/); assert.equal(notes[1].parent_id, notes[0].id);
+      assert.equal(fixture.mutations.find(m => m.path.endsWith('/note')).body.parent, notes[0].id);
+      await expect(audit32Notes(page).getByText('Reply keeps its original parent', { exact: true })).toBeVisible();
+      await expect(model(page, 'noteReplyDraft')).toHaveCount(0);
+      assert.equal(fixture.mutations.length, 2);
+    } finally { gate.resolve(); fixture.behavior.noteDispatchWait = null; }
+  }, { config: { author: 'Browser author' }, ticket: { notes: [{ id: '#0', at: stamp, author: 'Browser author', text: 'Legacy parent', reactions: [] }] } });
+});
+
+for (const [name, preference] of [['unset', {}], ['Off', { notify: [] }]]) test(`audit32-notify repeated channel edits preserve ${name}`, async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    await openTicket(page, 'kon-draft');
+    const rail = page.locator('[data-ticket-details]');
+    for (const [index, channel] of ['ops', 'team', 'ops'].entries()) {
+      await rail.locator('[x-text="notifyRailLabel()"]:visible').click();
+      await rail.getByRole('button', { name: channel, exact: true }).click();
+      await expect.poll(() => fixture.mutations.length).toBe(index + 1);
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).notifySaving)).toBe(false);
+      await rail.getByRole('button', { name: 'done', exact: true }).click();
+    }
+    assert.equal(fixture.mutations.length, 3);
+    for (const m of fixture.mutations) {
+      assert.equal(m.path, '/api/tickets/kon-draft');
+      assert.equal(Object.hasOwn(m.body, 'notify'), name === 'Off');
+      if (name === 'Off') assert.deepEqual(m.body.notify, []);
+    }
+    const saved = fixture.records.get('primary/kon-draft');
+    assert.equal(Object.hasOwn(saved, 'notify'), name === 'Off');
+    if (name === 'Off') assert.deepEqual(saved.notify, []);
+    await backToBoard(page); await openTicket(page, 'kon-draft');
+    assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedTicket.notify === undefined), name === 'unset');
+  }, { ticket: preference, config: { channels: ['ops', 'team'], default_channels: ['ops'], default_notify: ['waiting'] } });
+});
+
+for (const width of [390, 1280]) test(`audit32-schedule impossible calendar submission refused / ${width}px`, async t => {
+  await withPage(t, width, 'light', async (page, fixture) => {
+    await routeTo(page, '#/new');
+    await model(page, 'createForm.title').fill('Impossible local date');
+    await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
+    await page.getByRole('button', { name: 'later', exact: true }).filter({ visible: true }).click();
+    const input = model(page, 'createForm.scheduled_at');
+    await input.fill('2099-02-31 09:00'); await input.blur();
+    const submit = page.getByRole('button', { name: 'Schedule ticket', exact: true }).filter({ visible: true });
+    if (await submit.isEnabled()) await submit.click();
+    await expect(submit).toBeDisabled();
+    await expect(input).toHaveValue('2099-02-31 09:00');
+    await expect(page.getByText('not a valid local time', { exact: true }).filter({ visible: true })).toBeVisible();
+    assert.equal(fixture.mutations.length, 0, 'Never normalize an impossible date into a schedule write');
+    assert.equal(new URL(page.url()).hash, '#/new');
+  });
+});
+
+test('audit32-automation authoritative refusal then valid decimal preview and save', async t => {
+  await withPage(t, 390, 'dark', async (page, fixture) => {
+    await routeTo(page, '#/automations/new');
+    await model(page, 'automationsDraft.name').fill('Decimal interval');
+    await model(page, 'automationsDraft.prompt').fill('Review safely.');
+    await model(page, 'automationsDraft.path').fill('/fixtures/repository-with-a-long-name');
+    for (const schedule of ['0 9 * *', '61 9 * * *', '0 9 31 2 *', 'not a schedule']) {
+      const response = page.waitForResponse(r => r.url() === base + '/api/automations/preview' && r.request().postDataJSON().schedule === schedule);
+      await model(page, 'automationsDraft.schedule').fill(schedule);
+      assert.equal((await response).status(), 400);
+      await expect(automationButton(page, 'create automation')).toBeDisabled();
+      assert.equal(fixture.mutations.length, 0);
+    }
+    const response = page.waitForResponse(r => r.url() === base + '/api/automations/preview' && r.request().postDataJSON().schedule === '1.5h');
+    await model(page, 'automationsDraft.schedule').fill('1.5h');
+    assert.equal((await response).status(), 200);
+    await automationPreviewReady(page); await automationSaveReady(page);
+    await automationButton(page, 'create automation').click();
+    await automationDetailReady(page, 'auto-created-0');
+    assert.equal(fixture.definitions.get('auto-created-0').schedule, '1.5h');
+    assert.equal(fixture.mutations.length, 1);
+  });
+});
+
+test('audit32-settings delete saved empty environment with unrelated edit and reopen', async t => {
+  await withPage(t, 390, 'light', async (page, fixture) => {
+    await routeTo(page, '#/settings/environment');
+    await expect(page.getByRole('textbox', { name: 'EMPTY_OVERRIDE value', exact: true })).toHaveValue('');
+    await settingsView(page).getByRole('button', { name: 'Remove EMPTY_OVERRIDE', exact: true }).click();
+    await settingsSection(page, 'general');
+    await page.getByRole('switch', { name: 'Automatic pickup', exact: true }).click();
+    await settingsButton(page, 'save & reload').click();
+    await expect.poll(() => settingsWrites(fixture).length).toBe(1);
+    await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).settingsDirty())).toBe(false);
+    const saved = yaml.parse(fixture.rawConfig);
+    assert.equal(Object.hasOwn(saved.environment, 'EMPTY_OVERRIDE'), false);
+    assert.equal(saved.environment.KEEP, 'retained'); assert.equal(saved.auto_pick_up, true);
+    await routeTo(page, '#/'); await routeTo(page, '#/settings/environment');
+    await expect(page.getByRole('textbox', { name: 'EMPTY_OVERRIDE value', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('textbox', { name: 'KEEP value', exact: true })).toHaveValue('retained');
+    assert.equal(settingsWrites(fixture).length, 1);
+  }, { rawConfig: 'auto_pick_up: false\nenvironment:\n  EMPTY_OVERRIDE: ""\n  KEEP: retained\nagents:\n  fixture-agent:\n    binary: pi\n' });
+});
+
+for (const delayBody of [false, true]) test(`audit32-settings older save refresh cannot replace newer reload / ${delayBody ? 'body' : 'headers'}`, async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    await routeTo(page, '#/settings/general');
+    fixture.config.custom_statuses = ['old-status'];
+    const held = fixture.holdRead('/api/config', { delayBody });
+    try {
+      await page.getByRole('switch', { name: 'Automatic pickup', exact: true }).click();
+      await settingsButton(page, 'save & reload').click();
+      await held.started;
+      if (delayBody) { held.release(); await held.decoding; }
+      fixture.config.custom_statuses = ['new-status'];
+      fixture.records.get('primary/kon-draft').status = 'new-status';
+      await parityTicketEvent(page, fixture, 'kon-draft');
+      await audit32ConfigEvent(page);
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).configCache.custom_statuses)).toEqual(['new-status']);
+      held.release(); held.releaseBody(); await held.done;
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).settingsSaving)).toBe(false);
+      await routeTo(page, '#/');
+      await expect(page.locator('#col-new-status')).toBeVisible();
+      await expect(page.locator('#col-new-status [data-ticket-id="kon-draft"]')).toBeVisible();
+      await expect(page.locator('#col-old-status')).toHaveCount(0);
+      assert.deepEqual(await page.evaluate(() => Alpine.$data(document.body).configCache.custom_statuses), ['new-status']);
+    } finally { held.release(); held.releaseBody(); }
+  }, { rawConfig: settingsRaw });
+});
+
+for (const width of [390, 1280]) test(`audit32-assistant typing during creation preserves submitted text and newer draft / ${width}px`, async t => {
+  const gate = deferred();
+  await withPage(t, width, 'dark', async (page, fixture) => {
+    try {
+      const pane = await audit32Assistant(page);
+      fixture.behavior.assistantCreateWait = gate.promise;
+      const composer = page.getByLabel('Message the assistant', { exact: true });
+      await composer.fill('Captured outgoing question');
+      await pane.getByRole('button', { name: 'Send', exact: true }).click();
+      await expect.poll(() => fixture.requests.includes('POST /api/assistant/threads')).toBe(true);
+      await composer.fill('Newer question typed while creating');
+      gate.resolve();
+      await expect.poll(() => fixture.mutations.filter(m => m.path.endsWith('/messages')).length).toBe(1);
+      const sent = fixture.mutations.find(m => m.path.endsWith('/messages'));
+      assert.equal(sent.body.text, 'Captured outgoing question'); assert.equal(sent.body.autonomy, 'ask');
+      await expect(composer).toHaveValue('Newer question typed while creating');
+      assert.equal(fixture.assistantThreads.size, 1);
+    } finally { gate.resolve(); fixture.behavior.assistantCreateWait = null; }
+  });
+});
+
+test('audit32-assistant changed default belongs to future chat not selected chat', async t => {
+  await withPage(t, 390, 'light', async (page, fixture) => {
+    const pane = await audit32Assistant(page);
+    await expect(pane.locator('#assistant-sheet-autonomy')).toHaveText('ask first');
+    fixture.behavior.assistantConfig.autonomy = 'read';
+    await audit32ConfigEvent(page);
+    await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).assistantFutureAutonomy)).toBe('read');
+    await expect(pane.locator('#assistant-sheet-autonomy')).toHaveText('ask first');
+    await pane.getByRole('button', { name: 'New chat', exact: true }).click();
+    await expect.poll(() => fixture.mutations.filter(m => m.path === '/api/assistant/threads').length).toBe(1);
+    await expect(pane.locator('#assistant-sheet-autonomy')).toHaveText('read only');
+    await page.getByLabel('Message the assistant', { exact: true }).fill('Use future preference');
+    await pane.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect.poll(() => fixture.mutations.filter(m => m.path.endsWith('/messages')).length).toBe(1);
+    assert.equal(fixture.mutations.find(m => m.path === '/api/assistant/threads').body.autonomy, 'read');
+    assert.equal(fixture.mutations.find(m => m.path.endsWith('/messages')).body.autonomy, 'read');
+    assert.equal(fixture.assistantThreads.get(ordinaryThreadID).autonomy, 'ask');
+  }, parityAssistantOptions());
+});
+
+for (const reset of ['delete', 'failed selection']) test(`audit32-assistant empty composer displays the submitted future permission / ${reset}`, async t => {
+  const options = parityAssistantOptions();
+  const readThread = 'b0123456789abcdef';
+  options.savedThread = readThread; options.assistantConfig.autonomy = 'auto';
+  await withPage(t, 390, 'light', async (page, fixture) => {
+    const pane = await audit32Assistant(page);
+    const autonomy = pane.locator('#assistant-sheet-autonomy');
+    await expect(autonomy).toHaveText('read only');
+    await pane.getByRole('button', { name: 'History', exact: true }).click();
+    if (reset === 'delete') await pane.getByRole('button', { name: 'Delete Disposable history chat', exact: true }).click();
+    else {
+      fixture.behavior.assistantMissingThreads.add(ordinaryThreadID);
+      await pane.getByRole('button', { name: /^Recorded parity chat/ }).click();
+    }
+    await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).assistantThread?.id || '')).toBe('');
+    await pane.getByRole('button', { name: 'Chat', exact: true }).click();
+    await expect(autonomy).toHaveText('auto');
+    await autonomy.click();
+    await expect(pane.locator('.assistant-autonomy-menu button.bg-surface-800')).toHaveText(/auto/);
+    await autonomy.click();
+    await page.getByLabel('Message the assistant', { exact: true }).fill('Use the displayed permission');
+    await pane.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect.poll(() => fixture.mutations.filter(m => m.path.endsWith('/messages')).length).toBe(1);
+    const posts = fixture.mutations.filter(m => m.method === 'POST');
+    assert.equal(posts.length, 2);
+    for (const post of posts) assert.equal(post.body.autonomy, 'auto');
+  }, options);
+});
+
+test('audit32-assistant pending message allows Send and Enter in another idle chat', async t => {
+  const first = deferred(), second = deferred(), firstStarted = deferred(), secondStarted = deferred();
+  await withPage(t, 1280, 'dark', async (page, fixture) => {
+    await page.route('**/api/assistant/threads/*/messages', async route => {
+      if (route.request().url().includes(ordinaryThreadID)) { firstStarted.resolve(); await first.promise; }
+      else { secondStarted.resolve(); await second.promise; }
+      return route.fallback();
+    });
+    try {
+      const pane = await audit32Assistant(page);
+      const composer = page.getByLabel('Message the assistant', { exact: true });
+      await composer.fill('Pending first chat');
+      await pane.getByRole('button', { name: 'Send', exact: true }).click(); await firstStarted.promise;
+      await pane.getByRole('button', { name: 'History', exact: true }).click();
+      await pane.getByRole('button', { name: /^Disposable history chat/ }).click();
+      await composer.fill('Independent second chat');
+      await expect(pane.getByRole('button', { name: 'Send', exact: true })).toBeEnabled();
+      await composer.press('Enter'); await secondStarted.promise;
+      first.resolve();
+      await expect.poll(() => fixture.mutations.filter(m => m.path.endsWith('/messages')).length).toBe(1);
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).assistantSending)).toBe(true);
+      second.resolve();
+      await expect.poll(() => fixture.mutations.filter(m => m.path.endsWith('/messages')).length).toBe(2);
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).assistantSending)).toBe(false);
+    } finally { first.resolve(); second.resolve(); }
+  }, parityAssistantOptions());
+});
+
+test('audit32-assistant missing history selection clears old transcript but keeps draft', async t => {
+  await withPage(t, 390, 'light', async (page, fixture) => {
+    const pane = await audit32Assistant(page);
+    await expect(pane.getByText('Inspect the release safely.', { exact: true })).toBeVisible();
+    await page.getByLabel('Message the assistant', { exact: true }).fill('Unsent selection draft');
+    await pane.getByRole('button', { name: 'History', exact: true }).click();
+    const missing = 'b0123456789abcdef'; fixture.behavior.assistantMissingThreads.add(missing);
+    await pane.getByRole('button', { name: /^Disposable history chat/ }).click();
+    await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).assistantThread?.id || '')).toBe('');
+    await pane.getByRole('button', { name: 'Chat', exact: true }).click();
+    await expect(pane.getByText('Inspect the release safely.', { exact: true })).toHaveCount(0);
+    await expect(pane.getByText('Recorded explanation, not a live daemon response.', { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel('Message the assistant', { exact: true })).toHaveValue('Unsent selection draft');
+    assert.equal(fixture.mutations.length, 0);
+  }, parityAssistantOptions());
+});
+
+for (const recoveryStatus of [200, 304]) test(`audit32-assistant retains transcript through read failure and clears recovery / ${recoveryStatus}`, async t => {
+  await withPage(t, 390, 'dark', async (page, fixture) => {
+    const pane = await audit32Assistant(page);
+    await expect(pane.getByText('Recorded explanation, not a live daemon response.', { exact: true })).toBeVisible();
+    await page.getByLabel('Message the assistant', { exact: true }).fill('Draft survives read recovery');
+    const path = `/api/assistant/threads/${ordinaryThreadID}/activity`;
+    const validated = fixture.holdRead(path);
+    await pane.getByRole('button', { name: 'Chat', exact: true }).click();
+    await validated.started;
+    validated.release({ headers: { ETag: 'audit32-good-transcript' } });
+    await expect.poll(() => page.evaluate(() => Alpine.$data(document.body)._assistantETag)).toBe('audit32-good-transcript');
+    const held = fixture.holdRead(path);
+    const recovery = fixture.holdRead(path);
+    try {
+      // Chat explicitly resumes the retained thread. Going via History also
+      // resumes it, which would consume the held failure under a retired owner.
+      await pane.getByRole('button', { name: 'Chat', exact: true }).click();
+      await held.started; held.release({ status: 503, value: { error: 'Fixture transcript unavailable' } });
+      await expect(pane.getByRole('status').filter({ hasText: 'Transcript updates unavailable' })).toBeVisible();
+      await expect(pane.getByText('Recorded explanation, not a live daemon response.', { exact: true })).toBeVisible();
+      await recovery.started;
+      recovery.release({ status: recoveryStatus, headers: { ETag: 'audit32-good-transcript' } });
+      await expect(pane.getByRole('status').filter({ hasText: 'Transcript updates unavailable' })).toBeHidden();
+      await expect(pane.getByText('Recorded explanation, not a live daemon response.', { exact: true })).toBeVisible();
+      await expect(page.getByLabel('Message the assistant', { exact: true })).toHaveValue('Draft survives read recovery');
+      assert.equal(fixture.mutations.length, 0);
+    } finally { held.release(); recovery.release(); }
+  }, parityAssistantOptions());
+});
+
+// Phase 0 checks validate fixture transports, not the product defects they enable.
+// Keep these leaves independently selectable with KONTORA_BROWSER_TEST_FILTER.
+test('audit32-fixture captured config headers body and reordered reloads', async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    fixture.config.custom_statuses = ['old-status'];
+    const old = fixture.holdRead('/api/config', { delayBody: true });
+    try {
+      await page.evaluate(() => { window.__auditOld = null; fetch('/api/config').then(r => r.json()).then(v => { window.__auditOld = v; }); });
+      await old.started;
+      fixture.config.custom_statuses = ['new-status'];
+      old.release();
+      await old.decoding;
+      const current = await page.evaluate(() => fetch('/api/config').then(r => r.json()));
+      assert.deepEqual(current.custom_statuses, ['new-status']);
+      assert.equal(await page.evaluate(() => window.__auditOld), null);
+      old.releaseBody();
+      await expect.poll(() => page.evaluate(() => window.__auditOld?.custom_statuses)).toEqual(['old-status']);
+      assert.deepEqual(fixture.config.custom_statuses, ['new-status']);
+    } finally { old.release(); old.releaseBody(); }
+    // Also reverse the header order, not only response.json() completion.
+    const first = fixture.holdRead('/api/config');
+    await page.evaluate(() => { window.__auditFirst = null; fetch('/api/config').then(r => r.json()).then(v => { window.__auditFirst = v; }); });
+    await first.started;
+    fixture.config.custom_statuses = ['newest-status'];
+    const second = fixture.holdRead('/api/config');
+    const newer = page.evaluate(() => fetch('/api/config').then(r => r.json()));
+    await second.started; second.release();
+    assert.deepEqual((await newer).custom_statuses, ['newest-status']);
+    assert.equal(await page.evaluate(() => window.__auditFirst), null);
+    first.release();
+    await expect.poll(() => page.evaluate(() => window.__auditFirst?.custom_statuses)).toEqual(['new-status']);
+  });
+});
+
+test('audit32-fixture legacy note minting queued writes refusals and source namesakes', async t => {
+  const legacy = { id: '#0', at: stamp, author: 'Browser author', text: 'Legacy note', reactions: [] };
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    const request = (path, body, method = 'POST') => page.evaluate(async ({ path, body, method }) => {
+      const r = await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      return { status: r.status, value: await r.json() };
+    }, { path, body, method });
+    const path = '/api/tickets/kon-draft/notes/%230/reactions';
+    const wait = deferred(); fixture.behavior.noteDispatchWait = wait.promise;
+    const pending = request(path, { emoji: '👍' });
+    try {
+      await expect.poll(() => fixture.requests.includes('POST ' + path)).toBe(true);
+      assert.equal(fixture.records.get('primary/kon-draft').notes[0].id, '#0');
+      wait.resolve();
+      const minted = await pending;
+      assert.equal(minted.status, 200);
+      assert.match(minted.value.notes[0].id, /^[^#]/);
+      assert.equal(minted.value.notes[0].text, legacy.text);
+      assert.deepEqual(minted.value.notes[0].reactions, [{ emoji: '👍', actors: ['Browser author'] }]);
+      fixture.behavior.noteFailure = { status: 403, error: 'Fixture note permission revoked' };
+      const refused = await request('/api/tickets/kon-draft/note', { text: 'Retain refused text' });
+      assert.equal(refused.status, 403);
+      assert.equal(fixture.records.get('primary/kon-draft').notes.length, 1);
+      fixture.behavior.noteFailure = null;
+      const references = [];
+      for (const folder of [source, secondSource]) {
+        const detail = await page.evaluate(path => fetch(path).then(r => r.json()), `/api/sources/${folder}/tickets/kon-reference`);
+        assert.equal(detail.source, folder); references.push(detail.title);
+        const response = await request(`/api/sources/${folder}/tickets/kon-draft/note`, { text: folder + ' owns this note' });
+        assert.equal(response.value.source, folder);
+        assert.equal(response.value.notes.at(-1).text, folder + ' owns this note');
+      }
+      assert.notEqual(references[0], references[1]);
+      assert.equal(fixture.records.get(`${source}/kon-draft`).summary, fixture.records.get(`${secondSource}/kon-draft`).summary);
+      assert.equal(fixture.records.get('primary/kon-draft').notes.length, 1);
+      fixture.records.get('primary/kon-epic').can_edit = false;
+      assert.equal((await request('/api/tickets/kon-epic', { description: 'Forbidden brief' }, 'PUT')).status, 403);
+      assert.notEqual(fixture.records.get('primary/kon-epic').description, 'Forbidden brief');
+      fixture.behavior.noteLoseResponse = true;
+      assert.equal(await page.evaluate(async () => {
+        try { await fetch('/api/tickets/kon-draft/note', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"text":"Committed but acknowledgement lost"}' }); return 'unexpected success'; }
+        catch { return 'lost acknowledgement'; }
+      }), 'lost acknowledgement');
+      assert.equal(fixture.records.get('primary/kon-draft').notes.at(-1).text, 'Committed but acknowledgement lost');
+      assert.equal(fixture.mutations.filter(m => m.path === '/api/tickets/kon-draft/note').length, 1, 'No fixture retry of an uncertain POST');
+    } finally { wait.resolve(); fixture.behavior.noteDispatchWait = null; }
+  }, { ticket: { notes: [legacy] }, secondSecondary: true });
+});
+
+test('audit32-fixture legacy replies edits and positional references mirror accepted snapshots', async t => {
+  const notes = [
+    { id: '#0', author: 'Browser author', at: stamp, text: 'Duplicate legacy content', reactions: [] },
+    { id: '#1', author: 'Browser author', at: stamp, text: 'Duplicate legacy content', reactions: [] },
+    { id: 'stable-anchor', author: 'Browser author', at: stamp, text: 'Stable anchor', reactions: [] },
+  ];
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    const mutate = (path, method, body) => page.evaluate(async ({ path, method, body }) => {
+      const r = await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) });
+      return { status: r.status, value: await r.json() };
+    }, { path: '/api/tickets/kon-draft/' + path, method, body });
+    const replied = await mutate('note', 'POST', { text: 'Reply to first duplicate', parent: '#0' });
+    const firstID = replied.value.notes[0].id;
+    assert.notEqual(firstID, '#0'); assert.equal(replied.value.notes.at(-1).parent_id, firstID);
+    assert.equal(replied.value.notes[1].id, '#1', 'Mint only the addressed legacy note');
+    const deleted = await mutate('notes/' + firstID, 'DELETE');
+    assert.deepEqual(deleted.value.notes.map(n => n.id), ['#0', 'stable-anchor']);
+    assert.equal(deleted.value.notes[0].text, 'Duplicate legacy content');
+    const edited = await mutate('notes/%230', 'PATCH', { text: 'Edited remaining duplicate' });
+    assert.notEqual(edited.value.notes[0].id, firstID);
+    assert.match(edited.value.notes[0].id, /^[^#]/);
+    assert.equal(edited.value.notes[1].id, 'stable-anchor');
+    assert.equal(fixture.records.get('primary/kon-draft').notes[0].edited, true);
+  }, { ticket: { notes } });
+});
+
+test('audit32-fixture Assistant creation missing threads and independent activity SSE', async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    const gate = deferred(); fixture.behavior.assistantCreateWait = gate.promise;
+    const creating = page.evaluate(async () => {
+      const r = await fetch('/api/assistant/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ autonomy: 'read' }) });
+      return { status: r.status, value: await r.json() };
+    });
+    try {
+      await expect.poll(() => fixture.requests.includes('POST /api/assistant/threads')).toBe(true);
+      assert.equal(fixture.assistantThreads.size, 0);
+      gate.resolve();
+      const created = await creating;
+      assert.equal(created.status, 201); assert.equal(created.value.autonomy, 'read');
+      const id = created.value.id, path = `/api/assistant/threads/${id}/activity`;
+      fixture.assistantThreads.get(id).running = true;
+      const activity = fixture.holdRead(path);
+      await page.evaluate(({ path, id }) => {
+        window.__auditActivity = null; window.__auditDeltas = [];
+        const stream = new EventSource(`/api/assistant/threads/${id}/stream`);
+        stream.addEventListener('delta', e => window.__auditDeltas.push(JSON.parse(e.data)));
+        fetch(path + '?after=0').then(r => r.json()).then(v => { window.__auditActivity = v; });
+      }, { path, id });
+      await activity.started;
+      await page.evaluate(() => window.__fixtureSSE.at(-1).emit('delta', { gen: 1, text: 'independent delta' }));
+      assert.equal(await page.evaluate(() => window.__auditActivity), null);
+      assert.equal(await page.evaluate(() => window.__auditDeltas[0].text), 'independent delta');
+      fixture.assistantThreads.get(id).running = false;
+      activity.release();
+      await expect.poll(() => page.evaluate(() => window.__auditActivity?.running)).toBe(true);
+      for (const status of [503, 304]) {
+        const held = fixture.holdRead(path);
+        const read = page.evaluate(async path => {
+          const r = await fetch(path + '?after=0', { headers: { 'If-None-Match': 'fixture-good' } });
+          return { status: r.status, etag: r.headers.get('ETag'), text: await r.text() };
+        }, path);
+        await held.started;
+        held.release({ status, headers: { ETag: 'fixture-good' }, value: { error: 'Fixture transcript unavailable' } });
+        const result = await read;
+        assert.equal(result.status, status); assert.equal(result.etag, 'fixture-good');
+        if (status === 304) assert.equal(result.text, '');
+        else assert.match(result.text, /unavailable/);
+      }
+      fixture.behavior.assistantMissingThreads.add(id);
+      const missing = await page.evaluate(async id => {
+        const r = await fetch(`/api/assistant/threads/${id}`); return { status: r.status, value: await r.json() };
+      }, id);
+      assert.equal(missing.status, 404); assert.match(missing.value.error, /not found/i);
+      fixture.behavior.assistantCreateFailure = { status: 503, error: 'Creation refused' };
+      assert.equal(await page.evaluate(async () => (await fetch('/api/assistant/threads', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"autonomy":"ask"}',
+      })).status), 503);
+      assert.equal(fixture.assistantThreads.size, 1);
+    } finally { gate.resolve(); fixture.behavior.assistantCreateWait = null; }
+  });
+});
+
+test('audit32-fixture multipart uploads and one-time stylesheet failures', async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    for (const failure of [
+      { status: 503, contentType: 'text/plain', body: 'Upload unavailable' },
+      { status: 502, contentType: 'text/plain', body: '' },
+      { status: 500, contentType: 'application/json', body: '{invalid' },
+      { status: 200, contentType: 'application/json', body: JSON.stringify({ created: [], errors: [{ file: 'fixture.md', error: 'Permission refused' }] }) },
+    ]) {
+      fixture.behavior.uploadResponse = failure;
+      const received = await page.evaluate(async () => {
+        const form = new FormData(); form.append('files', new File(['# Upload fixture\n'], 'fixture.md', { type: 'text/markdown' }));
+        const r = await fetch('/api/tickets/upload', { method: 'POST', headers: { 'X-Kontora-Confirm': 'upload-tickets' }, body: form });
+        return { status: r.status, body: await r.text() };
+      });
+      assert.deepEqual(received, { status: failure.status, body: failure.body });
+      assert.deepEqual(fixture.uploads.at(-1).files, [{ name: 'fixture.md', content: '# Upload fixture\n', type: 'text/markdown' }]);
+    }
+    fixture.behavior.uploadResponse = { failure: 'network' };
+    assert.equal(await page.evaluate(async () => {
+      const form = new FormData(); form.append('files', new File(['# Retry explicitly'], 'lost.md'));
+      try { await fetch('/api/tickets/upload', { method: 'POST', headers: { 'X-Kontora-Confirm': 'upload-tickets' }, body: form }); return 'unexpected success'; }
+      catch { return 'network failure'; }
+    }), 'network failure');
+    assert.equal(fixture.uploads.length, 5); assert.equal(fixture.mutations.length, 0);
+    fixture.behavior.stylesheetFailures = 1;
+    for (const expected of ['error', 'load']) {
+      assert.equal(await page.evaluate(() => new Promise(resolve => {
+        const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = '/vendor/xterm@5.5.0/xterm.css';
+        link.onload = () => { link.remove(); resolve('load'); }; link.onerror = () => { link.remove(); resolve('error'); };
+        document.head.append(link);
+      })), expected);
+    }
+    assert.equal(fixture.stylesheetRequests.length, 2);
+  });
+});
+
+test('audit32-fixture populated Stats and exact raw run datasets', async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    for (const [range, days, unit] of [['1d', 1, 'hour'], ['1w', 7, 'day'], ['30d', 35, 'week'], ['90d', 98, 'week'], ['all', 182, 'week']]) {
+      const payload = await page.evaluate(range => fetch('/api/stats?range=' + range).then(r => r.json()), range);
+      assert.equal(payload.days.length, days); assert.equal(payload.window.unit, unit);
+      assert.equal(payload.buckets.length, payload.window.buckets);
+      assert.ok(payload.buckets.some(b => b.done > 0 && b.tokens_in > 0));
+      assert.ok(payload.stages.length && payload.agents.length && payload.projects.length);
+      assert.equal(payload.totals.tokens_in, payload.buckets.reduce((n, b) => n + b.tokens_in, 0));
+      assert.equal(payload.totals.runs, payload.days.reduce((n, d) => n + d.runs, 0));
+    }
+    const raw = async path => page.evaluate(path => fetch(path).then(async r => ({ status: r.status, value: await r.json() })), path);
+    const first = await raw('/api/tickets/kon-done/logs?stage=code&run=0');
+    const second = await raw('/api/tickets/kon-done/logs?stage=code&run=1');
+    const latest = await raw('/api/tickets/kon-done/logs?stage=code');
+    const live = await raw('/api/tickets/kon-live/logs?stage=code&run=0');
+    assert.notEqual(first.value.content, second.value.content);
+    assert.equal(latest.value.content, second.value.content);
+    assert.notEqual(live.value.content, second.value.content);
+    assert.equal((await raw('/api/tickets/kon-done/logs?stage=code&run=8')).status, 404);
+    fixture.behavior.rawFailures.set('kon-done/code/0', { status: 409, error: 'Recorded bytes are stale' });
+    assert.equal((await raw('/api/tickets/kon-done/logs?stage=code&run=0')).status, 409);
+  }, { populatedStats: true, distinctRaw: true });
+});
+
+test('audit32-fixture strict interception rejects unknown APIs assets queries and sockets', async () => {
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  const fixture = fixtures(); await fixture.install(context);
+  try {
+    const page = await context.newPage(); await page.goto(base); await ready(page);
+    for (const path of ['/api/not-modelled', '/api/config?not_allowed=1', '/missing-fixture.css', 'http://127.0.0.1:65530/external-fixture']) {
+      assert.equal(await page.evaluate(async path => {
+        try { await fetch(path); return 'escaped'; } catch { return 'blocked'; }
+      }, path), 'blocked');
+    }
+    await page.evaluate(() => new Promise(resolve => {
+      const ws = new WebSocket(location.origin.replace('http:', 'ws:') + '/ws/not-modelled');
+      ws.onclose = resolve;
+    }));
+    // CSP rejects the foreign origin before routing; the other four failures
+    // must reach (and be rejected by) the fixture's deny-by-default handlers.
+    assert.equal(fixture.violations.length, 4, fixture.violations.join('\n'));
+    for (const [i, pattern] of [/Unmodelled API/, /Unexpected query/, /Unknown asset/, /Unknown socket/].entries()) {
+      assert.match(fixture.violations[i], pattern);
+    }
+    assert.equal(fixture.mutations.length, 0);
+  } finally { await fixture.releaseReads(); await closeFixtureContext(context); }
+});
+
+test('audit32-fixture fake authentication redirect inherits browser fragment', async () => {
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  const fixture = fixtures({ authRequired: true });
+  await fixture.install(context);
+  try {
+    const page = await context.newPage();
+    await page.goto(base + '/?token=fixture-rejected#/t/kon-draft', { waitUntil: 'domcontentloaded' });
+    await ready(page);
+    assert.equal(new URL(page.url()).search, '?token=fixture-rejected');
+    assert.equal(await page.evaluate(async () => (await fetch('/api/tickets')).status), 401);
+    await page.goto(base + '/?token=fixture-token#/t/kon-draft', { waitUntil: 'domcontentloaded' });
+    await ready(page);
+    assert.equal(new URL(page.url()).hash, '#/t/kon-draft');
+    assert.equal(new URL(page.url()).search, '');
+    assert.deepEqual(fixture.authNavigations, [{ token: 'fixture-rejected', accepted: false }, { token: 'fixture-token', accepted: true }]);
+    fixture.behavior.authRequired = true;
+    assert.equal(await page.evaluate(async () => (await fetch('/api/config')).status), 401);
+    assert.deepEqual(fixture.violations, []);
+  } finally { await fixture.releaseReads(); await closeFixtureContext(context); }
 });
 
 // Optional Hallmark bridge: KONTORA_PHASES_BRIDGE_MS=300000 with filter

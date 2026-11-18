@@ -95,7 +95,7 @@ export function kontoraCompanion() {
       window.addEventListener('focus', this.companionFocus);
       this.companionTimer = setInterval(() => this.companionRefresh(), 30000);
       await this.companionRefresh();
-      if (this.companionSnapshot?.enabled && !this.assistantThread) this.assistantView = 'inbox';
+      if (!this.companionDestroyed) this._assistantDefaultInbox();
     },
 
     companionDestroy() {
@@ -187,11 +187,12 @@ export function kontoraCompanion() {
     },
     companionCanAsk() {
       return !!(this.companionSnapshot?.enabled && this.companionSnapshot.ai_available &&
-        !this.companionDisconnected && !this.companionBusy && !this.assistantStreaming);
+        !this.companionDisconnected && !this.companionBusy && !this.assistantSending && !this.assistantStreaming);
     },
     companionOpenInbox() {
+      this.assistantViewIntent = 'inbox';
       if (!this.companionEnabled()) return;
-      if (this.assistantView !== 'inbox') {
+      if (this._assistantSelecting || this.assistantView !== 'inbox') {
         this._assistantSelectionSeq++;
         this._assistantRetireActivity();
         this._assistantResume();
@@ -238,12 +239,14 @@ export function kontoraCompanion() {
     async companionSend(kind, text, ticketIDs) {
       if (!this.companionCanAsk() || !text?.trim()) return;
       this.companionBusy = true;
+      const sending = this._assistantStartSend();
       const requestedAt = new Date().toISOString();
       const context = this._assistantContextToken();
       let completionContext = context;
       const selectionSeq = this._assistantSelectionSeq;
       const threadID = this.assistantThread?.id;
       const draft = this.assistantDraft;
+      const revision = this._assistantDraftRevision;
       const stillSelected = () => !this.companionDestroyed && this._assistantContextCurrent(context) && this._assistantSelectionSeq === selectionSeq &&
         this.assistantThread?.id === threadID;
       this.assistantError = null;
@@ -265,13 +268,14 @@ export function kontoraCompanion() {
         const pending = messages.some(m => m.n === turn) ? messages : messages.concat([
           { n: turn, text: text.trim(), at: requestedAt },
         ]);
+        sending.id = thread.id;
         this._assistantAdopt(thread, pending);
         completionContext = this._assistantContextToken();
         this.assistantLoadThreads();
-        if (kind === 'followup' && this.assistantDraft === draft && draft.trim() === text.trim()) {
-          this.assistantDraft = '';
-          this.assistantMenu = null;
+        if (kind === 'followup' && draft.trim() === text.trim()) {
+          this._assistantClearSubmittedDraft(draft, revision);
         }
+        this.assistantViewIntent = 'thread';
         this.assistantView = 'thread';
         this.assistantAutonomyOpen = false;
         await this._assistantResume();
@@ -283,6 +287,7 @@ export function kontoraCompanion() {
           this.companionError = 'The explanation could not start. ' + error;
         }
       } finally {
+        this._assistantFinishSend(sending);
         if (this._assistantContextCurrent(completionContext)) this.companionBusy = false;
       }
     },

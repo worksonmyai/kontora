@@ -16,10 +16,10 @@ func instant(value string) time.Time {
 }
 
 func TestScheduleValidation(t *testing.T) {
-	for _, value := range []string{"* * * * *", "0 */6 * * *", "0 9 * * 1-5", "1,2,3 4 1-10/2 * 0", "1m", "30m", "6h", "1.5h", "60s"} {
+	for _, value := range []string{"* * * * *", "0 */6 * * *", "0 9 * * 1-5", "1,2,3 4 1-10/2 * 0", "1m", "30m", "6h", "1.5h", "0.5h", "1.5h30m", "1.0m", "60s"} {
 		t.Run(value, func(t *testing.T) { _, err := Compile(value, "UTC"); require.NoError(t, err) })
 	}
-	for _, value := range []string{"", "@hourly", "@every 1m", "0 0 0 * * *", "0 9 * * MON", "0 9 ? * *", "TZ=UTC 0 9 * * *", "CRON_TZ=UTC 0 9 * * *", "60 * * * *", "0 24 * * *", "0 0 31 2 *", "0s", "-1m", "59s", "90s", "1.01m"} {
+	for _, value := range []string{"", "@hourly", "@every 1m", "0 0 0 * * *", "0 9 * * MON", "0 9 ? * *", "TZ=UTC 0 9 * * *", "CRON_TZ=UTC 0 9 * * *", "60 * * * *", "0 24 * * *", "0 0 31 2 *", "0s", "-1m", "59s", "90s", "1.5m", "1.01m", "1e3m"} {
 		t.Run(value, func(t *testing.T) { _, err := Compile(value, "UTC"); require.ErrorIs(t, err, ErrValidation) })
 	}
 	for _, zone := range []string{"Local", "localtime", "../UTC", "/etc/localtime", "Bad/Timezone", "UTC\x00"} {
@@ -37,6 +37,10 @@ func TestScheduleOccurrences(t *testing.T) {
 	}{
 		{"exclusive", "0 * * * *", "UTC", "2024-01-01T09:00:00Z", []string{"2024-01-01T10:00:00Z", "2024-01-01T11:00:00Z"}},
 		{"fixed interval", "30m", "Europe/Berlin", "2024-01-01T09:12:34Z", []string{"2024-01-01T09:42:34Z", "2024-01-01T10:12:34Z"}},
+		{"decimal interval", "1.5h", "UTC", "2024-01-01T09:12:34Z", []string{"2024-01-01T10:42:34Z", "2024-01-01T12:12:34Z"}},
+		{"compound decimal interval", "1.5h30m", "UTC", "2024-01-01T09:12:34Z", []string{"2024-01-01T11:12:34Z", "2024-01-01T13:12:34Z"}},
+		{"interval across spring gap", "24h", "America/New_York", "2024-03-09T17:00:00Z", []string{"2024-03-10T17:00:00Z"}},
+		{"interval across autumn fold", "24h", "America/New_York", "2024-11-02T16:00:00Z", []string{"2024-11-03T16:00:00Z"}},
 		{"spring gap", "30 2 * * *", "America/New_York", "2024-03-09T08:00:00Z", []string{"2024-03-11T06:30:00Z"}},
 		{"autumn fold", "30 1 * * *", "America/New_York", "2024-11-03T05:00:00Z", []string{"2024-11-03T05:30:00Z", "2024-11-03T06:30:00Z"}},
 		{"leap day", "0 9 29 2 *", "UTC", "2025-01-01T00:00:00Z", []string{"2028-02-29T09:00:00Z"}},

@@ -272,6 +272,8 @@ export function kontoraTickets() {
         var update = this._selectedTicketUpdateSeq;
         var mine = () => !this._appDestroyed && detail === this._ticketDetailSeq &&
           this.sameTicket(this.selectedTicket, selected) && this.sourceAvailable(selected);
+        if (this._noteHasTail?.(this.ticketKey(selected))) await this._noteWaitForTail(this.ticketKey(selected));
+        update = this._selectedTicketUpdateSeq;
         while (mine()) {
           var response = await fetch(this.ticketURL(selected));
           if (!mine()) return;
@@ -459,6 +461,7 @@ export function kontoraTickets() {
     applyTicketUpdate(ticket) {
       if (this.isSecondary(ticket)) { this.applySecondaryUpdate(ticket); return; }
       this._touchTicket(ticket);
+      this._noteReconcileTicket?.(ticket);
       this.refreshInitContext(ticket.id);
       var output = this.outputSubject();
       var previousOutput = output ? { ...output } : null;

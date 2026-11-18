@@ -337,13 +337,8 @@ export function kontoraAutomations() {
       this.automationsPreview = [];
     },
     automationsScheduleError() {
-      const value = this.automationsDraft.schedule.trim();
-      if (!value) return 'A schedule is required.';
-      if (/^(?:\d+(?:h|m|s))+$/.test(value)) return '';
-      const fields = value.split(/\s+/);
-      if (fields.length !== 5) return 'cron takes 5 fields (minute hour day month weekday), got ' + fields.length;
-      if (fields.some(field => !/^[\d*/,-]+$/.test(field))) return 'cron fields take digits, *, /, - and , only';
-      return '';
+      // Only presence is local policy; preview owns the schedule grammar.
+      return this.automationsDraft.schedule.trim() ? '' : 'A schedule is required.';
     },
     automationsSchedulePreview(force = false) {
       if (!this.automationsEditing) return;
@@ -385,6 +380,8 @@ export function kontoraAutomations() {
           : /^ {4}enabled: false$/.test(text) ? 'text-st-paused' : /^ {6}/.test(text) ? 'text-tx-2' : 'text-tx-3' }));
     },
     automationsCanSave() {
+      // An uncertain create reconciles its captured receipt, not the edited
+      // draft. Ordinary creates and updates always need the matching preview.
       return this.automationsAvailable && !this.automationsPending && !this.automationsConflict && !this.automationsToggling[this.automationsSelected]
         && (this.automationsCreate || (this.automationsDraft.name.trim() && this.automationsDraft.path.trim() && this.automationsDraft.agent.trim() && this.automationsDraft.prompt.trim()
           && this.automationsPreviewValidKey === JSON.stringify({ schedule: this.automationsDraft.schedule, timezone: this.automationsDraft.timezone })));

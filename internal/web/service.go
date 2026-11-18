@@ -47,6 +47,8 @@ var (
 	// ErrAssistantAtCapacity is the global turn cap, which is not the same
 	// refusal as a thread that is already busy: this chat can run, just not yet.
 	ErrAssistantAtCapacity = errors.New("too many assistant turns are running; try again in a moment")
+	// ErrAssistantActivityUnavailable rejects a sample without replacing the client's last usable transcript.
+	ErrAssistantActivityUnavailable = errors.New("assistant activity is temporarily unavailable; try again")
 	// ErrAssistantStale is a thread whose agent has been repointed or removed
 	// under it. Its session cannot resume on another CLI, so it needs a new chat.
 	ErrAssistantStale        = errors.New("this chat's agent has changed")

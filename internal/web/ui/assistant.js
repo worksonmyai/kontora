@@ -64,6 +64,8 @@ export const assistantStream = {
   raf: null,
   tries: 0,
   retry: null,
+  retryAt: 0,
+  exhausted: false,
 };
 
 function assistantStored(key, fallback) {
@@ -96,8 +98,13 @@ function assistantClampWidth(px) {
 
 export function kontoraAssistant() {
   let presentationBound = false;
+  let configSeq = 0;
+  let autonomySeed = assistantStored('kontora-assistant-autonomy-seed', null);
+  // Avoid reconnecting and replaying settled text after an empty partial with
+  // no pending tool; polling can discover any later block.
+  let partialSettled = false;
   // Native request handles must not pass through Alpine's deep proxy.
-  const lane = { epoch: 0, owner: {}, send: null, flight: null, again: false, destroyed: false, resolved: new Map() };
+  const lane = { epoch: 0, owner: {}, sends: new Set(), flight: null, again: false, destroyed: false, resolved: new Map() };
   let history = { events: null, messages: null, rows: [], visible: null, start: -1 };
   return {
     assistantOpen: assistantStored('kontora-assistant-open', '0') === '1',
@@ -105,11 +112,18 @@ export function kontoraAssistant() {
     assistantWidth: assistantClampWidth(assistantStored('kontora-assistant-width', ASSISTANT_WIDTH_DEFAULT)),
     // 'thread' is the live chat; 'history' is the list of past ones.
     assistantView: 'thread',
+    assistantViewIntent: '',
     assistantAutonomy: assistantStored('kontora-assistant-autonomy', 'ask'),
+    assistantFutureAutonomy: assistantStored('kontora-assistant-autonomy', 'ask'),
     // The GET /api/assistant payload. enabled false is what drives the
     // configure hint in place of the composer.
     assistantAgent: null,
     assistantDraft: '',
+    _assistantDraftRevision: 0,
+    assistantSending: false,
+    assistantReadError: '',
+    assistantReadRetries: 0,
+    assistantReadRetryable: true,
     assistantStreaming: false,
     // The message being written. Plain text, not setProse: the 16-entry
     // markdown cache would evict per token, and an unterminated fence
@@ -144,6 +158,7 @@ export function kontoraAssistant() {
     _assistantActivityLoaded: false,
     _assistantETag: '',
     _assistantSelectionSeq: 0,
+    _assistantSelecting: false,
     _assistantResize: null,
     _assistantTurnStart: null,
     _assistantTick: null,
@@ -159,11 +174,11 @@ export function kontoraAssistant() {
       const res = await fetch(path, options);
       if (res.status === 401) {
         if (!current || current()) this.needsAuth = true;
-        throw new Error('unauthorized');
+        throw Object.assign(new Error('unauthorized'), { status: 401 });
       }
       if (res.status === 304 || res.ok) return res;
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || ('the daemon answered ' + res.status));
+      throw Object.assign(new Error(data?.error || ('the daemon answered ' + res.status)), { status: res.status });
     },
 
     // --- the working state -----------------------------------------------
@@ -295,7 +310,7 @@ export function kontoraAssistant() {
       }
       const context = this._assistantContextToken();
       await this._assistantRefreshConfig();
-      if (!this._assistantContextCurrent(context)) return;
+      if (!this._assistantContextCurrent(context) || this.assistantViewIntent || this.assistantDraft) return;
       const last = assistantStored('kontora-assistant-thread', '');
       if (last && (this.assistantEnabled() || last.startsWith('k'))) {
         await this.assistantSelectThread(last, { quiet: true });
@@ -308,16 +323,18 @@ export function kontoraAssistant() {
     // without a page reload. It touches nothing about the open thread — not
     // the cursor, not the poll — because a reload does not end a chat.
     async _assistantRefreshConfig() {
+      const seq = ++configSeq;
+      const current = () => seq === configSeq && !this._appDestroyed && !lane.destroyed;
       try {
-        const res = await this._assistantFetch('/api/assistant', undefined, () => !this._appDestroyed && !lane.destroyed);
+        const res = await this._assistantFetch('/api/assistant', undefined, current);
         const agent = await res.json();
-        if (this._appDestroyed || lane.destroyed) return;
+        if (!current()) return;
         this.assistantAgent = agent;
       } catch (e) {
         // Only the first fetch turns into the hint. A later one failing is a
         // blip in a pane that is already working, and replacing the composer
         // with the configure hint over it loses the draft in it.
-        if (this._appDestroyed || lane.destroyed) return;
+        if (!current()) return;
         if (!this.assistantAgent) {
           this.assistantAgent = { enabled: false, hint: 'The daemon did not answer.' };
         }
@@ -332,7 +349,9 @@ export function kontoraAssistant() {
     _assistantSeedAutonomy() {
       const mode = this.assistantAgent && this.assistantAgent.autonomy;
       if (!mode) return;
-      if (assistantStored('kontora-assistant-autonomy-seed', null) === mode) return;
+      if (autonomySeed === mode) return;
+      autonomySeed = mode;
+      this.assistantFutureAutonomy = mode;
       assistantStore('kontora-assistant-autonomy-seed', mode);
       assistantStore('kontora-assistant-autonomy', mode);
       // An open chat owns the switch: the daemon holds a mode for that chat,
@@ -386,6 +405,7 @@ export function kontoraAssistant() {
     _assistantRetireActivity() {
       lane.epoch++;
       lane.again = false;
+      this._assistantSelecting = false;
       this.companionBusy = false;
       const flight = lane.flight;
       lane.flight = null;
@@ -395,10 +415,7 @@ export function kontoraAssistant() {
 
     _assistantResume() {
       if (this._appDestroyed || lane.destroyed) return;
-      if (this.assistantStreaming) {
-        this._startAssistantTick();
-        this._assistantOpenStream();
-      }
+      if (this.assistantStreaming) this._startAssistantTick();
       return this._loadAssistantActivity({ fresh: true });
     },
 
@@ -429,12 +446,18 @@ export function kontoraAssistant() {
       }
     },
 
+    _assistantDefaultInbox() {
+      if (this.companionSnapshot?.enabled && !this.assistantThread && !this.assistantDraft && !this.assistantViewIntent) {
+        this.assistantView = 'inbox';
+      }
+    },
+
     // The phone has no room for a docked pane, so the same chat opens in the
     // bottom sheet the rest of the mobile layer uses.
     openAssistantSheet() {
       this.assistantCompositionReset();
       this.assistantOpen = true;
-      if (this.companionSnapshot?.enabled && !this.assistantThread) this.assistantView = 'inbox';
+      this._assistantDefaultInbox();
       this.sheet = { type: 'assistant' };
       this.assistantRecomputeContext();
       this.assistantLoadThreads();
@@ -504,6 +527,7 @@ export function kontoraAssistant() {
     },
 
     assistantShowHistory() {
+      this.assistantViewIntent = 'history';
       this._assistantSelectionSeq++;
       this._assistantRetireActivity();
       this.assistantView = 'history';
@@ -512,30 +536,21 @@ export function kontoraAssistant() {
     },
 
     assistantShowChat() {
-      if (this.assistantView !== 'thread' || !this.assistantThread || !this.assistantThreadVisible()) {
+      this.assistantViewIntent = 'thread';
+      if (this._assistantSelecting || this.assistantView !== 'thread' || !this.assistantThread || !this.assistantThreadVisible()) {
         this._assistantSelectionSeq++;
         this._assistantRetireActivity();
       }
       if (!this.assistantThreadVisible()) {
-        lane.owner = {};
-        this._assistantCloseStream();
-        this._stopAssistantPoll();
-        this._assistantClearPartial();
-        this._assistantSetStreaming(false);
-        this.assistantThread = null;
-        this.assistantMessages = [];
-        this.assistantEvents = [];
-        this.assistantGate = null;
-        this._assistantCursor = 0;
-        this._assistantETag = '';
-        assistantStore('kontora-assistant-thread', '');
+        this._assistantEmptyThread();
       }
       this.assistantView = 'thread';
       this._assistantResume();
     },
 
-    async assistantNewThread() {
+    async assistantNewThread(autonomy = this.assistantFutureAutonomy) {
       if (!this.assistantEnabled() || lane.destroyed) return null;
+      this.assistantViewIntent = 'thread';
       this._assistantSelectionSeq++;
       this._assistantRetireActivity();
       this._stopAssistantTick();
@@ -547,7 +562,7 @@ export function kontoraAssistant() {
         const res = await this._assistantFetch('/api/assistant/threads', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ autonomy: this.assistantAutonomy }),
+          body: JSON.stringify({ autonomy }),
         }, current);
         const thread = await res.json();
         if (!current()) return null;
@@ -567,9 +582,11 @@ export function kontoraAssistant() {
 
     async assistantSelectThread(id, opts) {
       if (this._appDestroyed || lane.destroyed) return false;
+      if (!opts?.quiet) this.assistantViewIntent = 'thread';
       lane.owner = {};
       this._assistantSelectionSeq++;
       this._assistantRetireActivity();
+      this._assistantSelecting = true;
       this._stopAssistantTick();
       const context = this._assistantContextToken();
       const current = () => this._assistantContextCurrent(context);
@@ -584,11 +601,15 @@ export function kontoraAssistant() {
         if (thread.purpose === 'companion') {
           if (!this.companionSnapshot) await this.companionRefresh();
           if (!this.companionEnabled()) {
-            if (current()) this._assistantResume();
+            if (current()) {
+              this._assistantSelecting = false;
+              this._assistantResume();
+            }
             return false;
           }
         }
         if (!current()) return false;
+        this._assistantSelecting = false;
         this._assistantAdopt(thread, thread.messages || []);
         this.assistantEvents = [];
         this._assistantCursor = 0;
@@ -605,11 +626,7 @@ export function kontoraAssistant() {
         // error worth showing: the pane simply opens empty.
         if (!current()) return false;
         if (!quiet) this.assistantError = String(e.message || e);
-        this._assistantSetStreaming(false);
-        this._stopAssistantPoll();
-        this.assistantGate = null;
-        this.assistantThread = null;
-        assistantStore('kontora-assistant-thread', '');
+        this._assistantEmptyThread();
         return false;
       }
     },
@@ -627,22 +644,40 @@ export function kontoraAssistant() {
       if (this.assistantThread && this.assistantThread.id === id) {
         this._assistantSelectionSeq++;
         this._assistantRetireActivity();
-        this.assistantGate = null;
-        // Through the setter, or the pane keeps counting for a chat that is
-        // gone.
-        this._assistantSetStreaming(false);
-        this._assistantClearPartial();
-        this.assistantThread = null;
-        this.assistantMessages = [];
-        this.assistantEvents = [];
-        assistantStore('kontora-assistant-thread', '');
+        this._assistantEmptyThread();
       }
       this.assistantLoadThreads();
     },
 
+    // Transcript resets must preserve drafts and send/selection errors.
+    _assistantEmptyThread() {
+      lane.owner = {};
+      this._assistantRetireActivity();
+      this._assistantSetStreaming(false);
+      this._assistantClearPartial();
+      this.assistantThread = null;
+      this._assistantSyncSending();
+      this.assistantMessages = [];
+      this.assistantEvents = [];
+      this.assistantGate = null;
+      this.assistantExpanded = Object.create(null);
+      this.assistantWindow = ASSISTANT_WINDOW;
+      this._assistantCursor = 0;
+      this._assistantETag = '';
+      this._assistantActivityLoaded = false;
+      this._assistantResetReadRecovery();
+      lane.resolved.clear();
+      history = { events: null, messages: null, rows: [], visible: null, start: -1 };
+      assistantStore('kontora-assistant-thread', '');
+    },
+
     _assistantAdopt(thread, messages) {
+      // A successful explicit selection/admission can establish a new read
+      // owner even for the same ID (for example after authenticating again).
+      this._assistantResetReadRecovery();
       if (thread?.id !== this.assistantThread?.id) {
         this._assistantRetireActivity();
+        partialSettled = false;
         this._assistantSetStreaming(false);
         this._assistantClearPartial();
         this.assistantWindow = ASSISTANT_WINDOW;
@@ -654,6 +689,7 @@ export function kontoraAssistant() {
         lane.resolved.clear();
       }
       this.assistantThread = thread;
+      this._assistantSyncSending();
       this.assistantMessages = messages || [];
       this._assistantSetStreaming(!!(thread && thread.running));
       if (thread && thread.autonomy && thread.purpose !== 'companion') this.assistantAutonomy = thread.autonomy;
@@ -697,51 +733,80 @@ export function kontoraAssistant() {
 
     // --- sending ---------------------------------------------------------
 
+    _assistantClearSubmittedDraft(raw, revision) {
+      if (this._assistantDraftRevision !== revision || this.assistantDraft !== raw) return;
+      this.assistantDraft = '';
+      this._assistantDraftRevision++;
+      this.assistantMenu = null;
+    },
+
+    _assistantSyncSending() {
+      this.assistantSending = [...lane.sends].some(send => send.id
+        ? send.id === this.assistantThread?.id : send.owner === lane.owner);
+    },
+
+    _assistantStartSend() {
+      const send = { id: this.assistantThread?.id, owner: lane.owner };
+      lane.sends.add(send);
+      this._assistantSyncSending();
+      return send;
+    },
+
+    _assistantFinishSend(send) {
+      lane.sends.delete(send);
+      this._assistantSyncSending();
+    },
+
     async sendAssistantMessage() {
+      if (this.assistantSending) return;
       if (this.isSecondary(this.selectedTicket)) {
         this.assistantError = 'The assistant is unavailable for secondary tickets. Claim the ticket into primary first.';
         return;
       }
-      const text = (this.assistantDraft || '').trim();
+      const raw = this.assistantDraft || '';
+      const revision = this._assistantDraftRevision;
+      const text = raw.trim();
       if (this.companionThread()) return this.companionSend('followup', text, []);
       if (!text || !this.assistantEnabled() || this.assistantStreaming) return;
-      let thread = this.assistantThread;
-      if (!thread) {
-        thread = await this.assistantNewThread();
-        if (!thread) return;
-      }
-      this.assistantDraft = '';
-      this.assistantMenu = null;
-      this.assistantError = null;
-      // Shown before the daemon answers, so the message does not vanish while
-      // the turn is starting. The next poll replaces it with the recorded one.
-      this.assistantMessages = this.assistantMessages.concat([{ n: this.assistantMessages.length + 1, text: text, at: new Date().toISOString() }]);
-      this._assistantSetStreaming(true, Date.now());
-      this._assistantScrollToEnd(true);
-      const context = this._assistantContextToken();
-      const current = () => this._assistantContextCurrent(context);
-      const sending = {};
-      lane.send = sending;
+      // Identical retyping is a newer draft; text equality cannot authorize clearing.
+      const autonomy = this.assistantEffectiveAutonomy();
+      const payload = { text, autonomy, context: this._assistantPageContext() };
+      const sending = this._assistantStartSend();
       try {
-        await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(thread.id) + '/messages', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: text, autonomy: this.assistantAutonomy, context: this._assistantPageContext(), source: this.isSecondary(this.selectedTicket) ? this.selectedTicket.source : undefined }),
-        }, current);
-      } catch (e) {
-        if (lane.send !== sending) return;
-        lane.send = null;
-        if (!this._assistantRetainedContextCurrent(context)) return;
-        this._assistantSetStreaming(!!this.assistantThread?.running);
-        this.assistantError = String(e.message || e);
-        this._armAssistantPoll();
-        return;
-      }
-      if (lane.send === sending) lane.send = null;
-      // A hidden badge may already have observed the pre-write idle state.
-      // Reconcile a successful write on the retained thread even after dismissal.
-      if (current() || (!this.assistantOpen && this._assistantRetainedContextCurrent(context))) {
-        await this._loadAssistantActivity({ fresh: true });
+        let thread = this.assistantThread;
+        if (!thread) {
+          thread = await this.assistantNewThread(autonomy);
+          if (!thread) return;
+          sending.id = thread.id;
+        }
+        this._assistantClearSubmittedDraft(raw, revision);
+        this.assistantError = null;
+        this.assistantMessages = this.assistantMessages.concat([{ n: this.assistantMessages.length + 1, text, at: new Date().toISOString() }]);
+        partialSettled = false;
+        this._assistantResetReadRecovery();
+        this._assistantSetStreaming(true, Date.now());
+        this._assistantScrollToEnd(true);
+        const context = this._assistantContextToken();
+        const current = () => this._assistantContextCurrent(context);
+        try {
+          await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(thread.id) + '/messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          }, current);
+        } catch (e) {
+          if (!this._assistantRetainedContextCurrent(context)) return;
+          this._assistantSetStreaming(!!this.assistantThread?.running);
+          this.assistantError = String(e.message || e);
+          this._armAssistantPoll();
+          return;
+        }
+        // A hidden badge may already have observed the pre-write idle state.
+        if (current() || (!this.assistantOpen && this._assistantRetainedContextCurrent(context))) {
+          await this._loadAssistantActivity({ fresh: true });
+        }
+      } finally {
+        this._assistantFinishSend(sending);
       }
     },
 
@@ -773,13 +838,19 @@ export function kontoraAssistant() {
     setAssistantAutonomy(mode) {
       if (this.companionThread()) return;
       this.assistantAutonomy = mode;
+      this.assistantFutureAutonomy = mode;
       this.assistantAutonomyOpen = false;
       assistantStore('kontora-assistant-autonomy', mode);
     },
 
+    assistantEffectiveAutonomy() {
+      return this.assistantThread ? this.assistantAutonomy : this.assistantFutureAutonomy;
+    },
+
     assistantAutonomyLabel() {
-      const row = this.assistantAutonomies().find((a) => a.key === this.assistantAutonomy);
-      return row ? row.label : this.assistantAutonomy;
+      const mode = this.assistantEffectiveAutonomy();
+      const row = this.assistantAutonomies().find((a) => a.key === mode);
+      return row ? row.label : mode;
     },
 
     // --- approval --------------------------------------------------------
@@ -828,13 +899,30 @@ export function kontoraAssistant() {
 
     // --- the poll --------------------------------------------------------
 
+    _assistantResetReadRecovery() {
+      this.assistantReadError = '';
+      this.assistantReadRetries = 0;
+      this.assistantReadRetryable = true;
+    },
+
+    assistantRetryActivity() {
+      if (!this.assistantReadRetryable) return Promise.resolve();
+      this._assistantResetReadRecovery();
+      return this._loadAssistantActivity({ fresh: true });
+    },
+
     _loadAssistantActivity(options) {
       if (!this.assistantThread || this._appDestroyed || lane.destroyed) return Promise.resolve();
+      if (this.assistantReadError && (!this.assistantReadRetryable || this.assistantReadRetries > ASSISTANT_STREAM_BACKOFF.length || this._assistantPoll !== null)) return Promise.resolve();
       if (lane.flight) {
         if (options?.fresh) lane.again = true;
         return lane.flight.promise;
       }
       this._stopAssistantPoll();
+      // There is no cross-source ordering in the SSE schema. Flush already
+      // accepted tokens, then retire that writer until all reads have decoded.
+      this._assistantFlushFrame();
+      this._assistantCloseStream({ keepTries: true });
       const context = this._assistantContextToken();
       const flight = { controller: new AbortController(), promise: null };
       lane.flight = flight;
@@ -847,20 +935,33 @@ export function kontoraAssistant() {
             '/api/assistant/threads/' + encodeURIComponent(context.id) + '/activity?after=' + this._assistantCursor,
             { headers, signal: flight.controller.signal }, current,
           );
-          if (!current() || res.status === 304) return;
+          if (!current()) return;
+          if (res.status === 304) {
+            this._assistantResetReadRecovery();
+            return;
+          }
           const data = await res.json();
           if (!current()) return;
           this._mergeAssistantActivity(data);
           this._assistantETag = res.headers?.get?.('ETag') || '';
+          this._assistantResetReadRecovery();
         } catch (e) {
-          // Body decoding can fail too; the same finalizer must keep polling.
+          if (!current()) return;
+          // Transcript failures retain the last good tape without replacing mutation feedback.
+          this.assistantReadError = String(e.message || e);
+          this.assistantReadRetryable = e.name !== 'AbortError' && ![401, 403, 404, 410].includes(e.status);
+          this.assistantReadRetries++;
+          lane.again = false;
         } finally {
           if (current()) {
             lane.flight = null;
             if (lane.again) {
               lane.again = false;
               await this._loadAssistantActivity();
-            } else this._armAssistantPoll();
+            } else {
+              if (this.assistantStreaming && this.assistantReadRetryable) this._assistantOpenStream();
+              this._armAssistantPoll();
+            }
           }
         }
       })();
@@ -920,24 +1021,20 @@ export function kontoraAssistant() {
     },
 
     _assistantAdoptPartial(data) {
-      const text = (data && data.partial) || '';
-      if (!text) {
+      const text = data?.partial || '';
+      const tool = data?.partial_tool || '';
+      partialSettled = !text && !tool;
+      if (partialSettled) {
         this._assistantClearPartial();
         return;
       }
-      // A poll snapshot is older than the stream's tail, so within a
-      // generation it may only add: rewinding rubs out text already read.
-      const gen = (data && data.partial_gen) || 0;
-      if (gen === this.assistantPartialGen && text.length < this.assistantPartial.length) return;
-      // The snapshot replaces what a queued frame would have appended, so the
-      // buffer goes with it: whether the daemon read its text before or after
-      // those deltas is not knowable here, and the next poll carries them
-      // anyway.
+      // The stream is closed for the whole read. This snapshot is authoritative,
+      // including shorter text at a generation reused by a different turn.
       assistantStream.buf = '';
-      this.assistantPartialGen = gen;
+      this.assistantPartialGen = data?.partial_gen || 0;
       this.assistantPartial = text;
-      this.assistantPartialTool = (data && data.partial_tool) || '';
-      this.assistantPartialTyping = true;
+      this.assistantPartialTool = tool;
+      this.assistantPartialTyping = !partialSettled;
     },
 
     _assistantClearPartial() {
@@ -955,8 +1052,19 @@ export function kontoraAssistant() {
     _assistantOpenStream() {
       if (typeof EventSource !== 'function') return;
       const thread = this.assistantThread;
-      if (this._appDestroyed || !thread || !this.assistantOpen || lane.destroyed) return;
+      if (this._appDestroyed || !thread || !this.assistantOpen || lane.destroyed || lane.flight || partialSettled || !this.assistantReadRetryable) return;
       if (assistantStream.es && assistantStream.threadID === thread.id) return;
+      if (assistantStream.exhausted || assistantStream.retry !== null) return;
+      const wait = assistantStream.retryAt - Date.now();
+      if (wait > 0) {
+        const context = this._assistantContextToken();
+        assistantStream.retry = setTimeout(() => {
+          assistantStream.retry = null;
+          assistantStream.retryAt = 0;
+          if (this._assistantContextCurrent(context)) this._assistantOpenStream();
+        }, wait);
+        return;
+      }
       this._assistantCloseStream({ keepTries: true });
 
       const seq = ++assistantStream.seq;
@@ -980,6 +1088,7 @@ export function kontoraAssistant() {
 
       es.addEventListener('reset', guard(function (d) {
         assistantStream.tries = 0;
+        partialSettled = false;
         assistantStream.gen = d.gen || 0;
         assistantStream.buf = '';
         self.assistantPartialGen = assistantStream.gen;
@@ -1009,6 +1118,7 @@ export function kontoraAssistant() {
       es.addEventListener('done', guard(function () {
         self._assistantFlushFrame(seq);
         self.assistantPartialTyping = false;
+        partialSettled = true;
         // Bumps the sequence, so the error the EOF fires finds a stale one and
         // does not reconnect into a turn that is over.
         self._assistantCloseStream();
@@ -1022,11 +1132,16 @@ export function kontoraAssistant() {
         if (seq !== assistantStream.seq) return;
         if (!self.assistantOpen || !self.assistantStreaming) return;
         const wait = ASSISTANT_STREAM_BACKOFF[assistantStream.tries];
-        if (wait === undefined) return;
+        if (wait === undefined) {
+          assistantStream.exhausted = true;
+          return;
+        }
         assistantStream.tries++;
+        assistantStream.retryAt = Date.now() + wait;
         assistantStream.retry = setTimeout(function () {
           if (seq !== assistantStream.seq) return;
           assistantStream.retry = null;
+          assistantStream.retryAt = 0;
           if (!self.assistantOpen || !self.assistantStreaming) return;
           self._assistantOpenStream();
         }, wait);
@@ -1074,10 +1189,13 @@ export function kontoraAssistant() {
         assistantStream.es = null;
       }
       assistantStream.threadID = '';
+      // Preserving retry limits must still retire every callback from the old stream.
+      assistantStream.seq++;
       if (!(opts && opts.keepTries)) {
-        assistantStream.seq++;
         assistantStream.tries = 0;
         assistantStream.gen = 0;
+        assistantStream.retryAt = 0;
+        assistantStream.exhausted = false;
       }
     },
 
@@ -1094,6 +1212,10 @@ export function kontoraAssistant() {
         lane.flight = null;
         lane.again = false;
         flight.controller.abort();
+      }
+      if (this.assistantReadError) {
+        if (!this.assistantReadRetryable || this.assistantReadRetries > ASSISTANT_STREAM_BACKOFF.length) return;
+        delay = ASSISTANT_STREAM_BACKOFF[this.assistantReadRetries - 1];
       }
       if (!this.assistantStreaming && !this.assistantGate && delay === undefined) return;
       const self = this;
@@ -1241,6 +1363,7 @@ export function kontoraAssistant() {
     // Open a menu when the caret sits on a "/" at the start of the draft or on
     // an "@" anywhere in it, and close it as soon as neither holds.
     assistantDraftChanged() {
+      this._assistantDraftRevision++;
       if (this._assistantComposing) return;
       const draft = this.assistantDraft || '';
       if (this.companionThread()) { this.assistantMenu = null; return; }
@@ -1279,6 +1402,7 @@ export function kontoraAssistant() {
       const chosen = row || menu.rows[menu.index];
       if (!chosen) return false;
       this.assistantDraft = (this.assistantDraft || '').slice(0, menu.from) + chosen.insert;
+      this._assistantDraftRevision++;
       this.assistantMenu = null;
       this.$nextTick?.(() => {
         document.getElementById(this.assistantComposerID('input'))?.focus();

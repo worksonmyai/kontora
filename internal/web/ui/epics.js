@@ -335,9 +335,23 @@ export function kontoraEpics() {
         (this.epicIsAgent(ticket) && ticket.status === 'open'));
     },
 
+    epicBriefWritable(ticket = this.selectedEpic) {
+      return this.ticketCanEdit(ticket) && (!this.epicIsAgent(ticket) ||
+        ['open', 'todo', 'paused'].includes(ticket.status));
+    },
+
     epicCanEditBrief() {
-      return !!this.selectedEpic && !this.lifecycleBusy(this.selectedEpic) && this._epicDetail?.id === this.selectedEpic.id && (!this.epicIsAgent(this.selectedEpic) ||
-        ['open', 'todo', 'paused'].includes(this.selectedEpic.status));
+      return this.epicBriefWritable() && !this.lifecycleBusy(this.selectedEpic) && this._epicDetail?.id === this.selectedEpic.id;
+    },
+
+    _epicRetainBrief() {
+      if (this._epicBriefDebounce) clearTimeout(this._epicBriefDebounce);
+      this._epicBriefDebounce = null;
+      var state = this._editorSaves[this.selectedEpic?.id];
+      if (state && this._epicDetail?.id === this.selectedEpic?.id) {
+        state.draft = { ...state.draft, description: this._epicBriefLead + this.editForm.body };
+      }
+      this.epicEditingBrief = false;
     },
 
     epicDescription(ticket) {
@@ -486,6 +500,7 @@ export function kontoraEpics() {
           this._epicDetail = full;
           this.selectedEpic = full;
           if (!keepDraft) this._epicLoadBrief(full);
+          if (!this.epicBriefWritable(full)) this._epicRetainBrief();
           var index = this.tickets.findIndex(t => t.id === id);
           if (index >= 0) {
             var before = this.tickets[index];
@@ -506,7 +521,11 @@ export function kontoraEpics() {
       var id = this.selectedEpic.id;
       var navigation = this._navigationSeq;
       var close = (ok) => {
-        if (!ok || navigation !== this._navigationSeq || this.selectedEpic?.id !== id) return false;
+        if (navigation !== this._navigationSeq || this.selectedEpic?.id !== id) return false;
+        if (!ok) {
+          if (this.epicBriefWritable()) return false;
+          this._epicRetainBrief();
+        }
         this.closeTerminal();
         this.terminalRW = false;
         this._resetActivity();
@@ -541,11 +560,7 @@ export function kontoraEpics() {
         this.closeEpic();
         return;
       }
-      if (this.epicEditingBrief && this.epicIsAgent(fresh) &&
-          !['open', 'todo', 'paused'].includes(fresh.status)) {
-        this.epicFlushBrief();
-        this.epicEditingBrief = false;
-      }
+      if (!this.epicBriefWritable(fresh)) this._epicRetainBrief();
       var detail = this._epicDetail && this._epicDetail.id === id ? this._epicDetail : null;
       this.selectedEpic = detail
         ? Object.assign({}, detail, fresh, { body: detail.body, notes: detail.notes,
@@ -826,6 +841,11 @@ export function kontoraEpics() {
       var state = this._editorSaves[id];
       if (!state) return true;
       if (!state.failed && this._epicBriefLead + this.editForm.body === state.ack.description) return true;
+      if (!this.epicBriefWritable()) {
+        this._epicRetainBrief();
+        this.error = 'The unsaved epic brief is retained. Editing is no longer permitted.';
+        return false;
+      }
       this.epicBriefSaving = true;
       this.epicBriefSaved = false;
       // A second PUT must not overtake the first or let navigation drop a newer draft.
@@ -833,6 +853,7 @@ export function kontoraEpics() {
         while (this.selectedEpic?.id === id) {
           var body = this._epicBriefLead + this.editForm.body;
           if (!state.failed && body === state.ack.description) return true;
+          if (!this.epicBriefWritable()) { this._epicRetainBrief(); return false; }
           if (!await this._queueEditorSave(id, { description: body }, generation)) return false;
         }
         return true;

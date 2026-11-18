@@ -5,6 +5,125 @@ import { kontoraAutomations } from '../ui/automations.js';
 import { kontoraDetail } from '../ui/detail.js';
 import { deferred } from './settings_fixtures.mjs';
 
+function previewState() {
+  const state = kontoraAutomations();
+  Object.assign(state, { automationsAvailable: true, automationsEditing: true,
+    automationsNotify() {}, automationsSelect: async () => false });
+  Object.assign(state.automationsDraft, { name: 'Report', path: '/repo', agent: 'coder', prompt: 'Report changes' });
+  return state;
+}
+
+for (const [schedule, valid] of [['1.5h', true], ['0.5h', true], ['1.5h30m', true], ['1.0m', true],
+  ['0 9 * * 1-5', true], ['0 9 * * MON', false], ['1.5m', false], ['nonsense', false], ['60 * * * *', false]]) {
+  test(`authoritative preview decides nonempty schedule ${schedule}`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const state = previewState(), response = deferred();
+    t.after(() => state.automationsCancelPreview());
+    state.automationsDraft.schedule = schedule;
+    const requests = [];
+    state.automationsRequest = async (path, options) => {
+      requests.push({ path, body: JSON.parse(options.body) });
+      return response.promise;
+    };
+    state.automationsSchedulePreview();
+    assert.equal(state.automationsPreviewError, '', 'only the server interprets nonempty schedules');
+    assert.equal(Boolean(state.automationsCanSave()), false);
+    await state.automationsSaveDraft();
+    assert.equal(requests.length, 0);
+    t.mock.timers.tick(250);
+    assert.deepEqual(requests, [{ path: '/preview', body: { schedule, timezone: 'UTC' } }]);
+    assert.equal(Boolean(state.automationsCanSave()), false, 'pending preview cannot authorize a save');
+    if (valid) response.resolve({ occurrences: ['2030-01-01T00:00:00Z'], human: 'authoritative' });
+    else response.resolve(Promise.reject(new Error('server rejected schedule')));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(Boolean(state.automationsCanSave()), valid);
+    assert.equal(state.automationsPreviewError, valid ? '' : 'server rejected schedule');
+    if (valid) {
+      assert.equal(state.automationsPreviewHuman, 'authoritative');
+      state.automationsDraft.timezone = 'Europe/Berlin';
+      assert.equal(Boolean(state.automationsCanSave()), false, 'timezone must match the successful preview');
+      state.automationsDraft.timezone = 'UTC';
+      state.automationsDraft.schedule += ' ';
+      assert.equal(Boolean(state.automationsCanSave()), false, 'schedule must match the successful preview');
+    }
+  });
+}
+
+for (const schedule of ['', '   ']) {
+  test(`empty schedule ${JSON.stringify(schedule)} is required without preview`, t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const state = previewState();
+    state.automationsDraft.schedule = schedule;
+    state.automationsRequest = () => assert.fail('empty schedule must not request preview');
+    state.automationsSchedulePreview();
+    t.mock.timers.tick(250);
+    assert.equal(state.automationsPreviewError, 'A schedule is required.');
+    assert.equal(Boolean(state.automationsCanSave()), false);
+  });
+}
+
+test('obsolete preview success cannot authorize a newer draft or timezone', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const state = previewState(), old = deferred(), current = deferred();
+  t.after(() => state.automationsCancelPreview());
+  let requests = 0;
+  state.automationsRequest = () => ++requests === 1 ? old.promise : current.promise;
+  state.automationsSchedulePreview();
+  t.mock.timers.tick(250);
+  state.automationsDraft.timezone = 'Europe/Berlin';
+  state.automationsSchedulePreview();
+  t.mock.timers.tick(250);
+  current.resolve(Promise.reject(new Error('timezone refused')));
+  await new Promise(resolve => setImmediate(resolve));
+  old.resolve({ occurrences: [], human: 'obsolete' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(state.automationsPreviewError, 'timezone refused');
+  assert.equal(state.automationsPreviewValidKey, '');
+  assert.equal(Boolean(state.automationsCanSave()), false);
+});
+
+for (const kind of ['new', 'update']) {
+  test(`${kind} save requires matching preview and sends the previewed definition`, async () => {
+    const state = previewState(), requests = [];
+    if (kind === 'update') Object.assign(state.automationsDraft, { id: 'auto-a', revision: 4 });
+    state.automationsDraft.schedule = '1.5h';
+    state.automationsRequest = async (path, options) => {
+      requests.push({ path, method: options.method, body: JSON.parse(options.body) });
+      return { id: 'auto-a', revision: 5, ...JSON.parse(options.body).definition };
+    };
+    await state.automationsSaveDraft();
+    assert.equal(requests.length, 0);
+    state.automationsPreviewValidKey = JSON.stringify({ schedule: '1.5h', timezone: 'UTC' });
+    await state.automationsSaveDraft();
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].method, kind === 'new' ? 'POST' : 'PUT');
+    assert.equal(requests[0].body.definition.schedule, '1.5h');
+    assert.equal(requests[0].body.definition.timezone, 'UTC');
+  });
+}
+
+test('uncertain creation retries captured receipt even after draft changes without a new preview', async () => {
+  const state = previewState(), requests = [];
+  state.automationsDraft.schedule = '1.5h';
+  state.automationsPreviewValidKey = JSON.stringify({ schedule: '1.5h', timezone: 'UTC' });
+  state.automationsRequest = async (path, options) => {
+    requests.push({ path, body: JSON.parse(options.body) });
+    if (requests.length === 1) throw new Error('acknowledgement lost');
+    return { id: 'created', revision: 1, ...requests[0].body.definition };
+  };
+  await state.automationsSaveDraft();
+  assert.ok(state.automationsCreate);
+  state.automationsDraft.schedule = 'not validated';
+  state.automationsDraft.prompt = 'new unsaved text';
+  state.automationsPreviewValidKey = '';
+  assert.equal(Boolean(state.automationsCanSave()), true, 'captured creation is reconciliation, not a new draft save');
+  await state.automationsSaveDraft();
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[1], requests[0]);
+  assert.equal(requests[1].body.definition.schedule, '1.5h');
+  assert.equal(state.automationsCreate, null);
+});
+
 const rows = [{ id: 'auto-a', revision: 1, name: 'A' }, { id: 'auto-b', revision: 1, name: 'B' }];
 const actions = [
   { name: 'Edit', hash: '#/automations/auto-a/edit', run: (state, writeRoute) => state.automationsEdit(rows[0], writeRoute) },

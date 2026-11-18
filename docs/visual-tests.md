@@ -48,6 +48,10 @@ tracked baselines.
 The separate `visual` CI job only checks baselines. For initial setup, enable
 that job after the images pass review and all 120 comparisons pass.
 
+## Baseline review
+
+Alexander Akhmetov approved all 12 baseline images on November 18, 2026.
+
 ## Read failures
 
 - Screenshot mismatches save actual, expected, and diff PNGs in `test-results/visual/`.

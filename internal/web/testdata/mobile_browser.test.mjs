@@ -13,7 +13,7 @@ import * as yaml from '../static/vendor/yaml@2.8.1/yaml.mjs';
 import {
   fixtureSession, fixtures as createFixtures, unloadFixtureDocuments,
   source, sourcePath, secondSource, unavailablePath, longID, tail, stamp, liveTitle, liveBranch, liveAgent,
-  supervisorID, ticket, settingsRaw, deferred, detailPath, populatedStats, ready, routeTo, openTicket,
+  supervisorID, ticket, settingsRaw, deferred, detailPath, ready, routeTo, openTicket,
 } from './browser_fixture.mjs';
 import {
   assistantSurface, automationDetailReady, detailPanel, inViewport, openAssistantControl, ordinaryThreadID,
@@ -2158,6 +2158,8 @@ describe('desktop automation handoff', { concurrency: 2 }, () => {
         await automationButton(page, 'edit').click(); await page.waitForURL('**/#/automations/auto-created-0/edit');
         await page.reload({ waitUntil: 'domcontentloaded' }); await ready(page); await visible(model(page, 'automationsDraft.name'));
         assert.equal(await model(page, 'automationsDraft.name').inputValue(), 'Repository review (copy)');
+        // Preview rows move Cancel, so wait before starting its pointer sequence.
+        await automationPreviewReady(page);
         await automationButton(page, 'cancel').click(); await automationDetailReady(page, 'auto-created-0');
         await sidebar.getByRole('button', { name: /Automations/ }).click(); await page.waitForURL('**/#/automations');
       }, { sidebar: true });

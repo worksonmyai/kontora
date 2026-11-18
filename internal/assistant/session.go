@@ -1,9 +1,11 @@
 package assistant
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/session"
@@ -67,4 +69,80 @@ func newestJSONL(dir string) string {
 		return entries[i].mod > entries[j].mod
 	})
 	return entries[0].path
+}
+
+// SessionPathStrict reports inaccessible directories and ambiguous transcripts.
+// An empty result means discovery succeeded without finding a session file.
+func SessionPathStrict(kind, sessionID, claudeConfigDir, piSessionDir string) (string, error) {
+	var matches []string
+	switch kind {
+	case config.AgentKindClaude:
+		if sessionID == "" {
+			return "", nil
+		}
+		if !session.SafeRef(session.KindClaude, sessionID) {
+			return "", fmt.Errorf("invalid claude session reference")
+		}
+		root := filepath.Join(config.ExpandTilde(claudeConfigDir), "projects")
+		dirs, err := os.ReadDir(root)
+		if err != nil {
+			return "", err
+		}
+		for _, dir := range dirs {
+			path := filepath.Join(root, dir.Name())
+			st, err := os.Stat(path)
+			if err != nil {
+				return "", err
+			}
+			if !st.IsDir() {
+				continue
+			}
+			files, err := strictSessionFiles(path, sessionID+".jsonl")
+			if err != nil {
+				return "", err
+			}
+			matches = append(matches, files...)
+		}
+	case config.AgentKindPi:
+		var err error
+		matches, err = strictSessionFiles(piSessionDir, "")
+		if err != nil {
+			return "", err
+		}
+	default:
+		return "", fmt.Errorf("unsupported assistant agent kind %q", kind)
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("ambiguous assistant transcript: found %d session files", len(matches))
+	}
+	if len(matches) == 0 {
+		return "", nil
+	}
+	return matches[0], nil
+}
+
+func strictSessionFiles(dir, name string) ([]string, error) {
+	if dir == "" {
+		return nil, fmt.Errorf("assistant session directory is empty")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, entry := range entries {
+		if (name != "" && entry.Name() != name) || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		st, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if !st.Mode().IsRegular() {
+			return nil, fmt.Errorf("assistant transcript is not a regular file: %s", path)
+		}
+		paths = append(paths, path)
+	}
+	return paths, nil
 }

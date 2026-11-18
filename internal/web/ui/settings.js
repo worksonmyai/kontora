@@ -776,8 +776,7 @@ export function kontoraSettings() {
     // config_reloaded listener for a reload this page did not cause.
     async _settingsRefreshConfigCache() {
       try {
-        const res = await fetch('/api/config');
-        if (res.ok) this.configCache = await res.json();
+        await this.refreshConfigCache();
       } catch (e) {
         // The file was written. A stale cache clears on the next page load.
       }
@@ -2030,11 +2029,11 @@ function settingsChangedPaths(cfg, baseline) {
   const paths = new Set([...Object.keys(now), ...Object.keys(was)]);
   const changed = [];
   for (const p of paths) {
-    // A key present on only one side counts as changed only when its value is
-    // non-empty: adding a blank environment row is not an edit yet.
+    // Removing a baseline environment key is an edit even for an empty value.
+    // A newly added blank row, however, is still unfinished rather than a write.
     const a = now[p] === undefined ? '' : now[p];
     const b = was[p] === undefined ? '' : was[p];
-    if (a !== b) changed.push(p);
+    if (a !== b || (p.startsWith('environment.') && Object.hasOwn(was, p) && !Object.hasOwn(now, p))) changed.push(p);
   }
   return changed.sort();
 }

@@ -64,9 +64,9 @@ export function parseScheduleDelay(text) {
 }
 
 // Local wall time with a space or a T between the date and the time, the
-// spellings ticket.ParseScheduleFlex takes. Seconds are optional and dropped:
-// the field stores second precision and nobody schedules to the second.
-const SCHEDULE_LOCAL = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::\d{2})?$/;
+// spellings ticket.ParseScheduleFlex takes. Seconds are optional: validate them
+// with the other components, then drop them to keep local input minute-precise.
+const SCHEDULE_LOCAL = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/;
 
 // The one input on every schedule surface: an absolute local time or a delay
 // from now, the two grammars `kontora schedule` takes. Returns the instant it
@@ -92,9 +92,21 @@ export function parseScheduleInput(text, now) {
       if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return { iso: '', at: null, error: 'add a time — a date alone is ambiguous' };
       return { iso: '', at: null, error: 'not a time or a duration' };
     }
-    when = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], 0, 0);
-    if (isNaN(when.getTime())) return { iso: '', at: null, error: 'not a time or a duration' };
+    var year = +m[1], month = +m[2], day = +m[3], hour = +m[4], minute = +m[5], second = +(m[6] || 0);
+    if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) {
+      return { iso: '', at: null, error: 'not a valid local time' };
+    }
+    when = new Date(year, month - 1, day, hour, minute, second, 0);
+    // Date normalizes impossible dates and DST gaps. Never submit that different
+    // wall time; a fall fold still uses Date's existing earlier-instant choice.
+    if (when.getFullYear() !== year || when.getMonth() !== month - 1 || when.getDate() !== day
+      || when.getHours() !== hour || when.getMinutes() !== minute || when.getSeconds() !== second) {
+      return { iso: '', at: null, error: 'not a valid local time' };
+    }
+    when.setSeconds(0, 0);
   }
+  // Durations can overflow Date's range (or start from an invalid clock).
+  if (!Number.isFinite(when.getTime())) return { iso: '', at: null, error: 'not a time or a duration' };
   // ticket.ScheduleGrace: an instant a moment old was current when it was typed.
   if (when.getTime() < at.getTime() - 60000) return { iso: '', at: null, error: 'that time has already passed' };
   return { iso: storedISO(when), at: when, error: '' };

@@ -297,6 +297,8 @@ func TestAutomationPreview(t *testing.T) {
 		valid          bool
 	}{
 		{"1m", "", true}, {"90m", "UTC", true}, {"0 9 * * 1-5", "Europe/Berlin", true},
+		{"1.5h", "UTC", true}, {"0.5h", "Europe/Berlin", true}, {"1.5h30m", "UTC", true}, {"1.0m", "UTC", true},
+		{"1.5m", "UTC", false}, {"1.01m", "UTC", false}, {"1e3m", "UTC", false},
 		{"30s", "UTC", false}, {"90s", "UTC", false}, {"0m", "UTC", false}, {"@daily", "UTC", false}, {"0 0 9 * * *", "UTC", false}, {"0 9 * * MON", "UTC", false}, {"1m", "Not/AZone", false},
 	} {
 		t.Run(tc.schedule+tc.zone, func(t *testing.T) {

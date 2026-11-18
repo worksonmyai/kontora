@@ -5,6 +5,7 @@ import { kontoraDetail } from '../ui/detail.js';
 import { kontoraNotes } from '../ui/notes.js';
 import { kontoraNotify } from '../ui/notify.js';
 import { kontoraSources } from '../ui/sources.js';
+import { kontoraTickets } from '../ui/tickets.js';
 import { kontoraMobile } from '../ui/mobile.js';
 
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -152,14 +153,320 @@ for (const permission of ['not author', 'revoked']) test(`note permissions: ${pe
 
 test('note writes serialize per source-qualified ticket', async t => {
   const state = fixture({ source: 'team', can_edit: true, notes: [{ id: 'n', author: 'me' }] });
-  const gate = deferred(), calls = [];
-  t.mock.method(globalThis, 'fetch', async (url, opts) => { calls.push([url, opts.method]); if (calls.length === 1) await gate.promise; return response(state.selectedTicket); });
+  const gate = deferred(), tail = deferred(), calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    calls.push([url, opts.method]);
+    await (calls.length === 1 ? gate.promise : tail.promise);
+    return response(state.selectedTicket);
+  });
   state.noteDraft = 'hello';
   const adding = state.submitNote();
   const reacting = state.toggleReaction(state.selectedTicket.notes[0], '👍');
+  const key = state.ticketKey(state.selectedTicket);
   await tick(); assert.equal(calls.length, 1);
-  gate.resolve(); await Promise.all([adding, reacting]);
+  gate.resolve(); await adding;
+  assert.equal(state._noteHasTail(key), true);
+  let drained = false;
+  const waiting = state._noteWaitForTail(key).then(() => { drained = true; });
+  await tick(); assert.equal(drained, false);
+  tail.resolve(); await Promise.all([reacting, waiting]);
+  assert.equal(state._noteHasTail(key), false);
+  assert.equal(drained, true);
   assert.deepEqual(calls, [['/api/sources/team/tickets/one/note', 'POST'], ['/api/sources/team/tickets/one/notes/n/reactions', 'POST']]);
+});
+
+// Accepted commands outlive the editor that submitted them. No mutation retries.
+for (const outcome of ['saved', 'refused', 'uncertain']) test(`queued note keeps captured source and text after navigation: ${outcome}`, async t => {
+  const state = fixture({ source: 'team', can_edit: true, notes: [{ id: 'n', text: 'original' }] });
+  const original = structuredClone(state.selectedTicket), gate = deferred(), calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    calls.push({ url, method: opts?.method, body: opts?.body });
+    if (calls.length === 1) { await gate.promise; return response(original); }
+    if (outcome === 'uncertain') throw new Error('lost acknowledgement');
+    if (outcome === 'refused') return { ok: false, json: async () => ({ error: 'permission refused' }) };
+    return response({ ...original, notes: [...original.notes, { id: 'added', text: 'captured' }] });
+  });
+  const reacting = state.toggleReaction(state.selectedTicket.notes[0], '👍');
+  state.noteDraft = ' captured ';
+  const adding = state.submitNote();
+  state.noteDraft = 'newer draft';
+  state.noteResetDrafts();
+  state.selectedTicket = { id: 'one', source: 'other', can_edit: true, notes: [] };
+  state._ticketDetailSeq++;
+  state.noteDraft = 'namesake draft';
+  gate.resolve(); await Promise.all([reacting, adding]);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].url, '/api/sources/team/tickets/one/note');
+  assert.deepEqual(JSON.parse(calls[1].body), { text: 'captured' });
+  assert.equal(state.noteDraft, 'namesake draft');
+  assert.equal(state.error, null, 'no old error over the new ticket');
+  state.selectedTicket = original;
+  const retained = state.noteRecoveryItems();
+  assert.ok(retained.some(r => r.text === 'newer draft'));
+  assert.equal(retained.some(r => r.text === ' captured '), outcome !== 'saved');
+  if (outcome !== 'saved') assert.match(retained.find(r => r.text === ' captured ').reason, outcome === 'uncertain' ? /uncertain/i : /permission refused/);
+  await state._noteWaitForTail(state.ticketKey(original));
+  assert.equal(calls.length, 2, 'waiting/reopening never retries a mutation');
+});
+
+for (const kind of ['Reply', 'Edit']) for (const target of ['same', 'other']) for (const boundary of ['navigation', 'unresolved']) {
+  test(`pending note ${kind} retains identical unsent ${target} editor after ${boundary}`, async t => {
+    const state = fixture({ notes: [{ id: 'a', author: 'me', text: 'A' }, { id: 'b', author: 'me', text: 'B' }] });
+    const original = structuredClone(state.selectedTicket), gate = deferred();
+    let writes = 0;
+    t.mock.method(globalThis, 'fetch', async (_url, options) => { if (options?.method) writes++; await gate.promise; return response(original); });
+    state['noteOpen' + kind](state.selectedTicket.notes[0]);
+    state['note' + kind + 'Draft'] = 'identical';
+    const pending = kind === 'Reply' ? state.submitReply() : state.saveNoteEdit();
+    state['noteOpen' + kind](state.selectedTicket.notes[target === 'same' ? 0 : 1]);
+    state['note' + kind + 'Draft'] = 'identical';
+    if (boundary === 'navigation') state.noteResetDrafts();
+    else state._noteApplyTicket('one', { ...original, notes: [] });
+    const recovery = state.noteRecoveryItems().find(r => r.text === 'identical');
+    assert.ok(recovery, 'a different editor is not the accepted command');
+    assert.equal(recovery.kind, kind);
+    assert.equal(recovery.unresolved, boundary === 'unresolved');
+    if (boundary === 'navigation') {
+      assert.equal(recovery.target, target === 'same' ? 'a' : 'b');
+      state.noteRestoreRecovery(recovery.id);
+      assert.equal(state['note' + kind + 'Draft'], 'identical');
+      assert.equal(state['note' + kind + 'On'], target === 'same' ? 'a' : 'b');
+    }
+    gate.resolve(); await pending;
+    assert.equal(writes, 1, 'retaining or restoring does not replay a write');
+    if (boundary === 'navigation') assert.equal(state['note' + kind + 'Draft'], 'identical');
+  });
+}
+
+const legacy = (id, text = 'legacy') => ({ id, text, at: 'handwritten byline', author: 'me', author_kind: 'human' });
+for (const kind of ['Reply', 'Edit', 'Delete', 'Reaction']) test(`queued ${kind} resolves legacy minting at dispatch`, async t => {
+  const state = fixture({ notes: [legacy('#0')] });
+  const gate = deferred(), calls = [];
+  const minted = { ...state.selectedTicket, notes: [legacy('mint')] };
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    calls.push([url, opts.method, opts.body && JSON.parse(opts.body)]);
+    if (calls.length === 1) await gate.promise;
+    return response(minted);
+  });
+  const first = state.toggleReaction(state.selectedTicket.notes[0], '👍');
+  let second;
+  if (kind === 'Reply') { state.noteOpenReply(state.selectedTicket.notes[0]); state.noteReplyDraft = 'reply'; second = state.submitReply(); }
+  if (kind === 'Edit') { state.noteOpenEdit(state.selectedTicket.notes[0]); state.noteEditDraft = 'edited'; second = state.saveNoteEdit(); }
+  if (kind === 'Delete') { state.noteAskDelete(state.selectedTicket.notes[0]); second = state.confirmDeleteNote(); }
+  if (kind === 'Reaction') second = state.toggleReaction(state.selectedTicket.notes[0], '👀');
+  gate.resolve(); await Promise.all([first, second]);
+  assert.equal(calls.length, 2);
+  if (kind === 'Reply') assert.deepEqual(calls[1], ['/api/tickets/one/note', 'POST', { text: 'reply', parent: 'mint' }]);
+  else assert.equal(calls[1][0], '/api/tickets/one/notes/mint' + (kind === 'Reaction' ? '/reactions' : ''));
+});
+
+for (const [name, before, after, expected] of [
+  ['shift is not positional', [legacy('#0', 'removed'), legacy('#1')], [legacy('#0')], '#0'],
+  ['ambiguous duplicates', [legacy('#0'), legacy('#1')], [legacy('aaaa'), legacy('bbbb')], null],
+  ['new duplicate is ambiguous', [legacy('#0')], [legacy('#0'), legacy('new1')], null],
+  ['changed content cannot be guessed', [legacy('#0')], [legacy('#0', 'replacement')], null],
+  ['stable anchors disambiguate', [legacy('#0'), legacy('anchor', 'anchor'), legacy('#2')], [legacy('left'), legacy('anchor', 'anchor'), legacy('right')], 'left'],
+  ['stable ID survives changed content', [legacy('keep')], [legacy('keep', 'changed')], 'keep'],
+  ['reordered anchors are uncertain', [legacy('#0'), legacy('left', 'left'), legacy('right', 'right')], [legacy('mint'), legacy('right', 'right'), legacy('left', 'left')], null],
+]) test(`legacy draft correspondence: ${name}`, async t => {
+  const state = fixture({ notes: before });
+  state.noteOpenReply(name === 'shift is not positional' ? before[1] : before[0]); state.noteReplyDraft = 'retained reply';
+  state._noteApplyTicket('one', { ...state.selectedTicket, notes: after });
+  assert.equal(state.noteReplyOn, expected);
+  let writes = 0;
+  t.mock.method(globalThis, 'fetch', async () => { writes++; return response(state.selectedTicket); });
+  if (!expected) {
+    const item = state.noteRecoveryItems().find(r => r.text === 'retained reply');
+    assert.ok(item); assert.equal(item.unresolved, true);
+    await state.submitReply();
+    assert.equal(writes, 0, 'unresolved work cannot target a positional namesake');
+  } else assert.equal(state.noteReplyDraft, 'retained reply');
+});
+
+test('accepted tail is awaited by detail hydration, not by leaving', async t => {
+  const state = fixture({ source: 'team', can_edit: true });
+  const gate = deferred(), calls = [];
+  Object.assign(state, {
+    _navigationSeq: 0, currentView: 'board', _editorGeneration: 0,
+    _releaseEditorBody() {}, _retireEditorState() {}, closeAgentPicker() {}, flushEditSave() {},
+    syncDetailCoverage() {}, _pushRecentTicket() {}, fetchTicketCost() {},
+    _resetActivity() {}, _resetTicketCost() {}, writeHash() {},
+    restoreDetailView: async () => true, startEditing: async () => {},
+  });
+  const original = structuredClone(state.selectedTicket);
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    calls.push(opts?.method || 'GET');
+    if (opts) await gate.promise;
+    return response(original);
+  });
+  state.noteDraft = 'accepted'; const adding = state.submitNote();
+  state.closeDetail();
+  assert.equal(state.selectedTicket, null);
+  const opening = state.selectTicket(original);
+  await tick(); assert.deepEqual(calls, ['POST']);
+  gate.resolve(); await Promise.all([adding, opening]);
+  assert.deepEqual(calls, ['POST', 'GET']);
+});
+
+test('ambiguous queued target stays visible and never dispatches, even after a later unique snapshot', async t => {
+  const state = fixture({ notes: [legacy('#0'), legacy('#1')] });
+  const gate = deferred(), calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, opts) => { calls.push([url, opts.method]); await gate.promise; return response({ ...state.selectedTicket, notes: [legacy('aaaa'), legacy('bbbb')] }); });
+  const first = state.toggleReaction(state.selectedTicket.notes[0], '👍');
+  state.noteOpenReply(state.selectedTicket.notes[1]); state.noteReplyDraft = 'must survive';
+  const second = state.submitReply();
+  gate.resolve(); await Promise.all([first, second]);
+  assert.equal(calls.length, 1);
+  assert.ok(state.noteRecoveryItems().some(r => r.text === 'must survive' && r.unresolved));
+  state._noteApplyTicket('one', { ...state.selectedTicket, notes: [legacy('bbbb')] });
+  const item = state.noteRecoveryItems().find(r => r.text === 'must survive');
+  state.noteRestoreRecovery(item.id);
+  await state.submitReply();
+  assert.equal(calls.length, 1, 'an unresolved identity cannot silently become a different note later');
+});
+
+for (const source of ['primary', 'team']) test(`accepted SSE snapshots remap only their source-qualified draft: ${source}`, () => {
+  const state = fixture({ source, can_edit: true, notes: [legacy('#0')] });
+  const store = kontoraTickets();
+  Object.assign(state, { applyTicketUpdate: store.applyTicketUpdate, _mergeDetailProjection: store._mergeDetailProjection,
+    refreshInitContext() {}, reconcileOutput() {}, logTabActive: () => false, createForm: {}, secondaryTickets: [] });
+  state.noteOpenReply(state.selectedTicket.notes[0]); state.noteReplyDraft = 'source-owned';
+  const namesake = { ...state.selectedTicket, source: source === 'primary' ? 'other' : 'primary', notes: [legacy('wrong')] };
+  state.applyTicketUpdate(namesake);
+  assert.equal(state.noteReplyOn, '#0');
+  state.applyTicketUpdate({ ...state.selectedTicket, notes: [legacy('right')] });
+  assert.equal(state.noteReplyOn, 'right');
+  assert.equal(state.noteReplyDraft, 'source-owned');
+});
+
+for (const source of ['primary', 'team']) test(`note acknowledgement preserves description editor ownership: ${source}`, () => {
+  const state = fixture({ source, can_edit: true, revision: 'r1', notes: [legacy('#0')], description_tail: 'old tail' });
+  state.editing = true; state.editForm = { body: 'newer unsaved editor text' };
+  state.noteOpenReply(state.selectedTicket.notes[0]); state.noteReplyDraft = 'reply draft';
+  const key = state.ticketKey(state.selectedTicket);
+  assert.equal(state._noteApplyTicket(key, { ...state.selectedTicket, revision: 'r2', description: 'remote description', description_tail: 'new tail', notes: [legacy('mint')] }), true);
+  assert.equal(state.selectedTicket.description, 'Description\n');
+  assert.equal(state.selectedTicket.description_tail, 'new tail');
+  assert.equal(state.selectedTicket.body, 'Description\nnew tail');
+  assert.equal(state.selectedTicket.revision, source === 'team' ? 'r1' : 'r2');
+  assert.equal(state.editForm.body, 'newer unsaved editor text');
+  assert.equal(state.noteReplyOn, 'mint');
+});
+
+for (const source of ['primary', 'team']) for (const kind of ['Reply', 'Edit', 'Reaction']) {
+  test(`failed delete acknowledgement invalidates queued legacy ${kind}: ${source}`, async t => {
+    const state = fixture({ source, can_edit: true, notes: [legacy('#0', 'removed'), legacy('#1', 'intended'), legacy('#2', 'wrong')] });
+    const gate = deferred(), calls = [];
+    let persisted = structuredClone(state.selectedTicket);
+    t.mock.method(globalThis, 'fetch', async (url, opts) => {
+      calls.push([url, opts?.method || 'GET']);
+      if (calls.length === 1) {
+        await gate.promise;
+        persisted.notes = [legacy('#0', 'intended'), legacy('#1', 'wrong')];
+        return { ok: false, status: 500, json: async () => ({ error: 'ticket read failed' }) };
+      }
+      return response(persisted);
+    });
+    state.noteAskDelete(state.selectedTicket.notes[0]);
+    const first = state.confirmDeleteNote();
+    const target = state.selectedTicket.notes[1];
+    let second;
+    if (kind === 'Reply') { state.noteOpenReply(target); state.noteReplyDraft = 'queued'; second = state.submitReply(); }
+    if (kind === 'Edit') { state.noteOpenEdit(target); state.noteEditDraft = 'queued'; second = state.saveNoteEdit(); }
+    if (kind === 'Reaction') second = state.toggleReaction(target, '👀');
+    gate.resolve(); await Promise.all([first, second]);
+    assert.deepEqual(persisted.notes.map(n => n.text), ['intended', 'wrong']);
+    assert.equal(calls.length, 1, 'no queued mutation uses the old positional ID');
+    const recoveries = state.noteRecoveryItems();
+    assert.ok(recoveries.some(r => r.kind === 'Delete' && /Outcome uncertain/.test(r.reason)));
+    assert.ok(recoveries.some(r => r.kind === kind && r.unresolved && /Not sent/.test(r.reason)));
+    state._noteApplyTicket(state.ticketKey(persisted), persisted);
+    assert.ok(state.noteRecoveryItems().some(r => r.kind === kind && r.unresolved), 'a later snapshot cannot revive an invalidated target');
+  });
+}
+
+for (const failure of ['lost status', 'lost body', 'failed refresh']) test(`unavailable acknowledgement never dispatches a stale legacy target: ${failure}`, async t => {
+  const state = fixture({ notes: [legacy('#0')] });
+  const gate = deferred(), calls = [];
+  t.mock.method(globalThis, 'fetch', async (_url, opts) => {
+    calls.push(opts?.method || 'GET');
+    if (!opts) return { ok: false };
+    await gate.promise;
+    if (failure === 'lost status') throw new Error('offline');
+    if (failure === 'lost body') return { ok: true, json: async () => { throw new Error('decode failed'); } };
+    return response({ ...state.selectedTicket, notes: [legacy('mint')] });
+  });
+  const first = state.toggleReaction(state.selectedTicket.notes[0], '👍');
+  state.noteOpenReply(state.selectedTicket.notes[0]); state.noteReplyDraft = 'queued reply';
+  const second = state.submitReply();
+  if (failure === 'failed refresh') { state._selectedTicketUpdateSeq++; }
+  gate.resolve(); await Promise.all([first, second]);
+  assert.deepEqual(calls, failure === 'failed refresh' ? ['POST', 'GET'] : ['POST']);
+  assert.ok(state.noteRecoveryItems().some(r => r.text === 'queued reply' && r.unresolved));
+});
+
+test('source-mismatched HTTP acknowledgement retains text without adopting the namesake', async t => {
+  const state = fixture({ source: 'team', can_edit: true });
+  t.mock.method(globalThis, 'fetch', async () => response({ id: 'one', source: 'other', notes: [legacy('wrong')] }));
+  state.noteDraft = 'original source'; await state.submitNote();
+  assert.equal(state.selectedTicket.source, 'team');
+  assert.equal(state.noteDraft, 'original source');
+  assert.ok(state.noteRecoveryItems().some(r => r.text === 'original source'));
+});
+
+test('navigation during stale acknowledgement refresh still resolves the next accepted target', async t => {
+  const state = fixture({ notes: [legacy('#0')] });
+  const mutation = deferred(), read = deferred(), calls = [];
+  const full = { ...state.selectedTicket, notes: [legacy('mint')] };
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    calls.push([url, opts?.method || 'GET']);
+    if (calls.length === 1) { await mutation.promise; return response(full); }
+    if (!opts) return { ok: true, json: async () => { await read.promise; return structuredClone(full); } };
+    return response(full);
+  });
+  const first = state.toggleReaction(state.selectedTicket.notes[0], '👍');
+  state.noteOpenReply(state.selectedTicket.notes[0]); state.noteReplyDraft = 'captured reply';
+  const second = state.submitReply();
+  state._selectedTicketUpdateSeq++;
+  mutation.resolve(); await tick();
+  state.noteResetDrafts(); state.selectedTicket = { id: 'other', notes: [] }; state._ticketDetailSeq++;
+  read.resolve(); await Promise.all([first, second]);
+  assert.deepEqual(calls.map(c => c[1]), ['POST', 'GET', 'POST']);
+  assert.equal(calls.at(-1)[0], '/api/tickets/one/note');
+  state.selectedTicket = full;
+  assert.equal(state.noteRecoveryItems().some(r => r.text === 'captured reply'), false);
+});
+
+test('independent source-qualified queues do not block each other or adopt each other\'s note IDs', async t => {
+  const state = fixture({ source: 'team', can_edit: true, notes: [legacy('#0')] });
+  const team = structuredClone(state.selectedTicket), other = { ...team, source: 'other' };
+  const gate = deferred(), calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    calls.push([url, opts.body && JSON.parse(opts.body)]);
+    if (url.includes('/team/')) { await gate.promise; return response({ ...team, notes: [legacy('team-id')] }); }
+    return response({ ...other, notes: [legacy('other-id')] });
+  });
+  const first = state.toggleReaction(team.notes[0], '👍');
+  state.noteOpenReply(team.notes[0]); state.noteReplyDraft = 'team reply'; const reply = state.submitReply();
+  state.noteResetDrafts(); state.selectedTicket = other; state._ticketDetailSeq++;
+  await state.toggleReaction(other.notes[0], '👀');
+  assert.equal(calls.length, 2);
+  gate.resolve(); await Promise.all([first, reply]);
+  assert.equal(calls[2][0], '/api/sources/team/tickets/one/note');
+  assert.equal(calls[2][1].parent, 'team-id');
+  assert.equal(state.selectedTicket.notes[0].id, 'other-id');
+});
+
+test('recovery restoration never overwrites newer text and requires explicit submission', async t => {
+  const state = fixture(); let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; throw new Error('offline'); });
+  state.noteDraft = 'submitted'; await state.submitNote();
+  const retained = state.noteRecoveryItems()[0];
+  state.noteDraft = 'newer'; state.noteRestoreRecovery(retained.id);
+  assert.equal(state.noteDraft, 'newer');
+  state.noteDraft = ''; state.noteRestoreRecovery(retained.id);
+  assert.equal(state.noteDraft, 'submitted');
+  assert.equal(calls, 1);
 });
 
 for (const delayed of ['headers', 'json', 'failure']) test(`Changes request ownership: delayed ${delayed}`, async t => {

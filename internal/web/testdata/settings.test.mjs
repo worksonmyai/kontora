@@ -3,6 +3,98 @@ import test from 'node:test';
 import * as yaml from '../static/vendor/yaml@2.8.1/yaml.mjs';
 import { deferred, settingsFixture, settingsNotificationMergeCases, settingsState } from './settings_fixtures.mjs';
 
+for (const value of ['""', 'null', 'kept']) {
+  test(`removing baseline environment value ${value} survives save and reopen`, async () => {
+    let raw = settingsFixture.replace('PRIVATE: never-search-this-value', `PRIVATE: never-search-this-value\n  EMPTY: ${value} # remove this entry`);
+    const state = await settingsState(raw, { fetch: async (url, options) => {
+      if (url === '/api/config') return { ok: true, json: async () => ({}) };
+      if (!options) return { ok: true, json: async () => ({ content: raw }) };
+      const body = JSON.parse(options.body);
+      assert.equal(body.expected_content, raw);
+      raw = body.content;
+      return { status: 204 };
+    } });
+    state.settingsRemoveEnv('EMPTY');
+    state.settingsConfig.general.branch_prefix = 'another-edit';
+    assert.ok(state.settingsChangedPaths().includes('environment.EMPTY'));
+    assert.equal(await state.saveSettings(), true);
+    assert.equal(Object.hasOwn(yaml.parse(raw).environment, 'EMPTY'), false);
+    assert.match(raw, /# Preserve this comment/);
+    assert.equal(state.settingsDirty(), false);
+    const reopened = await settingsState(raw);
+    assert.equal(Object.hasOwn(reopened.settingsConfig.environment, 'EMPTY'), false);
+  });
+}
+
+test('unfinished new blank environment rows remain unchanged and unwritten', async () => {
+  const state = await settingsState();
+  state.settingsNewEnvKey = 'UNFINISHED';
+  state.settingsAddEnv();
+  assert.equal(state.settingsDirty(), false);
+  state.settingsConfig.general.branch_prefix = 'another-edit';
+  assert.equal(state.settingsChangedPaths().includes('environment.UNFINISHED'), false);
+  assert.equal(Object.hasOwn(yaml.parse(await state._settingsWrite()).environment, 'UNFINISHED'), false);
+});
+
+for (const boundary of ['headers', 'body']) {
+  for (const older of ['_settingsRefreshConfigCache', 'refreshConfigCache']) {
+    test(`Settings shares config request ordering: older ${older} at ${boundary}`, async () => {
+      const gate = deferred(), entered = deferred();
+      let reads = 0;
+      const state = await settingsState(settingsFixture, { fetch: async url => {
+        assert.equal(url, '/api/config');
+        const first = ++reads === 1;
+        if (first && boundary === 'headers') { entered.resolve(); await gate.promise; }
+        return { ok: true, json: async () => {
+          if (first && boundary === 'body') { entered.resolve(); await gate.promise; }
+          return { custom_statuses: [first ? 'obsolete' : 'newer'] };
+        } };
+      } });
+      state.configCache = { custom_statuses: ['initial'] };
+      state.tickets = [{ id: 'keep', status: 'newer' }];
+      const tickets = state.tickets;
+      const pending = state[older]();
+      await entered.promise;
+      await state[older === 'refreshConfigCache' ? '_settingsRefreshConfigCache' : 'refreshConfigCache']();
+      gate.resolve();
+      await pending;
+      assert.deepEqual([...state.configCache.custom_statuses], ['newer']);
+      assert.equal(state.tickets, tickets);
+      Object.assign(state, { _builtinColumns: [{ key: 'done', statuses: ['done'] }], _knownCustomStatuses: {},
+        allBoardTickets: () => state.tickets, mobileColumn: () => null, setActiveColumn() {} });
+      assert.ok(state._deriveColumns().some(column => column.key === 'newer'));
+      assert.equal(state.columns.some(column => column.key === 'obsolete'), false);
+    });
+  }
+}
+
+for (const failure of ['http', 'network', 'decode']) {
+  test(`confirmed save remains confirmed after cache ${failure} failure`, async () => {
+    let raw = settingsFixture, puts = 0, refreshes = 0;
+    const state = await settingsState(raw, { fetch: async (url, options) => {
+      if (url === '/api/config') {
+        refreshes++;
+        if (failure === 'network') throw new Error('offline');
+        return { ok: failure !== 'http', status: 503, json: async () => { throw new Error('bad JSON'); } };
+      }
+      if (!options) return { ok: true, json: async () => ({ content: raw }) };
+      puts++;
+      raw = JSON.parse(options.body).content;
+      return { status: 204 };
+    } });
+    const cached = state.configCache = { custom_statuses: ['retained'] };
+    state.settingsConfig.general.branch_prefix = 'confirmed';
+    assert.equal(await state.saveSettings(), true);
+    assert.equal(puts, 1);
+    assert.equal(refreshes, 1);
+    assert.equal(state.configCache, cached);
+    assert.equal(state.settingsDirty(), false);
+    assert.equal(state.settingsErrors.length, 0);
+    assert.equal(state.settingsSavedAt, '12:00');
+    assert.equal(state.settingsReloadWarning, '');
+  });
+}
+
 for (const boundary of ['stale', 'yaml', 'put', 'rebase', 'cache']) {
   test(`save locks mutations throughout ${boundary}`, async () => {
     const wait = deferred();

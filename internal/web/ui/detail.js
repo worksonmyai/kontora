@@ -89,7 +89,6 @@ export function kontoraDetail() {
       this.chainError = null;
       this.childrenCollapsed = false;
       this.childrenExpanded = false;
-      this.noteDraft = '';
       this.noteResetDrafts();
       var detailSeq = ++this._ticketDetailSeq;
       var updateSeq = this._selectedTicketUpdateSeq;
@@ -103,6 +102,10 @@ export function kontoraDetail() {
       this.detailLoading = true;
       try {
         if (this._editorSaves[key]) await this._waitEditorSaves(key);
+        if (this._noteHasTail?.(key)) await this._noteWaitForTail(key);
+        // Capture after the accepted tail: it may have adopted a newer snapshot
+        // during close/reopen. Leaving never waits for conversation writes.
+        updateSeq = this._selectedTicketUpdateSeq;
         while (mine()) {
           var res = await fetch(this.ticketURL(ticket));
           if (!mine()) return;
@@ -119,7 +122,9 @@ export function kontoraDetail() {
             continue;
           }
           if (full.id === ticket.id) {
+            if (full.source && full.source !== (ticket.source || 'primary')) break;
             full = { ...full, source: ticket.source || full.source };
+            this._noteReconcileTicket?.(full);
             this.selectedTicket = full;
             this._touchTicket(full);
             var entries = this.isSecondary(ticket) ? this.secondaryTickets : this.tickets;
@@ -567,6 +572,7 @@ export function kontoraDetail() {
       this.editSubmitting = false;
       this.deleteSubmitting = false;
       var releasedEditor = this.ticketKey(this.selectedTicket);
+      this.noteResetDrafts();
       this.selectedTicket = null;
       this.syncDetailCoverage();
       this._releaseEditorBody();
@@ -586,8 +592,6 @@ export function kontoraDetail() {
       this.chainError = null;
       this.childrenCollapsed = false;
       this.childrenExpanded = false;
-      this.noteDraft = '';
-      this.noteResetDrafts();
       this._ticketDetailSeq++;
       if (writeRoute) this.writeHash();
     },
@@ -1151,6 +1155,7 @@ export function kontoraDetail() {
     // schedule makes to a todo ticket.
     _applyScheduled(updated) {
       if (!updated || !updated.id) return;
+      this._noteReconcileTicket?.(updated);
       var idx = this.tickets.findIndex(t => t.id === updated.id);
       if (idx >= 0) this.tickets[idx] = this.boardEntry(updated);
       // The schedule route answers with the detail projection, body included,
@@ -1483,7 +1488,10 @@ export function kontoraDetail() {
               if (this.ticketKey(full) !== id) throw new Error('Invalid ticket response');
             }
             if (generation === this._editorGeneration) {
-              if (this.ticketKey(this.selectedTicket) === id && update === this._selectedTicketUpdateSeq) this.selectedTicket = full;
+              if (this.ticketKey(this.selectedTicket) === id && update === this._selectedTicketUpdateSeq) {
+                this._noteReconcileTicket?.(full);
+                this.selectedTicket = full;
+              }
               if (this.selectedEpic?.id === id && epicUpdate === this._epicUpdateSeq) {
                 this.selectedEpic = full;
                 this._epicDetail = full;

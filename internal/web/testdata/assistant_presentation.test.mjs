@@ -527,7 +527,7 @@ for (const view of ['Chat', 'History']) {
       else state.assistantShowHistory();
       assert.equal(requests.length, 2, 'presentation immediately refreshes without waiting for the canceled selection');
       assert.match(requests[1].path, /\/thread-1\/activity\?after=0$/);
-      reply(requests[1], { running: true, gate: { id: 'approval-1' } });
+      reply(requests[1], { running: true, partial: 'Current reply', partial_gen: 1, gate: { id: 'approval-1' } });
       await flush();
       const poll = state._assistantPoll;
       assert.notEqual(poll, null, 'the accepted refresh rearms polling');

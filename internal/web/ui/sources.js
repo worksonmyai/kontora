@@ -176,6 +176,7 @@ export function kontoraSources() {
 
     applySecondaryUpdate(ticket) {
       if (!this.isSecondary(ticket)) return;
+      this._noteReconcileTicket?.(ticket);
       this._touchTicket(ticket);
       var idx = this.secondarySlot(ticket);
       if (idx < 0) {

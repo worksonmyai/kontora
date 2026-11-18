@@ -354,6 +354,45 @@ func TestSessionPath(t *testing.T) {
 	assert.Equal(t, newer, SessionPath(config.AgentKindPi, "s", "", piDir))
 
 	assert.Empty(t, SessionPath("aider", "s", claudeCfg, piDir))
+
+	empty := t.TempDir()
+	single := t.TempDir()
+	singleFile := filepath.Join(single, "s.jsonl")
+	require.NoError(t, os.WriteFile(singleFile, nil, 0o644))
+	uniqueClaude := filepath.Join(projects, "unique.jsonl")
+	require.NoError(t, os.WriteFile(uniqueClaude, nil, 0o644))
+	broken := t.TempDir()
+	require.NoError(t, os.Symlink(filepath.Join(dir, "gone"), filepath.Join(broken, "broken.jsonl")))
+	duplicate := filepath.Join(claudeCfg, "projects", "other")
+	require.NoError(t, os.MkdirAll(duplicate, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(duplicate, "abc.jsonl"), nil, 0o644))
+	for _, tt := range []struct {
+		name, kind, id, claude, pi, want string
+		wantErr                          bool
+	}{
+		{name: "pi single", kind: config.AgentKindPi, pi: single, want: singleFile},
+		{name: "claude single", kind: config.AgentKindClaude, id: "unique", claude: claudeCfg, want: uniqueClaude},
+		{name: "pi empty", kind: config.AgentKindPi, pi: empty},
+		{name: "pi missing directory", kind: config.AgentKindPi, pi: filepath.Join(dir, "missing"), wantErr: true},
+		{name: "pi directory is a file", kind: config.AgentKindPi, pi: newer, wantErr: true},
+		{name: "pi broken candidate", kind: config.AgentKindPi, pi: broken, wantErr: true},
+		{name: "pi ambiguous", kind: config.AgentKindPi, pi: piDir, wantErr: true},
+		{name: "claude missing directory", kind: config.AgentKindClaude, id: "abc", claude: empty, wantErr: true},
+		{name: "claude no candidate", kind: config.AgentKindClaude, id: "missing", claude: claudeCfg},
+		{name: "claude ambiguous", kind: config.AgentKindClaude, id: "abc", claude: claudeCfg, wantErr: true},
+		{name: "claude pre-session", kind: config.AgentKindClaude, claude: empty},
+		{name: "unsupported kind", kind: "aider", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path, err := SessionPathStrict(tt.kind, tt.id, tt.claude, tt.pi)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.want, path)
+		})
+	}
 }
 
 func TestGate(t *testing.T) {

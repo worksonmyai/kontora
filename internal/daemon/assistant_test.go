@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -737,7 +738,7 @@ func TestAssistantActivityCacheAndCursor(t *testing.T) {
 			}
 			got, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID, After: 999})
 			require.NoError(t, err)
-			assert.Empty(t, got.Partial)
+			assert.Equal(t, "Two tickets are running.", got.Partial, "an unknown boundary cannot identify the current reply")
 			assert.Empty(t, got.Tape.Events)
 			assert.Positive(t, got.Offset)
 			again, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID, After: 999, IfNoneMatch: got.ETag})
@@ -774,10 +775,10 @@ func TestAssistantActivityFailedReadHasNoValidator(t *testing.T) {
 	fail = true
 	for range 2 {
 		got, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID, IfNoneMatch: first.ETag})
-		require.NoError(t, err)
+		require.Error(t, err)
 		assert.Empty(t, got.ETag)
 		assert.False(t, got.NotModified)
-		assert.Empty(t, got.Tape.Events)
+		assert.Nil(t, got.Tape)
 	}
 	fail = false
 	got, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID, IfNoneMatch: first.ETag})
@@ -786,6 +787,159 @@ func TestAssistantActivityFailedReadHasNoValidator(t *testing.T) {
 	assert.False(t, got.NotModified)
 	assert.NotEmpty(t, got.Tape.Events)
 	assert.Equal(t, 4, calls)
+}
+
+func TestAssistantActivityAvailability(t *testing.T) {
+	for _, state := range []string{"new", "starting", "missing history", "metadata error", "directory error", "broken directory", "broken candidate", "ambiguous", "lost history", "lost directory"} {
+		t.Run(state, func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.assistantConfig("pi"))
+			created, err := d.CreateAssistantThread(web.CreateAssistantThreadRequest{})
+			require.NoError(t, err)
+			store := d.assistantThreadStore(d.config(), created.ID)
+			thread, err := store.Load(created.ID)
+			require.NoError(t, err)
+			dir, err := store.PiSessionDir(created.ID)
+			require.NoError(t, err)
+			switch state {
+			case "starting":
+				require.NoError(t, d.assistant.claim(created.ID, "secret", func() {}))
+				defer d.assistant.release(created.ID)
+			case "missing history":
+				thread.Turns, thread.SessionID = 1, "s"
+				require.NoError(t, store.Save(thread))
+				require.NoError(t, os.MkdirAll(dir, 0o755))
+			case "metadata error":
+				threadDir, err := store.Dir(created.ID)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(filepath.Join(threadDir, "thread.json"), []byte("invalid"), 0o644))
+			case "directory error":
+				require.NoError(t, os.WriteFile(dir, nil, 0o644))
+			case "broken directory":
+				require.NoError(t, os.Symlink(filepath.Join(filepath.Dir(dir), "missing-sessions"), dir))
+			case "broken candidate":
+				require.NoError(t, os.MkdirAll(dir, 0o755))
+				require.NoError(t, os.Symlink(filepath.Join(dir, "missing"), filepath.Join(dir, "broken.jsonl")))
+			case "ambiguous", "lost history", "lost directory":
+				require.NoError(t, os.MkdirAll(dir, 0o755))
+				path := filepath.Join(dir, "one.jsonl")
+				require.NoError(t, os.WriteFile(path, []byte(piSessionJSONL), 0o644))
+				if state == "ambiguous" {
+					require.NoError(t, os.WriteFile(filepath.Join(dir, "two.jsonl"), nil, 0o644))
+				} else {
+					_, err := d.AssistantActivity(web.AssistantActivityQuery{ID: created.ID})
+					require.NoError(t, err)
+					require.NoError(t, os.Remove(path))
+					if state == "lost directory" {
+						require.NoError(t, os.Remove(dir))
+					}
+				}
+			}
+			info, err := d.AssistantActivity(web.AssistantActivityQuery{ID: created.ID})
+			if state == "new" {
+				require.NoError(t, err)
+				require.NotNil(t, info.Tape)
+				assert.Empty(t, info.Tape.Events)
+			} else {
+				require.ErrorIs(t, err, web.ErrAssistantActivityUnavailable)
+				assert.Nil(t, info.Tape)
+				assert.Empty(t, info.ETag)
+			}
+		})
+	}
+}
+
+func TestAssistantActivityStampsBeforeMetadata(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.assistantConfig("pi"))
+	thread, err := d.CreateAssistantThread(web.CreateAssistantThreadRequest{})
+	require.NoError(t, err)
+	store := d.assistantThreadStore(d.config(), thread.ID)
+	dir, err := store.Dir(thread.ID)
+	require.NoError(t, err)
+	path := filepath.Join(dir, "thread.json")
+	metadata, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, syscall.Mkfifo(path, 0o600))
+	defer func() {
+		_ = os.Remove(path)
+		require.NoError(t, os.WriteFile(path, metadata, 0o644))
+	}()
+	type result struct {
+		info web.AssistantActivityInfo
+		err  error
+	}
+	read := make(chan result, 1)
+	go func() {
+		info, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
+		read <- result{info, err}
+	}()
+	// Opening the writer waits until activity has started reading the old metadata.
+	writer, err := os.OpenFile(path, os.O_WRONLY, 0)
+	require.NoError(t, err)
+	require.NoError(t, d.assistant.claim(thread.ID, "private-auth-secret", func() {}))
+	defer d.assistant.release(thread.ID)
+	d.assistant.mu.Lock()
+	d.assistant.live.Start(thread.ID)
+	d.assistant.nextActivity++
+	stamp := d.assistant.activity[thread.ID]
+	stamp.revision, stamp.ready = d.assistant.nextActivity, true
+	d.assistant.activity[thread.ID] = stamp
+	d.assistant.mu.Unlock()
+	_, err = writer.Write(metadata)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	select {
+	case got := <-read:
+		require.ErrorIs(t, got.err, web.ErrAssistantActivityUnavailable)
+		assert.Nil(t, got.info.Tape)
+	case <-time.After(5 * time.Second):
+		t.Fatal("activity did not finish after the metadata read")
+	}
+}
+
+func TestAssistantActivityRejectsTurnChangesDuringRead(t *testing.T) {
+	for _, change := range []string{"starting", "ready", "released", "reused generation"} {
+		t.Run(change, func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.assistantConfig("pi"))
+			thread, err := d.CreateAssistantThread(web.CreateAssistantThreadRequest{})
+			require.NoError(t, err)
+			dir, err := d.assistantThreadStore(d.config(), thread.ID).PiSessionDir(thread.ID)
+			require.NoError(t, err)
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "s.jsonl"), []byte(piSessionJSONL), 0o644))
+			d.assistant.live.Start(thread.ID)
+			d.assistant.live.Append(thread.ID, "Two tickets are running.")
+			d.assistant.live.Seal(thread.ID)
+			d.transcripts.parse = func(r io.Reader, pi bool) (logfmt.Tape, error) {
+				// Admission here also checks that transcript I/O does not hold the assistant mutex.
+				require.NoError(t, d.assistant.claim(thread.ID, "secret", func() {}))
+				switch change {
+				case "ready":
+					d.assistant.mu.Lock()
+					stamp := d.assistant.activity[thread.ID]
+					d.assistant.nextActivity++
+					stamp.revision, stamp.ready = d.assistant.nextActivity, true
+					d.assistant.activity[thread.ID] = stamp
+					d.assistant.mu.Unlock()
+				case "released":
+					d.assistant.release(thread.ID)
+				case "reused generation":
+					d.assistant.live.Start(thread.ID)
+					d.assistant.live.Append(thread.ID, "Two tickets are running.")
+				}
+				return parseTranscript(r, pi)
+			}
+			defer d.assistant.release(thread.ID)
+			info, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
+			require.ErrorIs(t, err, web.ErrAssistantActivityUnavailable)
+			assert.Nil(t, info.Tape)
+			assert.Empty(t, info.ETag)
+			assert.Equal(t, "Two tickets are running.", d.assistant.live.Snapshot(thread.ID).Text)
+		})
+	}
 }
 
 func TestAssistantETag(t *testing.T) {
@@ -1192,34 +1346,81 @@ func TestAssistantPartialThatLandedUnsealedStillRevalidates(t *testing.T) {
 }
 
 func TestAssistantPartialIsReplacedByANewTurn(t *testing.T) {
-	stub := &stubTurns{turns: make(chan spawnedTurn, 4)}
-	first := true
-	stub.before = func(_ context.Context, p TurnParams) {
-		if first {
-			p.Stream.Block()
-			p.Stream.Text("turn one")
-			first = false
-			return
-		}
-		p.Stream.Block()
-		p.Stream.Text("turn two")
+	for _, tt := range []struct {
+		name, reply                                   string
+		appendReply, uncertainBoundary, replaceSource bool
+	}{
+		{name: "different reply", reply: "turn two"},
+		{name: "identical previous reply", reply: "turn one"},
+		{name: "identical reply in current suffix", reply: "turn one", appendReply: true},
+		{name: "identical reply with unreadable boundary", reply: "turn one", uncertainBoundary: true},
+		{name: "identical reply in replaced source", reply: "turn one", appendReply: true, replaceSource: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := &stubTurns{turns: make(chan spawnedTurn, 4)}
+			var path string
+			failBoundary := false
+			first := true
+			stub.before = func(_ context.Context, p TurnParams) {
+				if first {
+					p.Stream.Block()
+					p.Stream.Text("turn one")
+					first = false
+					stub.claudeSession = claudeTextJSONL("turn one")
+					return
+				}
+				p.Stream.Block()
+				p.Stream.Text(tt.reply)
+				p.Stream.Seal()
+				failBoundary = false
+				if tt.appendReply {
+					body := claudeTextJSONL("turn one") + strings.ReplaceAll(claudeTextJSONL(tt.reply), "msg_01", "msg_02")
+					if tt.replaceSource {
+						require.NoError(t, os.WriteFile(path+".new", []byte(body), 0o644))
+						require.NoError(t, os.Rename(path+".new", path))
+					} else {
+						require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+					}
+				}
+			}
+			d, thread := claudeAssistantDaemon(t, stub)
+			d.transcripts.parse = func(r io.Reader, pi bool) (logfmt.Tape, error) {
+				if failBoundary {
+					return logfmt.Tape{}, errors.New("boundary unavailable")
+				}
+				return parseTranscript(r, pi)
+			}
+
+			require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "one"}))
+			stub.next(t)
+			waitIdle(t, d, thread.ID)
+			one, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
+			require.NoError(t, err)
+			assert.Empty(t, one.Partial)
+			stored, err := d.assistantThreadStore(d.config(), thread.ID).Load(thread.ID)
+			require.NoError(t, err)
+			path = d.assistantSessionPath(d.config(), stored)
+			if tt.uncertainBoundary {
+				require.NoError(t, os.WriteFile(path, []byte(claudeTextJSONL("turn one")+"{}\n"), 0o644))
+				failBoundary = true
+			}
+
+			require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "two"}))
+			stub.next(t)
+			waitIdle(t, d, thread.ID)
+			two, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
+			require.NoError(t, err)
+			want := tt.reply
+			if tt.appendReply && !tt.replaceSource {
+				want = ""
+			}
+			assert.Equal(t, want, two.Partial)
+			assert.Equal(t, 1, two.PartialGen, "each turn opens a buffer of its own")
+			partial, err := d.AssistantPartial(thread.ID)
+			require.NoError(t, err)
+			assert.Equal(t, want, partial.Text)
+		})
 	}
-	d, thread := claudeAssistantDaemon(t, stub)
-
-	require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "one"}))
-	stub.next(t)
-	waitIdle(t, d, thread.ID)
-	one, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
-	require.NoError(t, err)
-	assert.Equal(t, "turn one", one.Partial)
-
-	require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "two"}))
-	stub.next(t)
-	waitIdle(t, d, thread.ID)
-	two, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
-	require.NoError(t, err)
-	assert.Equal(t, "turn two", two.Partial)
-	assert.Equal(t, 1, two.PartialGen, "each turn opens a buffer of its own")
 }
 
 func TestAssistantTurnRetriesWithoutTheStreamFlag(t *testing.T) {

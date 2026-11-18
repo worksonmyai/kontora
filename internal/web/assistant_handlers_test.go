@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -270,6 +271,18 @@ func TestAssistantRoutes(t *testing.T) {
 			wantStatus: http.StatusForbidden,
 		},
 		{
+			name: "unavailable activity is retryable even with a validator",
+			svc: &mockService{assistantActFn: func(AssistantActivityQuery) (AssistantActivityInfo, error) {
+				return AssistantActivityInfo{ETag: `"old"`, NotModified: true}, ErrAssistantActivityUnavailable
+			}},
+			method:     http.MethodGet,
+			path:       "/api/assistant/threads/t1/activity",
+			wantStatus: http.StatusServiceUnavailable,
+			check: func(t *testing.T, res httpResult) {
+				assert.Empty(t, res.etag)
+			},
+		},
+		{
 			name:       "a negative cursor is rejected",
 			svc:        &mockService{},
 			method:     http.MethodGet,
@@ -300,7 +313,11 @@ func TestAssistantActivityCursorAndETag(t *testing.T) {
 	tape := logfmt.Tape{Version: 1, Agent: "claude", Events: []logfmt.Event{{Kind: "text", Text: "hello"}}}
 	pending := assistant.Pending{ID: "g1", ThreadID: "t1", Tool: "Bash", Kind: assistant.DecisionWrite}
 
+	var unavailable atomic.Bool
 	svc := &mockService{assistantActFn: func(q AssistantActivityQuery) (AssistantActivityInfo, error) {
+		if unavailable.Load() {
+			return AssistantActivityInfo{}, fmt.Errorf("%w: transcript read failed", ErrAssistantActivityUnavailable)
+		}
 		if q.IfNoneMatch == `"same"` {
 			return AssistantActivityInfo{NotModified: true, ETag: `"same"`}, nil
 		}
@@ -324,7 +341,13 @@ func TestAssistantActivityCursorAndETag(t *testing.T) {
 	require.NotNil(t, info.Tape)
 	require.Len(t, info.Tape.Events, 1)
 
-	// The same validator comes back as a 304 with no body.
+	unavailable.Store(true)
+	res = getWithHeaders(t, srv, "/api/assistant/threads/t1/activity", map[string]string{"If-None-Match": `"same"`})
+	assert.Equal(t, http.StatusServiceUnavailable, res.statusCode)
+	assert.Empty(t, res.etag)
+	unavailable.Store(false)
+
+	// Recovery can validate the retained snapshot without sending it again.
 	res = getWithHeaders(t, srv, "/api/assistant/threads/t1/activity", map[string]string{"If-None-Match": `"same"`})
 	assert.Equal(t, http.StatusNotModified, res.statusCode)
 	assert.Empty(t, res.body)

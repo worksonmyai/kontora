@@ -114,18 +114,47 @@ type assistantState struct {
 	// thread, so the turn record carries the audit trail.
 	gateLog map[string][]assistant.GateRecord
 	// live holds the text each thread's agent is typing right now.
-	live *assistant.LiveText
+	live         *assistant.LiveText
+	activity     map[string]assistantActivityStamp
+	nextActivity uint64
+}
+
+type assistantActivityStamp struct {
+	revision    uint64
+	running     bool
+	ready       bool
+	sessionSeen bool
+	boundary    *assistantTranscriptBoundary
+}
+
+type assistantTranscriptBoundary struct {
+	path       string
+	file       os.FileInfo
+	events     int
+	prefix     string
+	preSession bool
+}
+
+func (a *assistantState) sampleActivity(id string) (assistantActivityStamp, assistant.Partial) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.activity[id], a.live.Snapshot(id)
+}
+
+func (a *assistantState) activityMatchesLocked(id string, stamp assistantActivityStamp, partial assistant.Partial) bool {
+	return a.activity[id].revision == stamp.revision && a.live.Snapshot(id).Turn == partial.Turn
 }
 
 func newAssistantState() *assistantState {
 	return &assistantState{
-		running: make(map[string]context.CancelFunc),
-		nonces:  make(map[string]string),
-		done:    make(map[string]chan struct{}),
-		gate:    assistant.NewGate(assistantGateTimeout),
-		sem:     make(chan struct{}, assistantMaxConcurrent),
-		gateLog: make(map[string][]assistant.GateRecord),
-		live:    assistant.NewLiveText(),
+		running:  make(map[string]context.CancelFunc),
+		nonces:   make(map[string]string),
+		done:     make(map[string]chan struct{}),
+		gate:     assistant.NewGate(assistantGateTimeout),
+		sem:      make(chan struct{}, assistantMaxConcurrent),
+		gateLog:  make(map[string][]assistant.GateRecord),
+		live:     assistant.NewLiveText(),
+		activity: make(map[string]assistantActivityStamp),
 	}
 }
 
@@ -146,6 +175,10 @@ func (a *assistantState) claim(threadID, nonce string, cancel context.CancelFunc
 	default:
 		return web.ErrAssistantAtCapacity
 	}
+	a.nextActivity++
+	stamp := a.activity[threadID]
+	stamp.revision, stamp.running, stamp.ready = a.nextActivity, true, false
+	a.activity[threadID] = stamp
 	a.running[threadID] = cancel
 	a.nonces[threadID] = nonce
 	a.done[threadID] = make(chan struct{})
@@ -164,6 +197,10 @@ func (a *assistantState) release(threadID string) {
 	// exposing its slot to a new turn (or signaling deletion to proceed).
 	a.gate.Clear(threadID)
 	a.live.End(threadID)
+	a.nextActivity++
+	stamp := a.activity[threadID]
+	stamp.revision, stamp.running, stamp.ready = a.nextActivity, false, true
+	a.activity[threadID] = stamp
 	done := a.done[threadID]
 	delete(a.running, threadID)
 	delete(a.nonces, threadID)
@@ -438,7 +475,11 @@ func (d *Daemon) deleteAssistantThread(id string, timeout time.Duration) error {
 	if !d.assistant.stopAndWait(id, timeout) {
 		return web.ErrAssistantBusy
 	}
+	d.assistant.mu.Lock()
 	d.assistant.live.Clear(id)
+	d.assistant.nextActivity++
+	d.assistant.activity[id] = assistantActivityStamp{revision: d.assistant.nextActivity}
+	d.assistant.mu.Unlock()
 	return assistantErr(d.assistantThreadStore(d.config(), id).Delete(id))
 }
 
@@ -456,58 +497,76 @@ func (d *Daemon) StopAssistantTurn(id string) error {
 // point the agent may still rewrite. Any write waiting on the person rides the
 // same response, so one poll drives the tool rows and the proposal card.
 func (d *Daemon) AssistantActivity(q web.AssistantActivityQuery) (web.AssistantActivityInfo, error) {
+	stamp, partial := d.assistant.sampleActivity(q.ID)
+	if stamp.running && !stamp.ready {
+		return web.AssistantActivityInfo{}, web.ErrAssistantActivityUnavailable
+	}
 	cfg := d.config()
 	store := d.assistantThreadStore(cfg, q.ID)
 	thread, err := store.Load(q.ID)
 	if err != nil {
-		return web.AssistantActivityInfo{}, assistantErr(err)
+		if errors.Is(err, assistant.ErrThreadNotFound) {
+			return web.AssistantActivityInfo{}, assistantErr(err)
+		}
+		return web.AssistantActivityInfo{}, fmt.Errorf("%w: %v", web.ErrAssistantActivityUnavailable, err)
 	}
 
 	info := web.AssistantActivityInfo{
 		Evidence: d.companionEvidenceInfo(q.ID),
-		Running:  d.assistant.isRunning(q.ID),
+		Running:  stamp.running,
 		Autonomy: thread.Autonomy,
 		Messages: assistantMessages(store, q.ID),
 	}
 	if pending, ok := d.assistant.gate.Pending(q.ID); ok {
 		info.Gate = &pending
 	}
-	// Before the ETag, so the validator and what it validates describe the same
-	// text.
-	partial := d.assistant.live.Snapshot(q.ID)
 	info.Partial = partial.Text
 	info.PartialGen = partial.Gen
 	info.PartialTool = partial.Tool
 
-	path := d.assistantSessionPath(cfg, thread)
-	if path == "" {
-		// The turn has started but the agent has written nothing yet. The tape
-		// comes from the parser so it carries the version and agent fields the
-		// client reads from the first poll on.
-		tape := emptyTape(thread.Kind == config.AgentKindPi)
-		info.Tape = &tape
-		return info, nil
+	preSession := !stamp.sessionSeen && ((thread.Turns == 0 && thread.SessionID == "") ||
+		(stamp.boundary != nil && stamp.boundary.preSession))
+	path, err := d.assistantSessionPathStrict(cfg, thread)
+	// A new thread can precede its agent's session directory.
+	if err != nil && (!preSession || !assistantMissingSessionDir(err)) {
+		return web.AssistantActivityInfo{}, fmt.Errorf("%w: %v", web.ErrAssistantActivityUnavailable, err)
 	}
-
-	// Everything the response carries that is not in the session file is folded
-	// into the validator: the parked call, the turn records and whether a turn
-	// is still running. Without them a turn that ends without writing the
-	// session file again answers 304 for ever, and the pane sticks on "working".
-	tape, version, err := d.transcripts.read(path, thread.Kind == config.AgentKindPi)
-	if err != nil {
-		empty := emptyTape(thread.Kind == config.AgentKindPi)
-		info.Tape = &empty
-		return info, nil //nolint:nilerr // a session file that will not read is an empty tape, not a failed request.
+	if path == "" && !preSession {
+		return web.AssistantActivityInfo{}, web.ErrAssistantActivityUnavailable
 	}
-	if info.Partial != "" && assistantPartialLanded(tape, info.Partial, partial.Sealed, partial.Truncated) {
-		// Removal and arrival ride one response, so the pane swaps typed text
-		// for settled in a single update: no duplicate, no frame with neither.
+	tape := emptyTape(thread.Kind == config.AgentKindPi)
+	version := "empty"
+	if path != "" {
+		tape, version, err = d.transcripts.read(path, thread.Kind == config.AgentKindPi)
+		if err != nil {
+			return web.AssistantActivityInfo{}, fmt.Errorf("%w: %v", web.ErrAssistantActivityUnavailable, err)
+		}
+	}
+	landed := false
+	if info.Partial != "" && version != "" && stamp.boundary != nil {
+		if suffix, ok := stamp.boundary.suffix(path, tape); ok {
+			landed = assistantPartialLanded(suffix, info.Partial, partial.Sealed, partial.Truncated)
+		}
+	}
+	// Turn admission and suppression share this lock. No disk reads run under it.
+	d.assistant.mu.Lock()
+	if !d.assistant.activityMatchesLocked(q.ID, stamp, partial) {
+		d.assistant.mu.Unlock()
+		return web.AssistantActivityInfo{}, web.ErrAssistantActivityUnavailable
+	}
+	if path != "" && !stamp.sessionSeen {
+		d.assistant.nextActivity++
+		stamp.revision, stamp.sessionSeen = d.assistant.nextActivity, true
+		d.assistant.activity[q.ID] = stamp
+	}
+	if landed {
 		if partial.Sealed {
-			d.assistant.live.Suppress(q.ID, partial.Gen)
+			d.assistant.live.Suppress(q.ID, partial.Turn, partial.Gen)
 		}
 		info.Partial = ""
 		info.PartialTool = ""
 	}
+	d.assistant.mu.Unlock()
 	info.ETag = assistantETag(version, thread.Turns, info)
 	if info.ETag != "" && info.ETag == q.IfNoneMatch {
 		return web.AssistantActivityInfo{NotModified: true, ETag: info.ETag}, nil
@@ -581,8 +640,17 @@ func assistantETag(base string, turns int, info web.AssistantActivityInfo) strin
 // claude thread's lives in claude's own config directory, which the agent
 // environment names; a pi thread's lives under the thread directory.
 func (d *Daemon) assistantSessionPath(cfg *config.Config, thread assistant.Thread) string {
+	path, _ := d.assistantSessionPathLookup(cfg, thread, false)
+	return path
+}
+
+func (d *Daemon) assistantSessionPathStrict(cfg *config.Config, thread assistant.Thread) (string, error) {
+	return d.assistantSessionPathLookup(cfg, thread, true)
+}
+
+func (d *Daemon) assistantSessionPathLookup(cfg *config.Config, thread assistant.Thread, strict bool) (string, error) {
 	if thread.SessionID == "" && thread.Kind == config.AgentKindClaude {
-		return ""
+		return "", nil
 	}
 	var claudeConfigDir string
 	if agentCfg, ok := cfg.Agents[thread.Agent]; ok {
@@ -595,9 +663,77 @@ func (d *Daemon) assistantSessionPath(cfg *config.Config, thread assistant.Threa
 	}
 	piDir, err := d.assistantThreadStore(cfg, thread.ID).PiSessionDir(thread.ID)
 	if err != nil {
-		piDir = ""
+		return "", err
 	}
-	return assistant.SessionPath(thread.Kind, thread.SessionID, claudeConfigDir, piDir)
+	if strict {
+		return assistant.SessionPathStrict(thread.Kind, thread.SessionID, claudeConfigDir, piDir)
+	}
+	return assistant.SessionPath(thread.Kind, thread.SessionID, claudeConfigDir, piDir), nil
+}
+
+func assistantMissingSessionDir(err error) bool {
+	var pe *os.PathError
+	if !errors.As(err, &pe) || !errors.Is(err, os.ErrNotExist) || pe.Op != "open" {
+		return false
+	}
+	base := filepath.Base(pe.Path)
+	if base != "projects" && base != "pi-sessions" {
+		return false
+	}
+	// A broken directory symlink is unavailable, even before the first session.
+	_, statErr := os.Lstat(pe.Path)
+	return errors.Is(statErr, os.ErrNotExist)
+}
+
+func assistantTranscriptPrefix(events []logfmt.Event) string {
+	data, _ := json.Marshal(events)
+	return web.ContentETag(data, "")
+}
+
+func (b *assistantTranscriptBoundary) suffix(path string, tape logfmt.Tape) (logfmt.Tape, bool) {
+	if b.path == "" {
+		return tape, b.preSession
+	}
+	st, err := os.Stat(path)
+	if err != nil || path != b.path || !os.SameFile(b.file, st) || len(tape.Events) < b.events {
+		return logfmt.Tape{}, false
+	}
+	if assistantTranscriptPrefix(tape.Events[:b.events]) != b.prefix {
+		return logfmt.Tape{}, false
+	}
+	tape.Events = tape.Events[b.events:]
+	return tape, true
+}
+
+// The boundary excludes earlier replies, including replies with identical text.
+// If discovery or parsing fails, the turn keeps its live text without suppression.
+func (d *Daemon) assistantTurnBoundary(cfg *config.Config, thread assistant.Thread) *assistantTranscriptBoundary {
+	previous, _ := d.assistant.sampleActivity(thread.ID)
+	preSession := !previous.sessionSeen && ((thread.Turns == 0 && thread.SessionID == "") ||
+		(previous.boundary != nil && previous.boundary.preSession))
+	path, err := d.assistantSessionPathStrict(cfg, thread)
+	if path == "" && (err == nil || (preSession && assistantMissingSessionDir(err))) {
+		if preSession {
+			return &assistantTranscriptBoundary{preSession: true}
+		}
+		return nil
+	}
+	if err != nil {
+		return nil
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	tape, version, err := d.transcripts.read(path, thread.Kind == config.AgentKindPi)
+	if err != nil || version == "" {
+		return nil
+	}
+	after, err := os.Stat(path)
+	if err != nil || !os.SameFile(st, after) || st.Size() != after.Size() || !st.ModTime().Equal(after.ModTime()) {
+		return nil
+	}
+	return &assistantTranscriptBoundary{path: path, file: st, events: len(tape.Events), prefix: assistantTranscriptPrefix(tape.Events)}
 }
 
 // PostAssistantMessage starts a turn. It returns as soon as the subprocess is
@@ -669,6 +805,7 @@ func (d *Daemon) postAssistantMessagePreparedLocked(id string, req web.Assistant
 	if slices.Contains(config.Autonomies, req.Autonomy) {
 		thread.Autonomy = req.Autonomy
 	}
+	boundary := d.assistantTurnBoundary(cfg, thread)
 	if thread.SessionID == "" {
 		thread.SessionID = newSessionID()
 	}
@@ -691,6 +828,10 @@ func (d *Daemon) postAssistantMessagePreparedLocked(id string, req web.Assistant
 	// Failed validation/preparation must not erase the previous streamed answer.
 	d.assistant.mu.Lock()
 	d.assistant.live.Start(id)
+	d.assistant.nextActivity++
+	stamp := d.assistant.activity[id]
+	stamp.revision, stamp.ready, stamp.boundary = d.assistant.nextActivity, true, boundary
+	d.assistant.activity[id] = stamp
 	d.assistant.mu.Unlock()
 
 	admitted = true

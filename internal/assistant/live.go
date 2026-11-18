@@ -15,6 +15,8 @@ const partialTTL = time.Hour
 
 // Partial is one thread's live text as a reader sees it.
 type Partial struct {
+	// Turn identifies the buffer even when Gen restarts. It never leaves the daemon.
+	Turn uint64 `json:"-"`
 	// Gen is bumped when a new text block starts, so a reader replaces rather
 	// than appends. Zero means no block has started.
 	Gen  int
@@ -31,6 +33,7 @@ type Partial struct {
 }
 
 type livePartial struct {
+	turn      uint64
 	gen       int
 	text      []byte
 	tool      string
@@ -46,9 +49,10 @@ type livePartial struct {
 // LiveText holds what each thread's agent is typing. Daemon memory only: a
 // logfmt.Tape is the parsed form of a file, and no file carries this yet.
 type LiveText struct {
-	mu      sync.Mutex
-	threads map[string]*livePartial
-	now     func() time.Time
+	mu       sync.Mutex
+	nextTurn uint64
+	threads  map[string]*livePartial
+	now      func() time.Time
 }
 
 func NewLiveText() *LiveText {
@@ -69,7 +73,8 @@ func (l *LiveText) Start(threadID string) {
 			delete(l.threads, id)
 		}
 	}
-	l.threads[threadID] = &livePartial{running: true, touched: now}
+	l.nextTurn++
+	l.threads[threadID] = &livePartial{turn: l.nextTurn, running: true, touched: now}
 }
 
 // Block starts a new text block, dropping the text it replaces.
@@ -126,11 +131,10 @@ func (l *LiveText) End(threadID string) {
 	})
 }
 
-// Suppress stops reporting a generation the session file now carries. A stale
-// one is ignored: the agent has moved on to a block the tape does not have.
-func (l *LiveText) Suppress(threadID string, gen int) {
+// Suppress hides text only if the sampled turn and block still own the buffer.
+func (l *LiveText) Suppress(threadID string, turn uint64, gen int) {
 	l.with(threadID, func(e *livePartial) {
-		if gen != 0 && e.gen == gen {
+		if turn != 0 && e.turn == turn && gen != 0 && e.gen == gen {
 			e.suppressed = gen
 		}
 	})
@@ -158,6 +162,7 @@ func (l *LiveText) Snapshot(threadID string) Partial {
 		return Partial{}
 	}
 	p := Partial{
+		Turn:      e.turn,
 		Gen:       e.gen,
 		Sealed:    e.sealed,
 		Truncated: e.truncated,

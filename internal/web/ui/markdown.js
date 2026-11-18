@@ -126,67 +126,85 @@ export function kontoraMarkdown() {
       return html;
     },
 
+    // Qualify primary refs too, so clicks cannot inherit a later selection's source.
+    // Hidden relation refs follow relations.js precedence.
+    _proseTicketById(id, subject) {
+      var hit = this.sourceTicketById(id, subject);
+      if (!hit) {
+        var rows = this.relationRows.call({ selectedTicket: subject });
+        for (var row of rows) {
+          hit = row.refs.find(r => r.id === id && !!r.status);
+          if (hit) break;
+        }
+      }
+      return hit ? { ...hit, source: hit.source || subject?.source || 'primary' } : null;
+    },
+
+    // Only chip inputs invalidate DOM, not object identity, timestamps or clock ticks.
+    // Sanitized HTML remains text-keyed.
+    _proseFingerprint(text, summary, subject) {
+      var ids = [...new Set((text || '').match(new RegExp(TICKET_ID_RE, 'g')) || [])];
+      var refs = ids.map(id => {
+        var t = this._proseTicketById(id, subject);
+        return t ? [t.source, t.id, t.title, t.status, this.ticketTip(t), this.relationChipClass(t)] : [id, null];
+      });
+      var changes = summary ? this.ticketChanges : null;
+      return JSON.stringify([text || '', summary, subject?.source || 'primary', subject?.id || '', refs,
+        summary ? [subject?.branch || '', changes?.base,
+          (changes?.commits || []).map(c => [c.sha, c.subject]),
+          (changes?.files || []).map(f => [f.path, f.added, f.deleted]), changes?.remote] : null]);
+    },
+
     // x-html rewrites innerHTML on every effect run. An SSE refresh that leaves
     // the markdown untouched still tears the rendered body down and rebuilds
     // it, and the scroll container clamps to the top while it is empty. Write
-    // only when the source changed. Plain innerHTML is enough here because
-    // sanitized markdown carries no Alpine directives.
-    setProse(el, md) {
-      // The board size is in the key because a ticket id only chips once the
-      // board holding that ticket has loaded, which is after the first paint.
-      var src = (md || '') + '\u0000' + (this.tickets || []).length;
+    // only when text or chip context changed. Plain innerHTML is enough here
+    // because sanitized markdown carries no Alpine directives. An explicit
+    // subject lets epic/other surfaces render without changing the selection.
+    setProse(el, md, subject = this.selectedTicket || this.selectedEpic) {
+      var src = this._proseFingerprint(md, false, subject);
       if (el._proseSrc === src) return;
       el._proseSrc = src;
       el.innerHTML = this.renderMarkdown(md || '');
-      this._markTicketIds(el);
+      this._markTicketIds(el, subject);
     },
 
     // Plain text, not markdown. The notes tab renders a note through setProse
     // instead; this is what is left for anywhere a note has to read exactly as
     // it was typed. Ticket ids still become chips, so a note that answers
     // "blocked on kon-1234" points at that ticket.
-    setNoteText(el, text) {
-      var src = (text || '') + '\u0000' + (this.tickets || []).length;
+    setNoteText(el, text, subject = this.selectedTicket || this.selectedEpic) {
+      var src = this._proseFingerprint(text, false, subject);
       if (el._noteSrc === src) return;
       el._noteSrc = src;
       el.textContent = text || '';
-      this._markTicketIds(el);
+      this._markTicketIds(el, subject);
     },
 
     // The same write for stage summaries, with the full entity set on top. A
     // separate method rather than a flag on setProse: authored prose gets
     // ticket-id chips only, and chipping a sha or a filename inside a body
     // would rewrite what the reporter typed.
-    //
-    // The memo key adds the branch, the commit shas, the changed-file count and
-    // the size of the board, all of which the chips read and none of which is
-    // there on the first paint: fetchChanges resolves after it, and a ticket id
-    // only chips once the board holding that ticket has loaded. A branch with
-    // changed files but no commit yet has no sha to key on.
-    setSummaryProse(el, md) {
-      var shas = (this.ticketChanges?.commits || []).map(function (c) { return c.sha; }).join(',');
-      var files = (this.ticketChanges?.files || []).length;
-      var src = (md || '') + '\u0000' + (this.selectedTicket?.branch || '') + '\u0000' + shas
-        + '\u0000' + files + '\u0000' + (this.tickets || []).length
-        + '\u0000' + (this.ticketChanges?.remote || '');
+    setSummaryProse(el, md, subject = this.selectedTicket || this.selectedEpic) {
+      var src = this._proseFingerprint(md, true, subject);
       if (el._proseSrc === src) return;
       el._proseSrc = src;
       el.innerHTML = this.renderMarkdown(md || '');
-      this._markEntities(el);
+      this._markEntities(el, null, subject);
     },
 
     // Chip the ticket ids in already-sanitised prose and leave every other
     // pattern alone. This is the pass authored text gets: an id names a record
     // the reader can open, so it earns a chip, while a sha or a filename in a
     // body is only the words someone typed.
-    _markTicketIds(root) {
-      this._markEntities(root, this._ticketRe());
+    _markTicketIds(root, subject = this.selectedTicket || this.selectedEpic) {
+      this._markEntities(root, this._ticketRe(), subject);
     },
 
     // Chip the entities in already-sanitised prose. One combined alternation,
     // so two patterns cannot claim overlapping text, and one pass.
-    _markEntities(root, re) {
-      re = re || this._entityRe();
+    _markEntities(root, re, subject = this.selectedTicket || this.selectedEpic) {
+      re = re || this._entityRe(subject);
       var walker = document.createTreeWalker(root, SHOW_TEXT, {
         acceptNode: function (node) {
           // Code and links own their text: a fence has to render character for
@@ -200,7 +218,7 @@ export function kontoraMarkdown() {
       var targets = [];
       for (var n = walker.nextNode(); n; n = walker.nextNode()) targets.push(n);
       var budget = ENTITY_MAX;
-      for (var i = 0; i < targets.length && budget > 0; i++) budget = this._wrapEntities(targets[i], re, budget);
+      for (var i = 0; i < targets.length && budget > 0; i++) budget = this._wrapEntities(targets[i], re, budget, subject);
     },
 
     // The ticket-id half of _entityRe on its own, for authored prose. Kept
@@ -209,9 +227,9 @@ export function kontoraMarkdown() {
       return new RegExp('(?<ticket>' + TICKET_ID_RE + ')', 'g');
     },
 
-    _entityRe() {
+    _entityRe(subject = this.selectedTicket || this.selectedEpic) {
       var parts = [];
-      var branch = this.selectedTicket?.branch || '';
+      var branch = subject?.branch || '';
       // A branch name may hold a slash or a dash, so \b cannot bound it. Left
       // unbounded, a short name such as main chips the middle of domain and
       // maintenance, and takes those characters from the file pattern.
@@ -253,7 +271,7 @@ export function kontoraMarkdown() {
     },
 
     // Split one text node around its matches. Returns what is left of the cap.
-    _wrapEntities(node, re, budget) {
+    _wrapEntities(node, re, budget, subject = this.selectedTicket || this.selectedEpic) {
       var text = node.nodeValue;
       re.lastIndex = 0;
       var frag = null;
@@ -263,7 +281,7 @@ export function kontoraMarkdown() {
         // A pattern may decline the run it matched. Leaving last where it is
         // hands that text to the slice in front of the next chip, so the words
         // reach the fragment once, as prose.
-        var chip = this._entityChip(m);
+        var chip = this._entityChip(m, subject);
         if (!chip) continue;
         if (!frag) frag = document.createDocumentFragment();
         if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
@@ -277,14 +295,14 @@ export function kontoraMarkdown() {
       return budget;
     },
 
-    _entityChip(m) {
+    _entityChip(m, subject = this.selectedTicket || this.selectedEpic) {
       var g = m.groups;
       var text = m[0];
       if (g.diff) return this._diffChip(text);
       if (g.ref) return this._refChip(text);
       // A word shaped like a ticket id that names no ticket on the board is
       // prose, and declining it here is what keeps test-lisp a plain word.
-      var t = g.ticket ? this._ticketById(text) : null;
+      var t = g.ticket ? this._proseTicketById(text, subject) : null;
       if (g.ticket && !t) return null;
       var span = document.createElement('span');
       span.textContent = text;

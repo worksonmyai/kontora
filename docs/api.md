@@ -69,7 +69,7 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/assistant/threads` | Open a chat (optional `{"autonomy": "read"\|"ask"\|"auto"}`; the configured default otherwise). Answers 201 with the chat. |
 | `GET /api/assistant/threads/{id}` | One chat and the messages posted to it. |
 | `DELETE /api/assistant/threads/{id}` | Drop a chat and its transcript. |
-| `GET /api/assistant/threads/{id}/activity` | One poll of a chat: the transcript as a `logfmt` tape sliced at `?after=N`, the messages, whether a turn is running, the message being written right now, and any change waiting on the user. Carries an `ETag` and answers `If-None-Match` with 304. |
+| `GET /api/assistant/threads/{id}/activity` | One poll of a chat: the transcript as a `logfmt` tape sliced at `?after=N`, the messages, whether a turn is running, the message being written right now, and any change waiting on the user. Supports `ETag`/`If-None-Match`; unavailable or replaced samples return retryable 503. |
 | `GET /api/assistant/threads/{id}/stream` | Server-Sent Events stream of the message being written, pushed as it grows. Answers 204 when nothing is running and nothing was typed. |
 | `POST /api/assistant/threads/{id}/messages` | Post an ordinary chat message (`{"text": "...", "autonomy": "..."}`). Answers 202: the reply arrives through the activity poll. Companion-purpose threads reject this route. |
 | `POST /api/assistant/threads/{id}/stop` | Cancel the turn the chat is running. |
@@ -869,12 +869,26 @@ tests never fetch the catalog.
 the agent is writing before its session file records it: `partial`, the text so
 far; `partial_gen`, bumped when a new block starts, so a reader replaces rather
 than appends; and `partial_tool`, the tool call whose arguments are still being
-generated. `partial` is empty once the tape carries the same words, and the
-response that empties it is the one that carries them, so nothing renders twice
-and nothing blanks between the two. A turn that ended without recording its
-message keeps its `partial` alongside `running: false`, since that copy is then
-the only one there is. The text is held in daemon memory only: it is never part
-of the `logfmt` tape, which is the parsed form of a file.
+generated. Generation numbers restart for each turn and do not identify a turn.
+The daemon removes `partial` only when the current turn's transcript suffix
+contains the text. The same response includes the recorded text. An identical
+reply from an earlier turn does not remove the current partial. If the daemon
+cannot establish the transcript boundary or source, it keeps the partial.
+A turn that ends without recording its message keeps `partial` alongside
+`running: false`. Partial text and turn identity stay in daemon memory.
+
+Activity reads return 503 with `Retry-After: 1` when transcript discovery is
+inaccessible or ambiguous, a read fails, or the sampled turn changes during I/O.
+A turn that is still preparing its metadata also returns 503. These responses
+carry no activity validator and must not replace the last usable transcript.
+Missing history returns an empty tape only for an established new or pre-session
+thread. Missing history after a usable transcript is unavailable, not empty.
+An unknown thread still returns 404.
+
+Clients must retain the transcript, cursor, and validator during temporary read
+failures. A successful 200 or 304 clears read-recovery state. The browser makes
+at most four automatic read retries before offering manual Retry. Authentication
+failures, deletion, and requests for a retired selection do not enter that loop.
 
 `GET /api/assistant/threads/{id}/stream` pushes the same text at roughly ten
 frames a second, so a reader sees it as typing rather than in 1.5s steps. It is
@@ -895,6 +909,15 @@ a `delta` whose `gen` it does not hold. The connection answers 204, rather than
 opening, when nothing is running and nothing was typed: `EventSource` does not
 retry a 204, so a stale pane stops asking. Like `GET /api/events`, the response
 is never gzipped.
+
+Clients must serialize activity reads with the stream because stream events do
+not carry turn identity. Before each read, apply accepted frames, invalidate the
+old stream callbacks, and close the connection. Keep streaming closed through
+response decoding and any coalesced reads. On a successful read, adopt the current
+snapshot before reconnecting. After a retryable failure, retain the last usable
+state; the failure alone does not prevent reconnection. Reconnect only if the
+current thread still needs partial updates; an empty settled snapshot must not
+replay earlier text. Token updates pause during reads.
 
 For ordinary tickets, `POST /api/tickets` and `POST /api/tickets/{id}/init` resolve
 `pipeline` in this order:

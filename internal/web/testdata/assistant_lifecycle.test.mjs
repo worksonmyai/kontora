@@ -12,7 +12,48 @@ const assistant = source('ui/assistant.js').replaceAll('export ', '');
 const companion = source('ui/companion.js').replaceAll('export ', '');
 const markup = source('ui/assistant_markup.js').replaceAll('export ', '');
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
-const response = (data = {}, etag = '', status = 200) => ({ ok: status === 200, status, headers: { get: () => etag }, json: async () => data });
+const response = (data = {}, etag = '', status = 200) => {
+  const captured = structuredClone(data);
+  return { ok: status >= 200 && status < 300, status,
+    headers: { get: name => name.toLowerCase() === 'etag' ? etag : null },
+    json: async () => structuredClone(captured) };
+};
+
+// Explicit FIFO expectations, with independent header and JSON-decode gates.
+// No fallback success: a new request seam must be queued by its test first.
+function assistantTransport() {
+  const queues = new Map(), controls = [], requests = [];
+  return {
+    requests,
+    queue(method, url, value, options = {}) {
+      const key = `${method} ${url}`, headers = deferred(), body = deferred(), started = deferred(), decoding = deferred();
+      const captured = response(value, options.etag, options.status);
+      const control = { started: started.promise, decoding: decoding.promise,
+        release: () => headers.resolve(), releaseBody: () => body.resolve(),
+        async deliver() {
+          started.resolve(); await headers.promise;
+          return { ...captured, json: async () => {
+            decoding.resolve(); await body.promise;
+            if (options.decodeFailure) throw new Error(options.decodeFailure);
+            return captured.json();
+          } };
+        } };
+      if (!options.delayBody) control.releaseBody();
+      if (!queues.has(key)) queues.set(key, []);
+      queues.get(key).push(control); controls.push(control);
+      return control;
+    },
+    async fetch(url, options = {}) {
+      const key = `${options.method || 'GET'} ${url}`;
+      const control = queues.get(key)?.shift();
+      assert.ok(control, `Unmodelled Assistant fixture request: ${key}`);
+      requests.push({ url, options });
+      return control.deliver();
+    },
+    releaseAll() { for (const control of controls) { control.release(); control.releaseBody(); } },
+    assertDrained() { for (const [key, queue] of queues) assert.equal(queue.length, 0, `Unused fixture response: ${key}`); },
+  };
+}
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const plain = value => JSON.parse(JSON.stringify(value));
 
@@ -31,7 +72,7 @@ function harness(fetcher = async () => response()) {
     fetch: (url, options) => { requests.push({ url, options }); return fetcher(url, options); },
     EventSource: class {
       handlers = new Map(); closed = false;
-      constructor() { streams.push(this); }
+      constructor(url) { this.url = url; streams.push(this); }
       addEventListener(name, cb) { this.handlers.set(name, cb); }
       close() { this.closed = true; }
       emit(name, data) { this.handlers.get(name)?.({ data: JSON.stringify(data) }); }
@@ -46,6 +87,61 @@ function harness(fetcher = async () => response()) {
     paint() { const pending = [...frames.entries()]; for (const [id, cb] of pending) { frames.delete(id); cb(); } },
     poll() { const entry = [...timers.entries()][0]; assert.ok(entry); timers.delete(entry[0]); entry[1].cb(); } };
 }
+
+test('audit32-fixture Assistant queued responses capture data and separate headers body and SSE', async () => {
+  const transport = assistantTransport();
+  const snapshot = { running: true, messages: [{ n: 1, text: 'captured' }], partial: 'Hello', partial_gen: 1 };
+  const old = transport.queue('GET', '/api/assistant/threads/a/activity?after=0', snapshot, { delayBody: true, etag: 'old' });
+  const create = transport.queue('POST', '/api/assistant/threads', { id: 'created', autonomy: 'read', messages: [] }, { status: 201 });
+  const missing = transport.queue('GET', '/api/assistant/threads/missing', { error: 'Thread not found' }, { status: 404 });
+  const h = harness(transport.fetch);
+  const read = h.context.fetch('/api/assistant/threads/a/activity?after=0');
+  await old.started;
+  snapshot.messages[0].text = 'mutated after capture';
+  old.release();
+  const received = await read;
+  assert.equal(received.headers.get('ETag'), 'old');
+  let decoded = false;
+  const body = received.json().then(value => { decoded = true; return value; });
+  await old.decoding;
+  const stream = new h.context.EventSource('/api/assistant/threads/a/stream');
+  const deltas = []; stream.addEventListener('delta', e => deltas.push(JSON.parse(e.data)));
+  stream.emit('delta', { gen: 1, text: ' world' });
+  assert.equal(decoded, false); assert.equal(deltas[0].text, ' world');
+  old.releaseBody();
+  assert.equal((await body).messages[0].text, 'captured');
+  const creating = h.context.fetch('/api/assistant/threads', { method: 'POST', body: '{"autonomy":"read"}' });
+  await create.started; create.release();
+  assert.equal((await creating).status, 201);
+  const selecting = h.context.fetch('/api/assistant/threads/missing');
+  await missing.started; missing.release();
+  const absent = await selecting;
+  assert.equal(absent.ok, false); assert.equal(absent.status, 404);
+  assert.equal((await absent.json()).error, 'Thread not found');
+  assert.equal(stream.url, '/api/assistant/threads/a/stream');
+  await assert.rejects(h.context.fetch('/api/assistant/threads/unmodelled'), /Unmodelled Assistant fixture/);
+  transport.assertDrained(); stream.close();
+});
+
+test('audit32-fixture Assistant activity failure and cached recovery are independently deliverable', async () => {
+  const transport = assistantTransport();
+  const path = '/api/assistant/threads/a/activity?after=0';
+  const failures = [
+    transport.queue('GET', path, { messages: [{ text: 'last good' }] }, { etag: 'good' }),
+    transport.queue('GET', path, { error: 'Transcript unavailable' }, { status: 503 }),
+    transport.queue('GET', path, null, { status: 304, etag: 'good' }),
+    transport.queue('GET', path, {}, { decodeFailure: 'Invalid transcript JSON' }),
+  ];
+  for (const [i, control] of failures.entries()) {
+    const pending = transport.fetch(path); await control.started; control.release();
+    const result = await pending;
+    assert.equal(result.status, [200, 503, 304, 200][i]);
+    if (i === 3) await assert.rejects(result.json(), /Invalid transcript JSON/);
+    else if (i !== 2) assert.ok(await result.json());
+    else assert.equal(result.headers.get('etag'), 'good');
+  }
+  transport.assertDrained();
+});
 
 for (const view of ['history', 'inbox', 'chat']) {
   test(`switching to ${view} retires the old activity flight without blocking new polls`, async () => {
@@ -335,7 +431,7 @@ for (const approve of [false, true]) {
 for (const kind of ['send', 'approve', 'skip']) {
   test(`failed ${kind} after dismissal cannot overwrite newer accepted server state`, async () => {
     const write = deferred();
-    const h = harness((url, options) => options?.method === 'POST' ? write.promise : response({ running: true }, 'new-server-state'));
+    const h = harness((url, options) => options?.method === 'POST' ? write.promise : response({ running: true, partial: 'Current reply', partial_gen: 1 }, 'new-server-state'));
     h.state.assistantThread.running = false;
     h.state.assistantDraft = 'hello';
     h.state.assistantGate = { id: 'g' };
@@ -374,7 +470,7 @@ for (const kind of ['send', 'approve', 'skip']) {
   }
 }
 
-test('an older failed send cannot clear a newer optimistic send on the retained thread', async () => {
+test('a pending send prevents duplicates after reopening and preserves the newer draft', async () => {
   const first = deferred(), second = deferred();
   let writes = 0;
   const h = harness((url, options) => options?.method === 'POST' ? (++writes === 1 ? first.promise : second.promise) : response({ running: false }, 'idle'));
@@ -383,10 +479,16 @@ test('an older failed send cannot clear a newer optimistic send on the retained 
   h.state.closeAssistant();
   h.state.toggleAssistant(); await flush();
   h.state.assistantDraft = 'second';
-  const next = h.state.sendAssistantMessage();
+  await h.state.sendAssistantMessage();
+  assert.equal(writes, 1, 'the first request still owns the pending-send lock');
+  assert.equal(h.state.assistantDraft, 'second');
   first.reject(new Error('old failure')); await old;
+  assert.equal(h.state.assistantStreaming, false);
+  assert.equal(h.state.assistantError, 'old failure');
+  assert.equal(h.state.assistantDraft, 'second');
+  const next = h.state.sendAssistantMessage();
+  assert.equal(writes, 2);
   assert.equal(h.state.assistantStreaming, true);
-  assert.equal(h.state.assistantError, null);
   assert.equal(h.intervals.size, 1);
   second.reject(new Error('current failure')); await next;
   assert.equal(h.state.assistantStreaming, false);
@@ -423,9 +525,10 @@ for (const action of ['closeAssistant', 'assistantDestroy', 'assistantEscape']) 
     h.state._armAssistantPoll();
     h.streams[0].emit('delta', { gen: 0, text: 'queued' });
     h.streams[0].onerror();
-    const pending = h.state._loadAssistantActivity(); await flush();
-    assert.equal(h.frames.size, 1);
     const streamFrame = h.stream.raf;
+    const pending = h.state._loadAssistantActivity(); await flush();
+    assert.equal(h.frames.size, 0, 'activity reads flush and retire accepted stream frames');
+    assert.equal(h.state.assistantPartial, 'queued');
     h.state[action]();
     assert.equal(h.requests[0].options.signal.aborted, true);
     assert.equal(h.frames.has(streamFrame), false, 'the retired stream frame is canceled');
@@ -441,7 +544,7 @@ for (const action of ['closeAssistant', 'assistantDestroy', 'assistantEscape']) 
     assert.equal(h.state.assistantThread.id, 'a');
     assert.equal(h.state.assistantStreaming, true);
     assert.equal(h.state.assistantGate.id, 'keep-approval');
-    assert.equal(h.state.assistantPartial, '');
+    assert.equal(h.state.assistantPartial, 'queued');
     assert.equal(h.requests.length, 1, 'closing must send no server mutation');
     assert.equal(h.timers.size, action === 'assistantDestroy' ? 0 : 1);
     for (const resource of [h.intervals, h.frames, h.listeners]) assert.equal(resource.size, 0);
@@ -449,7 +552,7 @@ for (const action of ['closeAssistant', 'assistantDestroy', 'assistantEscape']) 
 }
 
 test('reopening a running thread reconciles exactly one tick, stream and poll', async () => {
-  const h = harness(async url => response(url.endsWith('/threads') ? { threads: [] } : { running: true }));
+  const h = harness(async url => response(url.endsWith('/threads') ? { threads: [] } : { running: true, partial: 'Current reply', partial_gen: 1 }));
   h.state._assistantSetStreaming(true, Date.now());
   h.state.closeAssistant();
   h.state.toggleAssistant();
@@ -557,7 +660,7 @@ test('a retired stream frame cannot clear a replacement stream buffer', () => {
   h.state.closeAssistant();
 });
 
-test('a companion write failure cannot clear a newer send or report into its context', async () => {
+test('a pending companion send prevents duplicates and its retired error does not replace current feedback', async () => {
   const first = deferred(), second = deferred();
   const h = harness(() => h.requests.length === 1 ? first.promise : second.promise);
   h.state.companionSnapshot = { enabled: true, ai_available: true };
@@ -565,11 +668,15 @@ test('a companion write failure cannot clear a newer send or report into its con
   const old = h.state.companionSend('followup', 'old', []);
   h.state.closeAssistant();
   h.state.assistantOpen = true;
-  const next = h.state.companionSend('followup', 'next', []);
+  await h.state.companionSend('followup', 'next', []);
+  assert.equal(h.requests.length, 1);
   first.reject(new Error('old error')); await old;
-  assert.equal(h.state.companionBusy, true);
+  assert.equal(h.state.companionBusy, false);
   assert.equal(h.state.assistantError, null);
   assert.equal(h.state.companionError, '');
+  const next = h.state.companionSend('followup', 'next', []);
+  assert.equal(h.state.companionBusy, true);
+  assert.equal(h.requests.length, 2);
   second.reject(new Error('current error')); await next;
   assert.equal(h.state.companionBusy, false);
   assert.equal(h.state.assistantError, 'current error');

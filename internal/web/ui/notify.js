@@ -30,6 +30,11 @@ function sameSet(a, b) {
   return a.length === b.length && a.every(x => b.includes(x));
 }
 
+// Conflict checks must distinguish missing/null (inherited) from [] (Off).
+function notifyPreferencesSignature(ticket) {
+  return JSON.stringify([ticket?.notify ?? null, ticket?.notify_channels ?? null]);
+}
+
 export function notifyModeFor(statuses) {
   var mode = NOTIFY_MODES.find(m => sameSet(m.statuses, statuses || []));
   return mode ? mode.key : 'custom';
@@ -338,7 +343,7 @@ export function kontoraNotify() {
           }
           break;
         }
-        var before = this.sameTicket(this.selectedTicket, t) ? this.selectedTicket : t;
+        var before = notifyPreferencesSignature(this.sameTicket(this.selectedTicket, t) ? this.selectedTicket : t);
         try {
           var res = await fetch(this.ticketURL(t), {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -350,10 +355,14 @@ export function kontoraNotify() {
           var updated = await res.json();
           // The endpoint returns a whole snapshot. Only acknowledge our fields;
           // even a fresh notification ack has no authority over notes or status.
-          var fields = { notify: updated.notify || [], notify_channels: updated.notify_channels || [] };
+          var fields = {};
+          for (var field of Object.keys(payload)) {
+            // Channel-only writes cannot adopt a status preference they did not submit.
+            if (payload[field] !== undefined) fields[field] = updated[field];
+          }
           var entries = this.isSecondary(t) ? this.secondaryTickets : this.tickets;
           var idx = entries.findIndex(x => this.sameTicket(x, t));
-          var unchanged = ticket => JSON.stringify([ticket?.notify || [], ticket?.notify_channels || []]) === JSON.stringify([before.notify || [], before.notify_channels || []]);
+          var unchanged = ticket => notifyPreferencesSignature(ticket) === before;
           if (idx >= 0 && unchanged(entries[idx])) entries[idx] = { ...entries[idx], ...fields };
           if (this.sameTicket(this.selectedTicket, t) && unchanged(this.selectedTicket)) {
             // A secondary revision authorizes the displayed document. Keep it

@@ -5874,12 +5874,17 @@ for (const reopened of [false, true]) {
     await flushMicrotasks();
     assert.equal(state._editorSaves['kon-desc'], undefined);
     assert.equal(state._editorAckVersion('kon-desc'), version);
+    const opening = reopened ? ui.open() : null;
     if (reopened) {
-      await ui.open();
-      assert.equal(state._editorSaves['kon-desc'].ackSequence, version);
+      await flushMicrotasks();
+      assert.equal(state.detailLoading, true, 'reopening waits for the accepted note before hydration');
     }
     wait.resolve();
     await note;
+    if (opening) {
+      await opening;
+      assert.equal(state._editorSaves['kon-desc'].ackSequence, version);
+    }
     assert.equal(state.tickets[0].title, 'New title');
     if (reopened) {
       assert.equal(state.selectedTicket.description, '# New description\n');
@@ -7711,20 +7716,62 @@ function settingsReactive(target, cache = new WeakMap()) {
 // to check it did not change under the tab, PUT the new content, then GET
 // /api/config so the board picks up the reloaded values.
 function settingsFetch({ raw = SETTINGS_FIXTURE, put = { status: 204, ok: true }, config } = {}) {
-  const sent = [];
+  const sent = [], configReads = [], controls = [];
+  function holdConfig({ delayBody = false } = {}) {
+    const headers = deferred(), body = deferred(), started = deferred(), decoding = deferred();
+    const control = { started: started.promise, decoding: decoding.promise,
+      release: () => headers.resolve(), releaseBody: () => body.resolve(),
+      async respond(captured) {
+        started.resolve(); await headers.promise;
+        return { status: 200, ok: true, json: async () => {
+          decoding.resolve(); await body.promise; return structuredClone(captured);
+        } };
+      } };
+    if (!delayBody) control.releaseBody();
+    configReads.push(control); controls.push(control);
+    return control;
+  }
   const fetch = async (url, init = {}) => {
     sent.push({ url, init });
     const method = init.method || "GET";
     if (url === "/api/config/raw" && method === "GET") {
       return { status: 200, ok: true, json: async () => ({ content: typeof raw === "function" ? raw() : raw }) };
     }
-    if (url === "/api/config/raw") return typeof put === "function" ? put() : put;
-    if (url === "/api/config") return { status: 200, ok: true, json: async () => config || {} };
-    return { status: 404, ok: false, json: async () => ({}) };
+    if (url === "/api/config/raw" && method === "PUT") return typeof put === "function" ? put() : put;
+    if (url === "/api/config" && method === "GET") {
+      const captured = structuredClone(config || {});
+      const held = configReads.shift();
+      return held ? held.respond(captured) : { status: 200, ok: true, json: async () => structuredClone(captured) };
+    }
+    throw new Error(`Unmodelled Settings fixture request: ${method} ${url}`);
   };
   const of = (method) => sent.filter((s) => (s.init.method || "GET") === method);
-  return { fetch, sent, puts: () => of("PUT"), gets: () => of("GET") };
+  return { fetch, sent, holdConfig, releaseAll() { for (const c of controls) { c.release(); c.releaseBody(); } },
+    puts: () => of("PUT"), gets: () => of("GET") };
 }
+
+test('audit32-fixture Settings config snapshots survive independent header and decoding gates', async () => {
+  const config = { custom_statuses: ['captured'], assistant: { autonomy: 'auto' } };
+  const daemon = settingsFetch({ config });
+  const old = daemon.holdConfig({ delayBody: true });
+  const state = loadKontoraState({ fetch: daemon.fetch });
+  // Exercise the actual compiled bundle with a single controlled refresh. The
+  // reordered transport probe below deliberately makes no product-fix claim.
+  const refresh = state.refreshConfigCache();
+  await old.started;
+  config.custom_statuses = ['current']; config.assistant.autonomy = 'read';
+  let headersArrived = false;
+  old.release(); await old.decoding;
+  const latest = await daemon.fetch('/api/config').then(r => { headersArrived = true; return r.json(); });
+  assert.equal(headersArrived, true);
+  assert.deepEqual(latest.custom_statuses, ['current']);
+  assert.equal(state.configCache, null);
+  old.releaseBody(); await refresh;
+  assert.deepEqual(vmValue(state.configCache.custom_statuses), ['captured']);
+  assert.equal(state.configCache.assistant.autonomy, 'auto');
+  assert.equal(daemon.gets().length, 2);
+  await assert.rejects(daemon.fetch('/api/not-modelled'), /Unmodelled Settings fixture/);
+});
 
 test("settings loads the fixture clean and defaults to General", async () => {
   const state = await settingsState();
@@ -11486,7 +11533,9 @@ function automationUI() {
     if (url === '/api/automations/preview' && method === 'POST') {
       assert.deepEqual(Object.keys(body).sort(), ['schedule', 'timezone']);
       assert.equal(typeof body.schedule, 'string');
-      return body.timezone === 'Invalid/Zone' ? response({ error: 'Invalid timezone' }, 400) : response({ occurrences: automationFires, human: 'Every weekday at 09:00' });
+      if (body.timezone === 'Invalid/Zone') return response({ error: 'Invalid timezone' }, 400);
+      if (['0 9 * *', '@daily'].includes(body.schedule)) return response({ error: 'Invalid schedule' }, 400);
+      return response({ occurrences: automationFires, human: 'Every weekday at 09:00' });
     }
     if (url === '/api/automations' && method === 'POST') {
       assert.deepEqual(Object.keys(body).sort(), ['definition', 'key', 'request_id']);
@@ -11621,9 +11670,22 @@ test('automation preview debounces cron and intervals, formats timezone and reje
   state.automationsDraft.timezone = 'Invalid/Zone'; state.automationsSchedulePreview(); await ui.preview();
   older.resolve(ui.response({ occurrences: ['2030-01-01T00:00:00Z'], human: 'Stale' })); await pending;
   assert.equal(state.automationsPreview.length, 0); assert.match(state.automationsPreviewError, /Invalid timezone/); assert.equal(!!state.automationsCanSave(), false);
+  state.automationsDraft.timezone = 'UTC';
   for (const schedule of ['', '0 9 * *', '@daily']) {
+    const before = ui.requests.length;
     state.automationsDraft.schedule = schedule; state.automationsSchedulePreview();
-    assert.ok(state.automationsPreviewError); assert.equal(state.automationsPreviewLoading, false);
+    if (schedule) {
+      assert.equal(state.automationsPreviewError, '');
+      assert.equal(state.automationsPreviewLoading, true);
+      await ui.preview();
+      assert.equal(ui.requests.length, before + 1);
+      assert.match(state.automationsPreviewError, /Invalid schedule/);
+    } else {
+      assert.equal(ui.requests.length, before);
+      assert.match(state.automationsPreviewError, /required/);
+    }
+    assert.equal(state.automationsPreviewLoading, false);
+    assert.equal(!!state.automationsCanSave(), false);
   }
   state.automationsDispose();
 });
@@ -12514,6 +12576,8 @@ test("obsolete detail reads preserve the current selection, loading and error", 
           : boundary === 'ticket switch' ? { ...original, id: 'kon-other', title: 'Other ticket card' } : original;
         const oldRead = state.selectTicket(original);
         assert.equal(state.detailLoading, true);
+        await flushMicrotasks();
+        assert.equal(calls, 1, 'the retired read must start before navigation changes');
         if (outcome.startsWith('JSON')) {
           first.resolve({ ok: true, json: () => { decoding.resolve(); return json.promise; } });
           await decoding.promise;
@@ -12574,6 +12638,8 @@ test("same-ticket SSE updates outrank older detail responses", async () => {
 
     const row = { id: "kon-current", title: "Initial", status: archive ? "archived" : "in_progress", history: [] };
     const request = archive ? state.archiveOpenRow(row) : state.selectTicket(row);
+    await flushMicrotasks();
+    assert.equal(calls, 1, 'the snapshot is captured before the SSE update');
     state.applyTicketUpdate({
       ...row,
       title: "New event",
@@ -17040,15 +17106,13 @@ test("the typed text goes and the settled row arrives in one update", () => {
   assert.equal(state.assistantEvents.length, 1);
 });
 
-test("a poll snapshot behind the stream does not rewind the text", () => {
+test("serialized activity snapshots replace partials even when generations are reused", () => {
   const { state } = assistantState();
   state.assistantThread = { id: "t1" };
 
   state._assistantAdoptPartial({ partial: "the board has two runs", partial_gen: 3 });
-  // The poll read the daemon before the last deltas landed. Adopting it would
-  // rub out words the reader has already seen.
   state._assistantAdoptPartial({ partial: "the board", partial_gen: 3 });
-  assert.equal(state.assistantPartial, "the board has two runs");
+  assert.equal(state.assistantPartial, "the board");
 
   // A new block replaces wholesale, however short it is.
   state._assistantAdoptPartial({ partial: "Now", partial_gen: 4 });

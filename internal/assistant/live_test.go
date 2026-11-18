@@ -77,7 +77,7 @@ func TestLiveText(t *testing.T) {
 				l.Block("t")
 				l.Append("t", "landed")
 				l.Seal("t")
-				l.Suppress("t", 1)
+				l.Suppress("t", l.Snapshot("t").Turn, 1)
 			},
 			want: Partial{Gen: 1, Sealed: true, Running: true, Present: true},
 		},
@@ -89,9 +89,23 @@ func TestLiveText(t *testing.T) {
 				l.Append("t", "old")
 				l.Block("t")
 				l.Append("t", "new")
-				l.Suppress("t", 1)
+				l.Suppress("t", l.Snapshot("t").Turn, 1)
 			},
 			want: Partial{Gen: 2, Text: "new", Running: true, Present: true},
+		},
+		{
+			name: "an old turn cannot suppress a reused generation",
+			run: func(l *LiveText) {
+				l.Start("t")
+				l.Append("t", "same")
+				old := l.Snapshot("t")
+				l.End("t")
+				l.Clear("t")
+				l.Start("t")
+				l.Append("t", "same")
+				l.Suppress("t", old.Turn, old.Gen)
+			},
+			want: Partial{Gen: 1, Text: "same", Running: true, Present: true},
 		},
 		{
 			name: "a cleared thread is not brought back by a late delta",
@@ -120,7 +134,12 @@ func TestLiveText(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			l := NewLiveText()
 			tt.run(l)
-			assert.Equal(t, tt.want, l.Snapshot("t"))
+			got := l.Snapshot("t")
+			if got.Present {
+				assert.NotZero(t, got.Turn)
+			}
+			got.Turn = 0
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

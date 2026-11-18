@@ -173,9 +173,13 @@ func TestDrainPaneLogOpenFailureStillDrains(t *testing.T) {
 				require.NoError(t, err)
 				t.Cleanup(func() { _ = f.Close() })
 			}
-			input := strings.NewReader(strings.Repeat("output", 1<<16))
-			require.Error(t, DrainPaneLog(input, path))
+			input := strings.NewReader(strings.Repeat("output", 1<<16) + "provider error")
+			scan := testPaneLogScan(t, "provider error")
+			require.Error(t, DrainPaneLog(input, path, scan.path))
 			assert.Zero(t, input.Len())
+			pattern, err := scan.wait(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, new("provider error"), pattern)
 		})
 	}
 }
@@ -216,9 +220,11 @@ func TestDrainPaneLogIOFailureStillDrains(t *testing.T) {
 		{name: "write and close fail", short: true, writeErr: syscall.EIO, closeErr: closeErr, wantErr: syscall.EIO},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			input := strings.NewReader(strings.Repeat("output", 1<<16))
+			input := strings.NewReader(strings.Repeat("output", 1<<16) + "provider error")
+			scan := testPaneLogScan(t, "provider error")
+			scanner := scanPaneLog(input, scan.path)
 			output := &failingPaneLog{writeErr: tc.writeErr, closeErr: tc.closeErr, short: tc.short}
-			err := drainPaneLog(input, output, 64)
+			err := drainPaneLog(scanner, output, 64)
 			require.ErrorIs(t, err, tc.wantErr)
 			if tc.closeErr != nil {
 				require.ErrorIs(t, err, tc.closeErr)
@@ -226,6 +232,10 @@ func TestDrainPaneLogIOFailureStillDrains(t *testing.T) {
 			assert.Zero(t, input.Len())
 			assert.Equal(t, 1, output.writes, "must stop writing after an I/O failure")
 			assert.True(t, output.closed)
+			require.NoError(t, scanner.finish())
+			pattern, err := scan.wait(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, new("provider error"), pattern)
 		})
 	}
 }

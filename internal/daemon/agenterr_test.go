@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/metrics"
+	"github.com/worksonmyai/kontora/internal/process"
 )
 
 func TestScanClaudeSessionError(t *testing.T) {
@@ -197,6 +198,8 @@ func TestDetectAgentErrorPiWithoutCurrentSession(t *testing.T) {
 		name       string
 		log        string
 		patterns   []string
+		raw        bool
+		result     process.Result
 		wantReason string
 		wantKind   string
 		wantFound  bool
@@ -205,6 +208,22 @@ func TestDetectAgentErrorPiWithoutCurrentSession(t *testing.T) {
 			name:      "old session is ignored",
 			log:       "all good\n",
 			wantFound: false,
+		},
+		{
+			name:       "streamed pattern outside capped output",
+			log:        "all good\n",
+			raw:        true,
+			patterns:   []string{"quota exceeded"},
+			result:     process.Result{FailurePattern: new("quota exceeded")},
+			wantReason: `output matched failure pattern "quota exceeded"`,
+			wantKind:   metrics.ErrorKindFailurePattern,
+			wantFound:  true,
+		},
+		{
+			name:     "structured session retains its own error policy",
+			log:      "all good\n",
+			patterns: []string{"quota exceeded"},
+			result:   process.Result{FailurePattern: new("quota exceeded")},
 		},
 		{
 			name:       "output patterns remain active",
@@ -221,11 +240,16 @@ func TestDetectAgentErrorPiWithoutCurrentSession(t *testing.T) {
 			logFile := filepath.Join(dir, strings.ReplaceAll(tt.name, " ", "-")+".log")
 			require.NoError(t, os.WriteFile(logFile, []byte(tt.log), 0o644))
 			d := &Daemon{}
+			params := RunnerParams{SessionDir: sessionDir, LogFile: logFile}
+			if tt.raw {
+				params.SessionDir = ""
+			}
 			reason, kind, found := d.detectAgentError(
 				config.Agent{Binary: "pi", FailurePatterns: tt.patterns},
-				RunnerParams{SessionDir: sessionDir, LogFile: logFile},
+				params,
 				0,
 				startedAt,
+				tt.result,
 			)
 			assert.Equal(t, tt.wantFound, found)
 			assert.Equal(t, tt.wantReason, reason)

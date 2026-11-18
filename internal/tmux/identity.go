@@ -201,8 +201,8 @@ func (w identityTmux) Signal(channel string) {
 	defer cancel()
 	_ = w.id.command(ctx, "wait-for", "-S", channel).Run()
 }
-func (w identityTmux) pipePane(logPath string) error {
-	pipeCmd, err := paneLogCommand(logPath)
+func (w identityTmux) pipePane(logPath string, scanPaths ...string) error {
+	pipeCmd, err := paneLogCommand(logPath, scanPaths...)
 	if err != nil {
 		return err
 	}

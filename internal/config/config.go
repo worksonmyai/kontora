@@ -350,8 +350,8 @@ type Agent struct {
 	Binary      string            `yaml:"binary"`
 	Args        []string          `yaml:"args"`
 	Environment map[string]string `yaml:"environment"`
-	// FailurePatterns are regexes matched against the agent's output log after
-	// it exits. A match pauses the ticket even when the agent exited cleanly.
+	// FailurePatterns are regexes checked against agent output. A match pauses
+	// the ticket even when the agent exited cleanly.
 	// When unset, DefaultFailurePatterns apply; set an explicit list to override
 	// them, or [] to disable pattern matching. Claude and pi also get structural
 	// detection from their session JSONL regardless.

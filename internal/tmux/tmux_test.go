@@ -22,8 +22,11 @@ var testSession = fmt.Sprintf("kontora-tmuxtest-%d", os.Getpid())
 
 func TestMain(m *testing.M) {
 	// The test executable also runs the sink that pipe-pane starts.
-	if len(os.Args) == 3 && os.Args[1] == "pty-log-sink" {
-		if err := DrainPaneLog(os.Stdin, os.Args[2]); err != nil {
+	if len(os.Args) >= 2 && os.Args[1] == "pty-log-sink" {
+		if len(os.Args) != 3 && len(os.Args) != 4 {
+			os.Exit(2)
+		}
+		if err := DrainPaneLog(os.Stdin, os.Args[2], os.Args[3:]...); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

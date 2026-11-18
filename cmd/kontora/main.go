@@ -155,11 +155,11 @@ func main() {
 		return
 	case "pty-log-sink":
 		// Only tmux pipe-pane calls this helper. It needs no config or daemon.
-		if len(os.Args) != 3 {
-			fmt.Fprintln(os.Stderr, "usage: kontora pty-log-sink LOG_PATH")
+		if len(os.Args) != 3 && len(os.Args) != 4 {
+			fmt.Fprintln(os.Stderr, "usage: kontora pty-log-sink LOG_PATH [SCAN_PATH]")
 			os.Exit(2)
 		}
-		if err := tmux.DrainPaneLog(os.Stdin, os.Args[2]); err != nil {
+		if err := tmux.DrainPaneLog(os.Stdin, os.Args[2], os.Args[3:]...); err != nil {
 			fmt.Fprintln(os.Stderr, "raw PTY log:", err)
 			os.Exit(1)
 		}

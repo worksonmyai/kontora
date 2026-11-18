@@ -513,6 +513,9 @@ Live raw stage logs captured through tmux are limited to 16 MiB (16,777,216 byte
 Kontora keeps the first bytes and drains later terminal output without writing it.
 Existing bytes count toward the limit; capture truncates an oversized raw log to 16 MiB when it opens the file.
 If capture encounters a file error, Kontora discards further raw output but continues draining the terminal.
+For agents without structured sessions, configured failure patterns scan the full current attempt independently of the display log, including discarded bytes and retries.
+A successful exit waits for the scan result; missing or incomplete scans fail the run instead of advancing it.
+Structured-session error detection keeps its existing policy.
 The limit does not cap structured session JSONL, activity sidecars, or logs materialized from session records after the agent exits.
 
 ### `kontora activity [--stage NAME] [--run N] TICKET_ID`

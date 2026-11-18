@@ -725,6 +725,7 @@ func TestAnnotate_FailedRunKeepsFeedback(t *testing.T) {
 	h.stdoutCh <- annotateJSON(annotateAnnotated, "sharpen the goal")
 
 	got := h.waitForAnnotationRuns("tst-an07", 1, ticket.StatusPaused)
+	waitForAgentsDone(t, d, 5*time.Second)
 	assert.Equal(t, ticket.StatusOpen, got.AnnotationReturnStatus, "the marker survives a failure")
 	assert.Contains(t, got.LastError, "annotation agent exited with code 1")
 	assert.FileExists(t, annotationsPath(h.reviewsDir, "tst-an07"), "the feedback survives a failure")
@@ -737,6 +738,7 @@ func TestAnnotate_FailedRunKeepsFeedback(t *testing.T) {
 	require.NoError(t, err)
 
 	got = h.waitForAnnotationRuns("tst-an07", 2, ticket.StatusOpen)
+	waitForAgentsDone(t, d, 5*time.Second)
 	assert.Empty(t, got.AnnotationReturnStatus)
 	assert.NoFileExists(t, annotationsPath(h.reviewsDir, "tst-an07"))
 	require.Len(t, got.History, 2, "one annotation entry per annotation run")

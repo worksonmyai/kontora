@@ -159,8 +159,9 @@ type RunnerParams struct {
 	AttemptID            string
 	ReplaceEnv           bool
 	RequireTermination   bool
-	SessionName          string            // tmux session; ignored by DirectRunner
-	LogFile              string            // path for agent output log (PTY capture or materialized session log)
+	SessionName          string // tmux session; ignored by DirectRunner
+	LogFile              string // path for agent output log (PTY capture or materialized session log)
+	FailurePatterns      []string
 	Interactive          bool              // use interactive tmux wait-for flow (for Claude agents)
 	SessionID            string            // Claude session ID; used for session JSONL materialization after agent exit
 	SessionDir           string            // pi session directory; used for session JSONL materialization after agent exit
@@ -240,6 +241,10 @@ func tmuxRunner(ctx context.Context, p RunnerParams) (process.Result, error) {
 	if p.ReplaceEnv {
 		return process.Result{}, fmt.Errorf("tmux replacement environment requires the managed authority integration")
 	}
+	patterns := p.FailurePatterns
+	if p.SessionID != "" || p.SessionDir != "" {
+		patterns = nil
+	}
 	return tmux.Run(ctx, tmux.RunParams{
 		Binary:               p.Binary,
 		Args:                 p.Args,
@@ -249,6 +254,7 @@ func tmuxRunner(ctx context.Context, p RunnerParams) (process.Result, error) {
 		AttemptID:            p.AttemptID,
 		SessionName:          p.SessionName,
 		LogFile:              p.LogFile,
+		FailurePatterns:      patterns,
 		Interactive:          p.Interactive,
 		SessionID:            p.SessionID,
 		Env:                  p.Env,
@@ -2856,7 +2862,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 func (d *Daemon) validateAgentAttempt(taskCtx context.Context, p spawnAgentParams, params RunnerParams, logStart int64, startedAt time.Time, run agentRun) agentAttempt {
 	// Non-zero exits already follow the pipeline's failure policy.
 	if run.Result.ExitCode == 0 && taskCtx.Err() == nil {
-		if reason, kind, detected := d.detectAgentError(p.agentCfg, params, logStart, startedAt); detected {
+		if reason, kind, detected := d.detectAgentError(p.agentCfg, params, logStart, startedAt, run.Result); detected {
 			p.log.Warn("agent error detected despite clean exit", "stage", p.stageName, "reason", reason, "kind", kind)
 			d.metrics.AgentError(taskCtx, p.stageName, p.agentName, kind)
 			d.killTaskWindow(p.ticketID)
@@ -3140,19 +3146,20 @@ func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, st
 	}
 
 	return RunnerParams{
-		Binary:         binaryPath,
-		Args:           args,
-		Dir:            dir,
-		Timeout:        stageCfg.Timeout.Duration,
-		TicketID:       ticketID,
-		SessionName:    d.tmuxSession,
-		LogFile:        stageLogPath(cfg, ticketID, stageName),
-		Interactive:    agentCfg.IsClaude(),
-		SessionID:      sessionID,
-		SessionDir:     sessionDir,
-		Env:            env,
-		OnIdle:         onIdle,
-		CompactChannel: ckpt.compactChannel,
+		Binary:          binaryPath,
+		Args:            args,
+		Dir:             dir,
+		Timeout:         stageCfg.Timeout.Duration,
+		TicketID:        ticketID,
+		SessionName:     d.tmuxSession,
+		LogFile:         stageLogPath(cfg, ticketID, stageName),
+		FailurePatterns: append([]string(nil), agentCfg.FailurePatterns...),
+		Interactive:     agentCfg.IsClaude(),
+		SessionID:       sessionID,
+		SessionDir:      sessionDir,
+		Env:             env,
+		OnIdle:          onIdle,
+		CompactChannel:  ckpt.compactChannel,
 		OnReady: func() {
 			d.broadcastTerminalReady(ticketID)
 		},
@@ -3917,7 +3924,7 @@ func finalAssistantMessage(log *slog.Logger, params RunnerParams, startedAt time
 // reason, the layer that matched (metrics.ErrorKindSessionAPI or
 // metrics.ErrorKindFailurePattern), and true when a failure is detected. Call
 // after materializeAgentLogs so the log file reflects the final session.
-func (d *Daemon) detectAgentError(agentCfg config.Agent, params RunnerParams, logStart int64, startedAt time.Time) (reason, kind string, detected bool) {
+func (d *Daemon) detectAgentError(agentCfg config.Agent, params RunnerParams, logStart int64, startedAt time.Time, result process.Result) (reason, kind string, detected bool) {
 	if agentCfg.IsClaude() && params.SessionID != "" {
 		if path, _ := sessionFile(params, startedAt); path != "" {
 			if reason, ok := scanClaudeSessionError(path); ok {
@@ -3931,6 +3938,9 @@ func (d *Daemon) detectAgentError(agentCfg config.Agent, params RunnerParams, lo
 				return reason, metrics.ErrorKindSessionAPI, true
 			}
 		}
+	}
+	if params.SessionID == "" && params.SessionDir == "" && result.FailurePattern != nil {
+		return fmt.Sprintf("output matched failure pattern %q", *result.FailurePattern), metrics.ErrorKindFailurePattern, true
 	}
 	if len(agentCfg.FailurePatterns) > 0 && params.LogFile != "" {
 		// Session-materialized logs are rewritten each run, so read the whole

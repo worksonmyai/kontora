@@ -82,9 +82,92 @@ export function mountSortableResource(el, options, reconcile) {
   };
 }
 
+// Returns viewport coordinates within the supplied clipping bounds. The caller
+// converts them to wrapper offsets.
+export function cardMenuPlacement(anchor, natural, bounds) {
+  const gap = 4;
+  const below = Math.max(0, bounds.bottom - anchor.bottom - gap);
+  const above = Math.max(0, anchor.top - bounds.top - gap);
+  const flip = natural.height > below && above > below;
+  const maxHeight = Math.floor(flip ? above : below);
+  const maxWidth = Math.max(0, Math.floor(bounds.right - bounds.left));
+  const width = Math.min(natural.width, maxWidth);
+  return {
+    maxWidth, maxHeight, flip,
+    left: Math.min(Math.max(anchor.right - width, bounds.left), bounds.right - width),
+    top: flip ? Math.min(bounds.bottom, anchor.top - gap) - Math.min(natural.height, maxHeight) : Math.max(bounds.top, anchor.bottom + gap),
+  };
+}
+
+function ownCardMenuPlacement(card, btn, menu) {
+  const parent = menu.parentElement;
+  const viewport = window.visualViewport;
+  const clips = [];
+  const clipsAxis = value => /^(auto|scroll|hidden|clip|overlay)$/.test(value);
+  for (let el = card.parentElement; el && el !== document.body; el = el.parentElement) {
+    const style = getComputedStyle(el);
+    const x = clipsAxis(style.overflowX), y = clipsAxis(style.overflowY);
+    if (x || y) clips.push({ el, x, y });
+  }
+  let frame = null;
+  let retired = false;
+  const place = () => {
+    frame = null;
+    if (retired || !menu.isConnected) return;
+    const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
+    const bounds = { left, top, right: left + (viewport?.width || window.innerWidth), bottom: top + (viewport?.height || window.innerHeight) };
+    for (const { el, x, y } of clips) {
+      const rect = el.getBoundingClientRect();
+      const left = rect.left + el.clientLeft, top = rect.top + el.clientTop;
+      if (x) { bounds.left = Math.max(bounds.left, left); bounds.right = Math.min(bounds.right, left + el.clientWidth); }
+      if (y) { bounds.top = Math.max(bounds.top, top); bounds.bottom = Math.min(bounds.bottom, top + el.clientHeight); }
+    }
+    const anchor = btn.getBoundingClientRect();
+    if (anchor.right <= bounds.left || anchor.left >= bounds.right || anchor.bottom <= bounds.top || anchor.top >= bounds.bottom) {
+      menu.style.visibility = 'hidden';
+      return;
+    }
+    menu.style.visibility = '';
+    const widthLimit = Math.max(0, Math.floor(bounds.right - bounds.left)) + 'px';
+    menu.style.minWidth = `min(10rem, ${widthLimit})`;
+    menu.style.width = 'max-content';
+    menu.style.maxWidth = widthLimit;
+    menu.style.right = 'auto';
+    const rect = menu.getBoundingClientRect();
+    // Read the full content height without clearing the cap (which would
+    // also clamp a scrolled menu's scrollTop back to zero).
+    const height = Math.max(rect.height, menu.scrollHeight + menu.offsetHeight - menu.clientHeight);
+    const origin = parent.getBoundingClientRect();
+    const placement = cardMenuPlacement(anchor, { width: rect.width, height }, bounds);
+    menu.style.left = placement.left - origin.left + 'px';
+    menu.style.top = placement.top - origin.top + 'px';
+    menu.style.maxHeight = placement.maxHeight + 'px';
+  };
+  const schedule = () => { if (!retired && frame === null) frame = requestAnimationFrame(place); };
+  for (const { el } of clips) el.addEventListener('scroll', schedule, { passive: true });
+  window.addEventListener('resize', schedule);
+  viewport?.addEventListener('resize', schedule);
+  viewport?.addEventListener('scroll', schedule);
+  const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(schedule) : null;
+  for (const { el } of clips) observer?.observe(el);
+  place();
+  return { schedule, dispose() {
+    retired = true;
+    if (frame !== null) cancelAnimationFrame(frame);
+    observer?.disconnect();
+    for (const { el } of clips) el.removeEventListener('scroll', schedule);
+    window.removeEventListener('resize', schedule);
+    viewport?.removeEventListener('resize', schedule);
+    viewport?.removeEventListener('scroll', schedule);
+  } };
+}
+
 // The board: card markup, the keyed column reconcile that patches only what
 // changed, drag and drop, and the global key bindings.
 export function kontoraBoard() {
+  let openMenu = null;
+  let removeGlobalEvents = null;
+  let removeBoardEvents = null;
   return {
     // What the assistant is told about the board: the view the user is on and
     // the filter narrowing it, which is what "these tickets" refers to.
@@ -395,7 +478,7 @@ export function kontoraBoard() {
       } else if (!moves.length) {
         items += '<span class="block px-3 py-2 text-[12px] font-mono text-surface-600">No actions available</span>';
       }
-      return '<div class="card-menu absolute right-0 top-7 min-w-[10rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-20" role="menu">' + items + '</div>';
+      return '<div class="card-menu absolute right-0 top-7 min-w-[10rem] overflow-y-auto overscroll-contain rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-20" role="menu">' + items + '</div>';
     },
 
     // The column a status is rendered in, or undefined for a status no column
@@ -526,8 +609,8 @@ export function kontoraBoard() {
     // next kebab click would toggle a menu that is no longer in the document.
     // A card the reconcile left alone keeps its menu open.
     _dropStaleCardMenu() {
-      if (!this._openMenuId) return;
-      if (!document.querySelector('#board-cols .card-menu')) this._openMenuId = null;
+      if (openMenu ? !openMenu.menu.isConnected : this._openMenuId && !document.querySelector('#board-cols .card-menu')) this._closeCardMenu();
+      else openMenu?.placement.schedule();
     },
 
     // Reset the render cache, render the cards, and bind the delegated handler
@@ -535,6 +618,8 @@ export function kontoraBoard() {
     // paint and again whenever the layout layer is rebuilt at the breakpoint,
     // because the previous board (and its listeners) went with the old layer.
     _mountBoard() {
+      if (this._appDestroyed) return;
+      this._closeCardMenu();
       this._rendered = Object.create(null);
       this._dirtyCols = Object.create(null);
       this._dragging = false;
@@ -567,10 +652,11 @@ export function kontoraBoard() {
         else this.activeTab = mode === 'terminal' ? 'session' : mode;
       }
       this.$nextTick(() => {
+        if (this._appDestroyed) return;
         this._mountBoard();
         this.syncDetailCoverage();
         this.restoreDetailScroll();
-        if (hadDetailFocus) {
+        if (hadDetailFocus && !this.interactionOwner?.()) {
           const root = this.detailViewRoot();
           const selected = root?.querySelector('button[aria-pressed="true"], button[aria-selected="true"]');
           const target = selected || root?.querySelector('button');
@@ -592,14 +678,18 @@ export function kontoraBoard() {
     // _bindGlobalEvents so they are registered once.
     _bindBoardEvents(root) {
       var self = this;
+      removeBoardEvents?.();
+      removeBoardEvents = null;
       if (!root) return;
-      root.addEventListener('click', function (e) {
+      const click = function (e) {
+        if (self.interactionOwner?.()) return;
         var item = e.target.closest('.card-menu-item');
         if (item) {
           e.stopPropagation();
           var mcard = item.closest('.kt-card');
           var mid = mcard && mcard.dataset.ticketId;
-          self._closeCardMenu();
+          const trigger = mcard?.querySelector('.card-menu-btn');
+          self._closeCardMenu(true);
           if (!mid) return;
           var act = item.dataset.act;
           if (act === 'epic-overview') {
@@ -609,10 +699,16 @@ export function kontoraBoard() {
             const command = mcard?._lifecycleCommands?.[actionKey];
             // Menu ownership was captured when it opened, not reconstructed
             // from a stale endpoint after SSE changed the ticket.
-            if (command) self.dispatchLifecycle(mid, command);
+            if (command) {
+              const layer = act === 'archive' ? 'archive' : (act === 'init' || command.kind === 'start' || command.kind === 'retry' || command.status === 'todo') ? 'init' : null;
+              if (layer && trigger && self.dispatchWithDialogOrigin) {
+                self.dispatchWithDialogOrigin(layer, mid, trigger, () => self.dispatchLifecycle(mid, command));
+              } else self.dispatchLifecycle(mid, command);
+            }
           }
           return;
         }
+        if (e.target.closest('.card-menu')) { e.stopPropagation(); return; }
         var btn = e.target.closest('.card-menu-btn');
         if (btn) {
           e.stopPropagation();
@@ -639,24 +735,34 @@ export function kontoraBoard() {
         // Click in the board gutter (not a card): close any menu and let the
         // event bubble to .board-scroll, which closes the detail panel.
         self._closeCardMenu();
-      });
-      root.addEventListener('keydown', function (e) {
+      };
+      const keydown = function (e) {
+        if (self.interactionOwner?.()) return;
         var card = e.target.closest('.kt-card');
-        if (card && !e.target.closest('button') && (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar')) {
+        if (card && !e.target.closest('button, .card-menu') && (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar')) {
           e.preventDefault();
           e.stopPropagation();
           var t = self.allBoardTickets().find(x => self.ticketKey(x) === card.dataset.ticketId);
           if (t) self.selectTicket(t);
-        } else if (e.key === 'Escape') {
-          self._closeCardMenu();
+        } else if (e.key === 'Escape' && self._openMenuId) {
+          e.preventDefault();
+          e.stopPropagation();
+          self._closeCardMenu(true);
         }
-      });
+      };
+      root.addEventListener('click', click);
+      root.addEventListener('keydown', keydown);
+      removeBoardEvents = () => {
+        root.removeEventListener?.('click', click);
+        root.removeEventListener?.('keydown', keydown);
+      };
     },
 
     // Close the menu on clicks outside the board, and on a window-level Escape.
     // Bound to document, so this runs once from init and survives a board remount.
     _bindGlobalEvents() {
       var self = this;
+      removeGlobalEvents?.();
       // Capture phase on window: xterm reads keys from a hidden textarea and
       // forwards them to the agent, so a bubble listener never sees this one.
       // stopPropagation keeps the "k" out of the agent's stdin.
@@ -664,8 +770,8 @@ export function kontoraBoard() {
       // One chord per platform, never both: on macOS Ctrl+K is readline's
       // kill-to-end-of-line, and swallowing it would break editing the agent's
       // command line in the terminal tab.
-      window.addEventListener('keydown', function (e) {
-        if (!(self.isMac ? e.metaKey : e.ctrlKey)) return;
+      const chord = function (e) {
+        if (!(self.isMac ? e.metaKey : e.ctrlKey) || e.isComposing || e.keyCode === 229) return;
         var key = (e.key || '').toLowerCase();
         // ⌘J opens the assistant pane on the same terms as ⌘K opens the
         // palette, and from this one listener rather than a second: both have
@@ -674,19 +780,42 @@ export function kontoraBoard() {
         if (self.isMobile) return;
         e.preventDefault();
         e.stopPropagation();
+        const blocking = self.interactionOwner?.();
+        if (blocking && !(blocking === 'palette' && key === 'k')) return;
         self.closeAgentPicker(false);
         if (key === 'k') self.togglePalette();
         else self.toggleAssistant();
-      }, true);
-      document.addEventListener('click', function (e) {
+      };
+      const click = function (e) {
         if (!self._openMenuId) return;
         if (e.target.closest && e.target.closest('#board-cols')) return;
         self._closeCardMenu();
-      });
-      document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && self._openMenuId) self._closeCardMenu();
+      };
+      const keydown = function (e) {
+        if (e.defaultPrevented || self.interactionOwner?.()) { self._keySeq = ''; return; }
+        if (e.key === 'Escape' && self._openMenuId) {
+          e.preventDefault();
+          e.stopPropagation();
+          self._closeCardMenu(true);
+          return;
+        }
         self._handleKeySequence(e);
-      });
+      };
+      window.addEventListener('keydown', chord, true);
+      document.addEventListener('click', click);
+      document.addEventListener('keydown', keydown);
+      removeGlobalEvents = () => {
+        window.removeEventListener?.('keydown', chord, true);
+        document.removeEventListener?.('click', click);
+        document.removeEventListener?.('keydown', keydown);
+      };
+    },
+
+    _disposeBoardEvents() {
+      this._closeCardMenu();
+      removeBoardEvents?.();
+      removeGlobalEvents?.();
+      removeBoardEvents = removeGlobalEvents = null;
     },
 
     // Two-key sequences, vim style: "c" then "t" within KEY_SEQ_MS toggles the
@@ -737,7 +866,7 @@ export function kontoraBoard() {
       var id = cardEl.dataset.ticketId;
       if (this._openMenuId === id) { this._closeCardMenu(); return; }
       this._closeCardMenu();
-      var ticket = this.tickets.find(function (t) { return t.id === id; });
+      var ticket = this.lifecycleResolve(id);
       if (!ticket) return;
       var btn = cardEl.querySelector('.card-menu-btn');
       if (!btn) return;
@@ -747,17 +876,19 @@ export function kontoraBoard() {
       cardEl.classList.add('menu-open');
       btn.setAttribute('aria-expanded', 'true');
       this._openMenuId = id;
+      openMenu = { card: cardEl, menu, btn, placement: ownCardMenuPlacement(cardEl, btn, menu) };
     },
 
-    _closeCardMenu() {
-      if (!this._openMenuId) return;
-      document.querySelectorAll('#board-cols .kt-card.menu-open').forEach(function (el) {
-        el.classList.remove('menu-open');
-        var btn = el.querySelector('.card-menu-btn');
-        if (btn) btn.setAttribute('aria-expanded', 'false');
-      });
-      document.querySelectorAll('#board-cols .card-menu').forEach(function (el) { el.remove(); });
+    _closeCardMenu(restore = false) {
       this._openMenuId = null;
+      if (!openMenu) return;
+      const { card, btn, menu, placement } = openMenu;
+      openMenu = null;
+      placement.dispose();
+      menu.remove();
+      card.classList.remove('menu-open');
+      btn.setAttribute('aria-expanded', 'false');
+      if (restore) this.restoreUiFocus?.(btn);
     },
 
     // Move the .is-selected highlight without re-rendering a column.
@@ -879,7 +1010,7 @@ export function kontoraBoard() {
         animation: 150,
         ghostClass: 'sortable-ghost',
         dragClass: 'sortable-drag',
-        filter: '.empty-state, [data-no-drag]',
+        filter: '.empty-state, [data-no-drag], .card-menu-btn, .card-menu',
         preventOnFilter: false,
         onStart: function(evt) {
           evt.item._lifecycleDragState = self.lifecycleCommand?.(evt.item.dataset.ticketId, 'move:open')?.expected;

@@ -2751,7 +2751,10 @@ func TestSessionLogMaterialization(t *testing.T) {
 	assert.Contains(t, content, "PASS")
 	assert.Contains(t, content, "All tests pass.")
 	assert.NotContains(t, content, `"type":"assistant"`, "log should be formatted, not raw JSONL")
-	assert.NotContains(t, content, "raw PTY output", "JSONL materialization should overwrite pipe-pane output")
+	assert.NotContains(t, content, "raw PTY output", "JSONL materialization replaces the shared stage log")
+	got, err := d.GetLogs(web.LogQuery{ID: "tst-slog", Stage: "step1", Run: new(0)})
+	require.NoError(t, err)
+	assert.Equal(t, "raw PTY output from pipe-pane", got)
 
 	cancel()
 	require.NoError(t, <-errCh)

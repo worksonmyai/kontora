@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import { kontoraDetail } from '../ui/detail.js';
 import { kontoraSettings } from '../ui/settings.js';
 import { kontoraAutomations } from '../ui/automations.js';
+import { kontoraTickets } from '../ui/tickets.js';
 
 // Use the shipped Alpine proxies: a guard target read back from component
 // state is not the plain destination object passed into gotoView.
@@ -106,6 +107,17 @@ test('settings routes default to General, preserve all section keys, and encode 
   for (const hash of ['#/settings/no-such-section', '#/settings/%', '#/settings/general/extra']) {
     assert.equal(state.parseHash(hash).settingsSection, 'general', hash);
   }
+});
+
+test('sign-in preserves the original encoded Settings deep link before history applies it', () => {
+  const hash = '#/settings/stages?q=deploy%20%2F%20release&field=%5B%22stages%22%2C%22a%2Fb%22%5D';
+  const h = harness(hash);
+  let navigation;
+  window.location = { assign: url => { navigation = new URL(url, 'https://kontora.invalid'); } };
+  kontoraTickets().submitToken.call({ currentView: 'board', tokenInput: ' fixture+token ' });
+  assert.equal(navigation.searchParams.get('token'), 'fixture+token');
+  assert.equal(navigation.hash, hash);
+  assert.equal(h.state.currentView, 'board');
 });
 
 test('bare and invalid settings links canonicalize in place; section routes retain the draft', async () => {

@@ -6,6 +6,8 @@
 // throws on a repeated key, so the pane carries its own copies rather than
 // sharing state with the ticket detail view.
 
+import { resourceOwner } from './board.js';
+
 const ASSISTANT_POLL_MS = 1500;
 const ASSISTANT_WINDOW = 200;
 
@@ -26,6 +28,7 @@ const ASSISTANT_STREAM_BACKOFF = [800, 1600, 3200, 5000];
 const ASSISTANT_WIDTH_MIN = 340;
 const ASSISTANT_WIDTH_MAX = 640;
 const ASSISTANT_WIDTH_DEFAULT = 420;
+const ASSISTANT_MAIN_RESERVE = 320;
 
 // The page-context cap the API enforces (assistantContextMax). Trimmed here so
 // a message is never rejected for describing the page.
@@ -96,7 +99,13 @@ function assistantClampWidth(px) {
   return Math.max(ASSISTANT_WIDTH_MIN, Math.min(ASSISTANT_WIDTH_MAX, Math.round(n)));
 }
 
+function assistantFitWidth(preference, available) {
+  if (available === null) return preference;
+  return Math.min(preference, available, Math.max(ASSISTANT_WIDTH_MIN, available - ASSISTANT_MAIN_RESERVE));
+}
+
 export function kontoraAssistant() {
+  let widthOwner = null, widthDrag = null;
   let presentationBound = false;
   let configSeq = 0;
   let autonomySeed = assistantStored('kontora-assistant-autonomy-seed', null);
@@ -109,7 +118,12 @@ export function kontoraAssistant() {
   return {
     assistantOpen: assistantStored('kontora-assistant-open', '0') === '1',
     assistantRail: assistantStored('kontora-assistant-rail', '0') === '1',
+    // Saved preference; only an explicit resize updates it.
     assistantWidth: assistantClampWidth(assistantStored('kontora-assistant-width', ASSISTANT_WIDTH_DEFAULT)),
+    _assistantAvailableWidth: null,
+    get assistantRenderedWidth() {
+      return assistantFitWidth(this.assistantWidth, this._assistantAvailableWidth);
+    },
     // 'thread' is the live chat; 'history' is the list of past ones.
     assistantView: 'thread',
     assistantViewIntent: '',
@@ -159,7 +173,6 @@ export function kontoraAssistant() {
     _assistantETag: '',
     _assistantSelectionSeq: 0,
     _assistantSelecting: false,
-    _assistantResize: null,
     _assistantTurnStart: null,
     _assistantTick: null,
     _assistantStick: true,
@@ -427,6 +440,7 @@ export function kontoraAssistant() {
     },
 
     closeAssistant() {
+      this._assistantRetireWidth();
       this._assistantSelectionSeq++;
       this._assistantRetireActivity();
       this.assistantOpen = false;
@@ -439,11 +453,6 @@ export function kontoraAssistant() {
       this._armAssistantPoll();
       this._stopAssistantTick();
       this._assistantCloseStream();
-      if (this._assistantResize) {
-        window.removeEventListener('mousemove', this._assistantResize.move);
-        window.removeEventListener('mouseup', this._assistantResize.up);
-        this._assistantResize = null;
-      }
     },
 
     _assistantDefaultInbox() {
@@ -471,34 +480,97 @@ export function kontoraAssistant() {
     toggleAssistantRail() {
       this.assistantRail = !this.assistantRail;
       assistantStore('kontora-assistant-rail', this.assistantRail ? '1' : '0');
-      if (!this.assistantRail) this.assistantRecomputeContext();
+      if (this.assistantRail) this._assistantRetireWidth();
+      else this.assistantRecomputeContext();
     },
 
     // --- width -----------------------------------------------------------
 
+    assistantPaneStyle() {
+      if (this._assistantAvailableWidth !== null) return `width:${this.assistantRenderedWidth}px`;
+      // Before the first layout read, constrain the dock against the host
+      // using the same CSS sidebar width as the shell.
+      const sidebar = this.sidebarHidden === false ? 'var(--assistant-sidebar-width, 220px)' : '0px';
+      const available = `100% - ${sidebar}`;
+      return `width:min(${this.assistantWidth}px, max(0px, calc(${available})), ` +
+        `max(${ASSISTANT_WIDTH_MIN}px, calc(${available} - ${ASSISTANT_MAIN_RESERVE}px)))`;
+    },
+
+    assistantWidthOwner() {
+      const app = this;
+      const owner = resourceOwner(function (alive) {
+        const pane = this.$el;
+        const host = pane?.parentElement;
+        if (!host || !app.assistantOpen || app.assistantRail || app.isMobile || app._appDestroyed || lane.destroyed) return;
+        app._assistantRetireWidth();
+        widthOwner = owner;
+        const sidebar = host.querySelector('[data-assistant-sidebar]');
+        let frame = null;
+        const schedule = () => {
+          if (!alive() || frame !== null) return;
+          frame = requestAnimationFrame(() => {
+            frame = null;
+            if (!alive() || !pane.isConnected || app.isMobile || !app.assistantOpen || app.assistantRail) return;
+            const hostWidth = host.getBoundingClientRect().width;
+            // A display:none sidebar measures zero; observing its box also
+            // catches visibility and responsive width changes independently.
+            const sidebarWidth = sidebar?.getBoundingClientRect().width ?? 0;
+            app._assistantAvailableWidth = Math.max(0, hostWidth - sidebarWidth);
+          });
+        };
+        const observer = new ResizeObserver(schedule);
+        observer.observe(host, { box: 'border-box' });
+        if (sidebar) observer.observe(sidebar, { box: 'border-box' });
+        schedule();
+        return () => {
+          observer.disconnect();
+          if (frame !== null) cancelAnimationFrame(frame);
+          if (widthOwner !== owner) return;
+          widthOwner = null;
+          widthDrag?.finish(false);
+          app._assistantAvailableWidth = null;
+        };
+      });
+      return owner;
+    },
+
+    _assistantRetireWidth() {
+      widthOwner?.destroy();
+      widthDrag?.finish(false);
+    },
+
     setAssistantWidth(px) {
+      widthDrag?.finish(false);
       this.assistantWidth = assistantClampWidth(px);
       assistantStore('kontora-assistant-width', String(this.assistantWidth));
       return this.assistantWidth;
     },
 
-    // Drag the pane's left edge. The width is written on every move and
-    // persisted once, so a drag does not hammer localStorage.
+    // Drag the right-docked pane's left edge from where it is painted, not
+    // from its saved width. Persist once on release, only if it was resized.
     startAssistantResize(event) {
+      if (this.isMobile || this.assistantRail || this._appDestroyed || lane.destroyed) return;
+      widthDrag?.finish(false);
       const startX = event.clientX;
-      const startWidth = this.assistantWidth;
-      const self = this;
-      const move = (e) => {
-        // The pane is on the right, so dragging left widens it.
-        self.assistantWidth = assistantClampWidth(startWidth + (startX - e.clientX));
-      };
-      const up = () => {
+      const startWidth = event.currentTarget?.parentElement?.getBoundingClientRect().width ?? this.assistantRenderedWidth;
+      const preference = this.assistantWidth;
+      const drag = widthDrag = { finish: commit => {
+        if (widthDrag !== drag) return;
+        widthDrag = null;
         window.removeEventListener('mousemove', move);
         window.removeEventListener('mouseup', up);
-        self._assistantResize = null;
-        assistantStore('kontora-assistant-width', String(self.assistantWidth));
+        if (!commit) this.assistantWidth = preference;
+        else if (this.assistantWidth !== preference) assistantStore('kontora-assistant-width', String(this.assistantWidth));
+      } };
+      const move = e => {
+        if (widthDrag !== drag || this.isMobile) return;
+        const available = this._assistantAvailableWidth;
+        const next = assistantFitWidth(assistantClampWidth(startWidth + startX - e.clientX), available);
+        // Keep the saved width if the pointer returns to its start or the drag leaves the fitted width unchanged.
+        this.assistantWidth = e.clientX === startX || next === assistantFitWidth(preference, available)
+          ? preference : assistantClampWidth(next);
       };
-      this._assistantResize = { move, up };
+      const up = () => drag.finish(!this.isMobile);
       window.addEventListener('mousemove', move);
       window.addEventListener('mouseup', up);
     },

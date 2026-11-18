@@ -236,7 +236,7 @@ func appendEpicHistory(t *ticket.Ticket, run agentRun, agent string, index int) 
 		Stage: simpleStageName, Agent: agent, Run: index,
 		Model: run.Model, Effort: run.Effort, ExitCode: run.Result.ExitCode,
 		StartedAt: &started, CompletedAt: &ended, Summary: runSummary(t.Summary, run.FinalMessage),
-		SessionKind: run.SessionKind, SessionRef: run.SessionRef,
+		SessionKind: run.SessionKind, SessionRef: run.SessionRef, RawLogID: run.RawLogID,
 	})
 	_ = t.SetField("history", history)
 }

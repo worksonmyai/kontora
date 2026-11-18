@@ -25,6 +25,11 @@ function historyPosition() {
 export function kontoraDetail() {
   const moves = new Map();
   const retirements = new Map();
+  let rawLogPopup = null;
+  const closeRawLogPopup = () => {
+    rawLogPopup?.close();
+    rawLogPopup = null;
+  };
   return {
     // What the assistant is told about the open ticket. Null when none is open,
     // so the pane leaves the line out rather than saying "no ticket". The panel
@@ -1828,40 +1833,76 @@ export function kontoraDetail() {
     },
 
     _rawLogEpoch: 0,
+    _rawLogRequest: 0,
+    rawLogError: '',
+    rawLogCanExportLatest: false,
 
     // Polling must not cancel a pending raw-log request.
     _invalidateRawLog() {
+      closeRawLogPopup();
       this._rawLogEpoch++;
+      this.rawLogError = '';
+      this.rawLogCanExportLatest = false;
     },
 
-    // Open the currently viewed log as plain text in a new tab.
-    async openRawLog() {
-      var subject = this.outputSubject();
-      if (!subject || this._appDestroyed || this.importedRun(this.activityStage, this.activityRun)) return;
-      var generation = this._rawLogEpoch;
-      var viewingActivity = this.outputTab() === 'activity';
-      var content = this.selectedEpic || viewingActivity ? null : this.logViewContent;
-      if (content === null && this.activity && !this.activity.tape && !this.activity.content_truncated) content = this.activity.content;
-      if (content === null || content === undefined) {
+    async openRawLog(latest = false) {
+      const subject = this.outputSubject();
+      if (!subject || this._appDestroyed || this.isSecondary(subject)) return;
+      const key = this.ticketKey(subject);
+      const generation = this._rawLogEpoch;
+      const stage = this.activityStage;
+      const run = this.activityRun;
+      if (!stage || (latest && !this.rawLogCanExportLatest)) return;
+      const request = ++this._rawLogRequest;
+      closeRawLogPopup();
+      if (!latest) this.rawLogCanExportLatest = false;
+      let unavailable = !latest && this.importedRun(stage, run);
+      let popup = null;
+      if (!unavailable) {
         try {
-          var url = '/api/tickets/' + encodeURIComponent(subject.id) + '/logs';
-          var stage = viewingActivity ? this.activityStage : this.logViewStage;
-          stage = stage || subject.stage;
-          if (stage) url += '?stage=' + encodeURIComponent(stage);
-          var res = await fetch(url);
-          if (res.ok) {
-            var data = await res.json();
-            content = data.content || '';
-          }
-        } catch (e) { /* fall through to the guard below */ }
+          // Reserve the tab while the click still permits popups.
+          popup = window.open('about:blank', '_blank');
+          if (popup) popup.opener = null;
+        } catch (e) {}
+        if (!popup) {
+          this.rawLogError = "Couldn't open the raw log. Allow popups and try again.";
+          return;
+        }
       }
-      if (this._appDestroyed || generation !== this._rawLogEpoch || this.outputSubject()?.id !== subject.id) return;
-      if (content === null || content === undefined) {
-        this.error = 'No log available yet';
-        return;
+      rawLogPopup = popup;
+      let exported = false;
+      try {
+        let content;
+        if (!unavailable) {
+          try {
+            const url = this.ticketURL(subject, '/logs') + '?stage=' + encodeURIComponent(stage) +
+              (latest ? '&stage_only=true' : '&run=' + run);
+            const res = await fetch(url);
+            unavailable = res.status === 404;
+            if (res.ok) content = (await res.json())?.content;
+          } catch (e) {}
+        }
+        if (this._appDestroyed || generation !== this._rawLogEpoch || request !== this._rawLogRequest ||
+            key !== this.ticketKey(this.outputSubject()) || stage !== this.activityStage || run !== this.activityRun) return;
+        if (!latest && this.importedRun(stage, run)) unavailable = true;
+        if (unavailable) {
+          this.rawLogError = latest ? 'Latest stage output is unavailable.' : 'Exact output is unavailable for the selected run.';
+          this.rawLogCanExportLatest = true;
+        } else if (typeof content !== 'string') {
+          this.rawLogError = latest ? "Couldn't load the latest stage log. Try exporting it again." :
+            "Couldn't load the selected run's raw log. Try Raw again.";
+        } else if (popup.closed) {
+          this.rawLogError = 'The raw log tab was closed. Try exporting it again.';
+        } else {
+          const blob = new Blob([content], { type: 'text/plain' });
+          popup.location.replace(URL.createObjectURL(blob));
+          exported = true;
+          this.rawLogError = latest ? 'Exact output is unavailable for the selected run.' : '';
+        }
+      } finally {
+        if (rawLogPopup === popup) rawLogPopup = null;
+        if (!exported && popup && !popup.closed) popup.close();
       }
-      var blob = new Blob([content], { type: 'text/plain' });
-      window.open(URL.createObjectURL(blob));
     },
 
     // ─── Imperative board card rendering ───

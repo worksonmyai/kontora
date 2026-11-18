@@ -6,7 +6,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const web = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const script = fs.readFileSync(path.join(web, 'ui/assistant.js'), 'utf8').replaceAll('export ', '');
+const script = fs.readFileSync(path.join(web, 'ui/assistant.js'), 'utf8').replace(/^import .*$/gm, '').replaceAll('export ', '');
 function fixture() {
   const ticks = [];
   const scroll = { scrollHeight: 1000, clientHeight: 100, scrollTop: 100 };

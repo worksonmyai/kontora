@@ -141,7 +141,8 @@ func resolveTaskID(tasksDir, input string) (string, error) {
 	return ResolveTicketID(tasksDir, input)
 }
 
-func readLogFile(logDir, path string) ([]byte, error) {
+// ReadLogFile reads the supplied path within logDir without selecting a fallback.
+func ReadLogFile(logDir, path string) ([]byte, error) {
 	name, err := filepath.Rel(logDir, path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve log path: %w", err)
@@ -158,7 +159,7 @@ func readLogFile(logDir, path string) ([]byte, error) {
 }
 
 func printFile(logDir, path string, w io.Writer) error {
-	data, err := readLogFile(logDir, path)
+	data, err := ReadLogFile(logDir, path)
 	if err != nil {
 		return fmt.Errorf("reading log: %w", err)
 	}

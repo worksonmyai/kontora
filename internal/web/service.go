@@ -105,7 +105,7 @@ type TicketService interface {
 	SetChildOrder(id string, children []string) error
 	UpdateTicket(id string, req UpdateTicketRequest) error
 	UploadTicket(content []byte) (TicketInfo, error)
-	GetLogs(id string, stage string) (string, error)
+	GetLogs(q LogQuery) (string, error)
 	GetActivity(q ActivityQuery) (ActivityInfo, error)
 	GetStats(q StatsQuery) (StatsInfo, error)
 	GetTicketCost(id string) (TicketCostInfo, error)
@@ -433,6 +433,15 @@ type PipelineInfo struct {
 	// Stages. It is the denominator of the "attempt 2 / 2" meter.
 	MaxRetries   []int  `json:"max_retries,omitempty"`
 	DefaultAgent string `json:"default_agent,omitempty"`
+}
+
+// LogQuery selects a stage occurrence with Run or the named stage log with
+// StageOnly. With neither, it keeps the CLI selection and fallbacks.
+type LogQuery struct {
+	ID        string
+	Stage     string
+	Run       *int
+	StageOnly bool
 }
 
 const MaxLogTailBytes = 1 << 20

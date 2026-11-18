@@ -392,11 +392,13 @@ export function kontoraPalette() {
 
     openPalette() {
       // Below 768px the app runs its phone layout, which has its own sheets.
-      if (this.isMobile) return;
-      this._paletteReturnFocus = document.activeElement;
+      if (this.isMobile || this.activeBlockingDialog?.()) return;
+      const trigger = document.activeElement;
+      this.rememberDialogTrigger?.('palette', trigger);
+      if (!this.dialogFocusManaged?.()) this._paletteReturnFocus = trigger;
       this.paletteOpen = true;
       this._paletteReset();
-      this._focusPaletteInput();
+      if (!this.dialogFocusManaged?.()) this._focusPaletteInput();
     },
 
     // Alpine defers an x-show reveal to the next animation frame, and focus on
@@ -409,7 +411,7 @@ export function kontoraPalette() {
       var tries = 0;
       var attempt = function () {
         // A palette closed again before this ran has already restored focus.
-        if (!self.paletteOpen) return;
+        if (!self.paletteOpen || self._appDestroyed || (self.activeBlockingDialog && self.activeBlockingDialog() !== 'palette')) return;
         var el = self.$refs && self.$refs.paletteInput;
         // offsetParent is null while the panel is still hidden.
         if (el && el.offsetParent) { el.focus(); return; }
@@ -427,6 +429,7 @@ export function kontoraPalette() {
       this.paletteGroups = [];
       this._paletteRows = [];
       this._paletteSelId = null;
+      if (this.dialogFocusManaged?.()) return;
       // Hiding the panel does not move focus off its input, and focus() on the
       // body below is a no-op while another element holds it. A hidden input
       // left focused is still a typing target, which kills every bare shortcut.
@@ -523,18 +526,25 @@ export function kontoraPalette() {
       this._paletteSelId = id;
     },
 
-    // → drills only from a ticket row, and only with the caret at the end of the
-    // query, so it still moves the caret while typing. Tab is swallowed by the
-    // template either way, which also traps focus in the dialog.
+    // Forward Tab opens actions for a selected ticket. Right Arrow does so only
+    // at the end of the query. The dialog handles other Tab navigation.
     paletteDrillFromKey(e) {
+      if (e.isComposing || e.keyCode === 229 || (e.key === 'Tab' && e.shiftKey)) return false;
       var row = this._paletteRows[this.paletteSel];
-      if (!row || row.kind !== 'ticket') return;
+      if (!row || row.kind !== 'ticket') return false;
       if (e.key === 'ArrowRight') {
         var caret = e.target && typeof e.target.selectionStart === 'number' ? e.target.selectionStart : 0;
-        if (caret < (this.paletteQuery || '').length) return;
-        e.preventDefault();
+        if (caret < (this.paletteQuery || '').length) return false;
       }
+      e.preventDefault();
       this.palettePush(row.ticketId);
+      return true;
+    },
+
+    paletteEnter(event) {
+      if (event.isComposing || event.keyCode === 229) return;
+      event.preventDefault();
+      return this.paletteRun(this._paletteRows[this.paletteSel], event.metaKey || event.ctrlKey);
     },
 
     async paletteRun(row, withMeta) {

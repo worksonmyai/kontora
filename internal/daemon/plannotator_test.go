@@ -543,9 +543,14 @@ func TestPlannotator_ReworkConditionalExit(t *testing.T) {
 // status=review.
 func TestPlannotator_ReworkCompletion(t *testing.T) {
 	h := newPlannotatorHarness(t)
-	// Use the default agent2=true so rework exits 0 immediately.
 	reader := sdkmetric.NewManualReader()
-	d := h.newDaemonWithSpawner(WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
+	d := h.newDaemonWithSpawner(
+		WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))),
+		WithRunner(func(ctx context.Context, p RunnerParams) (process.Result, error) {
+			p.Binary, p.Args = "printf", []string{"rework output"}
+			return DirectRunner(ctx, p)
+		}),
+	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -584,6 +589,9 @@ func TestPlannotator_ReworkCompletion(t *testing.T) {
 	// Review file consumed by the rework agent's prompt render.
 	_, statErr := os.Stat(filepath.Join(h.reviewsDir, "tst-prc01.md"))
 	assert.True(t, os.IsNotExist(statErr), "review file should be removed after rework consumes it")
+	got, err := d.GetLogs(web.LogQuery{ID: "tst-prc01", Stage: config.ReworkStageName, Run: new(0)})
+	require.NoError(t, err)
+	assert.Equal(t, "rework output", got)
 
 	cancel()
 	require.NoError(t, <-errCh)

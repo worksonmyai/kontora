@@ -6,7 +6,7 @@ import test from 'node:test';
 // Exercise the production mixins together, without importing the shared fixtures.
 // The parent Go wrapper can run this file directly with node --test.
 const source = ['assistant', 'companion', 'assistant_markup'].map(name =>
-  fs.readFileSync(new URL(`../ui/${name}.js`, import.meta.url), 'utf8').replaceAll('export ', '')).join('\n');
+  fs.readFileSync(new URL(`../ui/${name}.js`, import.meta.url), 'utf8').replace(/^import .*$/gm, '').replaceAll('export ', '')).join('\n');
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const response = (data = {}, status = 200, tag = '') => ({ ok: status >= 200 && status < 300, status, headers: { get: () => tag }, json: async () => data });
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };

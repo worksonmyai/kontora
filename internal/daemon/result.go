@@ -464,7 +464,7 @@ func (d *Daemon) beginFinalization(cfg *config.Config, rec *executionRecord, run
 		started, ended := run.Result.StartedAt, run.Result.ExitedAt
 		rec.PendingHistory = &ticket.HistoryEntry{Stage: rec.Invocation.Stage, Agent: rec.Agent, Run: rec.Run,
 			StartedAt: &started, CompletedAt: &ended, ExitCode: run.Result.ExitCode, Model: run.Model, Effort: run.Effort,
-			Summary: runSummary("", run.FinalMessage), SessionKind: run.SessionKind, SessionRef: run.SessionRef,
+			Summary: runSummary("", run.FinalMessage), SessionKind: run.SessionKind, SessionRef: run.SessionRef, RawLogID: run.RawLogID,
 			RunOutcome: ticket.RunOutcome(run.Outcome), OutcomeReason: run.OutcomeReason, InvocationID: rec.Invocation.ID}
 		rec.PendingHistory.Verdict, rec.PendingHistory.NextStep = run.Verdict, run.NextStep
 		setGraphHistoryProvenance(rec.PendingHistory, rec)
@@ -526,7 +526,7 @@ func appendRunHistory(t *ticket.Ticket, run agentRun, agent, stage string, index
 	}
 	h := ticket.HistoryEntry{Stage: stage, Agent: agent, Run: index, Model: run.Model, Effort: run.Effort,
 		ExitCode: run.Result.ExitCode, StartedAt: &started, CompletedAt: &ended,
-		Summary: runSummary(t.Summary, run.FinalMessage), SessionKind: run.SessionKind, SessionRef: run.SessionRef,
+		Summary: runSummary(t.Summary, run.FinalMessage), SessionKind: run.SessionKind, SessionRef: run.SessionRef, RawLogID: run.RawLogID,
 		RunOutcome: ticket.RunOutcome(run.Outcome), OutcomeReason: run.OutcomeReason, InvocationID: id}
 	h.Verdict, h.NextStep, h.Wait = run.Verdict, run.NextStep, run.WaitState.Clone()
 	setGraphHistoryProvenance(&h, run.Execution)

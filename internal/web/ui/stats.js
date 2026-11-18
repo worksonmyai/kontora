@@ -18,9 +18,6 @@ const STATS_RANGE_LABELS = { '1d': '1d', '1w': '1w', '30d': '5w', '90d': '14w', 
 const STATS_STAGE_MODES = ['time', 'tokens'];
 const STATS_POLL_MS = 30000;
 
-// Heat map geometry, mirrored by the cell classes in index.html: a 13px cell
-// plus a 3px gap. Month ticks are positioned at weekIndex * this.
-const STATS_CELL_PITCH = 16;
 const STATS_THROUGHPUT_H = 86;
 const STATS_TOKEN_H = 44;
 
@@ -126,9 +123,9 @@ function statsHeatColor(level) {
   return 'rgba(var(--accent),' + STATS_HEAT_ALPHA[level] + ')';
 }
 
-// statsHeatWeeks turns the day series into Sunday-started columns, padding the
-// first one with blanks so the weekday rows line up, and places one month tick
-// per month change.
+// Weeks start on Sunday; pad the first column with blanks to align weekdays.
+// A month tick marks the first column whose first nonblank day is in that month.
+// CSS sets column width and spacing.
 function statsHeatWeeks(days) {
   const list = Array.isArray(days) ? days : [];
   let max = 0;
@@ -159,7 +156,7 @@ function statsHeatWeeks(days) {
     const m = Number(String(first.date).split('-')[1]) - 1;
     if (m === lastMonth) return;
     lastMonth = m;
-    months.push({ label: STATS_MONTHS[m], left: w.index * STATS_CELL_PITCH });
+    months.push({ label: STATS_MONTHS[m], weekIndex: w.index });
   });
 
   return { weeks: weeks, months: months, max: max };

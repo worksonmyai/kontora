@@ -88,15 +88,20 @@ export function kontoraTerminal() {
     // here instead, alongside the xterm modules.
     _loadTerminalCSS() {
       if (termState.cssLoad) return termState.cssLoad;
-      termState.cssLoad = new Promise(function (resolve, reject) {
-        var link = document.createElement('link');
+      var link;
+      var attempt = new Promise(function (resolve, reject) {
+        link = document.createElement('link');
         link.rel = 'stylesheet';
         link.href = '/vendor/xterm@5.5.0/xterm.css';
         link.onload = resolve;
-        link.onerror = reject;
+        link.onerror = () => reject(new Error('Could not load terminal styles'));
         document.head.appendChild(link);
+      }).catch(error => {
+        link?.remove();
+        if (termState.cssLoad === attempt) termState.cssLoad = null;
+        throw error;
       });
-      return termState.cssLoad;
+      return termState.cssLoad = attempt;
     },
 
     terminalConnected: false,
@@ -375,7 +380,7 @@ export function kontoraTerminal() {
         }
         this._connectTerminal(seq);
       } catch (e) {
-        console.error('terminal load error:', e);
+        console.warn('terminal load error:', e);
         if (this._terminalSeq !== seq) return;
         this.terminalError = 'Failed to load terminal';
         // _connectTerminal may already have attached the resize observer.

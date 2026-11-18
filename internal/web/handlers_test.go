@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,7 +44,7 @@ type mockService struct {
 	deleteNoteFn   func(id, noteID string) error
 	reactionFn     func(id, noteID, emoji, actor string, on bool) error
 	summaryFn      func(id, text string) error
-	logsFn         func(id, stage string) (string, error)
+	logsFn         func(LogQuery) (string, error)
 	activityFn     func(q ActivityQuery) (ActivityInfo, error)
 	statsFn        func(q StatsQuery) (StatsInfo, error)
 	costFn         func(id string) (TicketCostInfo, error)
@@ -307,9 +309,9 @@ func (m *mockService) UpdateTicket(id string, req UpdateTicketRequest) error {
 	}
 	return nil
 }
-func (m *mockService) GetLogs(id, stage string) (string, error) {
+func (m *mockService) GetLogs(q LogQuery) (string, error) {
 	if m.logsFn != nil {
-		return m.logsFn(id, stage)
+		return m.logsFn(q)
 	}
 	return "", nil
 }
@@ -1801,9 +1803,8 @@ func TestHandleUploadTickets_InvalidContent(t *testing.T) {
 
 func TestHandleGetLogs_Success(t *testing.T) {
 	svc := &mockService{
-		logsFn: func(id, stage string) (string, error) {
-			assert.Equal(t, "t-001", id)
-			assert.Equal(t, "plan", stage)
+		logsFn: func(q LogQuery) (string, error) {
+			assert.Equal(t, LogQuery{ID: "t-001", Stage: "plan"}, q)
 			return "plan stage log output", nil
 		},
 	}
@@ -1819,9 +1820,8 @@ func TestHandleGetLogs_Success(t *testing.T) {
 
 func TestHandleGetLogs_NoStage(t *testing.T) {
 	svc := &mockService{
-		logsFn: func(id, stage string) (string, error) {
-			assert.Equal(t, "t-001", id)
-			assert.Equal(t, "", stage)
+		logsFn: func(q LogQuery) (string, error) {
+			assert.Equal(t, LogQuery{ID: "t-001"}, q)
 			return "latest log output", nil
 		},
 	}
@@ -1837,7 +1837,7 @@ func TestHandleGetLogs_NoStage(t *testing.T) {
 
 func TestHandleGetLogs_NotFound(t *testing.T) {
 	svc := &mockService{
-		logsFn: func(_, _ string) (string, error) {
+		logsFn: func(LogQuery) (string, error) {
 			return "", ErrTicketNotFound
 		},
 	}
@@ -1849,21 +1849,22 @@ func TestHandleGetLogs_NotFound(t *testing.T) {
 
 func TestHandleGetLogs_LogNotFound(t *testing.T) {
 	svc := &mockService{
-		logsFn: func(_, _ string) (string, error) {
+		logsFn: func(LogQuery) (string, error) {
 			return "", ErrLogNotFound
 		},
 	}
 	srv := startHandlerTestServer(t, svc)
 
-	res := get(t, srv, "/api/tickets/t-001/logs?stage=nonexistent")
-	assert.Equal(t, http.StatusNotFound, res.statusCode)
+	for _, suffix := range []string{"?stage=nonexistent", "?stage=plan&run=0"} {
+		res := get(t, srv, "/api/tickets/t-001/logs"+suffix)
+		assert.Equal(t, http.StatusNotFound, res.statusCode)
+	}
 }
 
 func TestHandleGetLogs_PathTraversal(t *testing.T) {
 	svc := &mockService{
-		logsFn: func(id, stage string) (string, error) {
-			assert.Equal(t, "t-001", id)
-			assert.Equal(t, "passwd", stage)
+		logsFn: func(q LogQuery) (string, error) {
+			assert.Equal(t, LogQuery{ID: "t-001", Stage: "passwd"}, q)
 			return "", ErrLogNotFound
 		},
 	}
@@ -1871,6 +1872,67 @@ func TestHandleGetLogs_PathTraversal(t *testing.T) {
 
 	res := get(t, srv, "/api/tickets/t-001/logs?stage=../../etc/passwd")
 	assert.Equal(t, http.StatusNotFound, res.statusCode)
+}
+
+func TestHandleGetLogs_RawSelectors(t *testing.T) {
+	for _, tc := range []struct {
+		query string
+		want  LogQuery
+	}{
+		{"stage=plan..review&run=0", LogQuery{ID: "t-001", Stage: "plan..review", Run: new(0)}},
+		{"stage=plan&run=2", LogQuery{ID: "t-001", Stage: "plan", Run: new(2)}},
+		{"stage=plan&run=000", LogQuery{ID: "t-001", Stage: "plan", Run: new(0)}},
+		{"stage=plan&run=002", LogQuery{ID: "t-001", Stage: "plan", Run: new(2)}},
+		{"stage=plan&run=" + strconv.Itoa(math.MaxInt-1), LogQuery{ID: "t-001", Stage: "plan", Run: new(math.MaxInt - 1)}},
+		{"stage=plan&run=" + strconv.Itoa(math.MaxInt), LogQuery{ID: "t-001", Stage: "plan", Run: new(math.MaxInt)}},
+		{"stage=plan&run=0" + strconv.Itoa(math.MaxInt), LogQuery{ID: "t-001", Stage: "plan", Run: new(math.MaxInt)}},
+		{"stage=plan..review&stage_only=true", LogQuery{ID: "t-001", Stage: "plan..review", StageOnly: true}},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			srv := startHandlerTestServer(t, &mockService{logsFn: func(q LogQuery) (string, error) {
+				assert.Equal(t, tc.want, q)
+				return "raw output", nil
+			}})
+			res := get(t, srv, "/api/tickets/t-001/logs?"+tc.query)
+			assert.Equal(t, http.StatusOK, res.statusCode)
+			assert.JSONEq(t, `{"content":"raw output"}`, res.body)
+		})
+	}
+}
+
+func TestHandleGetLogs_RejectsInvalidExactQuery(t *testing.T) {
+	for _, query := range []string{
+		"run=0", "stage=&run=0", "stage=plan&stage=review&run=0",
+		"stage=../plan&run=0", "stage=plan&run", "stage=plan&run=",
+		"stage=plan&run=-1", "stage=plan&run=-0", "stage=plan&run=%2B1",
+		"stage=plan&run=+1", "stage=plan&run=1.5", "stage=plan&run=auto",
+		"stage=plan&run=%2B0", "stage=plan&run=-00",
+		"stage=plan&run=%201", "stage=plan&run=1%20", "stage=plan&run=1%09",
+		"stage=plan&run=1_0", "stage=plan&run=0x10", "stage=plan&run=1e2",
+		"stage=plan&run=1%002", "stage=plan&run=%D9%A1",
+		"stage=plan&run=%ZZ", "stage=plan&run=0&run=1", "stage=plan&run=0&run=0",
+		"stage=plan&run=" + strconv.Itoa(math.MinInt),
+		"stage=plan&run=" + strconv.FormatUint(uint64(math.MaxInt)+1, 10),
+		"stage=plan&run=99999999999999999999999999999",
+		"stage=plan%5Creview&run=0", "stage=plan%00review&run=0",
+		"stage_only=true", "stage=plan&stage_only=false", "stage=plan&stage_only=true&run=0",
+		"stage=plan&stage_only=true&stage_only=true", "stage=plan&stage=plan&stage_only=true",
+	} {
+		t.Run(query, func(t *testing.T) {
+			srv := startHandlerTestServer(t, &mockService{logsFn: func(LogQuery) (string, error) {
+				t.Error("invalid exact request reached the service")
+				return "wrong output", nil
+			}})
+			res := get(t, srv, "/api/tickets/t-001/logs?"+query)
+			assert.Equal(t, http.StatusBadRequest, res.statusCode)
+			switch query {
+			case "stage=plan&run=0&run=1":
+				assert.JSONEq(t, `{"error":"Pass run exactly once as a non-negative integer"}`, res.body)
+			case "stage=plan&stage=review&run=0":
+				assert.JSONEq(t, `{"error":"run requires exactly one valid stage parameter"}`, res.body)
+			}
+		})
+	}
 }
 
 // --- GET /api/tickets/{id}/activity ---

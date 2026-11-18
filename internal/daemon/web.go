@@ -1238,25 +1238,129 @@ func applyTicketUpdate(cfg *config.Config, t2 *ticket.Ticket, req web.UpdateTick
 	return nil
 }
 
-// GetLogs returns the log content for a ticket stage. If stage is empty, it returns
-// the most recently modified log, matching CLI behavior.
-func (d *Daemon) GetLogs(id string, stage string) (string, error) {
-	d.mu.Lock()
-	_, ok := d.tickets[id]
-	d.mu.Unlock()
-	if !ok {
-		return "", web.ErrTicketNotFound
+// GetLogs returns an exact run or the named stage log. With neither selector,
+// it keeps the CLI behavior, which can return another stage or ticket history.
+func (d *Daemon) GetLogs(q web.LogQuery) (string, error) {
+	cfg := d.config()
+	logsDir := expandTilde(cfg.LogsDir)
+	if q.Run == nil && !q.StageOnly {
+		d.mu.Lock()
+		_, ok := d.tickets[q.ID]
+		d.mu.Unlock()
+		if !ok {
+			return "", web.ErrTicketNotFound
+		}
+		var buf bytes.Buffer
+		err := cli.LogsExact(cfg.TicketsDir, cfg.LogsDir, q.ID, q.Stage, &buf)
+		return rawLogResult(buf.String(), err)
 	}
 
-	cfg := d.config()
-	var buf bytes.Buffer
-	if err := cli.LogsExact(cfg.TicketsDir, cfg.LogsDir, id, stage, &buf); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", web.ErrLogNotFound
+	if !session.ValidLogStage(q.Stage) || q.Run != nil && (*q.Run < 0 || q.StageOnly) {
+		return "", fmt.Errorf("%w: invalid raw log selection", web.ErrInvalidConfig)
+	}
+	if q.StageOnly {
+		snapshot, err := d.snapshotStageRun(q.ID, q.Stage, -1)
+		if err != nil {
+			return "", err
 		}
+		path, _ := snapshot.fallbackLog(logsDir)
+		return readRawLog(logsDir, q.ID, path)
+	}
+
+	snapshot, err := d.snapshotStageRun(q.ID, q.Stage, *q.Run)
+	if err != nil {
 		return "", err
 	}
-	return buf.String(), nil
+	return readRawLog(logsDir, q.ID, snapshot.exactLog(logsDir))
+}
+
+func readRawLog(logsDir, id, path string) (string, error) {
+	if path == "" {
+		return "", web.ErrLogNotFound
+	}
+	data, err := cli.ReadLogFile(session.TicketDir(logsDir, id), path)
+	if err == nil && len(data) == 0 {
+		return "", web.ErrLogNotFound
+	}
+	return rawLogResult(string(data), err)
+}
+
+func rawLogResult(content string, err error) (string, error) {
+	if errors.Is(err, os.ErrNotExist) {
+		return "", web.ErrLogNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return content, nil
+}
+
+type stageRunSnapshot struct {
+	ticket       *ticket.Ticket
+	stage        string
+	run          int
+	liveRun      liveRun
+	registered   bool
+	liveMatch    bool
+	stageRunning bool
+	nextRun      int
+}
+
+// The in-flight invocation's stage and occurrence need not match the ticket's
+// metadata (for example, built-in rework). Capture both under the same lock.
+func (d *Daemon) snapshotStageRun(id, stage string, run int) (stageRunSnapshot, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	ts, ok := d.tickets[id]
+	if !ok {
+		return stageRunSnapshot{}, web.ErrTicketNotFound
+	}
+	if run >= 0 && ts.ticket.IsImportedRun(stage, run) {
+		return stageRunSnapshot{}, web.ErrLogNotFound
+	}
+	lr, registered := d.liveRuns[id]
+	return stageRunSnapshot{
+		ticket:       ts.ticket.Clone(),
+		stage:        stage,
+		run:          run,
+		liveRun:      lr,
+		registered:   registered,
+		liveMatch:    registered && stage == lr.stage && run == lr.run,
+		stageRunning: ts.ticket.IsRunning() && ts.ticket.Stage == stage,
+		nextRun:      stageRunIndex(ts.ticket, stage),
+	}, nil
+}
+
+func (s stageRunSnapshot) fallbackLog(logsDir string) (path string, stale bool) {
+	if path, stale, graph := cli.GraphRunLog(s.ticket, logsDir, s.stage, s.run); graph {
+		return path, stale
+	}
+	return session.LogPath(logsDir, s.ticket.ID, s.stage), s.run < s.nextRun-1 || s.stageRunning
+}
+
+// Neither a stage log nor a visit log identifies the run that wrote its bytes.
+func (s stageRunSnapshot) exactLog(logsDir string) string {
+	if s.liveMatch {
+		return s.liveRun.rawPath
+	}
+	occurrence := 0
+	for _, h := range s.ticket.History {
+		if h.Stage != s.stage {
+			continue
+		}
+		if occurrence != s.run {
+			occurrence++
+			continue
+		}
+		if ticket.IsSafeID(h.RawLogID) {
+			return session.RawLogPath(logsDir, s.ticket.ID, h.RawLogID, s.stage)
+		}
+		if ticket.IsSafeID(s.stage) && ticket.IsSafeID(h.NodeVisitID) && ticket.IsSafeID(h.InvocationID) {
+			return session.GraphLogPath(logsDir, s.ticket.ID, s.stage, h.NodeVisitID, h.InvocationID)
+		}
+		break
+	}
+	return ""
 }
 
 // GetActivity returns the transcript of one run of a stage. A run still in
@@ -1264,58 +1368,29 @@ func (d *Daemon) GetLogs(id string, stage string) (string, error) {
 // run is read from its structured sidecar, and from the plaintext log
 // when it has none.
 //
-// A fallback is marked stale when its bytes may describe a different run than
-// the one asked for. Legacy <stage>.log holds only the newest run: the ticket's
-// history records a newer run of the same stage, or the stage is running right
-// now and appending to the same file. Run indexes count stage occurrences because
-// legacy history rows can all store run 0.
+// Activity marks a shared stage log stale when history records a newer run or
+// when the stage is running. Run indexes count stage occurrences because legacy
+// history rows can all store run 0.
 // Historical graph attempts use visit-specific logs. A fallback is stale if a
 // later attempt reused the same visit log or that visit is currently running.
 func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 	if q.LogTailBytes < 0 || q.LogTailBytes > web.MaxLogTailBytes {
 		return web.ActivityInfo{}, fmt.Errorf("%w: log_tail_bytes must be between 0 and %d", web.ErrInvalidConfig, web.MaxLogTailBytes)
 	}
-	d.mu.Lock()
-	ts, ok := d.tickets[q.ID]
-	var stageRunning, fallbackStale bool
-	var nextRun int
-	var lr liveRun
-	var registered bool
-	logsDir := expandTilde(d.config().LogsDir)
-	logPath := session.LogPath(logsDir, q.ID, q.Stage)
-	if ok && ts.ticket.IsImportedRun(q.Stage, q.Run) {
-		d.mu.Unlock()
-		return web.ActivityInfo{}, web.ErrLogNotFound
-	}
-	if ok {
-		stageRunning = ts.ticket.IsRunning() && ts.ticket.Stage == q.Stage
-		nextRun = stageRunIndex(ts.ticket, q.Stage)
-		fallbackStale = q.Run < nextRun-1 || stageRunning
-		if path, stale, graph := cli.GraphRunLog(ts.ticket, logsDir, q.Stage, q.Run); graph {
-			logPath, fallbackStale = path, stale
-		}
-		lr, registered = d.liveRuns[q.ID]
-	}
-	d.mu.Unlock()
-	if !ok {
-		return web.ActivityInfo{}, web.ErrTicketNotFound
+	snapshot, err := d.snapshotStageRun(q.ID, q.Stage, q.Run)
+	if err != nil {
+		return web.ActivityInfo{}, err
 	}
 
-	// liveMatch is the run the daemon has registered as in flight. The second
-	// clause covers the seconds between the ticket flipping to in_progress and
-	// the invocation registering, which happens only after the worktree exists
-	// and the prompt is rendered; without it a polling client gets an error per
-	// tick at the start of every run. Once another run is registered this one is
-	// not live: the rework stage runs while the ticket's stage field still names
-	// a pipeline stage, and its transcript must not answer for that stage.
-	liveMatch := registered && q.Stage == lr.stage && q.Run == lr.run
-	live := q.Stage != "" && (liveMatch || (!registered && stageRunning && q.Run == nextRun))
-
-	if liveMatch {
-		if info, ok := d.liveActivity(q, lr); ok {
+	// Polling also treats the next occurrence as live while it waits for
+	// registration. Exact exports cannot use this provisional selection.
+	live := q.Stage != "" && (snapshot.liveMatch || (!snapshot.registered && snapshot.stageRunning && q.Run == snapshot.nextRun))
+	if snapshot.liveMatch {
+		if info, ok := d.liveActivity(q, snapshot.liveRun); ok {
 			return info, nil
 		}
 	}
+	logPath, fallbackStale := snapshot.fallbackLog(expandTilde(d.config().LogsDir))
 	return d.recordedActivity(q, live, fallbackStale, logPath)
 }
 

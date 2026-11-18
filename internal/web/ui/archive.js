@@ -48,16 +48,19 @@ function archiveText(v) {
 export function archiveParseQuery(raw) {
   const tokens = [];
   const free = [];
-  filterSplitTerms(raw).forEach(term => {
+  const seen = new Set();
+  for (const term of filterSplitTerms(raw)) {
     const m = /^([a-zA-Z]+):(=?)(.*)$/.exec(term);
     const key = m ? m[1].toLowerCase() : '';
     if (!m || ARCHIVE_TOKEN_KEYS.indexOf(key) < 0) {
       free.push(archiveText(filterUnquote(term)));
-      return;
+      continue;
     }
     const value = archiveText(filterUnquote(m[3]));
-    if (value) tokens.push({ key: key, value: value, exact: m[2] === '=', term: term });
-  });
+    if (!value || seen.has(term)) continue;
+    seen.add(term);
+    tokens.push({ key: key, value: value, exact: m[2] === '=', term: term });
+  }
   return { tokens: tokens, text: free.join(' ') };
 }
 
@@ -627,8 +630,9 @@ export function kontoraArchive() {
 
     // ---- archive and restore -----------------------------------------------
 
-    openArchivePrompt(id) {
-      if (!id || this.isSecondary(this.ticketIdentity(id)) || (this.isSecondary(this.selectedTicket) && this.selectedTicket.id === id)) return;
+    openArchivePrompt(id, trigger) {
+      if (!id || this.archiveSubmitting || this.isSecondary(this.ticketIdentity(id)) || (this.isSecondary(this.selectedTicket) && this.selectedTicket.id === id)) return;
+      this.rememberDialogTrigger?.('archive', trigger || this.dialogTrigger?.('archive', id));
       this._lifecycleArchiveCommand = this.lifecycleCommand(id, { id: 'archive', confirmed: true });
       this.archivePromptId = id;
       this.archiveNoteDraft = '';
@@ -636,6 +640,7 @@ export function kontoraArchive() {
     },
 
     closeArchivePrompt() {
+      if (this.archiveSubmitting) return;
       this.archivePromptId = null;
       this.archiveNoteDraft = '';
       this.archivePromptError = null;
@@ -654,6 +659,7 @@ export function kontoraArchive() {
           this.archivePromptError = result.error || 'Archive not completed (' + result.outcome + ').';
           return result;
         }
+        this.archiveSubmitting = false;
         this.closeArchivePrompt();
         this.showToast(id + ' archived');
         if (this.currentView === 'archive') this.archiveLoad();

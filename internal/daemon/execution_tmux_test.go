@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/process"
+	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/tmux"
 	"github.com/worksonmyai/kontora/internal/web"
@@ -119,14 +121,6 @@ func TestExecutionRealTmuxFailurePatternsBeyondLogCap(t *testing.T) {
 			pipeline := "one-stage"
 			if tc.retry {
 				pipeline = "retry-stage"
-				path := stageLogPath(h.cfg, "tst-stream", "step1")
-				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-				file, err := os.Create(path)
-				require.NoError(t, err)
-				_, err = file.WriteString("provider rejected\n")
-				require.NoError(t, err)
-				require.NoError(t, file.Truncate(16<<20))
-				require.NoError(t, file.Close())
 				script += fmt.Sprintf("if [ ! -f %q ]; then touch %q; printf '\\nprovider rejected\\n'; exit 1; fi\n", marker, marker)
 			} else {
 				script += flood
@@ -147,7 +141,19 @@ func TestExecutionRealTmuxFailurePatternsBeyondLogCap(t *testing.T) {
 			agentCfg.FailurePatterns = []string{pattern}
 			h.cfg.Agents["agent1"] = agentCfg
 			exits := make(chan int, 2)
+			var seed sync.Once
 			runner := func(ctx context.Context, p RunnerParams) (process.Result, error) {
+				var seedErr error
+				if tc.retry {
+					seed.Do(func() {
+						if seedErr = os.WriteFile(p.LogFile, []byte("provider rejected\n"), 0o600); seedErr == nil {
+							seedErr = os.Truncate(p.LogFile, 16<<20)
+						}
+					})
+				}
+				if seedErr != nil {
+					return process.Result{}, seedErr
+				}
 				result, err := tmuxRunner(ctx, p)
 				exits <- result.ExitCode
 				return result, err
@@ -186,7 +192,17 @@ func TestExecutionRealTmuxFailurePatternsBeyondLogCap(t *testing.T) {
 			}
 			info, err := os.Stat(stageLogPath(h.cfg, "tst-stream", "step1"))
 			require.NoError(t, err)
-			assert.EqualValues(t, 16<<20, info.Size())
+			if tc.retry {
+				require.NotEmpty(t, got.History)
+				previous := got.History[0]
+				require.NotEmpty(t, previous.RawLogID)
+				retained, err := os.Stat(session.RawLogPath(h.logsDir, "tst-stream", previous.RawLogID, "step1"))
+				require.NoError(t, err)
+				assert.EqualValues(t, 16<<20, retained.Size())
+				assert.Less(t, info.Size(), int64(16<<20), "the retry has its own capture")
+			} else {
+				assert.EqualValues(t, 16<<20, info.Size())
+			}
 		})
 	}
 }

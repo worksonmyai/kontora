@@ -587,6 +587,7 @@ type liveRun struct {
 	run       int
 	params    RunnerParams
 	startedAt time.Time
+	rawPath   string
 }
 
 func (d *Daemon) setLiveRun(ticketID string, lr liveRun) {
@@ -2196,6 +2197,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 			exitAction.History.Effort = p.effort
 			exitAction.History.SessionKind = p.sessionKind
 			exitAction.History.SessionRef = p.sessionRef
+			exitAction.History.RawLogID = p.runData.RawLogID
 		}
 
 		nextStage := fieldValue(exitAction.Fields, "stage")
@@ -2507,6 +2509,7 @@ type agentRun struct {
 	// that writes no session Kontora can point at.
 	SessionKind   string
 	SessionRef    string
+	RawLogID      string
 	Execution     *executionRecord
 	Outcome       string
 	OutcomeReason string
@@ -2768,20 +2771,19 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	if rec != nil && p.annotation {
 		scope.prior = sessionUsageTotals(params)
 	}
+	capture, rawID := captureRunnerParams(p.log, p.cfg.LogsDir, p.ticketID, p.stageName, params, p.boundExecution != nil)
 	// Confirmed stops clear live-run state even after errors or cancellation.
 	// Uncertain termination retains the execution record.
-	d.setLiveRun(p.ticketID, liveRun{stage: p.stageName, agent: p.agentName, run: p.run, params: params, startedAt: scope.startedAt})
+	d.setLiveRun(p.ticketID, liveRun{stage: p.stageName, agent: p.agentName, run: p.run, params: capture,
+		startedAt: scope.startedAt, rawPath: capture.LogFile})
 	defer func() {
 		if !ordinaryReservationRetained(taskCtx) {
 			d.clearLiveRun(p.ticketID)
 		}
 	}()
-	// Stage logs are appended across retries (pipe-pane, DirectRunner), so record
-	// where this run's output starts. Failure-pattern detection only scans from
-	// here, otherwise a previous attempt's error would keep matching on retry.
-	logStart := fileSize(params.LogFile)
+	logStart := fileSize(capture.LogFile)
 	eventsFile := stageEventsPath(p.cfg, p.ticketID, p.stageName, p.run)
-	result, runnerErr := d.runner(taskCtx, params)
+	result, runnerErr := d.runner(taskCtx, capture)
 	recordRunnerResult(execution, &result, runnerErr)
 	if workflowTerminationUncertain(p, result, runnerErr) {
 		d.retainUncertainExecution(taskCtx, t, execution)
@@ -2815,7 +2817,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		// session, so the reference is recorded on this path too.
 		failKind, failRef := runSessionRef(p.cfg, p.ticketID, params, scope.startedAt)
 		failedRun := agentRun{Result: result, Resumed: rec != nil, Model: effModel, Effort: effEffort,
-			SessionKind: failKind, SessionRef: failRef}
+			SessionKind: failKind, SessionRef: failRef, RawLogID: rawID}
 		classifyExecution(execution, &failedRun, runnerFailureReason(runnerErr, openQuestion, hadOpenQuestion))
 		if execution != nil {
 			failedRun.ForcePause = true
@@ -2842,6 +2844,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		Effort:       effEffort,
 		SessionKind:  sessionKind,
 		SessionRef:   sessionRef,
+		RawLogID:     rawID,
 	}
 
 	classifyExecution(execution, &run, "")
@@ -2858,7 +2861,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	}
 	p.log.Info("agent exited", attrs...)
 
-	return d.validateAgentAttempt(taskCtx, p, params, logStart, scope.startedAt, run)
+	return d.validateAgentAttempt(taskCtx, p, logDetectionParams(params, capture), logStart, scope.startedAt, run)
 }
 
 func (d *Daemon) validateAgentAttempt(taskCtx context.Context, p spawnAgentParams, params RunnerParams, logStart int64, startedAt time.Time, run agentRun) agentAttempt {
@@ -3830,21 +3833,23 @@ func materializeSessionLog(path string, isPi bool, logFile string) error {
 		return fmt.Errorf("create log directory: %w", err)
 	}
 
-	dst, err := os.Create(logFile)
+	// Replace the stage log so formatting a resumed session cannot overwrite
+	// the invocation's raw capture, which can share the original inode.
+	dst, err := os.CreateTemp(filepath.Dir(logFile), ".session-log-*")
 	if err != nil {
 		return fmt.Errorf("create log file: %w", err)
 	}
-	defer dst.Close()
+	defer os.Remove(dst.Name())
 
 	if isPi {
 		err = logfmt.FmtPi(src, dst)
 	} else {
 		err = logfmt.Fmt(src, dst)
 	}
-	if err != nil {
+	if err := errors.Join(err, dst.Close()); err != nil {
 		return fmt.Errorf("format session JSONL: %w", err)
 	}
-	return nil
+	return os.Rename(dst.Name(), logFile)
 }
 
 // materializeSessionEvents parses the session JSONL at path into a structured

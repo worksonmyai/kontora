@@ -52,3 +52,32 @@ test("an empty window does not claim a first-pass result", () => {
   assert.equal(card.value, "—");
   assert.equal(card.delta, "no stage runs");
 });
+
+test("26-week heatmap labels identify rendered week columns across a year boundary", () => {
+  const start = Date.UTC(2026, 9, 28); // Wednesday, so rendering starts with a partial week.
+  const days = Array.from({ length: 182 }, (_, i) => ({
+    date: new Date(start + i * 86400000).toISOString().slice(0, 10), runs: 1,
+  }));
+  const { heat } = statsDerive({ days });
+  assert.equal(heat.weeks.length, 27);
+  assert.deepEqual(heat.months, [
+    { label: "Oct", weekIndex: 0 },
+    { label: "Nov", weekIndex: 1 },
+    { label: "Dec", weekIndex: 6 },
+    { label: "Jan", weekIndex: 10 },
+    { label: "Feb", weekIndex: 15 },
+    { label: "Mar", weekIndex: 19 },
+    { label: "Apr", weekIndex: 23 },
+  ]);
+});
+
+test("bucket heights retain the same numeric scale for zero, split, and full buckets", () => {
+  const buckets = [
+    { start: "2026-11-18T06:00", done: 0, cancelled: 0, tokens_in: 0, tokens_out: 0 },
+    { start: "2026-11-18T07:00", done: 2, cancelled: 1, tokens_in: 3, tokens_out: 1 },
+    { start: "2026-11-18T08:00", done: 4, cancelled: 0, tokens_in: 0, tokens_out: 8 },
+  ];
+  const { throughput, tokens } = statsDerive({ buckets, window: { unit: "hour" } });
+  assert.deepEqual(throughput.map(b => [b.doneH, b.cancelH]), [[0, 0], [43, 21.5], [86, 0]]);
+  assert.deepEqual(tokens.map(b => [b.inH, b.outH]), [[0, 0], [16.5, 5.5], [0, 44]]);
+});

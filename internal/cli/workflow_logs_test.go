@@ -70,8 +70,20 @@ func TestLogPathIsolation(t *testing.T) {
 				assert.Empty(t, text)
 			}
 			if !tc.sidecar {
+				rawPath := path
+				if tc.stage != "review" {
+					rawPath = session.LogPath(logsDir, tkt.ID, tc.stage)
+				}
+				raw, err := ReadLogFile(logDir, rawPath)
+				if tc.allowed {
+					require.NoError(t, err)
+					assert.Equal(t, content, raw)
+				} else {
+					require.Error(t, err)
+					assert.Empty(t, raw)
+				}
 				var out bytes.Buffer
-				err := Logs(ticketsDir, logsDir, tkt.ID, tc.stage, &out)
+				err = Logs(ticketsDir, logsDir, tkt.ID, tc.stage, &out)
 				if tc.allowed {
 					require.NoError(t, err)
 					assert.Equal(t, "log contents", out.String())

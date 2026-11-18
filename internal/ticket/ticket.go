@@ -199,9 +199,10 @@ type HistoryEntry struct {
 	Effort   string `yaml:"effort,omitempty"`
 	ExitCode int    `yaml:"exit_code"`
 	// Run is the zero-based index of this run among the runs of the same stage.
-	// It keys the structured activity sidecar, which is written per run while
-	// <stage>.log holds only the newest one.
-	Run         int        `yaml:"run,omitempty"`
+	// It keys the structured activity sidecar.
+	Run int `yaml:"run,omitempty"`
+	// RawLogID identifies the retained capture for a run that used a shared stage log.
+	RawLogID    string     `yaml:"raw_log_id,omitempty" json:"raw_log_id,omitempty"`
 	StartedAt   *time.Time `yaml:"started_at"`
 	CompletedAt *time.Time `yaml:"completed_at"`
 	Summary     string     `yaml:"summary,omitempty"`

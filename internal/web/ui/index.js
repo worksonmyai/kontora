@@ -18,6 +18,7 @@ import { kontoraCreate } from './create.js';
 import { kontoraCompanion } from './companion.js';
 import { kontoraDetail } from './detail.js';
 import { kontoraDetailView } from './detail_view.js';
+import { kontoraDialogs } from './dialogs.js';
 import { kontoraDetailMarkup } from './detail_markup.js';
 import { kontoraLifecycle } from './lifecycle.js';
 import { kontoraEpics } from './epics.js';
@@ -64,6 +65,7 @@ function kontora() {
     kontoraAgentPicker(),
     kontoraDetail(),
     kontoraDetailView(),
+    kontoraDialogs(),
     kontoraDetailMarkup(),
     kontoraLifecycle(),
     kontoraBoard(),

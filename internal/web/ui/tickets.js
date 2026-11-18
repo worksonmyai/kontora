@@ -101,6 +101,7 @@ export function kontoraTickets() {
     },
 
     async init() {
+      this.initDialogs?.();
       this.initMobile();
       this.setupSettingsLifecycle?.();
       this.setupSettingsHistory?.();
@@ -117,9 +118,15 @@ export function kontoraTickets() {
       // The palette model is small and fully in memory, so it rebuilds on every
       // keystroke without a debounce.
       this.$watch('paletteQuery', () => this.onPaletteQueryChanged());
-      // Selection highlight is a class toggle on the rendered card, not a
-      // re-render, so changing the selected ticket doesn't rebuild a column.
-      this.$watch('selectedTicket', () => this._markSelectedCard());
+      // Detail covers the board without rebuilding the column DOM.
+      const dismissCoveredMenu = () => {
+        if (this.selectedTicket || this.selectedEpic) this._closeCardMenu();
+      };
+      this.$watch('selectedTicket', () => {
+        dismissCoveredMenu();
+        this._markSelectedCard();
+      });
+      this.$watch('selectedEpic', dismissCoveredMenu);
       // Custom statuses add columns; recompute so _board gains the new key,
       // then renderBoard (called by recomputeBoard) fills the new column DOM.
       this.$watch('configCache', () => this.$nextTick(() => {
@@ -134,6 +141,7 @@ export function kontoraTickets() {
       // Desktop and mobile are complementary x-if layers, so only one board
       // exists at a time and crossing the breakpoint rebuilds it.
       this.$watch('isMobile', () => this._onBreakpointChange());
+      this.$watch('currentView', view => { if (view !== 'board') this._closeCardMenu(); });
       const syncAutomationTerminal = () => {
         if (this.currentView !== 'automations') return;
         if (this.terminalOpen && (!this.terminalWanted() || this.terminalSubjectKey !== this.outputSubjectKey())) {
@@ -300,12 +308,12 @@ export function kontoraTickets() {
 
     // Hand the token to the server via /?token=, which validates it, sets the
     // HttpOnly kontora_token cookie, and redirects back with the query param
-    // stripped. Keeping the cookie server-set and HttpOnly means JS never holds
-    // the token and it stays out of browser history.
+    // stripped. A redirect with no fragment inherits the requested fragment;
+    // use the actual URL here because the initial route may not have run yet.
     submitToken() {
       var t = (this.tokenInput || '').trim();
       if (!t) return;
-      window.location.assign('/?token=' + encodeURIComponent(t));
+      window.location.assign('/?token=' + encodeURIComponent(t) + (location.hash || ''));
     },
 
     _cssVar(name, styles) {

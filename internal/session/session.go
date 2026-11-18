@@ -39,10 +39,19 @@ func TicketDir(logsDir, ticketID string) string {
 	return filepath.Join(logsDir, ticketID)
 }
 
-// LogPath is the plaintext capture of a stage's agent output. It holds only the
-// newest run: every run of the stage writes to the same file.
+// ValidLogStage reports whether stage is a single filename component.
+func ValidLogStage(stage string) bool {
+	return stage != "" && stage != "." && stage != ".." && !strings.ContainsAny(stage, "/\\\x00")
+}
+
+// LogPath is the shared plaintext log for a stage.
 func LogPath(logsDir, ticketID, stage string) string {
 	return filepath.Join(logsDir, ticketID, stage+".log")
+}
+
+// RawLogPath keeps a capture outside the directory scanned for CLI logs.
+func RawLogPath(logsDir, ticketID, rawLogID, stage string) string {
+	return filepath.Join(logsDir, ticketID, "raw", rawLogID, stage+".log")
 }
 
 // GraphLogPath optionally qualifies a visit log by invocation, preserving each

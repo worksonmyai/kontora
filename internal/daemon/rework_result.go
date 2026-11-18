@@ -49,7 +49,8 @@ func (d *Daemon) finalizeRework(ctx, taskCtx context.Context, p spawnAgentParams
 		summary := runSummary(current.Summary, run.FinalMessage)
 		row := ticket.HistoryEntry{Stage: config.ReworkStageName, Agent: p.agentName, Run: p.run,
 			Model: run.Model, Effort: run.Effort, ExitCode: run.Result.ExitCode, StartedAt: current.StartedAt, CompletedAt: &run.Result.ExitedAt,
-			Summary: summary, SessionKind: run.SessionKind, SessionRef: run.SessionRef, RunOutcome: ticket.RunOutcome(run.Outcome), OutcomeReason: run.OutcomeReason}
+			Summary: summary, SessionKind: run.SessionKind, SessionRef: run.SessionRef, RawLogID: run.RawLogID,
+			RunOutcome: ticket.RunOutcome(run.Outcome), OutcomeReason: run.OutcomeReason}
 		if run.Execution != nil {
 			row.InvocationID = run.Execution.Invocation.ID
 		}

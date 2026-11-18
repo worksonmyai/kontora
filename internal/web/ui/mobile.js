@@ -106,6 +106,21 @@ export function kontoraMobile() {
 
     mobileViewportHeight: 0,
 
+    mobileTerminalReading() {
+      return this.isMobile && this.currentView === 'board' && this.terminalWanted() && !this.mobileTerminalTyping();
+    },
+
+    mobileTerminalPause() {
+      const subject = this.selectedTicket || this.selectedEpic;
+      const command = this.lifecycleCommand(subject, 'pause');
+      return command && this._lifecycleAllowed(this.lifecycleResolve(subject), command) ? command : null;
+    },
+
+    mobilePauseTerminal() {
+      const command = this.mobileTerminalPause();
+      if (command) return this.dispatchLifecycle(command.ticketKey, command);
+    },
+
     mobileTerminalCompact() {
       var session = this.selectedEpic ? this.epicTab === 'session' : this.detailTab === 'terminal';
       return this.isMobile && session &&
@@ -577,7 +592,7 @@ export function kontoraMobile() {
 
     mobileBeginTerminalDirect() {
       if (!this.mobileCanCompose()) return;
-      if (document.activeElement?.matches('.mobile-terminal-direct')) document.activeElement.blur();
+      if (document.activeElement?.matches('[data-mobile-terminal-input], .mobile-terminal-direct')) document.activeElement.blur();
       ++terminalFocusSequence;
       this.mobileTerminalInputTarget = 'terminal';
       this.setTerminalRW(true);
@@ -608,6 +623,8 @@ export function kontoraMobile() {
     },
 
     _mobileTerminalFocusout(event) {
+      // Entering input hides the reading header and can blur its focused Back button.
+      if (event.target?.closest('.mobile-reading-bar')) return;
       if (!this.mobileTerminalTyping() || !event.target?.closest('.mobile-terminal-dock, .mobile-terminal-host, .mobile-terminal-bar')) return;
       const owner = lifecycle;
       const sequence = ++terminalFocusSequence;
@@ -781,10 +798,6 @@ export function kontoraMobile() {
       if (t.kind === 'epic') add('Epic overview', 'default', () => this.openEpic(t.id));
       if (this.ticketCanControl(t)) {
         this.lifecycleActions(key).forEach(addCommand);
-        if (this.mobileHasRun(t)) add('Output options', 'default', async () => {
-          if (!this.sameTicket(this.selectedTicket, t)) await this._paletteOpenTicket(t);
-          if (this.sameTicket(this.selectedTicket, t)) this.mobileSwitchTab('activity');
-        });
         if (this.lifecycleDestinations(key).length) add('Move to', 'default', () => this.openMoveSheet(t));
         for (const id of ['cancel', 'skip', 'review', 'annotate', 'archive', 'delete']) {
           const command = this.lifecycleCommand(key, id);

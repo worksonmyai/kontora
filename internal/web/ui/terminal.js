@@ -17,8 +17,15 @@ export const termState = {
   Unicode11Addon: null,
   WebglAddon: null,
   inputDisposable: null,
+  historyDisposables: [],
+  historyGesture: null,
+  historyReady: false,
+  historyResetSeq: 0,
+  resetScrollTerm: null,
+  resetRenderDisposable: null,
   resizeObserver: null,
   resizeTimer: null,
+  requestedDimensions: null,
   webglRetried: false,
   paneReset: false,
   streamSeq: 0,
@@ -29,13 +36,13 @@ export const termState = {
 // A terminal can outlive its socket. Keep new resets behind any write already
 // inside xterm, and discard queued frames from streams that no longer own it.
 const terminalWrites = new WeakMap();
-function queueTerminalFrame(term, current, frame) {
+function queueTerminalFrame(term, current, frame, afterReset, beforeReset) {
   var queue = terminalWrites.get(term);
   if (!queue) {
     queue = { frames: [], pending: 0, scheduled: false };
     terminalWrites.set(term, queue);
   }
-  queue.frames.push({ current: current, frame: frame });
+  queue.frames.push({ current: current, frame: frame, afterReset: afterReset, beforeReset: beforeReset });
   scheduleTerminalFrames(term, queue);
 }
 
@@ -56,8 +63,10 @@ function drainTerminalFrames(term, queue) {
     if (next.frame.type === 'reset') {
       if (queue.pending) return;
       queue.frames.shift();
+      if (next.beforeReset) next.beforeReset();
       term.reset();
       if (next.frame.cols !== undefined) term.resize(next.frame.cols, next.frame.rows);
+      if (next.afterReset) next.afterReset();
     } else {
       queue.frames.shift();
       if (!next.frame.length) continue;
@@ -93,6 +102,168 @@ export function kontoraTerminal() {
     terminalConnected: false,
     terminalError: null,
     terminalSubjectKey: null,
+    terminalBufferType: null,
+    terminalHasHistory: false,
+    terminalHistoryReviewing: false,
+    terminalHistoryNotice: '',
+
+    terminalCurrentActivityAvailable() {
+      return !!this.outputSubject() && this.outputSubject().kind !== 'automation' && !!this.runningRun();
+    },
+
+    openCurrentTerminalActivity() {
+      var run = this.terminalCurrentActivityAvailable() ? this.runningRun() : null;
+      if (!run) {
+        this.terminalHistoryNotice = 'Current Activity is not available yet.';
+        return false;
+      }
+      this.terminalHistoryNotice = '';
+      this.openActivity(run.stage, run.run);
+      return true;
+    },
+
+    _cancelTerminalHistoryGesture() {
+      termState.historyGesture = null;
+    },
+
+    _syncTerminalHistory(term) {
+      if (termState.term !== term || !termState.historyReady || !this.terminalOpen || this._appDestroyed
+        || this.terminalSubjectKey !== this.outputSubjectKey()) return;
+      var buffer = term.buffer.active;
+      this.terminalBufferType = buffer.type;
+      this.terminalHasHistory = buffer.type === 'normal' && buffer.baseY > 0;
+      this.terminalHistoryReviewing = this.terminalHasHistory && buffer.viewportY < buffer.baseY;
+      if (!this.terminalHasHistory) this._cancelTerminalHistoryGesture();
+    },
+
+    _queueTerminalReset(term, current, frame) {
+      if (this.terminalHistoryReviewing || termState.historyGesture?.active) {
+        this.terminalHistoryNotice = 'Terminal view refreshed. Local history was replaced.';
+      }
+      this._cancelTerminalHistoryGesture();
+      termState.historyReady = false;
+      var resetSeq = ++termState.historyResetSeq;
+      var subjectKey = this.outputSubjectKey();
+      var streamSeq = termState.streamSeq;
+      var ws = termState.ws;
+      queueTerminalFrame(term, current, frame, () => {
+        if (termState.term !== term || termState.historyResetSeq !== resetSeq) return;
+        this._cancelTerminalHistoryGesture();
+        termState.historyReady = true;
+        this._syncTerminalHistory(term);
+        if (frame.cols === undefined) return;
+        // A delayed pane resize can arrive after the host returns to its previous size.
+        requestAnimationFrame(() => {
+          if (!current() || this._appDestroyed || termState.term !== term || termState.ws !== ws
+            || termState.streamSeq !== streamSeq || termState.historyResetSeq !== resetSeq
+            || this.outputSubjectKey() !== subjectKey) return;
+          this.refitTerminal();
+        });
+      }, () => {
+        termState.resetRenderDisposable?.dispose();
+        termState.resetScrollTerm = term;
+        var rendered = term.onRender(() => {
+          rendered.dispose();
+          requestAnimationFrame(() => {
+            if (termState.term !== term || termState.resetRenderDisposable !== rendered) return;
+            termState.resetScrollTerm = null;
+            termState.resetRenderDisposable = null;
+          });
+        });
+        termState.resetRenderDisposable = rendered;
+      });
+    },
+
+    _terminalHistoryCanScroll(term) {
+      return termState.term === term && termState.historyReady && termState.mobile && this.isMobile
+        && this.terminalOpen && this.terminalConnected && !this.terminalRW && !this._appDestroyed
+        && this.terminalSubjectKey === this.outputSubjectKey()
+        && term.buffer.active.type === 'normal' && term.buffer.active.baseY > 0;
+    },
+
+    _bindTerminalHistory(term, container) {
+      var sync = () => this._syncTerminalHistory(term);
+      termState.historyDisposables = [term.onScroll(sync), term.onWriteParsed(sync), term.buffer.onBufferChange(sync)];
+      // xterm 5.5 resets its row height to zero until rendering; queued scroll events would divide by zero.
+      var resetScroll = e => {
+        if (termState.term === term && termState.resetScrollTerm === term) e.stopImmediatePropagation();
+      };
+      container.addEventListener('scroll', resetScroll, { capture: true, passive: false });
+      termState.historyDisposables.push({ dispose() { container.removeEventListener('scroll', resetScroll, true); } });
+      termState.historyReady = true;
+      sync();
+      if (!this.isMobile) return;
+      // xterm must not resume an intercepted touch after its stream or history gesture ends.
+      var interceptedID = null;
+      var suppress = e => {
+        if (interceptedID === null || (e.touches.length !== 0
+          && (e.touches.length !== 1 || e.touches[0].identifier !== interceptedID))) return;
+        if (e.cancelable) e.preventDefault();
+        e.stopImmediatePropagation();
+      };
+      var start = e => {
+        if (termState.term !== term) return;
+        interceptedID = null;
+        this._cancelTerminalHistoryGesture();
+        if (e.touches.length !== 1 || !this._terminalHistoryCanScroll(term)) return;
+        var point = e.touches[0];
+        termState.historyGesture = { term, subject: this.outputSubjectKey(), seq: this._terminalSeq,
+          stream: termState.streamSeq, id: point.identifier, x: point.clientX, y: point.clientY,
+          lastY: point.clientY, remainder: 0, active: false };
+      };
+      var current = gesture => gesture && gesture.term === term && this._terminalHistoryCanScroll(term)
+        && gesture.subject === this.outputSubjectKey() && gesture.seq === this._terminalSeq
+        && gesture.stream === termState.streamSeq;
+      var move = e => {
+        if (termState.term !== term) return;
+        var gesture = termState.historyGesture;
+        if (e.touches.length !== 1) interceptedID = null;
+        if (!current(gesture) || e.touches.length !== 1 || e.touches[0].identifier !== gesture.id || !e.cancelable) {
+          this._cancelTerminalHistoryGesture();
+          suppress(e);
+          return;
+        }
+        var point = e.touches[0];
+        var dx = Math.abs(point.clientX - gesture.x);
+        var dy = Math.abs(point.clientY - gesture.y);
+        if (dx >= 8 && dx >= dy) {
+          this._cancelTerminalHistoryGesture();
+          suppress(e);
+          return;
+        }
+        if (!gesture.active && (dy < 8 || dy <= dx)) return;
+        var screen = term.element.querySelector('.xterm-screen');
+        var height = screen?.getBoundingClientRect().height;
+        if (!(height > 0) || !(term.rows > 0)) {
+          this._cancelTerminalHistoryGesture();
+          suppress(e);
+          return;
+        }
+        gesture.active = true;
+        interceptedID = gesture.id;
+        suppress(e);
+        var rows = gesture.remainder + (gesture.lastY - point.clientY) * term.rows / height;
+        var lines = Math.trunc(rows);
+        gesture.remainder = rows - lines;
+        gesture.lastY = point.clientY;
+        if (lines) term.scrollLines(lines);
+      };
+      var end = e => {
+        if (termState.term !== term) return;
+        suppress(e);
+        interceptedID = null;
+        this._cancelTerminalHistoryGesture();
+      };
+      var cancel = () => {
+        interceptedID = null;
+        if (termState.term === term) this._cancelTerminalHistoryGesture();
+      };
+      // Capture qualifying drags before xterm can turn mouse-reporting gestures into input.
+      [['touchstart', start], ['touchmove', move], ['touchend', end], ['touchcancel', cancel]].forEach(([type, handler]) => {
+        container.addEventListener(type, handler, { capture: true, passive: false });
+        termState.historyDisposables.push({ dispose() { container.removeEventListener(type, handler, true); } });
+      });
+    },
 
     outputSubjectKey() {
       const subject = this.outputSubject();
@@ -110,6 +281,14 @@ export function kontoraTerminal() {
       { label: '^C', name: 'Ctrl+C', bytes: '\x03' },
       { label: '↵', name: 'Enter', bytes: '\r' },
     ],
+
+    terminalEssentialKeys() {
+      return ['Escape', 'Enter', 'Ctrl+C'].map(name => this.terminalKeys.find(key => key.name === name));
+    },
+
+    terminalSecondaryKeys() {
+      return this.terminalKeys.filter(key => !['Escape', 'Enter', 'Ctrl+C'].includes(key.name));
+    },
 
     sendTerminalKey(bytes) {
       if (!this.terminalRW || !this.terminalConnected) return;
@@ -235,7 +414,7 @@ export function kontoraTerminal() {
       if (termState.term) {
         // The buffer still holds whatever the last stream wrote into it.
         var term = termState.term;
-        queueTerminalFrame(term, function() {
+        this._queueTerminalReset(term, function() {
           return self._terminalSeq === seq && self.terminalOpen && termState.term === term;
         }, { type: 'reset' });
       } else {
@@ -264,8 +443,7 @@ export function kontoraTerminal() {
         fontFamily: "'JetBrains Mono', monospace",
         cursorBlink: this.terminalRW,
         disableStdin: this.isMobile,
-        // tmux uses the alternate screen; zero also removes FitAddon's scrollbar reserve.
-        scrollback: this.isMobile ? 0 : 5000,
+        scrollback: 5000,
         allowProposedApi: true,
       });
       term.loadAddon(fit);
@@ -306,6 +484,7 @@ export function kontoraTerminal() {
       });
       termState.term = term;
       termState.mobile = this.isMobile;
+      this._bindTerminalHistory(term, container);
       this._setTerminalInput(false);
       termState.fit = fit;
       termState.webglRetried = false;
@@ -361,6 +540,7 @@ export function kontoraTerminal() {
     _connectWs(seq) {
       if (this._terminalSeq !== seq || !this.terminalOpen || !termState.term) return;
       var streamSeq = ++termState.streamSeq;
+      this._cancelTerminalHistoryGesture();
       this.terminalConnected = false;
       this._setTerminalInput(false);
       if (termState.inputDisposable) {
@@ -388,6 +568,7 @@ export function kontoraTerminal() {
       };
       var cols = term.cols;
       var rows = term.rows;
+      termState.requestedDimensions = { cols: cols, rows: rows };
       var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       var subject = self.outputSubject();
       var subjectKey = self.outputSubjectKey();
@@ -409,7 +590,7 @@ export function kontoraTerminal() {
           if (!frame || frame.type !== 'reset' || !Number.isInteger(frame.cols) || frame.cols < 1
             || !Number.isInteger(frame.rows) || frame.rows < 1) return;
           termState.paneReset = true;
-          queueTerminalFrame(term, ownsOutput, frame);
+          self._queueTerminalReset(term, ownsOutput, frame);
         } else {
           queueTerminalFrame(term, ownsOutput, new Uint8Array(e.data));
         }
@@ -423,6 +604,7 @@ export function kontoraTerminal() {
         var dimensions = termState.fit.proposeDimensions();
         if (dimensions && (dimensions.cols !== cols || dimensions.rows !== rows)) {
           ws.send(JSON.stringify({ type: 'resize', cols: dimensions.cols, rows: dimensions.rows }));
+          termState.requestedDimensions = dimensions;
         }
         // A socket callback cannot open the keyboard. Input starts with a later tap.
         self._setTerminalInput(rw && self.terminalRW);
@@ -430,6 +612,7 @@ export function kontoraTerminal() {
       var disconnected = function() {
         if (!current()) return;
         termState.ws = null;
+        self._cancelTerminalHistoryGesture();
         self.terminalConnected = false;
         self.terminalError = 'Terminal disconnected. Retry to reconnect.';
         if (self.isMobile || termState.mobile) {
@@ -459,6 +642,7 @@ export function kontoraTerminal() {
     // left alone: cancelling an in-flight openTerminal is the caller's call.
     _disconnectStream({ preserveInput = false } = {}) {
       termState.streamSeq++;
+      this._cancelTerminalHistoryGesture();
       if (!preserveInput && (this.isMobile || termState.mobile)) {
         this.mobileResetTerminalInput();
         this.terminalRW = false;
@@ -486,6 +670,16 @@ export function kontoraTerminal() {
     // itself is going away, including across the 768px breakpoint.
     _destroyTerminal(options = {}) {
       this._disconnectStream(options);
+      termState.historyDisposables.forEach(disposable => disposable.dispose());
+      termState.historyDisposables = [];
+      termState.resetRenderDisposable?.dispose();
+      termState.resetRenderDisposable = null;
+      termState.resetScrollTerm = null;
+      termState.historyReady = false;
+      this.terminalBufferType = null;
+      this.terminalHasHistory = false;
+      this.terminalHistoryReviewing = false;
+      this.terminalHistoryNotice = '';
       if (termState.term) {
         var term = termState.term;
         // xterm 5.5 leaves viewport callbacks pending after open() and reset().
@@ -506,9 +700,14 @@ export function kontoraTerminal() {
       this.terminalOpen = false;
       this.terminalConnected = false;
       this.terminalSubjectKey = null;
+      this.terminalBufferType = null;
+      this.terminalHasHistory = false;
+      this.terminalHistoryReviewing = false;
+      this.terminalHistoryNotice = '';
     },
 
     setTerminalRW(enabled) {
+      this._cancelTerminalHistoryGesture();
       if (!enabled && (this.isMobile || termState.mobile)) this.mobileResetTerminalInput();
       if (this.terminalRW === enabled) return;
       this.terminalRW = enabled;
@@ -527,10 +726,14 @@ export function kontoraTerminal() {
       var el = termState.term.element;
       if (!el || !el.clientWidth || !el.clientHeight) return;
       var dimensions = termState.fit.proposeDimensions();
-      if (!dimensions || (dimensions.cols === termState.term.cols && dimensions.rows === termState.term.rows)) return;
-      if (this.outputSubject()?.kind === 'automation') termState.fit.fit();
+      var automation = this.outputSubject()?.kind === 'automation';
+      // Peer snapshots change the shared grid, not this viewer's requested size.
+      var previous = automation ? termState.term : termState.requestedDimensions;
+      if (!dimensions || (dimensions.cols === previous?.cols && dimensions.rows === previous?.rows)) return;
+      if (automation) termState.fit.fit();
       if (termState.ws && termState.ws.readyState === WebSocket.OPEN) {
         termState.ws.send(JSON.stringify({ type: 'resize', cols: dimensions.cols, rows: dimensions.rows }));
+        termState.requestedDimensions = dimensions;
       }
     },
 

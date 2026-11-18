@@ -221,7 +221,14 @@ function stubXterm(termState) {
       this.cols = 80;
       this.rows = 24;
       this.unicode = {};
-      this.element = { clientWidth: 800, clientHeight: 400, parentNode: null };
+      this.screenHeight = 400;
+      this.element = { clientWidth: 800, clientHeight: 400, parentNode: null,
+        querySelector: selector => selector === '.xterm-screen' ? { getBoundingClientRect: () => ({ height: this.screenHeight }) } : null };
+      this.historyListeners = { scroll: [], parsed: [], buffer: [], render: [] };
+      this.buffer = { active: { type: 'normal', baseY: 0, viewportY: 0 },
+        onBufferChange: handler => this.onHistoryEvent('buffer', handler) };
+      this.modes = { mouseTrackingMode: 'none' };
+      this.scrolledLines = [];
       this.resets = 0;
       this.disposed = false;
       this.inputListeners = [];
@@ -255,8 +262,33 @@ function stubXterm(termState) {
     }
     open(container) {
       this.element.parentNode = container;
+      if (!container.addEventListener) {
+        container.touchListeners = [];
+        container.addEventListener = (type, handler, options) => container.touchListeners.push({ type, handler, options, disposed: false });
+        container.removeEventListener = (type, handler, capture) => {
+          const listener = container.touchListeners.find(row => row.type === type && row.handler === handler);
+          assert.equal(listener.options.capture, capture);
+          listener.disposed = true;
+        };
+      }
+    }
+    onHistoryEvent(type, handler) {
+      const listener = { handler, disposed: false, dispose() { this.disposed = true; } };
+      this.historyListeners[type].push(listener);
+      return listener;
+    }
+    onScroll(handler) { return this.onHistoryEvent('scroll', handler); }
+    onWriteParsed(handler) { return this.onHistoryEvent('parsed', handler); }
+    onRender(handler) { return this.onHistoryEvent('render', handler); }
+    emitHistory(type) { this.historyListeners[type].filter(row => !row.disposed).forEach(row => row.handler()); }
+    scrollLines(lines) {
+      this.scrolledLines.push(lines);
+      const buffer = this.buffer.active;
+      buffer.viewportY = Math.max(0, Math.min(buffer.baseY, buffer.viewportY + lines));
+      this.emitHistory('scroll');
     }
     reset() {
+      this.buffer.active = { type: 'normal', baseY: 0, viewportY: 0 };
       this.resets += 1;
       this.operations.push(['reset']);
     }
@@ -289,7 +321,10 @@ function stubXterm(termState) {
     }
     focus() { this.textarea.focus(); }
     blur() { this.textarea.blur(); }
-    scrollToBottom() {}
+    scrollToBottom() {
+      this.buffer.active.viewportY = this.buffer.active.baseY;
+      this.emitHistory('scroll');
+    }
     dispose() {
       this.disposed = true;
     }
@@ -1003,19 +1038,348 @@ test("phone terminal compact mode follows the selected ticket or supervisor sess
       epicTab: tc.epicTab, detailTab: tc.detailTab, terminalRW: !!tc.rw, mobileViewportHeight: tc.height,
       mobileTerminalInputTarget: tc.target ?? null });
     assert.equal(state.mobileTerminalCompact(), tc.compact, tc.name);
+    const reading = tc.mobile !== false && !tc.target && (tc.epic ? tc.epicTab === 'session' : tc.detailTab === 'terminal');
+    assert.equal(state.mobileTerminalReading(), reading, tc.name);
+    assert.equal(state.terminalRW, !!tc.rw, 'Reading never changes input permission');
   }
 });
 
-test("terminal scrollback follows the layout that created it", async () => {
+test("terminal retains 5000 normal-buffer rows in both layouts and input modes", async () => {
   for (const mobile of [true, false]) {
-    const { ctx } = await openedTerminal({}, { mobile });
-    assert.equal(ctx.termState.term.options.scrollback, mobile ? 0 : 5000);
+    const { ctx, state } = await openedTerminal({}, { mobile });
+    assert.equal(ctx.termState.term.options.scrollback, 5000);
+    state.setTerminalRW(true);
+    assert.equal(ctx.termState.term.options.scrollback, 5000);
+    state.setTerminalRW(false);
+    assert.equal(ctx.termState.term.options.scrollback, 5000);
     ctx.termState.term.options.disableStdin = true;
     const sent = [];
     ctx.termState.term.onData(data => sent.push(data));
     ctx.termState.term.input('ignored');
     ctx.termState.term.paste('ignored');
     assert.deepEqual(sent, []);
+  }
+});
+
+function terminalTouch(term, type, points = [], options = {}) {
+  const event = { touches: points.map(([clientX, clientY, identifier = 1]) => ({ clientX, clientY, identifier })),
+    cancelable: true, prevented: false, stopped: false,
+    preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; }, ...options };
+  for (const listener of term.element.parentNode.touchListeners.filter(row => row.type === type && !row.disposed)) {
+    listener.handler(event);
+  }
+  return event;
+}
+
+function retainedTerminalHistory(term, { baseY = 100, viewportY = baseY, type = 'normal' } = {}) {
+  Object.assign(term.buffer.active, { type, baseY, viewportY });
+  term.emitHistory('parsed');
+}
+
+test('terminal history presentation follows parsed buffers and never exposes hidden normal history', async () => {
+  for (const mobile of [false, true]) {
+    const { ctx, state } = await openedTerminal({}, { mobile });
+    const term = ctx.termState.term;
+    for (const tc of [
+      { type: 'normal', baseY: 0, viewportY: 0, history: false, reviewing: false, event: 'parsed' },
+      { type: 'normal', baseY: 100, viewportY: 100, history: true, reviewing: false, event: 'parsed' },
+      { type: 'normal', baseY: 100, viewportY: 70, history: true, reviewing: true, event: 'scroll' },
+      { type: 'alternate', baseY: 0, viewportY: 0, history: false, reviewing: false, event: 'buffer' },
+      { type: 'alternate', baseY: 100, viewportY: 70, history: false, reviewing: false, event: 'parsed' },
+      { type: 'normal', baseY: 100, viewportY: 70, history: true, reviewing: true, event: 'buffer' },
+    ]) {
+      Object.assign(term.buffer.active, tc);
+      term.emitHistory(tc.event);
+      assert.deepEqual([state.terminalBufferType, state.terminalHasHistory, state.terminalHistoryReviewing],
+        [tc.type, tc.history, tc.reviewing], `${mobile}: ${tc.event}`);
+    }
+    state.closeTerminal();
+    term.emitHistory('parsed');
+    assert.deepEqual([state.terminalBufferType, state.terminalHasHistory, state.terminalHistoryReviewing], [null, false, false]);
+    state.destroy();
+  }
+});
+
+for (const mouseTrackingMode of ['none', 'vt200']) {
+  test(`read-only vertical touch scrolls local rows without input: mouse=${mouseTrackingMode}`, async () => {
+    const { ctx, state } = await openedTerminal({}, { mobile: true });
+    const { term, ws } = ctx.termState;
+    ws.onopen();
+    term.modes.mouseTrackingMode = mouseTrackingMode;
+    term.rows = 24;
+    term.screenHeight = 240;
+    retainedTerminalHistory(term);
+    const sent = ws.sent.length;
+    const resizes = term.resizes.length;
+    const fits = ctx.termState.fit.fits;
+    for (const method of ['input', 'paste', 'focus', 'resize']) term[method] = () => assert.fail(`gesture called ${method}`);
+    state.logFollow = false;
+    assert.equal(terminalTouch(term, 'touchstart', [[100, 100]]).prevented, false);
+    assert.equal(terminalTouch(term, 'touchmove', [[101, 104]]).prevented, false, 'a short movement stays native');
+    const move = terminalTouch(term, 'touchmove', [[101, 140]]);
+    assert.equal(move.prevented, true);
+    assert.equal(move.stopped, true);
+    assert.deepEqual(term.scrolledLines, [-4]);
+    terminalTouch(term, 'touchmove', [[101, 145]]);
+    assert.deepEqual(term.scrolledLines, [-4], 'fractional rows accumulate');
+    terminalTouch(term, 'touchmove', [[101, 150]]);
+    assert.deepEqual(term.scrolledLines, [-4, -1]);
+    assert.equal(state.terminalHistoryReviewing, true);
+    assert.equal(term.buffer.active.viewportY, 95);
+    ws.onmessage({ data: new TextEncoder().encode('new output').buffer });
+    await flushMicrotasks();
+    retainedTerminalHistory(term, { baseY: 110, viewportY: 95 });
+    assert.equal(term.buffer.active.viewportY, 95, 'incoming parsed output does not jump to live');
+    assert.equal(state.terminalHistoryReviewing, true);
+    assert.equal(terminalTouch(term, 'touchend').prevented, true);
+    assert.equal(ctx.termState.historyGesture, null);
+    state.scrollLogToEnd();
+    assert.equal(term.buffer.active.viewportY, 110);
+    assert.equal(state.terminalHistoryReviewing, false);
+    assert.equal(state.logFollow, false, 'terminal history does not change Activity follow');
+    assert.equal(ws.sent.length, sent);
+    assert.equal(term.resizes.length, resizes);
+    assert.equal(ctx.termState.fit.fits, fits);
+    assert.equal(term.textarea.focuses, 0);
+    assert.equal(state.terminalRW, false);
+    assert.ok(term.element.parentNode.touchListeners.every(row => row.options.capture && !row.options.passive));
+    state.destroy();
+  });
+}
+
+for (const tc of [
+  { name: 'horizontal', move: [[140, 101]] },
+  { name: 'short', move: [[100, 107]] },
+  { name: 'multi-touch start', start: [[100, 100], [120, 100]] },
+  { name: 'pinch', move: [[100, 140], [120, 80]] },
+  { name: 'changed finger', move: [[100, 140, 2]] },
+  { name: 'non-cancelable', options: { cancelable: false } },
+  { name: 'alternate', setup: (_state, _handles, term) => retainedTerminalHistory(term, { type: 'alternate' }) },
+  { name: 'no history', setup: (_state, _handles, term) => retainedTerminalHistory(term, { baseY: 0 }) },
+  { name: 'connecting', setup: state => { state.terminalConnected = false; } },
+  { name: 'disconnected', setup: (_state, handles) => handles.ws.onclose() },
+  { name: 'writable', setup: (state, handles) => { state.setTerminalRW(true); handles.ws.onopen(); } },
+  { name: 'desktop', setup: state => { state.isMobile = false; } },
+  { name: 'wrong subject', setup: state => { state.terminalSubjectKey = 'primary:old'; } },
+  { name: 'unmeasurable screen', setup: (_state, _handles, term) => { term.screenHeight = 0; } },
+]) {
+  test(`terminal history leaves ${tc.name} interaction untouched`, async () => {
+    const { ctx, state } = await openedTerminal({}, { mobile: true });
+    const handles = ctx.termState;
+    const { term, ws } = handles;
+    ws.onopen();
+    retainedTerminalHistory(term);
+    tc.setup?.(state, handles, term);
+    for (const method of ['input', 'paste', 'focus', 'resize']) term[method] = () => assert.fail(`gesture called ${method}`);
+    const sent = ws.sent.length;
+    assert.equal(terminalTouch(term, 'touchstart', tc.start || [[100, 100]]).prevented, false);
+    const move = terminalTouch(term, 'touchmove', tc.move || [[100, 140]], tc.options);
+    assert.equal(move.prevented, false);
+    assert.equal(move.stopped, false);
+    assert.deepEqual(term.scrolledLines, []);
+    assert.equal(ws.sent.length, sent);
+    state.destroy();
+  });
+}
+
+for (const boundary of ['permission', 'stream', 'disconnect', 'close', 'subject', 'destroy', 'alternate', 'cancel', 'multi-touch']) {
+  test(`terminal history gesture is cancelled at ${boundary}`, async () => {
+    const { ctx, state } = await openedTerminal({}, { mobile: true });
+    const { term, ws } = ctx.termState;
+    ws.onopen();
+    retainedTerminalHistory(term);
+    terminalTouch(term, 'touchstart', [[100, 100]]);
+    terminalTouch(term, 'touchmove', [[100, 140]]);
+    assert.equal(ctx.termState.historyGesture.active, true);
+    const lines = term.scrolledLines.length;
+    switch (boundary) {
+      case 'permission': state.setTerminalRW(true); break;
+      case 'stream': state._connectWs(state._terminalSeq); break;
+      case 'disconnect': ws.onclose(); break;
+      case 'close': state.closeTerminal(); break;
+      case 'subject': await state.selectTicket({ id: 'tst-002', status: 'in_progress' }); break;
+      case 'destroy': state._destroyTerminal(); break;
+      case 'alternate': retainedTerminalHistory(term, { type: 'alternate' }); break;
+      case 'cancel': terminalTouch(term, 'touchcancel'); break;
+      case 'multi-touch': terminalTouch(term, 'touchmove', [[100, 150], [120, 80]]); break;
+    }
+    assert.equal(ctx.termState.historyGesture, null);
+    const stale = terminalTouch(term, 'touchmove', [[100, 190]]);
+    const released = ['destroy', 'cancel', 'multi-touch'].includes(boundary);
+    assert.equal(stale.prevented, !released, 'An intercepted finger stays suppressed until touch end or cancellation');
+    assert.equal(stale.stopped, !released);
+    assert.equal(term.scrolledLines.length, lines);
+    assert.equal(terminalTouch(term, 'touchend').prevented, !released);
+    terminalTouch(term, 'touchstart', [[100, 100]]);
+    assert.equal(terminalTouch(term, 'touchmove', [[140, 101]]).prevented, false, 'A new gesture is independent');
+    state.destroy();
+  });
+}
+
+test('reset during history review cancels the drag without bypassing queued writes', async () => {
+  const { ctx, state } = await openedTerminal({}, { mobile: true });
+  const { term, ws } = ctx.termState;
+  ws.onopen();
+  retainedTerminalHistory(term);
+  terminalTouch(term, 'touchstart', [[100, 100]]);
+  terminalTouch(term, 'touchmove', [[100, 140]]);
+  term.deferWrites = true;
+  ws.onmessage({ data: new TextEncoder().encode('in flight').buffer });
+  await flushMicrotasks();
+  ws.onmessage({ data: '{"type":"reset","cols":99,"rows":31}' });
+  ws.onmessage({ data: new TextEncoder().encode('snapshot').buffer });
+  assert.equal(ctx.termState.historyGesture, null);
+  assert.match(state.terminalHistoryNotice, /refreshed.*replaced/);
+  terminalTouch(term, 'touchstart', [[100, 100]]);
+  assert.equal(ctx.termState.historyGesture, null, 'a pending reset cannot start another drag');
+  await flushMicrotasks();
+  assert.equal(term.resets, 0);
+  term.writeCallbacks.shift()();
+  await flushMicrotasks();
+  assert.deepEqual(term.operations.slice(-4), [['write', 'in flight'], ['reset'], ['resize', 99, 31], ['write', 'snapshot']]);
+  assert.equal(state.terminalHistoryReviewing, false);
+  assert.equal(state.terminalHasHistory, false);
+  term.writeCallbacks.shift()();
+  state.destroy();
+});
+
+for (const mobile of [false, true]) for (const writable of [false, true]) {
+  test(`queued native scroll waits for reset rendering: mobile=${mobile}, writable=${writable}`, async () => {
+    const { ctx, state } = await openedTerminal({}, { mobile });
+    state.setTerminalRW(writable);
+    const { term, ws } = ctx.termState;
+    ws.onopen();
+    assert.equal(terminalTouch(term, 'scroll').stopped, false);
+    term.deferWrites = true;
+    ws.onmessage({ data: new TextEncoder().encode('pending').buffer });
+    await flushMicrotasks();
+    ws.onmessage({ data: '{"type":"reset","cols":80,"rows":24}' });
+    await flushMicrotasks();
+    assert.equal(terminalTouch(term, 'scroll').stopped, false, 'Pending writes still use the rendered viewport');
+    term.writeCallbacks.shift()();
+    await flushMicrotasks();
+    const first = term.historyListeners.render.at(-1);
+    assert.equal(terminalTouch(term, 'scroll').stopped, true);
+    ws.onmessage({ data: '{"type":"reset","cols":80,"rows":24}' });
+    await flushMicrotasks();
+    assert.equal(first.disposed, true);
+    first.handler();
+    assert.equal(terminalTouch(term, 'scroll').stopped, true, 'An obsolete render cannot release a newer reset');
+    term.emitHistory('render');
+    assert.equal(ctx.termState.resetRenderDisposable, null);
+    assert.equal(terminalTouch(term, 'scroll').stopped, false, 'Normal interaction resumes after rendering');
+    assert.equal(state.terminalRW, writable);
+    assert.ok(ws.sent.every(frame => frame.type !== 'input'));
+    ws.onmessage({ data: '{"type":"reset","cols":80,"rows":24}' });
+    await flushMicrotasks();
+    const last = term.historyListeners.render.at(-1);
+    state._destroyTerminal();
+    assert.equal(last.disposed, true);
+    assert.equal(ctx.termState.resetScrollTerm, null);
+    assert.equal(ctx.termState.resetRenderDisposable, null);
+    state.destroy();
+  });
+}
+
+test('only the latest queued reset enables terminal history gestures', async () => {
+  const { ctx, state } = await openedTerminal({}, { mobile: true });
+  const { term, ws } = ctx.termState;
+  ws.onopen();
+  term.deferWrites = true;
+  ws.onmessage({ data: '{"type":"reset","cols":80,"rows":24}' });
+  ws.onmessage({ data: new TextEncoder().encode('first snapshot').buffer });
+  ws.onmessage({ data: '{"type":"reset","cols":90,"rows":30}' });
+  await flushMicrotasks();
+  retainedTerminalHistory(term);
+  terminalTouch(term, 'touchstart', [[100, 100]]);
+  assert.equal(ctx.termState.historyGesture, null);
+  term.writeCallbacks.shift()();
+  await flushMicrotasks();
+  retainedTerminalHistory(term);
+  terminalTouch(term, 'touchstart', [[100, 100]]);
+  assert.ok(ctx.termState.historyGesture);
+  state.destroy();
+});
+
+test('history subscriptions survive stream and subject reuse, and dispose with their terminal instance', async () => {
+  const { ctx, state } = await openedTerminal({}, { mobile: true });
+  const { term } = ctx.termState;
+  const subscriptions = [...ctx.termState.historyDisposables];
+  const host = term.element.parentNode;
+  const callbacks = host.touchListeners.slice();
+  state._disconnectStream();
+  assert.ok(subscriptions.every(row => !row.disposed));
+  await state.selectTicket({ id: 'tst-002', status: 'in_progress' });
+  await flushMicrotasks();
+  assert.equal(ctx.termState.term, term);
+  assert.equal(ctx.termState.historyDisposables.length, subscriptions.length);
+  ctx.termState.ws.onopen();
+  retainedTerminalHistory(term, { baseY: 50, viewportY: 20 });
+  assert.equal(state.terminalHistoryReviewing, true);
+  state._destroyTerminal();
+  assert.ok(Object.values(term.historyListeners).flat().every(row => row.disposed));
+  assert.ok(callbacks.every(row => row.disposed));
+  state._createTerminal(host);
+  const replacement = ctx.termState.term;
+  state.terminalConnected = true;
+  retainedTerminalHistory(replacement);
+  terminalTouch(replacement, 'touchstart', [[100, 100]]);
+  const gesture = ctx.termState.historyGesture;
+  for (const row of Object.values(term.historyListeners).flat()) row.handler();
+  for (const row of callbacks) row.handler({ touches: [], cancelable: true });
+  assert.equal(ctx.termState.historyGesture, gesture, 'obsolete listeners cannot cancel a replacement gesture');
+  assert.equal(state.terminalHasHistory, true);
+  assert.equal(state.terminalHistoryReviewing, false);
+  state.destroy();
+});
+
+test('obsolete stream resets and disconnects cannot interrupt a current history gesture', async () => {
+  const { ctx, state } = await openedTerminal({}, { mobile: true });
+  const { term, ws: old } = ctx.termState;
+  state._connectWs(state._terminalSeq);
+  const current = ctx.termState.ws;
+  current.onopen();
+  retainedTerminalHistory(term);
+  terminalTouch(term, 'touchstart', [[100, 100]]);
+  const gesture = ctx.termState.historyGesture;
+  old.onmessage({ data: '{"type":"reset","cols":99,"rows":31}' });
+  old.onclose();
+  old.onerror();
+  await flushMicrotasks();
+  assert.equal(ctx.termState.historyGesture, gesture);
+  assert.equal(ctx.termState.ws, current);
+  assert.equal(state.terminalHistoryNotice, '');
+  assert.equal(term.resets, 0);
+  assert.equal(terminalTouch(term, 'touchmove', [[100, 140]]).prevented, true);
+  state.destroy();
+});
+
+test('current terminal Activity targets runningRun instead of an older explicit selection', () => {
+  for (const mobile of [false, true]) for (const epic of [false, true]) {
+    const state = loadKontoraState();
+    const subject = { id: 'live', status: 'in_progress', stage: 'code',
+      history: [{ stage: 'code' }, { stage: 'review' }, { stage: 'code' }],
+      ...(epic ? { kind: 'epic', epic_execution: 'agent' } : {}) };
+    Object.assign(state, { isMobile: mobile, selectedTicket: epic ? null : subject, selectedEpic: epic ? subject : null,
+      activityStage: 'review', activityRun: 0, _activityExplicit: true, terminalHistoryNotice: 'Current Activity is not available yet.' });
+    const opened = [];
+    state.openActivity = (stage, run) => opened.push([stage, run]);
+    assert.equal(state.terminalCurrentActivityAvailable(), true);
+    assert.equal(state.openCurrentTerminalActivity(), true);
+    assert.deepEqual(opened, [['code', 2]]);
+    assert.equal(state.terminalHistoryNotice, '');
+  }
+  for (const subject of [null, { id: 'live', status: 'in_progress' },
+    { id: 'live', status: 'done', stage: 'code' }, { id: 'live', status: 'in_progress', stage: 'code', source: 'remote' },
+    { id: 'auto', kind: 'automation', n: 3, status: 'in_progress', stage: 'code' },
+    { id: 'live', status: 'in_progress', stage: 'pause', graph_definition: { nodes: [{ id: 'pause', type: 'wait' }] } },
+  ]) {
+    const state = loadKontoraState();
+    state.selectedTicket = subject;
+    state.openActivity = () => assert.fail('unaddressable current run opened unrelated Activity');
+    assert.equal(state.terminalCurrentActivityAvailable(), false);
+    assert.equal(state.openCurrentTerminalActivity(), false);
+    assert.match(state.terminalHistoryNotice, /Current Activity.*not available/);
   }
 });
 
@@ -1263,11 +1627,123 @@ for (const action of ['toggle', 'ticket', 'reopen', 'disconnect']) {
   });
 }
 
+for (const mobile of [false, true]) for (const rw of [false, true]) {
+  test(`stationary viewers accept shared pane resizes: mobile=${mobile} rw=${rw}`, async () => {
+    const viewers = [];
+    for (const dimensions of [{ cols: 120, rows: 40 }, { cols: 40, rows: 25 }]) {
+      const viewer = await openedTerminal({}, { mobile });
+      if (rw) viewer.state.setTerminalRW(true);
+      viewer.ctx.termState.fit.dimensions = dimensions;
+      viewer.ctx.termState.ws.onopen();
+      viewers.push(viewer);
+    }
+    const pending = viewers.flatMap(viewer => viewer.ctx.termState.ws.sent.splice(0));
+    let requests = 0;
+    while (pending.length && requests < 10) {
+      const frame = pending.shift();
+      for (const { ctx, state } of viewers) {
+        const { ws } = ctx.termState;
+        ws.onmessage({ data: JSON.stringify({ ...frame, type: 'reset' }) });
+        await flushMicrotasks();
+        state.refitTerminal();
+        pending.push(...ws.sent.splice(0));
+      }
+      requests++;
+    }
+    assert.equal(requests, 2, 'Only the initial local sizes resize the shared pane');
+    assert.equal(pending.length, 0, 'Peer snapshots and unchanged layout measurements cannot start resize feedback');
+    for (const { ctx, state } of viewers) {
+      assert.deepEqual([ctx.termState.term.cols, ctx.termState.term.rows], [40, 25]);
+      ctx.termState.fit.dimensions = { cols: 60, rows: 30 };
+      state.refitTerminal();
+      state.refitTerminal();
+      assert.deepEqual(ctx.termState.ws.sent, [{ type: 'resize', cols: 60, rows: 30 }], 'A real local layout change requests its size once');
+      state.destroy();
+    }
+  });
+
+  test(`an applied delayed pane reset requests the current host size: mobile=${mobile} rw=${rw}`, async () => {
+    const frames = [];
+    const { ctx, state } = await openedTerminal({ requestAnimationFrame: callback => { frames.push(callback); return frames.length; } }, { mobile });
+    frames.shift()();
+    if (rw) state.setTerminalRW(true);
+    const { term, fit, ws } = ctx.termState;
+    ws.onopen();
+    term.resize(80, 44);
+    fit.dimensions = { cols: 80, rows: 45 };
+    state.refitTerminal();
+    assert.deepEqual(ws.sent, [{ type: 'resize', cols: 80, rows: 45 }]);
+    fit.dimensions = { cols: 80, rows: 44 };
+    state.refitTerminal();
+    assert.equal(ws.sent.length, 2, 'Returning to the old grid must supersede the pending size request');
+    const fits = fit.fits;
+    term.deferWrites = true;
+    ws.onmessage({ data: new TextEncoder().encode('in flight').buffer });
+    await flushMicrotasks();
+    ws.onmessage({ data: '{"type":"reset","cols":80,"rows":45}' });
+    ws.onmessage({ data: new TextEncoder().encode('delayed snapshot').buffer });
+    await flushMicrotasks();
+    assert.equal(term.rows, 44, 'the reset still waits for pending writes');
+    assert.equal(frames.length, 0, 'refitting waits until the reset applies');
+    term.writeCallbacks.shift()();
+    await flushMicrotasks();
+    assert.deepEqual(term.operations.slice(-3), [['reset'], ['resize', 80, 45], ['write', 'delayed snapshot']]);
+    assert.equal(ws.sent.length, 2, 'Applying the older snapshot cannot request another resize');
+    frames.shift()();
+    assert.deepEqual(ws.sent, [{ type: 'resize', cols: 80, rows: 45 }, { type: 'resize', cols: 80, rows: 44 }]);
+    assert.equal(term.rows, 45, 'only the pane server changes the local grid');
+    assert.equal(fit.fits, fits, 'the client only proposes dimensions for pane streams');
+    ws.onmessage({ data: '{"type":"reset","cols":80,"rows":44}' });
+    ws.onmessage({ data: new TextEncoder().encode('current snapshot').buffer });
+    await flushMicrotasks();
+    assert.equal(term.rows, 45, 'the corrective reset also respects snapshot write ordering');
+    term.writeCallbacks.shift()();
+    await flushMicrotasks();
+    assert.deepEqual(term.operations.slice(-3), [['reset'], ['resize', 80, 44], ['write', 'current snapshot']]);
+    frames.shift()();
+    assert.equal(ws.sent.length, 2, 'a matching server grid needs no further resize');
+    term.writeCallbacks.shift()();
+    state.destroy();
+  });
+}
+
+for (const boundary of ['stream', 'subject', 'sequence', 'terminal', 'disconnect', 'close', 'new reset']) {
+  test(`an applied reset cannot refit after ${boundary}`, async () => {
+    const frames = [];
+    const { ctx, state } = await openedTerminal({ requestAnimationFrame: callback => { frames.push(callback); return frames.length; } });
+    frames.shift()();
+    const { term, ws } = ctx.termState;
+    ws.onopen();
+    ws.onmessage({ data: '{"type":"reset","cols":90,"rows":30}' });
+    await flushMicrotasks();
+    assert.equal(term.rows, 30);
+    const refit = frames.shift();
+    assert.equal(typeof refit, 'function');
+    switch (boundary) {
+      case 'stream': state._connectWs(state._terminalSeq); break;
+      case 'subject': state.selectedTicket = { id: 'tst-002', status: 'in_progress' }; break;
+      case 'sequence': state._terminalSeq++; break;
+      case 'terminal': state._destroyTerminal(); state._createTerminal(term.element.parentNode); break;
+      case 'disconnect': ws.onclose(); break;
+      case 'close': state.closeTerminal(); break;
+      case 'new reset': ws.onmessage({ data: '{"type":"reset","cols":95,"rows":32}' }); await flushMicrotasks(); break;
+    }
+    let refits = 0;
+    state.refitTerminal = () => { refits++; };
+    refit();
+    assert.equal(refits, 0, 'obsolete layout callbacks cannot affect another stream or subject');
+    assert.deepEqual(ws.sent, []);
+    state.destroy();
+  });
+}
+
 test("refit requests proposed dimensions without resizing or clearing the terminal", async () => {
   const { ctx, state } = await liveTerminal();
   const { term, fit, ws } = ctx.termState;
   ws.onmessage({ data: '{"type":"reset","cols":100,"rows":30}' });
   await flushMicrotasks();
+  assert.deepEqual(ws.sent, [], 'Peer snapshots cannot reassert unchanged local dimensions');
+  ws.sent.length = 0;
   const operations = term.operations.length;
   fit.dimensions = { cols: 120, rows: 40 };
   state.refitTerminal();
@@ -1632,7 +2108,8 @@ for (const subject of ['ticket', 'epic']) {
     assert.deepEqual(rw.sent, []);
     state.mobileBeginTerminalCompose(composer);
     state.mobileBeginTerminalDirect();
-    assert.equal(dom.document.activeElement, composer, 'direct entry waits for a user tap on xterm');
+    assert.notEqual(dom.document.activeElement, composer, 'direct entry releases the native composer');
+    assert.equal(textarea.focuses.length, 0, 'direct entry waits for a user tap on xterm');
     textarea.focus();
     dom.document.emit('focusin', { target: textarea });
     assert.equal(state.mobileTerminalInputTarget, 'terminal');
@@ -1648,7 +2125,7 @@ for (const subject of ['ticket', 'epic']) {
     assert.equal(ctx.termState.ws, ro, 'Done is idempotent');
     assert.equal(state.mobileTerminalInputTarget, null);
     assert.equal(state.terminalRW, false);
-    assert.equal(composer.blurs, 1);
+    assert.equal(composer.blurs, 2, 'direct entry and Done each release composer focus');
     assert.equal(state.mobileComposeDraft, 'first\nsecond');
     state.destroy();
   });
@@ -1896,6 +2373,30 @@ for (const subject of ['ticket', 'epic']) {
     await flushMicrotasks();
     assert.doesNotMatch(ctx.termState.ws.url, /rw=1/);
     assert.equal(ctx.termState.term, term, 'reconnect reuses xterm');
+    state.destroy();
+  });
+}
+
+for (const subject of ['ticket', 'epic']) for (const socketOpens of [false, true]) {
+  test(`mobile ${subject} direct input survives reading-header focusout, socket opens=${socketOpens}`, async () => {
+    const { state, ctx, dom } = await inlineMobileTerminal(subject);
+    const bar = dom.node({ class: 'mobile-terminal-bar mobile-reading-bar' });
+    const back = dom.node({}, bar);
+    back.focus();
+    state.mobileBeginTerminalDirect();
+    const rw = ctx.termState.ws;
+    if (socketOpens) {
+      rw.readyState = 1;
+      rw.onopen();
+    }
+    back.blur();
+    dom.document.emit('focusout', { target: back });
+    await flushMicrotasks();
+    assert.equal(state.mobileTerminalInputTarget, 'terminal');
+    assert.equal(state.terminalRW, true);
+    assert.equal(state.terminalConnected, socketOpens);
+    assert.equal(ctx.termState.ws, rw);
+    assert.equal(dom.document.activeElement, null, 'socket readiness cannot open the keyboard');
     state.destroy();
   });
 }
@@ -3846,7 +4347,10 @@ test('both phone terminals use mounted native inline composers without a Compose
     assert.match(dock, /@pointerdown.prevent @click="submitComposeMobile\(\)"/);
     assert.match(dock, /:disabled="!terminalRW \|\| !terminalConnected \|\| !mobileComposeDraft.trim\(\)"/);
   }
-  assert.equal([...html.matchAll(/@pointerdown.prevent @click="sendTerminalKey\(key.bytes\)"/g)].length, 2);
+  assert.equal([...html.matchAll(/@pointerdown.prevent @click="sendTerminalKey\(key.bytes\)"/g)].length, 4);
+  assert.equal([...html.matchAll(/x-for="key in terminalEssentialKeys\(\)"/g)].length, 2);
+  assert.equal([...html.matchAll(/x-for="key in terminalSecondaryKeys\(\)"/g)].length, 2);
+  assert.equal([...html.matchAll(/x-show="mobileTerminalInputTarget === 'terminal'" class="mobile-terminal-keys"/g)].length, 2);
   assert.equal([...html.matchAll(/@pointerdown.prevent @click="mobileFinishTerminalInput\(\)"/g)].length, 2);
   assert.doesNotMatch(html + uiSource, /openComposeSheet|sheet\.type\s*===?\s*'compose'|compose:\s*'Compose'/);
   assert.doesNotMatch(html, />Compose<\/button>|Enable input|Done typing/);
@@ -3876,6 +4380,7 @@ test("mobile typography, focus and motion contracts stay phone-scoped", () => {
   assert.match(css, /--mobile-text-body:\s*16px/);
   assert.match(css, /--mobile-text-label:\s*14px/);
   assert.match(css, /--mobile-text-meta:\s*13px/);
+  assert.match(css, /\.mobile-detail\.mobile-terminal-reading \.mobile-terminal-dock \{ padding-bottom:max\(8px,env\(safe-area-inset-bottom\)\)/);
   const mobile = [...css.matchAll(/@media \(max-width:767px\) \{((?:[^{}]|\{[^{}]*\})*)\}/g)]
     .map(([, rules]) => rules).join('\n');
   assert.ok(mobile);
@@ -12733,8 +13238,10 @@ test('phone Output retains activity controls, shared scroller, selectors and fou
   }
   const toolbar = html.split('class="mobile-output-toolbar detail-shared"')[1].split('<!-- terminal')[0];
   assert.match(toolbar, /@change="selectOutputRun\(\$event.target.value\)"/);
-  assert.match(toolbar, /@change="mobileSwitchTab\(\$event.target.value\)"/);
-  for (const view of ['terminal', 'activity', 'logs']) assert.ok(toolbar.includes(`value="${view}"`), view + ' remains reachable within Output');
+  const modes = html.split('class="mobile-output-row"').find(part => part.includes('aria-label="Output view"')).split('</select>')[0];
+  assert.match(modes, /@change="mobileSwitchTab\(\$event.target.value\)"/);
+  assert.doesNotMatch(toolbar, /aria-label="Output view"/);
+  for (const view of ['terminal', 'activity', 'logs']) assert.ok(modes.includes(`value="${view}"`), view + ' remains reachable within Output');
   assert.doesNotMatch(tabs, /text-transform:uppercase|letter-spacing:|JetBrains Mono/);
 });
 

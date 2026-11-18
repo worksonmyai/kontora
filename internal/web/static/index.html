@@ -5557,7 +5557,16 @@
 
     <!-- ===== Ticket detail (full-screen overlay) ===== -->
     <template x-if="selectedEpic && currentView === 'board'">
-      <section class="mobile-epic fixed inset-0 z-40 bg-surface-950 flex flex-col" :class="{ 'mobile-terminal-compact': mobileTerminalCompact(), 'mobile-terminal-typing': mobileTerminalTyping() }" aria-label="Epic overview">
+      <section class="mobile-epic fixed inset-0 z-40 bg-surface-950 flex flex-col" :class="{ 'mobile-terminal-reading': mobileTerminalReading(), 'mobile-terminal-compact': mobileTerminalCompact(), 'mobile-terminal-typing': mobileTerminalTyping() }" aria-label="Epic overview">
+        <div x-show="mobileTerminalReading()" class="mobile-detail-header mobile-reading-header">
+          <div class="mobile-terminal-bar mobile-reading-bar">
+            <button type="button" @click="closeEpic()" aria-label="Back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 18l-6-6 6-6"/></svg></button>
+            <span class="mobile-terminal-dot" :class="terminalConnected ? 'connected' : ''" :aria-label="terminalConnected ? 'Connected' : 'Not connected'" role="status"></span>
+            <span class="mobile-terminal-title" x-text="selectedEpic?.id + ' · ' + selectedEpic?.title"></span>
+            <button type="button" x-show="mobileTerminalPause()" @click="mobilePauseTerminal()" :disabled="lifecycleBusy(selectedEpic)" title="Stops only the supervisor. Child agents keep running.">Pause</button>
+            <button type="button" @click="sheet = { type: 'navigation' }" aria-label="More" aria-haspopup="dialog">More</button>
+          </div>
+        </div>
         <div x-show="mobileTerminalTyping()" class="mobile-detail-header mobile-epic-typing-header">
           <div class="mobile-terminal-bar">
             <button type="button" @click="closeEpic()" aria-label="Back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 18l-6-6 6-6"/></svg></button>
@@ -5689,9 +5698,18 @@
                       class="font-mono text-[10px] px-2 py-1 rounded-md border border-edge-input text-tx-3">⧉ raw</button>
             </div>
             <div x-show="epicTab === 'session'" class="flex-1 min-h-0 flex flex-col">
+              <div x-show="mobileTerminalReading()" class="mobile-output-row">
+                <button type="button" @click="epicRunDetails()">Run details</button>
+                <div class="mobile-history-controls">
+                  <button type="button" x-show="terminalHistoryReviewing" @click="scrollLogToEnd()">Jump to live</button>
+                  <span x-show="terminalBufferType === 'alternate'">Screen history unavailable</span>
+                  <button type="button" x-show="terminalBufferType === 'alternate'" @click="openCurrentTerminalActivity()">View Activity</button>
+                </div>
+              </div>
               <p x-show="!executionActive(outputSubject())" class="p-4 font-mono text-xs text-surface-600" x-text="outputNoRunText()"></p>
               <div x-show="executionActive(outputSubject())" class="flex-1 min-h-0 flex flex-col">
                 <span class="mobile-terminal-status" role="status" x-text="terminalConnected ? (mobileTerminalInputTarget === 'terminal' ? 'Tap terminal to type' : 'Connected') : (terminalError ? 'Disconnected' : 'Connecting…')"></span>
+                <span x-show="terminalHistoryNotice" role="status" class="mobile-history-notice" x-text="terminalHistoryNotice"></span>
                 <div x-show="terminalError" class="mobile-terminal-error shrink-0 px-3 pb-3 flex items-center gap-3 font-mono text-xs text-err" role="alert">
                   <span class="whitespace-pre-wrap break-words" x-text="terminalError"></span>
                   <button type="button" @click="reconnectTerminal()" class="shrink-0 underline">retry connection</button>
@@ -5700,11 +5718,17 @@
                   <div id="epic-terminal-mobile" class="mobile-terminal-host"></div>
                 </div>
                 <div x-show="mobileCanCompose()" class="mobile-terminal-dock">
-                  <div x-show="mobileTerminalTyping()" class="mobile-terminal-keys" role="group" aria-label="Terminal keys">
-                    <template x-for="key in terminalKeys" :key="key.name">
+                  <div x-show="mobileTerminalInputTarget === 'terminal'" class="mobile-terminal-keys" role="group" aria-label="Terminal keys">
+                    <template x-for="key in terminalEssentialKeys()" :key="key.name">
                       <button type="button" @pointerdown.prevent @click="sendTerminalKey(key.bytes)"
                               :aria-label="key.name" :disabled="!terminalRW || !terminalConnected" x-text="key.label"></button>
                     </template>
+                    <div class="mobile-terminal-secondary" aria-label="More terminal keys">
+                      <template x-for="key in terminalSecondaryKeys()" :key="key.name">
+                        <button type="button" @pointerdown.prevent @click="sendTerminalKey(key.bytes)"
+                                :aria-label="key.name" :disabled="!terminalRW || !terminalConnected" x-text="key.label"></button>
+                      </template>
+                    </div>
                   </div>
                   <div class="mobile-terminal-compose-row">
                     <textarea id="mobile-epic-terminal-compose" x-ref="mobileEpicTerminalCompose" data-mobile-terminal-input
@@ -5712,7 +5736,7 @@
                               @focus="mobileBeginTerminalCompose($el)" @input="mobileResizeCompose($el)"
                               @keydown.escape.stop.prevent="mobileFinishTerminalInput()" rows="1" aria-label="Message the agent"
                               placeholder="Message the agent…" class="mobile-terminal-compose"></textarea>
-                    <button type="button" x-show="!mobileTerminalTyping()" @pointerdown.prevent @click="mobileBeginTerminalDirect()" class="mobile-terminal-direct">Type in terminal</button>
+                    <button type="button" x-show="mobileTerminalInputTarget !== 'terminal'" @pointerdown.prevent @click="mobileBeginTerminalDirect()" class="mobile-terminal-direct">Type in terminal</button>
                     <button type="button" x-show="mobileTerminalTyping()" @pointerdown.prevent @click="submitComposeMobile()"
                             :disabled="!terminalRW || !terminalConnected || !mobileComposeDraft.trim()" class="mobile-terminal-send">Send</button>
                   </div>
@@ -5811,9 +5835,16 @@
       </section>
     </template>
 
-    <div :style="{ display: isMobile && selectedTicket && currentView === 'board' ? 'flex' : 'none' }" x-cloak tabindex="-1" class="mobile-detail detail-enter" :class="{ 'mobile-terminal-compact': mobileTerminalCompact(), 'mobile-terminal-typing': mobileTerminalTyping(), 'mobile-editor-focus': mobileDescriptionFocused(), 'mobile-output-inspection': mobilePanel() === 'output' && detailTab !== 'terminal', 'mobile-terminal-view': detailTab === 'terminal', 'mobile-terminal-tight': mobileViewportHeight > 0 && mobileViewportHeight < 600 }">
+    <div :style="{ display: isMobile && selectedTicket && currentView === 'board' ? 'flex' : 'none' }" x-cloak tabindex="-1" class="mobile-detail detail-enter" :class="{ 'mobile-terminal-reading': mobileTerminalReading(), 'mobile-terminal-compact': mobileTerminalCompact(), 'mobile-terminal-typing': mobileTerminalTyping(), 'mobile-editor-focus': mobileDescriptionFocused(), 'mobile-output-inspection': mobilePanel() === 'output' && detailTab !== 'terminal', 'mobile-terminal-view': detailTab === 'terminal', 'mobile-terminal-tight': mobileViewportHeight > 0 && mobileViewportHeight < 600 }">
       <!-- header -->
       <div class="mobile-detail-header">
+        <div x-show="mobileTerminalReading()" class="mobile-terminal-bar mobile-reading-bar">
+          <button type="button" @click="closeDetail()" aria-label="Back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 18l-6-6 6-6"/></svg></button>
+          <span class="mobile-terminal-dot" :class="terminalConnected ? 'connected' : ''" :aria-label="terminalConnected ? 'Connected' : 'Not connected'" role="status"></span>
+          <span class="mobile-terminal-title" x-text="selectedTicket?.id + ' · ' + selectedTicket?.title"></span>
+          <button type="button" x-show="mobileTerminalPause()" @click="mobilePauseTerminal()" :disabled="lifecycleBusy(selectedTicket)" :title="epicIsAgent(selectedTicket) ? 'Stops only the supervisor. Child agents keep running.' : 'Pause ticket'">Pause</button>
+          <button type="button" @click="sheet = { type: 'navigation' }" aria-label="More" aria-haspopup="dialog">More</button>
+        </div>
         <div x-show="mobileTerminalTyping()" class="mobile-terminal-bar">
           <button type="button" @click="closeDetail()" aria-label="Back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 18l-6-6 6-6"/></svg></button>
           <span class="mobile-terminal-dot" :class="terminalConnected ? 'connected' : ''" aria-hidden="true"></span>
@@ -5905,10 +5936,19 @@
 
         <div x-show="mobilePanel() === 'notes'" class="flex-1 min-h-0" x-html="detailNotesMarkup"></div>
         <div x-show="mobilePanel() === 'changes'" class="mobile-ticket-pane overflow-y-auto" x-html="detailChangesMarkup"></div>
+        <div x-show="mobilePanel() === 'output' && !mobileTerminalTyping()" class="mobile-output-row">
+          <select aria-label="Output view" :value="detailTab" @change="mobileSwitchTab($event.target.value)" :disabled="isSecondary(selectedTicket) || importedRun(activityStage, activityRun)">
+            <option value="terminal" :disabled="!executionActive(selectedTicket)">Terminal</option><option value="activity">Activity</option><option value="logs">Stage logs</option>
+          </select>
+          <div x-show="detailTab === 'terminal'" class="mobile-history-controls">
+            <button type="button" x-show="terminalHistoryReviewing" @click="scrollLogToEnd()">Jump to live</button>
+            <span x-show="terminalBufferType === 'alternate'">Screen history unavailable</span>
+            <button type="button" x-show="terminalBufferType === 'alternate'" @click="openCurrentTerminalActivity()">View Activity</button>
+          </div>
+        </div>
         <div x-show="mobilePanel() === 'output'" class="mobile-output-toolbar detail-shared" :class="{ 'mobile-output-evidence-only': isSecondary(selectedTicket) || importedRun(activityStage, activityRun) }">
           <div x-show="!isSecondary(selectedTicket)" class="detail-output-selectors">
             <label class="detail-field"><span>Run</span><select aria-label="Run" :value="outputRunKey()" @change="selectOutputRun($event.target.value)" :disabled="!outputRuns().length"><option x-show="!outputRuns().length" value="">No recorded runs</option><template x-for="r in outputRuns()" :key="r.key"><option :value="r.key" :selected="r.key === outputRunKey()" x-text="r.label"></option></template></select></label>
-            <label class="detail-field"><span>Output view</span><select aria-label="Output view" :value="detailTab" @change="mobileSwitchTab($event.target.value)" :disabled="isSecondary(selectedTicket) || importedRun(activityStage, activityRun)"><option value="terminal" :disabled="!executionActive(selectedTicket)">Terminal</option><option value="activity">Activity</option><option value="logs">Stage logs</option></select></label>
           </div>
           <template x-if="!isSecondary(selectedTicket)"><div x-html="detailRunEvidenceMarkup"></div></template>
           <template x-if="isSecondary(selectedTicket)"><div><p class="text-sm text-tx-3 py-3">Imported history is readable here. Local transcripts, logs and terminal are unavailable until a permitted claim.</p><div x-html="detailHistoryMarkup"></div></div></template>
@@ -5917,6 +5957,7 @@
         <!-- terminal (live execution): imperative host remains outside extraction -->
         <div x-show="!isSecondary(selectedTicket) && detailTab==='terminal'" class="mobile-terminal-pane">
           <span class="mobile-terminal-status" role="status" x-text="terminalConnected ? (mobileTerminalInputTarget === 'terminal' ? 'Tap terminal to type' : 'Connected') : (terminalError ? 'Disconnected' : 'Connecting…')"></span>
+          <span x-show="terminalHistoryNotice" role="status" class="mobile-history-notice" x-text="terminalHistoryNotice"></span>
           <div x-show="terminalError" class="mobile-terminal-error shrink-0 px-3 pb-3 flex items-center gap-3 font-mono text-xs text-err" role="alert">
             <span class="whitespace-pre-wrap break-words" x-text="terminalError"></span>
             <button type="button" @click="reconnectTerminal()" class="shrink-0 underline">retry connection</button>
@@ -5925,11 +5966,17 @@
             <div id="terminal-container-mobile" class="mobile-terminal-host"></div>
           </div>
           <div x-show="mobileCanCompose()" class="mobile-terminal-dock">
-            <div x-show="mobileTerminalTyping()" class="mobile-terminal-keys" role="group" aria-label="Terminal keys">
-              <template x-for="key in terminalKeys" :key="key.name">
+            <div x-show="mobileTerminalInputTarget === 'terminal'" class="mobile-terminal-keys" role="group" aria-label="Terminal keys">
+              <template x-for="key in terminalEssentialKeys()" :key="key.name">
                 <button type="button" @pointerdown.prevent @click="sendTerminalKey(key.bytes)"
                         :aria-label="key.name" :disabled="!terminalRW || !terminalConnected" x-text="key.label"></button>
               </template>
+              <div class="mobile-terminal-secondary" aria-label="More terminal keys">
+                <template x-for="key in terminalSecondaryKeys()" :key="key.name">
+                  <button type="button" @pointerdown.prevent @click="sendTerminalKey(key.bytes)"
+                          :aria-label="key.name" :disabled="!terminalRW || !terminalConnected" x-text="key.label"></button>
+                </template>
+              </div>
             </div>
             <div class="mobile-terminal-compose-row">
               <textarea id="mobile-terminal-compose" x-ref="mobileTerminalCompose" data-mobile-terminal-input
@@ -5937,7 +5984,7 @@
                         @focus="mobileBeginTerminalCompose($el)" @input="mobileResizeCompose($el)"
                         @keydown.escape.stop.prevent="mobileFinishTerminalInput()" rows="1" aria-label="Message the agent"
                         placeholder="Message the agent…" class="mobile-terminal-compose"></textarea>
-              <button type="button" x-show="!mobileTerminalTyping()" @pointerdown.prevent @click="mobileBeginTerminalDirect()" class="mobile-terminal-direct">Type in terminal</button>
+              <button type="button" x-show="mobileTerminalInputTarget !== 'terminal'" @pointerdown.prevent @click="mobileBeginTerminalDirect()" class="mobile-terminal-direct">Type in terminal</button>
               <button type="button" x-show="mobileTerminalTyping()" @pointerdown.prevent @click="submitComposeMobile()"
                       :disabled="!terminalRW || !terminalConnected || !mobileComposeDraft.trim()" class="mobile-terminal-send">Send</button>
             </div>
@@ -6193,6 +6240,8 @@
                   <span x-text="view.label"></span><span class="mobile-navigation-count" x-text="mobileNavigationCount(view.key)"></span>
                 </button>
               </template>
+              <button type="button" @click="closeSheet(); openAssistantSheet()">Assistant</button>
+              <button type="button" x-show="ticketCanControl(selectedTicket || selectedEpic)" @click="openActionsSheet(selectedTicket || selectedEpic)">Ticket actions</button>
               <button type="button" @click="closeSheet(); $refs.uploadInput.click()">Upload .md files</button>
             </nav>
           </template>

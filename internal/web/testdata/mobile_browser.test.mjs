@@ -834,7 +834,11 @@ async function closeFixtureContext(context) {
 }
 
 async function withPage(t, width, theme, run, options = {}) {
-  const context = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: theme,
+  const viewport = { width, height: options.video ? options.height || 900 : 900 };
+  const videoPath = options.video ? join(options.video, engine, 'mobile-terminal-demo.webm') : null;
+  if (videoPath) await mkdir(join(options.video, engine), { recursive: true });
+  const context = await browser.newContext({ viewport, colorScheme: theme,
+    ...(videoPath ? { recordVideo: { dir: join(options.video, engine), size: viewport } } : {}),
     reducedMotion: options.reducedMotion || 'reduce', hasTouch: options.hasTouch || false, serviceWorkers: 'block', locale: 'en-US', timezoneId: 'UTC' });
   const fixture = fixtures(options), errors = [];
   await fixture.install(context);
@@ -862,6 +866,7 @@ async function withPage(t, width, theme, run, options = {}) {
     };
   }, { theme, sidebar: options.sidebar, savedThread: options.savedThread, assistantOpen: options.assistantOpen, base });
   const page = await context.newPage();
+  const video = videoPath ? page.video() : null;
   page.setDefaultTimeout(4000);
   page.setDefaultNavigationTimeout(15000);
   page.on('pageerror', error => errors.push(error.stack || error.message));
@@ -887,6 +892,7 @@ async function withPage(t, width, theme, run, options = {}) {
       await fixture.releaseReads();
     } finally {
       await closeFixtureContext(context);
+      if (video) await video.saveAs(videoPath);
     }
     assert.deepEqual(fixture.violations, [], 'Unexpected requests (all must be explicitly modelled)');
     assert.deepEqual(errors, [], 'Browser/Alpine/console errors');
@@ -2473,7 +2479,9 @@ describe('custom execution activity', () => {
       }
       await openTicket(page, active.id);
       await visible(page.getByRole('button', { name: /^pause$/i }).filter({ visible: true }));
+      if (width < 768) await detailPanel(page, 'Ticket');
       await visible(page.locator('.status-chip[data-status="awaiting_data"]').filter({ visible: true }).first());
+      if (width < 768) await phoneOutputView(page, 'Terminal');
       await expect.poll(() => fixture.sockets.filter(url => url.pathname === '/ws/terminal/kon-live').length).toBeGreaterThan(0);
       assert.equal(await page.evaluate(() => Alpine.$data(document.body).editorCanEdit()), false);
       assert.equal(await page.evaluate(() => Alpine.$data(document.body).canSetStage()), false);
@@ -2609,6 +2617,7 @@ describe('mobile desktop parity', () => {
           }
         }
         await openTicket(page, 'kon-live');
+        await detailPanel(page, 'Ticket');
         const detail = page.locator('.mobile-detail');
         const secondary = detail.locator('.mobile-detail-secondary');
         await visible(secondary.locator('.pipe-tag'));
@@ -2617,11 +2626,16 @@ describe('mobile desktop parity', () => {
         await fixedColor(detail.locator('.mobile-detail-title .title-tag'), 'color', `hsl(${pipePalettes[theme][1]})`);
         const strip = detail.getByRole('list', { name: 'Pipeline stage progress' });
         await visible(strip);
+        await phoneOutputView(page, 'Terminal');
+        await expect(detail).toHaveClass(/mobile-terminal-reading/);
+        await expect(secondary).toBeHidden();
+        await expect(strip).toBeHidden();
         await page.setViewportSize({ width, height: 360 });
         await expect(secondary).toBeHidden();
         await expect(strip).toBeHidden();
         await page.setViewportSize({ width, height: 900 });
-        await expect(strip).toBeVisible();
+        await expect(secondary).toBeHidden();
+        await expect(strip).toBeHidden();
         await detail.getByRole('button', { name: 'Ticket', exact: true }).click();
         await visible(strip);
         assert.equal(await strip.getByRole('button').count(), 0);
@@ -2763,6 +2777,7 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
         const detail = page.locator('.mobile-detail');
         const tabs = detail.locator('.mobile-detail-tabs');
         const status = detail.locator('.mobile-detail-secondary .status-chip');
+        await detailPanel(page, 'Ticket');
         await visible(status);
         assert.deepEqual(await status.evaluate(el => {
           const css = getComputedStyle(el, '::before');
@@ -3046,18 +3061,43 @@ async function releaseTerminalOpens(page) {
   await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
 }
 
+async function essentialTerminalKeys(page) {
+  const keys = mobileTerminalSurface(page).locator('.mobile-terminal-keys');
+  const secondary = keys.locator('.mobile-terminal-secondary');
+  await expect(secondary).toBeVisible();
+  const scrollLeft = await secondary.evaluate(el => el.scrollLeft);
+  const boxes = [];
+  for (const name of ['Escape', 'Enter', 'Ctrl+C']) {
+    const button = keys.getByRole('button', { name, exact: true });
+    await inViewport(button);
+    const geometry = await button.evaluate(el => {
+      const box = el.getBoundingClientRect(), surface = el.closest('.mobile-detail, .mobile-epic').getBoundingClientRect();
+      return { box: box.toJSON(), outsideScroller: !el.closest('.mobile-terminal-secondary'),
+        withinSurface: box.top >= surface.top && box.bottom <= surface.bottom + 1,
+        hit: el.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)) };
+    });
+    assert.ok(geometry.outsideScroller && geometry.withinSurface && geometry.hit &&
+      geometry.box.width >= 44 && geometry.box.height >= 44, `${name}: ${JSON.stringify(geometry)}`);
+    boxes.push(geometry.box);
+  }
+  assert.ok(boxes.every(box => Math.abs(box.top - boxes[0].top) <= 1), 'Essential keys share one row');
+  assert.equal(await secondary.evaluate(el => el.scrollLeft), scrollLeft, 'Essential keys need no horizontal scrolling');
+}
+
 async function mobileTerminalLayout(page, typing, height, top = 0) {
   const surface = mobileTerminalSurface(page);
   await expect(surface).toHaveClass(typing ? /mobile-terminal-typing/ : /^(?!.*mobile-terminal-typing)/);
   await expect(surface).toHaveClass(typing || height < 500 ? /mobile-terminal-compact/ : /^(?!.*mobile-terminal-compact)/);
-  await expect(surface.locator('.mobile-terminal-bar')).toBeVisible({ visible: typing });
+  await expect(surface.locator('.mobile-terminal-bar:not(.mobile-reading-bar)')).toBeVisible({ visible: typing });
   await expect(surface.locator('.mobile-detail-tabs, nav[aria-label="Epic tabs"]').filter({ visible: true })).toHaveCount(typing ? 0 : 1);
   await expect(surface.locator('.mobile-terminal-toolbar')).toHaveCount(0);
   await expect(surface.locator('.mobile-terminal-status')).toHaveAttribute('role', 'status');
+  const direct = await page.evaluate(() => Alpine.$data(document.body).mobileTerminalInputTarget === 'terminal');
+  await expect(surface.locator('.mobile-terminal-keys')).toBeVisible({ visible: direct });
   const geometry = await surface.evaluate(el => {
     const frame = el.querySelector('.mobile-terminal-frame'), dock = el.querySelector('.mobile-terminal-dock');
     const keys = dock.querySelector('.mobile-terminal-keys'), row = dock.querySelector('.mobile-terminal-compose-row');
-    const bar = el.querySelector('.mobile-terminal-bar');
+    const bar = el.querySelector('.mobile-terminal-bar:not(.mobile-reading-bar)');
     return { overlay: el.getBoundingClientRect().toJSON(), frame: frame.getBoundingClientRect().toJSON(),
       dock: dock.getBoundingClientRect().toJSON(), keys: keys.getBoundingClientRect().toJSON(),
       row: row.getBoundingClientRect().toJSON(), bar: bar.getBoundingClientRect().toJSON(),
@@ -3070,11 +3110,14 @@ async function mobileTerminalLayout(page, typing, height, top = 0) {
   assert.ok(geometry.frame.bottom <= geometry.dock.top + 1 && geometry.row.bottom <= height + top + 1, JSON.stringify(geometry));
   if (typing) {
     near(geometry.bar.height, 48, 'compact bar height');
-    await expect(surface.locator('.mobile-terminal-dot')).toHaveCount(1);
+    await expect(surface.locator('.mobile-terminal-dot:visible')).toHaveCount(1);
     await expect(surface.locator('.mobile-terminal-id')).toHaveText(await page.evaluate(() => Alpine.$data(document.body).outputSubject().id));
-    await expect(surface.locator('.mobile-terminal-title')).toHaveText(await page.evaluate(() => Alpine.$data(document.body).outputSubject().title));
+    await expect(surface.locator('.mobile-terminal-bar:not(.mobile-reading-bar) .mobile-terminal-title')).toHaveText(await page.evaluate(() => Alpine.$data(document.body).outputSubject().title));
     await expect(surface.locator('.mobile-epic-output-toolbar:visible, .mobile-epic-resting-header:visible')).toHaveCount(0);
-    assert.ok(geometry.keys.top >= geometry.frame.bottom - 1 && geometry.keys.bottom <= geometry.row.top + 1, JSON.stringify(geometry));
+    if (direct) {
+      assert.ok(geometry.keys.top >= geometry.frame.bottom - 1 && geometry.keys.bottom <= geometry.row.top + 1, JSON.stringify(geometry));
+      await essentialTerminalKeys(page);
+    }
     await inViewport(mobileTerminalDone(page));
     await expect(surface.locator('.mobile-detail-context, .mobile-detail-secondary, .mobile-detail-actions').filter({ visible: true })).toHaveCount(0);
   }
@@ -4282,8 +4325,10 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await compose.fill('первая\nвторая\x00\x03\x1b\x7f');
           await page.waitForFunction(() => Alpine.$data(document.body).terminalRW && Alpine.$data(document.body).terminalConnected);
           await terminalGridFits(page, fixture);
+          // A paused clock must not strand replacement snapshot parsing during the input assertion.
+          fixture.behavior.holdResizes = true;
           fixture.socketRoutes.at(-1).send(Buffer.from('\x1b[?2004h'));
-          await page.waitForFunction(() => termState.term.modes.bracketedPasteMode);
+          await page.waitForFunction(() => termState.term.modes.bracketedPasteMode && termState.resetScrollTerm === null);
           const send = surface.getByRole('button', { name: 'Send', exact: true });
           await expect(send).toBeVisible();
           await expect(send).toBeEnabled();
@@ -4307,7 +4352,33 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           assert.equal(new URL(page.url()).hash, '#/t/kon-live');
           if (cancel) await page.waitForFunction(() => !Alpine.$data(document.body).terminalRW && !Alpine.$data(document.body).mobileTerminalInputTarget);
           await page.clock.resume();
+          fixture.behavior.holdResizes = false;
+          fixture.pendingResizes.splice(0).forEach(resize => resize.reset());
         }
+      });
+    });
+    test(`phone delayed pane resize after composer reflow / ${theme}`, async t => {
+      await withPage(t, 390, theme, async (page, fixture) => {
+        await openTerminalSubject(page, 'kon-live');
+        const compose = mobileComposer(page);
+        await compose.fill('first local line\nsecond local line');
+        await terminalGridFits(page, fixture, 8);
+        const initial = await page.evaluate(() => ({ rows: termState.term.rows, cols: termState.term.cols }));
+        fixture.behavior.holdResizes = true;
+        await compose.fill('');
+        await expect.poll(() => fixture.pendingResizes.at(-1)?.rows || 0).toBeGreaterThan(initial.rows);
+        const pending = fixture.pendingResizes.length;
+        await compose.fill('first local line\nsecond local line');
+        await page.waitForFunction(rows => termState.fit.proposeDimensions()?.rows === rows, initial.rows);
+        await expect.poll(() => fixture.pendingResizes.length).toBeGreaterThan(pending);
+        assert.equal(fixture.pendingResizes.at(-1).rows, initial.rows, 'Restoring the old host size supersedes the pending request');
+        assert.equal(await page.evaluate(() => termState.term.rows), initial.rows);
+        fixture.behavior.holdResizes = false;
+        fixture.pendingResizes.splice(0).forEach(resize => resize.reset());
+        await terminalGridFits(page, fixture, 8);
+        assert.equal(await page.evaluate(() => termState.term.rows), initial.rows, 'A stale pane snapshot must converge on the current fitting host');
+        await expect(compose).toHaveValue('first local line\nsecond local line');
+        assert.equal(fixture.messages.filter(message => message.type === 'input').length, 0);
       });
     });
     test(`phone activity polling, completion and tab reachability / ${theme}`, async t => {
@@ -4547,14 +4618,15 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await visible(page.locator('#terminal-container-mobile .xterm'));
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         assert.ok(await page.locator('#terminal-container-mobile').evaluate(el => el.clientWidth > 0 && el.clientWidth < innerWidth));
-        assert.equal(await page.evaluate(() => termState.term.options.scrollback), 0);
+        assert.equal(await page.evaluate(() => termState.term.options.scrollback), 5000);
         for (const height of [360, 420, 555, 900]) {
           await visualViewport(page, height, height === 900 ? 0 : 12);
           assert.equal(await page.evaluate(() => innerHeight), 900, 'Only the visual viewport shrinks');
           await terminalRows(page, height, height === 900 ? 0 : 12);
           const status = page.locator('.mobile-detail .mobile-terminal-status');
-          assert.equal(await page.locator('.mobile-detail-actions').isVisible(), height >= 500);
+          assert.equal(await page.locator('.mobile-detail-actions').isVisible(), false);
           await page.evaluate(() => { window.__fixtureHoldOpen = true; });
+          await mobileTerminalSurface(page).locator('.mobile-reading-bar').getByRole('button', { name: 'Back', exact: true }).focus();
           await page.getByRole('button', { name: 'Type in terminal', exact: true }).filter({ visible: true }).click();
           await page.waitForFunction(() => window.__fixturePendingOpens.length > 0);
           await mobileTerminalLayout(page, true, height, height === 900 ? 0 : 12);
@@ -4563,6 +4635,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el.readOnly), true);
           const inputs = fixture.messages.filter(message => message.type === 'input').length;
           const keys = page.locator('.mobile-detail .mobile-terminal-keys');
+          await essentialTerminalKeys(page);
           for (const button of await keys.getByRole('button').all()) assert.equal(await button.isDisabled(), true);
           await keys.getByRole('button', { name: 'Escape', exact: true }).dispatchEvent('click');
           assert.equal(fixture.messages.filter(message => message.type === 'input').length, inputs);
@@ -4643,7 +4716,8 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el.readOnly), true);
         await page.getByRole('button', { name: 'Type in terminal', exact: true }).filter({ visible: true }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
-        await detail.getByRole('combobox', { name: 'Output view', exact: true, includeHidden: true }).selectOption('logs', { force: true });
+        await mobileTerminalDone(page).click();
+        await phoneOutputView(page, 'Stage logs');
         await phoneOutputView(page, 'Terminal');
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el.readOnly), true);
@@ -5316,6 +5390,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await epic.getByRole('button', { name: 'Terminal', exact: true }).click();
         await visible(page.locator('#epic-terminal-mobile .xterm'));
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        await epic.locator('.mobile-reading-bar').getByRole('button', { name: 'Back', exact: true }).focus();
         await epic.getByRole('button', { name: 'Type in terminal', exact: true }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         assert.equal(await page.locator('#epic-terminal-mobile textarea').evaluate(el => el.readOnly), false);
@@ -5385,7 +5460,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
                 Math.abs(parseFloat(document.documentElement.style.getPropertyValue('--mobile-vv-width')) - width) < 1);
             }, { width });
             await terminalGridFits(page, fixture);
-            assert.equal(await page.evaluate(() => termState.term.options.scrollback), width < 768 ? 0 : 5000);
+            assert.equal(await page.evaluate(() => termState.term.options.scrollback), 5000);
             assert.equal(new URL(page.url()).hash, `#/${id === supervisorID ? 'e' : 't'}/${id}`);
             await inViewport(page.locator(terminalSelector));
             await noPageOverflow(page);
@@ -5395,6 +5470,468 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       });
     });
   }
+});
+
+async function terminalBuffer(page, phase = '') {
+  const state = await page.evaluate(() => {
+    const term = termState.term, buffer = term.buffer.active;
+    return { type: buffer.type, baseY: buffer.baseY, viewportY: buffer.viewportY, rows: term.rows,
+      first: buffer.getLine(buffer.viewportY)?.translateToString(true),
+      last: buffer.getLine(buffer.baseY + term.rows - 1)?.translateToString(true) };
+  });
+  assert.ok(Number.isFinite(state.baseY) && Number.isFinite(state.viewportY), `Terminal buffer positions must remain finite ${phase}: ${JSON.stringify(state)}`);
+  return state;
+}
+
+async function seedTerminalHistory(page, fixture, { alternate = false, mouse = false, count = 180, reset = true } = {}) {
+  const ws = fixture.socketRoutes.at(-1);
+  const { cols, rows } = await page.evaluate(() => ({ cols: termState.term.cols, rows: termState.term.rows }));
+  if (reset) ws.send(JSON.stringify({ type: 'reset', cols, rows }));
+  ws.send(Buffer.from((alternate ? '\x1b[?1049h' : '') + (mouse ? '\x1b[?1000h\x1b[?1002h\x1b[?1006h' : '') +
+    Array.from({ length: count }, (_, i) => `Synthetic output row ${i}`).join('\r\n') + '\r\nsynthetic-live'));
+  await page.waitForFunction(({ alternate }) => {
+    const term = termState.term, buffer = term.buffer.active;
+    return buffer.type === (alternate ? 'alternate' : 'normal') &&
+      buffer.getLine(buffer.baseY + term.rows - 1)?.translateToString(true) === 'synthetic-live';
+  }, { alternate });
+  return ws;
+}
+
+async function terminalTouch(page) {
+  const screen = page.locator(terminalSelector).locator('.xterm-screen');
+  const box = await screen.boundingBox();
+  assert.ok(box && box.height > 120);
+  const origin = { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + 25) };
+  const session = engine === 'chromium' ? await page.context().newCDPSession(page) : null;
+  const element = await screen.elementHandle();
+  async function send(type, dx = 0, dy = 0, multiple = false) {
+    const points = type === 'touchEnd' || type === 'touchCancel' ? [] :
+      [{ x: origin.x + dx, y: origin.y + dy, id: 1 }, ...(multiple ? [{ x: origin.x + dx + 20, y: origin.y + dy, id: 2 }] : [])];
+    if (session) {
+      await session.send('Input.dispatchTouchEvent', { type, touchPoints: points });
+    } else {
+      await element.evaluate((el, { type, points }) => {
+        const touches = points.map(point => ({ identifier: point.id, clientX: point.x, clientY: point.y,
+          pageX: point.x + scrollX, pageY: point.y + scrollY, screenX: point.x, screenY: point.y, target: el }));
+        const event = new Event(type.toLowerCase(), { bubbles: true, cancelable: true });
+        for (const name of ['touches', 'targetTouches', 'changedTouches']) Object.defineProperty(event, name, { value: touches });
+        el.dispatchEvent(event);
+      }, { type, points });
+    }
+  }
+  return { start: (multiple = false) => send('touchStart', 0, 0, multiple),
+    move: (dx = 0, dy = 120, multiple = false) => send('touchMove', dx, dy, multiple),
+    end: () => send('touchEnd'), dispose: async () => { await session?.detach(); await element.dispose(); } };
+}
+
+describe('mobile terminal reading and history', { concurrency: 2 }, () => {
+  for (const theme of themes) {
+    test(`mobile terminal read-only management / ${theme}`, async t => {
+      const records = terminalSubjects.map((id, index) => ticket(id, liveTitle, { status: 'in_progress', stage: 'code',
+        started_at: stamp, can_edit: false, can_control: false,
+        ...(index ? { kind: 'epic', epic_mode: 'agent', epic_execution: 'agent' } : {}) }));
+      await withPage(t, 390, theme, async (page, fixture) => {
+        for (const id of terminalSubjects) {
+          await openTerminalSubject(page, id);
+          await terminalGridFits(page, fixture, 8);
+          const surface = mobileTerminalSurface(page);
+          await expect(surface).toHaveClass(/mobile-terminal-reading/);
+          await expect(surface.locator('.mobile-reading-bar').getByRole('button', { name: 'Pause', exact: true })).toBeHidden();
+          await surface.getByRole('button', { name: 'More', exact: true }).click();
+          const navigation = page.getByRole('dialog', { name: 'Navigation', exact: true });
+          await inViewport(navigation.getByRole('button', { name: 'Assistant', exact: true }));
+          await expect(navigation.getByRole('button', { name: 'Ticket actions', exact: true })).toBeHidden();
+          await page.keyboard.press('Escape');
+          assert.equal(fixture.messages.filter(message => message.type === 'input').length, 0);
+          assert.equal(fixture.mutations.length, 0);
+          await backToBoard(page);
+        }
+      }, { records });
+    });
+
+    test(`mobile terminal queued native scroll during reset / ${theme}`, async t => {
+      await withPage(t, 390, theme, async (page, fixture) => {
+        await openTerminalSubject(page, 'kon-live');
+        await terminalGridFits(page, fixture, 8);
+        await seedTerminalHistory(page, fixture, { mouse: true });
+        fixture.behavior.holdResizes = true;
+        const dimensions = await page.evaluate(() => {
+          const term = termState.term;
+          window.__fixtureResetScrollDelivered = false;
+          const reset = term.reset.bind(term);
+          term.reset = () => {
+            term.reset = reset;
+            reset();
+            const viewport = term.element.querySelector('.xterm-viewport');
+            viewport.scrollTop = 0;
+            viewport.dispatchEvent(new Event('scroll'));
+            viewport.dispatchEvent(new Event('scroll'));
+            const rendered = term.onRender(() => {
+              rendered.dispose();
+              viewport.scrollTop = 0;
+              viewport.dispatchEvent(new Event('scroll'));
+              viewport.dispatchEvent(new Event('scroll'));
+              window.__fixtureResetScrollDelivered = true;
+            });
+          };
+          return { cols: term.cols, rows: term.rows };
+        });
+        fixture.socketRoutes.at(-1).send(JSON.stringify({ type: 'reset', ...dimensions }));
+        await page.waitForFunction(() => window.__fixtureResetScrollDelivered);
+        await terminalBuffer(page, 'after queued native scroll during reset');
+        fixture.behavior.holdResizes = false;
+        fixture.pendingResizes.splice(0).forEach(resize => resize.reset());
+        await terminalGridFits(page, fixture, 8);
+        assert.equal(fixture.messages.filter(message => message.type === 'input').length, 0);
+      });
+    });
+
+    for (const addressable of [true, false]) test(`mobile terminal current Activity ${addressable ? 'live run' : 'unavailable'} / ${theme}`, async t => {
+      const records = terminalSubjects.map((id, index) => ticket(id, liveTitle, { status: 'in_progress', stage: addressable ? 'code' : '',
+        history: [0, 1].map(run => ({ stage: 'code', run, started_at: stamp, completed_at: stamp, exit_code: 0 })),
+        ...(index ? { kind: 'epic', epic_mode: 'agent', epic_execution: 'agent' } : {}) }));
+      await withPage(t, 390, theme, async (page, fixture) => {
+        for (const id of terminalSubjects) {
+          await openTerminalSubject(page, id);
+          const surface = mobileTerminalSurface(page);
+          if (addressable) {
+            if (id === supervisorID) await surface.getByRole('button', { name: 'Activity', exact: true }).click();
+            else await phoneOutputView(page, 'Activity');
+            await surface.getByRole('combobox', { name: id === supervisorID ? 'Supervisor output run' : 'Run', exact: true }).selectOption('code#0');
+            await page.waitForFunction(() => Alpine.$data(document.body).activityRun === 0 && !Alpine.$data(document.body).activityLoading);
+            if (id === supervisorID) await surface.getByRole('button', { name: 'Terminal', exact: true }).click();
+            else await phoneOutputView(page, 'Terminal');
+          }
+          await terminalGridFits(page, fixture, 8);
+          await seedTerminalHistory(page, fixture, { alternate: true });
+          const before = fixture.artifactReads.length;
+          await surface.getByRole('button', { name: 'View Activity', exact: true }).click();
+          if (addressable) {
+            await expect.poll(() => fixture.artifactReads.length).toBeGreaterThan(before);
+            assert.deepEqual(fixture.artifactReads.at(-1), { id, stage: 'code', run: 2 });
+            if (id === supervisorID) await expect(surface.getByRole('button', { name: 'Activity', exact: true })).toHaveAttribute('aria-pressed', 'true');
+            else await expect(surface.getByRole('combobox', { name: 'Output view', exact: true })).toHaveValue('activity');
+          } else {
+            await expect(surface.getByText('Current Activity is not available yet.', { exact: true })).toBeVisible();
+            assert.equal(fixture.artifactReads.length, before, 'An unaddressable live run must not silently open completed history');
+            assert.equal((await terminalBuffer(page)).type, 'alternate');
+          }
+          await backToBoard(page);
+        }
+      }, { records });
+    });
+
+    test(`mobile terminal compact Pause lifecycle / ${theme}`, async t => {
+      await withPage(t, 390, theme, async (page, fixture) => {
+        for (const id of terminalSubjects) {
+          await openTerminalSubject(page, id);
+          await terminalGridFits(page, fixture, 8);
+          const pause = mobileTerminalSurface(page).locator('.mobile-reading-bar').getByRole('button', { name: 'Pause', exact: true });
+          await inViewport(pause);
+          if (id === supervisorID) await expect(pause).toHaveAttribute('title', /Child agents keep running/i);
+          const before = fixture.mutations.length;
+          await pause.click();
+          await expect.poll(() => fixture.mutations.length).toBe(before + 1);
+          assert.equal(fixture.mutations.at(-1).path, `/api/tickets/${id}/pause`);
+          assert.equal(fixture.records.get('primary/' + id).status, 'paused');
+          assert.equal(fixture.records.get('primary/kon-child').status, 'in_progress', 'Pause never pauses supervisor children');
+          assert.equal(fixture.messages.filter(message => message.type === 'input').length, 0);
+          await backToBoard(page);
+        }
+      }, { records: [ticket('kon-child', 'Synthetic running child', { parent: supervisorID, status: 'in_progress', stage: 'code' })] });
+    });
+
+    for (const mouse of [false, true]) for (const boundary of [...(mouse ? ['ignored'] : []), 'reset', 'disconnect', 'connecting', 'permission', 'subject']) {
+      test(`mobile terminal touch lifecycle ${boundary} / mouse=${mouse} / ${theme}`, { timeout: 45000 }, async t => {
+        await withPage(t, 390, theme, async (page, fixture) => {
+          await page.evaluate(() => {
+            const add = EventTarget.prototype.addEventListener, remove = EventTarget.prototype.removeEventListener;
+            window.__fixtureTerminalListeners = [];
+            EventTarget.prototype.addEventListener = function(type, listener, options) {
+              const capture = options === true || !!options?.capture;
+              if (capture && /^touch/.test(type) && this.matches?.('.mobile-terminal-host') &&
+                !window.__fixtureTerminalListeners.some(entry => entry.target === this && entry.type === type && entry.listener === listener)) {
+                window.__fixtureTerminalListeners.push({ target: this, type, listener });
+              }
+              return add.call(this, type, listener, options);
+            };
+            EventTarget.prototype.removeEventListener = function(type, listener, options) {
+              if (options === true || options?.capture) window.__fixtureTerminalListeners = window.__fixtureTerminalListeners.filter(entry =>
+                entry.target !== this || entry.type !== type || entry.listener !== listener);
+              return remove.call(this, type, listener, options);
+            };
+          });
+          for (const id of terminalSubjects) {
+            await openTerminalSubject(page, id);
+            await terminalGridFits(page, fixture, 8);
+            await seedTerminalHistory(page, fixture, { mouse });
+            await page.evaluate(() => { window.__fixtureHistoryTerm = termState.term; });
+            assert.equal(await page.evaluate(() => window.__fixtureTerminalListeners.length), 4, 'Exactly one set of host touch listeners');
+            const inputCount = fixture.messages.filter(message => message.type === 'input').length;
+            if (boundary === 'ignored') {
+              const messages = fixture.messages.length;
+              for (const [dx, dy, multiple] of [[30, 2, false], [0, 3, false], [0, 120, true]]) {
+                const gesture = await terminalTouch(page);
+                try { await gesture.start(multiple); await gesture.move(dx, dy, multiple); await gesture.end(); }
+                finally { await gesture.dispose(); }
+                const state = await terminalBuffer(page);
+                assert.equal(state.viewportY, state.baseY, 'Horizontal, below-threshold and multi-touch gestures are not history scrolling');
+              }
+              assert.equal(fixture.messages.length, messages);
+            } else if (boundary === 'connecting') {
+              await fixture.socketRoutes.at(-1).close({ code: 1000, reason: 'Synthetic history disconnect' });
+              await visible(mobileTerminalSurface(page).locator('.mobile-terminal-error'));
+              await page.evaluate(() => { window.__fixtureHoldOpen = true; });
+              await mobileTerminalSurface(page).getByRole('button', { name: 'retry connection', exact: true }).click();
+              await page.waitForFunction(() => window.__fixturePendingOpens.length > 0);
+              const gesture = await terminalTouch(page);
+              try { await gesture.start(); await gesture.move(); await gesture.end(); }
+              finally { await gesture.dispose(); }
+              const state = await terminalBuffer(page);
+              assert.equal(state.viewportY, state.baseY, 'Connecting gestures cannot move history');
+              await releaseTerminalOpens(page);
+              assert.equal(fixture.sockets.at(-1).searchParams.get('rw'), null, 'Retry is read-only');
+              assert.equal(await page.evaluate(() => termState.term === window.__fixtureHistoryTerm), true, 'Stream retry reuses the terminal');
+            } else {
+              const oldScreen = boundary === 'subject' ? await page.locator(terminalSelector).locator('.xterm-screen').elementHandle() : null;
+              const oldHost = boundary === 'subject' ? await page.locator(terminalSelector).elementHandle() : null;
+              const gesture = await terminalTouch(page);
+              try {
+                await gesture.start(); await gesture.move();
+                await page.waitForFunction(() => termState.term.buffer.active.viewportY < termState.term.buffer.active.baseY);
+                if (boundary === 'reset') {
+                  fixture.behavior.holdResizes = true;
+                  await seedTerminalHistory(page, fixture, { mouse });
+                  await expect(mobileTerminalSurface(page).getByText('Terminal view refreshed. Local history was replaced.', { exact: true })).toBeVisible();
+                } else if (boundary === 'disconnect') {
+                  await fixture.socketRoutes.at(-1).close({ code: 1000, reason: 'Synthetic history disconnect' });
+                  await visible(mobileTerminalSurface(page).locator('.mobile-terminal-error'));
+                } else if (boundary === 'permission') {
+                  // Compare gesture positions within one snapshot, not across a queued resize replacement.
+                  fixture.behavior.holdResizes = true;
+                  await mobileTerminalSurface(page).getByRole('button', { name: 'Type in terminal', exact: true }).click();
+                  await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected && Alpine.$data(document.body).terminalRW);
+                  await page.evaluate(() => new Promise(resolve => {
+                    const host = termState.term.element.parentElement;
+                    let timer;
+                    const observer = new ResizeObserver(() => {
+                      clearTimeout(timer);
+                      timer = setTimeout(() => { observer.disconnect(); resolve(); }, 150);
+                    });
+                    observer.observe(host);
+                  }));
+                  fixture.behavior.holdResizes = false;
+                  fixture.pendingResizes.at(-1)?.reset();
+                  await terminalGridFits(page);
+                  await terminalBuffer(page, 'after permission resize, before synthetic replacement');
+                  await seedTerminalHistory(page, fixture, { mouse });
+                  assert.equal(await page.evaluate(() => termState.term === window.__fixtureHistoryTerm), true, 'Permission changes reuse the terminal');
+                } else {
+                  await backToBoard(page);
+                  await openTerminalSubject(page, id === supervisorID ? 'kon-live' : supervisorID);
+                  await terminalGridFits(page, fixture, 8);
+                  await seedTerminalHistory(page, fixture, { mouse });
+                  assert.equal(await page.evaluate(() => termState.term === window.__fixtureHistoryTerm), false, 'Different hosts replace the terminal');
+                  assert.equal(await oldHost.evaluate(el => window.__fixtureTerminalListeners.filter(entry => entry.target === el).length), 0,
+                    'Retired terminal host listeners are removed');
+                }
+                const state = await terminalBuffer(page);
+                await gesture.move(0, 180); await gesture.end();
+                assert.equal((await terminalBuffer(page)).viewportY, state.viewportY, `${boundary} cancels the original read-only drag`);
+                if (oldScreen) {
+                  await oldScreen.evaluate(el => {
+                    for (const [type, y] of [['touchstart', 10], ['touchmove', 150], ['touchend', 150]]) {
+                      const event = new Event(type, { bubbles: true, cancelable: true });
+                      Object.defineProperty(event, 'touches', { value: type === 'touchend' ? [] :
+                        [{ identifier: 1, clientX: 20, clientY: y, pageX: 20, pageY: y }] });
+                      el.dispatchEvent(event);
+                    }
+                  });
+                  assert.deepEqual(await terminalBuffer(page), state, 'Disposed host listeners cannot move a replacement subject');
+                }
+              } finally { await gesture.dispose(); await oldScreen?.dispose(); await oldHost?.dispose(); }
+            }
+            assert.equal(await page.evaluate(() => window.__fixtureTerminalListeners.length), 4, 'Streams reuse instance listeners without duplication');
+            if (boundary !== 'permission') assert.equal(fixture.messages.filter(message => message.type === 'input').length, inputCount);
+            assert.equal(fixture.messages.filter(message => message.type === 'input').every(message => message.url.searchParams.get('rw') === '1'), true);
+            await backToBoard(page);
+          }
+        }, { hasTouch: true });
+      });
+    }
+  }
+  for (const width of [320, 390, 402]) for (const theme of themes) {
+    test(`mobile terminal reading budget / ${width}px / ${theme}`, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        for (const id of terminalSubjects) {
+          await openTerminalSubject(page, id);
+          await terminalGridFits(page, fixture, 8);
+          const surface = mobileTerminalSurface(page);
+          await expect(surface).toHaveClass(/mobile-terminal-reading/);
+          const geometry = await surface.evaluate(el => {
+            const rect = selector => el.querySelector(selector).getBoundingClientRect().toJSON();
+            return { header: rect('.mobile-reading-bar'), tabs: rect('.mobile-detail-tabs, nav[aria-label="Epic tabs"]'),
+              output: rect('.mobile-output-row'), host: rect('.mobile-terminal-host') };
+          });
+          near(geometry.header.height, 48, 'reading header');
+          near(geometry.tabs.height, 44, 'reading tabs');
+          assert.ok(geometry.output.height <= 44 && geometry.header.height + geometry.tabs.height + geometry.output.height <= 136 &&
+            geometry.output.bottom - geometry.header.top <= 136, JSON.stringify(geometry));
+          if (width === 390) assert.ok(geometry.host.height >= 667 * 2 / 3, JSON.stringify(geometry));
+          assert.equal(await page.evaluate(() => Alpine.$data(document.body).terminalRW), false);
+          assert.ok(fixture.sockets.every(url => url.searchParams.get('rw') !== '1'));
+          assert.equal(fixture.messages.filter(message => message.type === 'input').length, 0);
+          await expect(mobileComposer(page)).not.toBeFocused();
+          await expect(surface.locator('.mobile-terminal-keys')).toBeHidden();
+          const sockets = fixture.sockets.length;
+          await surface.getByRole('button', { name: 'More', exact: true }).click();
+          const navigation = page.getByRole('dialog', { name: 'Navigation', exact: true });
+          await inViewport(navigation.getByRole('button', { name: 'Assistant', exact: true }));
+          if (id !== supervisorID) {
+            const actions = navigation.getByRole('button', { name: 'Ticket actions', exact: true });
+            await inViewport(actions);
+            await actions.click();
+            const dialog = page.getByRole('dialog', { name: 'Ticket actions', exact: true });
+            await visible(dialog);
+            await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+            await surface.getByRole('button', { name: 'More', exact: true }).click();
+          }
+          await navigation.getByRole('button', { name: 'Assistant', exact: true }).click();
+          await visible(page.getByRole('dialog', { name: 'Assistant', exact: true }));
+          await page.keyboard.press('Escape');
+          assert.equal(fixture.sockets.length, sockets, 'Reading navigation must not reconnect');
+          await backToBoard(page);
+        }
+      }, { beforeReady: page => page.setViewportSize({ width, height: 667 }), records: [
+        ticket(supervisorID, liveTitle, { kind: 'epic', epic_mode: 'agent', epic_execution: 'agent', status: 'in_progress',
+          stage: 'code', started_at: stamp, branch: liveBranch, agent: liveAgent, can_edit: false }),
+      ] });
+    });
+
+    test(`mobile terminal touch history / ${width}px / ${theme}`, { timeout: 90000 }, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        for (const id of terminalSubjects) {
+          await openTerminalSubject(page, id);
+          await terminalGridFits(page, fixture, 8);
+          for (const mouse of [false, true]) for (const alternate of [false, true]) {
+            const ws = await seedTerminalHistory(page, fixture, { mouse, alternate, count: alternate ? 180 : 5200, reset: !alternate });
+            if (alternate) assert.ok(await page.evaluate(() => termState.term.buffer.normal.baseY > 0), 'Hidden normal history must not become alternate-screen replay');
+            const initial = await terminalBuffer(page);
+            assert.equal(initial.type, alternate ? 'alternate' : 'normal');
+            assert.equal(initial.baseY, alternate ? 0 : 5000);
+            const before = fixture.messages.length, sockets = fixture.sockets.length;
+            const gesture = await terminalTouch(page);
+            try {
+              await gesture.start();
+              await gesture.move();
+              await gesture.end();
+            } finally { await gesture.dispose(); }
+            const surface = mobileTerminalSurface(page);
+            if (alternate) {
+              assert.equal((await terminalBuffer(page)).viewportY, 0);
+              await expect(surface.getByText(/screen history.*unavailable/i)).toBeVisible();
+              await inViewport(surface.getByRole('button', { name: 'View Activity', exact: true }));
+            } else {
+              await page.waitForFunction(() => termState.term.buffer.active.viewportY < termState.term.buffer.active.baseY);
+              const reviewed = await terminalBuffer(page);
+              const jump = surface.getByRole('button', { name: 'Jump to live', exact: true });
+              await inViewport(jump);
+              ws.send(Buffer.from('\r\nincoming-during-review'));
+              await page.waitForFunction(() => {
+                const term = termState.term, b = term.buffer.active;
+                return b.getLine(b.baseY + term.rows - 1)?.translateToString(true) === 'incoming-during-review';
+              });
+              const incoming = await terminalBuffer(page);
+              assert.ok(incoming.viewportY < incoming.baseY && incoming.viewportY <= reviewed.viewportY, JSON.stringify({ reviewed, incoming }));
+              await jump.click();
+              await page.waitForFunction(() => termState.term.buffer.active.viewportY === termState.term.buffer.active.baseY);
+              await expect(jump).toBeHidden();
+            }
+            assert.equal(fixture.messages.length, before, 'Read-only touch and history controls send neither input nor resize');
+            assert.equal(fixture.sockets.length, sockets);
+            assert.equal(await page.evaluate(() => Alpine.$data(document.body).terminalRW), false);
+            await expect(mobileComposer(page)).not.toBeFocused();
+          }
+          await backToBoard(page);
+        }
+      }, { hasTouch: true });
+    });
+  }
+});
+
+test('mobile terminal video demo', { skip: !process.env.KONTORA_MOBILE_VIDEO_DIR, timeout: 90000 }, async t => {
+  await withPage(t, 390, 'dark', async (page, fixture) => {
+    async function caption(text, keyboard = false) {
+      await page.evaluate(({ text, engine, keyboard }) => {
+        let label = document.getElementById('fixture-video-caption');
+        if (!label) {
+          label = document.createElement('div'); label.id = 'fixture-video-caption';
+          label.style.cssText = 'position:fixed;z-index:1000;top:145px;left:12px;right:12px;padding:8px;border-radius:6px;background:#122033ee;color:white;font:12px/1.5 sans-serif;pointer-events:none';
+          document.body.append(label);
+        }
+        label.textContent = `${engine === 'chromium' ? 'Chromium' : 'WebKit'} emulation · synthetic fixtures${keyboard ? ' · simulated 420px keyboard viewport' : ''}\n${text}`;
+        label.style.whiteSpace = 'pre-line';
+      }, { text, engine, keyboard });
+      await page.waitForTimeout(1100);
+    }
+    await openTerminalSubject(page, supervisorID);
+    await terminalGridFits(page, fixture, 8);
+    await seedTerminalHistory(page, fixture);
+    await caption('Supervisor: compact reading, read-only by default.');
+    await backToBoard(page);
+    await openTerminalSubject(page, 'kon-live');
+    await terminalGridFits(page, fixture, 8);
+    const ws = await seedTerminalHistory(page, fixture, { mouse: true });
+    await caption('Ticket: terminal-first reading with direct output selection.');
+    const gesture = await terminalTouch(page);
+    try { await gesture.start(); await gesture.move(); await gesture.end(); }
+    finally { await gesture.dispose(); }
+    await page.waitForFunction(() => termState.term.buffer.active.viewportY < termState.term.buffer.active.baseY);
+    ws.send(Buffer.from('\r\nNew synthetic output while reviewing history'));
+    await caption('Review retained normal-buffer rows while new output arrives.');
+    await mobileTerminalSurface(page).getByRole('button', { name: 'Jump to live', exact: true }).click();
+    await caption('Jump to live returns to the current stream.');
+    await seedTerminalHistory(page, fixture, { alternate: true, mouse: true });
+    await caption('Alternate screens have no screen replay; use current Activity.');
+    await mobileTerminalSurface(page).getByRole('button', { name: 'View Activity', exact: true }).click();
+    await expect(mobileTerminalSurface(page).getByRole('combobox', { name: 'Output view', exact: true })).toHaveValue('activity');
+    await caption('Activity is a separate representation of the current run.');
+    await phoneOutputView(page, 'Terminal');
+    await terminalGridFits(page, fixture, 8);
+    const composer = mobileComposer(page), surface = mobileTerminalSurface(page);
+    await composer.click();
+    await composer.fill('Synthetic unsent message');
+    await composer.press('End'); await composer.press('Enter');
+    await page.keyboard.insertText('Second local line, not sent');
+    await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+    await visualViewport(page, 420);
+    await expect(surface.locator('.mobile-terminal-keys')).toBeHidden();
+    assert.equal(fixture.messages.filter(message => message.type === 'input').length, 0);
+    await caption('Native Return adds a local newline. Raw keys stay hidden.', true);
+    await surface.getByRole('button', { name: 'Type in terminal', exact: true }).click();
+    await page.waitForFunction(() => Alpine.$data(document.body).mobileTerminalInputTarget === 'terminal');
+    await essentialTerminalKeys(page);
+    for (const [name, bytes] of [['Escape', '\x1b'], ['Enter', '\r'], ['Ctrl+C', '\x03']]) {
+      await surface.getByRole('button', { name, exact: true }).click();
+      await expect.poll(() => fixture.messages.filter(message => message.type === 'input').at(-1)?.data).toBe(bytes);
+      await caption(`Direct input: ${name} sends its terminal bytes, not the draft.`, true);
+    }
+    await fixture.socketRoutes.at(-1).close({ code: 1000, reason: 'Synthetic demo disconnect' });
+    await visible(surface.locator('.mobile-terminal-error'));
+    await expect(composer).toHaveValue('Synthetic unsent message\nSecond local line, not sent');
+    await caption('Disconnected: unsent draft retained. Retry starts read-only.', true);
+    await surface.getByRole('button', { name: 'retry connection', exact: true }).click();
+    await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected && !Alpine.$data(document.body).terminalRW);
+    await expect(surface.locator('.mobile-terminal-keys')).toBeHidden();
+    await caption('Connected read-only. Input still requires a deliberate action.', true);
+    await surface.getByRole('button', { name: 'Type in terminal', exact: true }).click();
+    await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected && Alpine.$data(document.body).terminalRW);
+    await essentialTerminalKeys(page);
+    await caption('Deliberately resume direct input; the multiline draft remains local.', true);
+    await mobileTerminalDone(page).click();
+    await visualViewport(page, 668);
+    await caption('Done returns to read-only reading. No daemon or real ticket store was used.');
+  }, { hasTouch: true, height: 668, video: process.env.KONTORA_MOBILE_VIDEO_DIR });
 });
 
 async function focusedEditorGeometry(page, height, top = 0, error = false) {
@@ -5486,7 +6023,8 @@ describe('phone inline terminal and focused description', { concurrency: 2 }, ()
           await mobileComposer(page).click();
           await mobileComposer(page).fill('Retain draft after leaving input');
           await page.waitForFunction(() => window.__fixturePendingOpens.length > 0);
-          const title = mobileTerminalSurface(page).locator('.mobile-terminal-title');
+          const title = mobileTerminalSurface(page).locator('.mobile-terminal-bar:not(.mobile-reading-bar) .mobile-terminal-title');
+          await visible(title);
           await title.evaluate(el => el.addEventListener('pointerdown', () => {
             setTimeout(() => {
               window.__fixtureHoldOpen = false;
@@ -5507,13 +6045,15 @@ describe('phone inline terminal and focused description', { concurrency: 2 }, ()
         await openTerminalSubject(page, supervisorID);
         await terminalGridFits(page, fixture);
         const initial = fixture.holdDetail('primary', supervisorID);
-        await mobileTerminalSurface(page).locator('.mobile-epic-output-toolbar').getByRole('button', { name: 'run details', exact: true }).click();
+        await mobileTerminalSurface(page).getByRole('button', { name: /^run details$/i }).filter({ visible: true }).click();
         await initial.started;
         // Initial hydration hides the body. Background reads must keep the composer usable.
         await assertLoadingStatus(loadingStatus(page), 'Loading ticket…');
         await expect(mobileDetail(page).locator('.mobile-detail-content')).toBeHidden();
         await expect(mobileDetail(page).locator('#mobile-terminal-compose')).toBeHidden();
-        await inViewport(mobileDetail(page).getByRole('button', { name: 'Back', exact: true }));
+        const back = mobileDetail(page).getByRole('button', { name: 'Back', exact: true });
+        await expect(back).toHaveCount(1);
+        await inViewport(back);
         await settleRead(page, initial);
         await ready(page);
         await terminalGridFits(page, fixture);
@@ -5568,18 +6108,28 @@ describe('phone inline terminal and focused description', { concurrency: 2 }, ()
           await expect(compose).toHaveValue(`Local draft for ${id}\nsecond line`);
           await expect(compose).toBeFocused();
           await expect(surface.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
-          for (const key of await surface.locator('.mobile-terminal-keys button').all()) await expect(key).toBeDisabled();
+          await expect(surface.locator('.mobile-terminal-keys')).toBeHidden();
           assert.equal(fixture.messages.filter(message => message.type === 'input').length, inputs);
           await expect.poll(() => fixture.sockets.length).toBe(sockets + 1);
           await releaseTerminalOpens(page);
           await expect(compose).toBeFocused();
           await expect(surface.getByRole('button', { name: 'Send', exact: true })).toBeEnabled();
           const writableSockets = fixture.sockets.length;
-          await surface.getByRole('button', { name: 'Tab', exact: true }).click();
-          await expect(compose).toBeFocused();
-          await expect.poll(() => fixture.messages.filter(message => message.type === 'input').at(-1)?.data).toBe('\t');
-          await page.locator(terminalSelector).locator('.xterm-screen').click();
+          await expect(surface.locator('.mobile-terminal-keys')).toBeHidden();
+          await surface.getByRole('button', { name: 'Type in terminal', exact: true }).click();
           await page.waitForFunction(() => Alpine.$data(document.body).mobileTerminalInputTarget === 'terminal');
+          await expect(surface.locator('.mobile-terminal-keys')).toBeVisible();
+          await expect(compose).not.toBeFocused();
+          await essentialTerminalKeys(page);
+          const directInputs = fixture.messages.filter(message => message.type === 'input').length;
+          for (const [name, bytes] of [['Escape', '\x1b'], ['Enter', '\r'], ['Ctrl+C', '\x03']]) {
+            await surface.getByRole('button', { name, exact: true }).click();
+            await expect.poll(() => fixture.messages.filter(message => message.type === 'input').at(-1)?.data).toBe(bytes);
+            await expect(compose).toHaveValue(`Local draft for ${id}\nsecond line`);
+          }
+          assert.deepEqual(fixture.messages.filter(message => message.type === 'input').slice(directInputs).map(message => message.data), ['\x1b', '\r', '\x03']);
+          await surface.getByRole('button', { name: 'Tab', exact: true }).click();
+          await expect.poll(() => fixture.messages.filter(message => message.type === 'input').at(-1)?.data).toBe('\t');
           await compose.click();
           await expect(compose).toBeFocused();
           assert.equal(await page.evaluate(() => Alpine.$data(document.body).mobileTerminalInputTarget), 'composer');
@@ -6376,11 +6926,8 @@ async function openDetailNotifications(page) {
 async function phoneOutputView(page, view) {
   const output = page.locator('.mobile-detail-tabs').getByRole('button', { name: 'Output', exact: true });
   if (await output.getAttribute('aria-pressed') !== 'true') await output.click();
-  const select = page.getByRole('combobox', { name: 'Output view', exact: true }).filter({ visible: true });
-  if (!await select.count()) {
-    await page.locator('.mobile-detail').getByRole('button', { name: 'Actions', exact: true }).click();
-    await page.getByRole('button', { name: 'Output options', exact: true }).click();
-  }
+  const select = page.locator('.mobile-detail .mobile-output-row').getByRole('combobox', { name: 'Output view', exact: true });
+  await inViewport(select);
   await select.selectOption({ label: view });
 }
 const coreHistory = () => [

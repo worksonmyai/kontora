@@ -189,7 +189,7 @@ for (const [explicit, savedStage] of [[true, 'code'], [false, 'code'], [false, n
     await state.restoreDetailView();
     await fixture.flush();
     assert.equal(state.activeTab, 'activity');
-    assert.deepEqual(reads.map(read => read.url), ['/api/tickets/kon-test/activity?stage=code&run=1']);
+    assert.deepEqual(reads.map(read => read.url), ['/api/tickets/kon-test/activity?stage=code&run=1&log_tail_bytes=262144']);
     fixture.completeReads();
     await fixture.flush();
   });

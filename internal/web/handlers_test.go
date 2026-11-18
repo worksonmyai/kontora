@@ -1875,6 +1875,42 @@ func TestHandleGetLogs_PathTraversal(t *testing.T) {
 
 // --- GET /api/tickets/{id}/activity ---
 
+func TestHandleGetActivityTailBytes(t *testing.T) {
+	for _, tc := range []struct {
+		raw   string
+		want  int
+		valid bool
+	}{
+		{raw: "", valid: true}, {raw: "?log_tail_bytes=0", valid: true},
+		{raw: "?log_tail_bytes=262144", want: 262144, valid: true},
+		{raw: "?log_tail_bytes=1048576", want: 1048576, valid: true},
+		{raw: "?log_tail_bytes=-1"}, {raw: "?log_tail_bytes=1048577"},
+		{raw: "?log_tail_bytes=abc"}, {raw: "?log_tail_bytes=1.5"},
+		{raw: "?log_tail_bytes="}, {raw: "?log_tail_bytes=9999999999999999999999999"},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			called := false
+			srv := startHandlerTestServer(t, &mockService{activityFn: func(q ActivityQuery) (ActivityInfo, error) {
+				called = true
+				assert.Equal(t, tc.want, q.LogTailBytes)
+				return ActivityInfo{Source: "log", Content: "suffix", ContentStart: 100, ContentSize: 106, ContentTruncated: true, ETag: `"tail"`}, nil
+			}})
+			res := getWithHeaders(t, srv, "/api/tickets/t-001/activity"+tc.raw, nil)
+			if !tc.valid {
+				assert.Equal(t, http.StatusBadRequest, res.statusCode)
+				assert.False(t, called)
+				return
+			}
+			assert.True(t, called)
+			assert.Equal(t, http.StatusOK, res.statusCode)
+			assert.Contains(t, res.body, `"content_start":100`)
+			assert.Contains(t, res.body, `"content_size":106`)
+			assert.Contains(t, res.body, `"content_truncated":true`)
+			assert.Equal(t, `"tail"`, res.etag)
+		})
+	}
+}
+
 func TestHandleGetActivity(t *testing.T) {
 	cases := []struct {
 		name       string

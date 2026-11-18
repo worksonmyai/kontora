@@ -37,8 +37,11 @@ test('Assistant shells mount constant fragments and keep exclusive scroll hosts'
   for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(fragments))) assert.equal(descriptor.get, undefined);
   assert.match(html, /x-if="!isMobile && assistantOpen && !assistantRail"/);
   assert.match(html, /x-if="isMobile && sheet.type==='assistant'"/);
-  for (const id of ['assistant-thread', 'assistant-sheet-thread']) {
-    assert.match(html, new RegExp(`id="${id}"[^>]*@scroll\\.passive="assistantThreadScrolled\\(\\)"[^>]*x-html="assistant\\w+Markup"`));
+  for (const [id, name] of [['assistant-thread', 'assistantTranscriptMarkup'], ['assistant-sheet-thread', 'assistantSheetTranscriptMarkup']]) {
+    const host = html.match(new RegExp(`<div id="${id}"[^>]*>[\\s\\S]*?</div>`))?.[0];
+    assert.ok(host, id);
+    assert.match(host, /@scroll\.passive="assistantThreadScrolled\(\)"/);
+    assert.match(host, new RegExp(`x-html="${name}"`));
   }
   assert.doesNotMatch(html, /x-for="row in assistantThreadRows\(\)"/);
 });
@@ -51,7 +54,8 @@ for (const prefix of ['', 'Sheet']) {
     }
     assert.match(transcript, /@click="toggleAssistantTool\(row.event, row.index\)"/);
     assert.match(transcript, /:aria-expanded="assistantToolExpanded\(row.event, row.index\)/);
-    assert.match(transcript, /x-show="assistantToolExpanded\(row.event, row.index\)"/);
+    assert.match(transcript, /<template x-if="assistantToolExpanded\(row.event, row.index\)">/);
+    assert.doesNotMatch(transcript, /x-show="assistantToolExpanded/);
     assert.match(transcript, /x-html="companionEvidenceMarkup"/);
     assert.match(transcript, /x-effect="setProse\(\$el, row.event.text\)"/);
     const partial = transcript.indexOf('x-if="assistantPartial"');
@@ -379,14 +383,20 @@ test('closing during a slow status request does not stack polls or reopen the st
   });
   const load = state._loadAssistantActivity();
   state.closeAssistant();
+  assert.equal(requests[0].options.signal.aborted, true, 'dismissal retires the pane request');
   t.mock.timers.tick(15000);
-  assert.equal(requests.length, 1, 'the pending request owns the next timeout');
-  reply(requests[0], { running: true, gate: { id: 'gate-1' } });
+  assert.equal(requests.length, 2, 'one fresh badge request replaces the retired pane request');
+  t.mock.timers.tick(15000);
+  assert.equal(requests.length, 2, 'the pending badge request prevents stacked polls');
+  reply(requests[0], { running: false, gate: { id: 'stale' } });
   await load;
+  assert.equal(state.assistantLaunchLabel(), 'Working', 'the retired pane response is ignored');
+  reply(requests[1], { running: true, gate: { id: 'gate-1' } });
+  await flush();
   assert.equal(state.assistantLaunchLabel(), 'Approval');
   t.mock.timers.tick(1500);
-  assert.equal(requests.length, 2);
-  reply(requests[1], { running: false });
+  assert.equal(requests.length, 3);
+  reply(requests[2], { running: false });
   await flush();
   assert.equal(state.assistantLaunchLabel(), '');
   assert.equal(streams, 0, 'background status only uses activity reads');
@@ -419,9 +429,9 @@ for (const stage of ['response', 'body', 'error']) {
         requests[0].resolve({ status: 200, json: () => new Promise(resolve => { finishBody = resolve; }) });
         await flush();
       }
+      let selection;
       if (change === 'destroy') state._appDestroyed = true;
-      if (change === 'replace') state._assistantAdopt({ id: 'thread-2', running: true }, []);
-      if (change === 'reselect') state._assistantAdopt({ id: 'thread-1', running: true }, []);
+      else selection = state.assistantSelectThread(change === 'reselect' ? 'thread-1' : 'thread-2', { quiet: true });
       if (stage === 'body') finishBody({ running: false, gate: { id: 'stale' } });
       else if (stage === 'error') requests[0].reject(new Error('stale failure'));
       else reply(requests[0], { running: false, gate: { id: 'stale' } });
@@ -431,21 +441,30 @@ for (const stage of ['response', 'body', 'error']) {
       assert.equal(state._assistantETag, '');
       assert.equal(state._assistantPoll, null);
       t.mock.timers.tick(1500);
-      assert.equal(requests.length, 1, 'a stale request cannot schedule another owner’s poll');
+      assert.equal(requests.length, change === 'destroy' ? 1 : 2, 'a stale request cannot schedule another owner’s poll');
+      if (selection) {
+        requests[1].reject(new Error('selection canceled'));
+        assert.equal(await selection, false);
+      }
     });
   }
 }
 
 for (const change of ['destroy', 'replace', 'reselect']) {
-  test(`queued background poll cannot run after ${change}`, t => {
+  test(`queued background poll cannot run after ${change}`, async t => {
     const { state, requests } = activityHarness(t);
     state.closeAssistant();
     assert.notEqual(state._assistantPoll, null);
+    let selection;
     if (change === 'destroy') state._appDestroyed = true;
-    else state._assistantAdopt({ id: change === 'reselect' ? 'thread-1' : 'thread-2', running: true }, []);
+    else selection = state.assistantSelectThread(change === 'reselect' ? 'thread-1' : 'thread-2', { quiet: true });
     t.mock.timers.tick(1500);
-    assert.equal(requests.length, 0);
+    assert.equal(requests.length, change === 'destroy' ? 0 : 1, 'only the explicit selection may fetch');
     assert.equal(state._assistantPoll, null);
+    if (selection) {
+      requests[0].reject(new Error('selection canceled'));
+      assert.equal(await selection, false);
+    }
   });
 }
 
@@ -506,8 +525,13 @@ for (const view of ['Chat', 'History']) {
       }
       if (view === 'Chat') state.assistantShowChat();
       else state.assistantShowHistory();
+      assert.equal(requests.length, 2, 'presentation immediately refreshes without waiting for the canceled selection');
+      assert.match(requests[1].path, /\/thread-1\/activity\?after=0$/);
+      reply(requests[1], { running: true, gate: { id: 'approval-1' } });
+      await flush();
       const poll = state._assistantPoll;
-      assert.notEqual(poll, null, 'presentation resumes polling without waiting for the canceled selection');
+      assert.notEqual(poll, null, 'the accepted refresh rearms polling');
+      assert.equal(state.assistantLaunchLabel(), 'Approval');
       assert.equal(streams.length, 2);
       assert.equal(streams[1].url, '/api/assistant/threads/thread-1/stream');
       assert.equal(streams[1].closed, false);
@@ -521,12 +545,6 @@ for (const view of ['Chat', 'History']) {
       assert.equal(state.assistantError, null);
       assert.equal(state._assistantPoll, poll, 'stale callbacks cannot replace the recovered poll');
       assert.equal(streams.length, 2);
-      t.mock.timers.tick(1500);
-      assert.equal(requests.length, 2);
-      assert.match(requests[1].path, /\/thread-1\/activity\?after=0$/);
-      reply(requests[1], { running: true, gate: { id: 'approval-1' } });
-      await flush();
-      assert.equal(state.assistantLaunchLabel(), 'Approval');
       t.mock.timers.tick(1500);
       assert.equal(requests.length, 3);
       reply(requests[2], { running: false, messages: [{ n: 1, text: 'Finished' }] });

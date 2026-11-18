@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -682,6 +684,110 @@ func waitForGate(t *testing.T, d *Daemon, id string) assistant.Pending {
 	return assistant.Pending{}
 }
 
+func TestAssistantActivityCacheAndCursor(t *testing.T) {
+	for _, sealed := range []bool{false, true} {
+		t.Run(fmt.Sprint(sealed), func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.assistantConfig("pi"))
+			thread, err := d.CreateAssistantThread(web.CreateAssistantThreadRequest{})
+			require.NoError(t, err)
+			store := d.assistantThreadStore(d.config(), thread.ID)
+			dir, err := store.PiSessionDir(thread.ID)
+			require.NoError(t, err)
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "s.jsonl"), []byte(piSessionJSONL), 0o644))
+			calls := 0
+			d.transcripts.parse = func(r io.Reader, pi bool) (logfmt.Tape, error) { calls++; return parseTranscript(r, pi) }
+			first, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
+			require.NoError(t, err)
+			expected := cloneTape(*first.Tape, true)
+			for _, change := range []string{"partial", "partial grows", "approval", "message"} {
+				t.Run(change, func(t *testing.T) {
+					switch change {
+					case "partial":
+						d.assistant.live.Start(thread.ID)
+						d.assistant.live.Append(thread.ID, "not in tape")
+					case "partial grows":
+						d.assistant.live.Append(thread.ID, " yet")
+					case "approval":
+						d.assistant.gate.Park(assistant.Call{ThreadID: thread.ID, Tool: "Bash", Arg: "write"})
+					case "message":
+						require.NoError(t, store.AppendTurn(thread.ID, assistant.Turn{N: 1, Text: "hello", StartedAt: time.Now()}))
+					}
+					got, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID, After: 999, IfNoneMatch: first.ETag})
+					require.NoError(t, err)
+					assert.False(t, got.NotModified)
+					assert.NotEqual(t, first.ETag, got.ETag)
+					assert.Empty(t, got.Tape.Events)
+					assert.Equal(t, len(expected.Events), got.Offset)
+					first = got
+					unchanged, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID, After: 999, IfNoneMatch: got.ETag})
+					require.NoError(t, err)
+					assert.True(t, unchanged.NotModified)
+					all, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
+					require.NoError(t, err)
+					assert.Equal(t, expected, *all.Tape)
+					assert.Equal(t, 1, calls)
+				})
+			}
+			d.assistant.live.Block(thread.ID)
+			d.assistant.live.Append(thread.ID, "Two tickets are running.")
+			if sealed {
+				d.assistant.live.Seal(thread.ID)
+			}
+			got, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID, After: 999})
+			require.NoError(t, err)
+			assert.Empty(t, got.Partial)
+			assert.Empty(t, got.Tape.Events)
+			assert.Positive(t, got.Offset)
+			again, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID, After: 999, IfNoneMatch: got.ETag})
+			require.NoError(t, err)
+			assert.True(t, again.NotModified)
+			assert.Equal(t, 1, calls)
+		})
+	}
+}
+
+func TestAssistantActivityFailedReadHasNoValidator(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.assistantConfig("pi"))
+	thread, err := d.CreateAssistantThread(web.CreateAssistantThreadRequest{})
+	require.NoError(t, err)
+	dir, err := d.assistantThreadStore(d.config(), thread.ID).PiSessionDir(thread.ID)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	path := filepath.Join(dir, "s.jsonl")
+	require.NoError(t, os.WriteFile(path, []byte(piSessionJSONL), 0o644))
+	fail := false
+	calls := 0
+	d.transcripts.parse = func(r io.Reader, pi bool) (logfmt.Tape, error) {
+		calls++
+		if fail {
+			return logfmt.Tape{}, errors.New("read failed")
+		}
+		return parseTranscript(r, pi)
+	}
+	first, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
+	require.NoError(t, err)
+	require.NotEmpty(t, first.ETag)
+	require.NoError(t, os.WriteFile(path, []byte(piSessionJSONL+"{}\n"), 0o644))
+	fail = true
+	for range 2 {
+		got, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID, IfNoneMatch: first.ETag})
+		require.NoError(t, err)
+		assert.Empty(t, got.ETag)
+		assert.False(t, got.NotModified)
+		assert.Empty(t, got.Tape.Events)
+	}
+	fail = false
+	got, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID, IfNoneMatch: first.ETag})
+	require.NoError(t, err)
+	assert.NotEmpty(t, got.ETag)
+	assert.False(t, got.NotModified)
+	assert.NotEmpty(t, got.Tape.Events)
+	assert.Equal(t, 4, calls)
+}
+
 func TestAssistantETag(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.jsonl")
@@ -689,6 +795,10 @@ func TestAssistantETag(t *testing.T) {
 	gate := &assistant.Pending{ID: "g1"}
 	parked := web.AssistantActivityInfo{Gate: gate}
 
+	cache := transcriptCache{}
+	_, version, err := cache.read(path, true)
+	require.NoError(t, err)
+	path = version
 	base := assistantETag(path, 1, web.AssistantActivityInfo{})
 	require.NotEmpty(t, base)
 
@@ -707,9 +817,25 @@ func TestAssistantETag(t *testing.T) {
 		assistantETag(path, 1, web.AssistantActivityInfo{Messages: []web.AssistantMessage{{N: 1, Error: "boom"}}}),
 		"a turn that ended with an error is a different response")
 	assert.Equal(t, base, assistantETag(path, 1, web.AssistantActivityInfo{}), "the same state is the same validator")
+	for _, tc := range []struct {
+		name          string
+		before, after web.AssistantActivityInfo
+	}{
+		{name: "same-length partial", before: web.AssistantActivityInfo{Partial: "one", PartialGen: 1}, after: web.AssistantActivityInfo{Partial: "two", PartialGen: 1}},
+		{name: "autonomy", after: web.AssistantActivityInfo{Autonomy: config.AutonomyRead}},
+		{name: "evidence revision", before: web.AssistantActivityInfo{Evidence: []web.CompanionEvidenceInfo{{ID: "e1", Revision: 1}}}, after: web.AssistantActivityInfo{Evidence: []web.CompanionEvidenceInfo{{ID: "e1", Revision: 2}}}},
+		{name: "evidence outdated", before: web.AssistantActivityInfo{Evidence: []web.CompanionEvidenceInfo{{ID: "e1"}}}, after: web.AssistantActivityInfo{Evidence: []web.CompanionEvidenceInfo{{ID: "e1", Outdated: true}}}},
+		{name: "same-count messages", before: web.AssistantActivityInfo{Messages: []web.AssistantMessage{{N: 1, Text: "one"}}}, after: web.AssistantActivityInfo{Messages: []web.AssistantMessage{{N: 1, Text: "two"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.NotEqual(t, assistantETag(path, 1, tc.before), assistantETag(path, 1, tc.after))
+		})
+	}
 
 	// An unreadable file yields no validator, which never matches a client's.
-	assert.Empty(t, assistantETag(filepath.Join(dir, "missing.jsonl"), 1, parked))
+	_, missingVersion, err := cache.read(filepath.Join(dir, "missing.jsonl"), true)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	assert.Empty(t, assistantETag(missingVersion, 1, parked))
 }
 
 func TestAssistantGlobalCap(t *testing.T) {
@@ -982,8 +1108,11 @@ func TestAssistantPartialRidesThePoll(t *testing.T) {
 func TestAssistantETagFollowsThePartial(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.jsonl")
 	require.NoError(t, os.WriteFile(path, []byte("{}\n"), 0o644))
+	cache := transcriptCache{}
+	_, version, err := cache.read(path, false)
+	require.NoError(t, err)
 	etag := func(partial string, gen int) string {
-		return assistantETag(path, 1, web.AssistantActivityInfo{Partial: partial, PartialGen: gen})
+		return assistantETag(version, 1, web.AssistantActivityInfo{Partial: partial, PartialGen: gen})
 	}
 	// Without this the poll answers 304 for the whole length of a message that
 	// produces no tape rows.

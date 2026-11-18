@@ -32,12 +32,23 @@ test-browser-install:
 test-browser:
 	KONTORA_TEST_BROWSER=1 PLAYWRIGHT_BROWSERS_PATH="$(BROWSER_CACHE)" go test -count=1 -timeout 42m ./internal/web -run '^TestMobileBrowserJS$$/($(BROWSER_ENGINE))$$' -v
 
+.PHONY: test-visual test-visual-update test-visual-repeat
+test-visual:
+	./hack/test-visual.sh check
+
+test-visual-update:
+	./hack/test-visual.sh update
+
+test-visual-repeat:
+	./hack/test-visual.sh repeat
+
 test-pi-sdk:
 	node --test internal/daemon/testdata/pi_extension.sdk.test.mjs
 
 test-scripts:
 	./hack/changelog-for-release.test.sh
 	./hack/update-model-prices.test.sh
+	./hack/test-visual.test.sh
 
 # Refresh the committed catalog explicitly; normal builds and tests only read
 # its embedded snapshot and do not contact OpenRouter.

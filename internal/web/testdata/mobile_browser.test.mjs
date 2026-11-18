@@ -2380,23 +2380,30 @@ describe('custom execution activity', () => {
     }, { config: { custom_statuses: ['awaiting_data', 'parked'] }, records: [active] });
   });
 
-  for (const [name, folder, fields, editable] of [
+  for (const surface of ['ticket', 'sidebar']) for (const [name, folder, fields, editable] of [
     ['custom active primary', 'primary', { status: 'awaiting_data', execution_active: true }, false],
     ['legacy active primary', 'primary', { status: 'in_progress' }, false],
     ['custom parked primary', 'primary', { status: 'awaiting_data', execution_active: false }, true],
     ['custom active secondary', source, { status: 'awaiting_data', execution_active: true }, true],
     ['legacy active secondary', source, { status: 'in_progress' }, true],
     ['terminal secondary', source, { status: 'done' }, true],
-  ]) test(`notification editor respects activity and source / ${name}`, async t => {
+  ]) test(`notification editor respects activity and source / ${surface} / ${name}`, async t => {
     const record = ticket(folder === 'primary' ? 'kon-live' : 'kon-draft', name,
       { source: folder, can_edit: true, notify: [], notify_channels: [], ...fields });
     await withPage(t, 1280, 'dark', async (page, fixture) => {
       await openTicket(page, record.id, folder);
-      await detailPanel(page, 'Ticket');
-      const metadata = page.locator('[data-detail-metadata]:visible');
-      await metadata.locator('summary').filter({ hasText: /^Details$/ }).click();
+      const metadata = surface === 'ticket' ? page.locator('[data-detail-metadata]:visible') : page.locator('[data-ticket-details]');
+      if (surface === 'ticket') {
+        await detailPanel(page, 'Ticket');
+        await metadata.locator('summary').filter({ hasText: /^Details$/ }).click();
+      }
       const notify = metadata.locator('[x-text="notifyRailLabel()"]:visible');
-      const modes = page.getByRole('radiogroup', { name: 'notify me', exact: true }).filter({ visible: true });
+      const modes = metadata.getByRole('radiogroup', { name: 'notify me', exact: true }).filter({ visible: true });
+      if (surface === 'sidebar') {
+        const changeStage = metadata.getByRole('button', { name: 'Change stage', exact: true });
+        if (folder === 'primary' && editable) await expect(changeStage).toBeEnabled();
+        else await expect(changeStage).toBeDisabled();
+      }
       if (editable) {
         await notify.click();
         await visible(modes);
@@ -6344,6 +6351,134 @@ const coreChanges = { base: 'main', branch: 'fixture/core', commits: [{ sha: 'b0
   files: [{ path: 'internal/core-fixture.go', added: 17, deleted: 4 }] };
 
 describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
+  for (const [width, theme, tab, status] of [
+    [768, 'dark', 'summary', 'done'],
+    [1280, 'light', 'summary', 'done'],
+    [1280, 'dark', 'activity', 'paused'],
+    [1280, 'light', 'ticket', 'open'],
+  ]) test(`desktop sidebar details stay available / ${tab} / ${width}px`, async t => {
+    const branch = 'fixture/sidebar-details', log = '/fixtures/logs/sidebar-details.jsonl';
+    await withPage(t, width, theme, async (page, fixture) => {
+      await openTicket(page, 'kon-draft');
+      await page.locator('[data-ticket-detail]').getByRole('button', { name: tab, exact: true }).click();
+      const rail = page.locator('.ticket-detail-rail');
+      const copyID = rail.getByRole('button', { name: 'Copy ticket ID', exact: true });
+      await copyID.click();
+      assert.equal(await page.evaluate(() => window.__fixtureCopied), 'kon-draft');
+      await expect(copyID).toHaveText('✓ copied');
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).activeTab), tab);
+      await expect(page.locator('[data-detail-metadata] details')).not.toHaveAttribute('open', '');
+      for (const [label, value] of [['Copy branch', branch], ['Copy log path', log]]) {
+        await rail.getByRole('button', { name: label, exact: true }).click();
+        assert.equal(await page.evaluate(() => window.__fixtureCopied), value);
+      }
+      await expect(rail).toContainText('/fixtures/repository-with-a-long-name');
+      await expect(rail).toContainText('main');
+      await expect(rail).toContainText('fixture-agent');
+      if (captureDirectory) await mobileCapture(page, width, theme, `desktop-sidebar-${tab}`);
+      await rail.getByRole('button', { name: 'kon-blocker', exact: true }).click();
+      await expect.poll(() => new URL(page.url()).hash).toBe('#/t/kon-blocker');
+      assert.deepEqual(fixture.mutations, []);
+      await noPageOverflow(page);
+    }, { ticket: { status, history: coreHistory(), branch, base_branch: 'main', last_log: log,
+      deps: [{ id: 'kon-blocker', title: 'Sidebar blocker', status: 'paused', source: 'primary' }] },
+      records: [ticket('kon-blocker', 'Sidebar blocker', { status: 'paused' })] });
+  });
+
+  for (const [status, stage] of [['open', ''], ['todo', 'plan']]) {
+    test(`desktop sidebar stage and schedule actions / ${status}`, async t => {
+      await withPage(t, 1280, 'dark', async (page, fixture) => {
+        const record = fixture.records.get('primary/kon-draft');
+        const targetStage = stage ? 'code' : 'plan';
+        await page.route('**/api/tickets/kon-draft/set-stage', async route => {
+          const body = route.request().postDataJSON();
+          assert.equal(route.request().method(), 'POST');
+          assert.deepEqual(body, { stage: targetStage });
+          record.stage = body.stage;
+          fixture.mutations.push({ method: 'POST', path: '/api/tickets/kon-draft/set-stage', body });
+          await route.fulfill({ contentType: 'application/json', body: JSON.stringify(record) });
+        });
+        await page.route('**/api/tickets/kon-draft/schedule', async route => {
+          const body = route.request().postDataJSON();
+          assert.equal(route.request().method(), 'POST');
+          if (body.clear) {
+            assert.deepEqual(body, { clear: true });
+            delete record.scheduled_at;
+          } else {
+            assert.deepEqual(body, { scheduled_at: '2099-10-01T10:00:00Z' });
+            record.scheduled_at = body.scheduled_at;
+            record.status = 'open';
+          }
+          fixture.mutations.push({ method: 'POST', path: '/api/tickets/kon-draft/schedule', body });
+          await route.fulfill({ contentType: 'application/json', body: JSON.stringify(record) });
+        });
+        await openTicket(page, 'kon-draft');
+        await page.locator('[data-ticket-detail]').getByRole('button', { name: 'summary', exact: true }).click();
+        const rail = page.locator('[data-ticket-details]');
+        await rail.getByRole('button', { name: 'Change stage', exact: true }).click();
+        const select = rail.getByRole('combobox', { name: 'Stage', exact: true });
+        await expect(select).toHaveValue(stage);
+        await select.selectOption(targetStage);
+        await expect.poll(() => fixture.mutations.length).toBe(1);
+        await rail.getByRole('button', { name: 'Edit scheduled start', exact: true }).click();
+        await rail.getByLabel('Scheduled start', { exact: true }).fill('2099-10-01T10:00');
+        await rail.getByRole('button', { name: 'save', exact: true }).click();
+        await expect.poll(() => record.scheduled_at).toBe('2099-10-01T10:00:00Z');
+        await rail.getByRole('button', { name: 'clear', exact: true }).click();
+        await expect.poll(() => record.scheduled_at).toBeUndefined();
+        assert.deepEqual(fixture.mutations.map(m => m.path), [
+          '/api/tickets/kon-draft/set-stage', '/api/tickets/kon-draft/schedule', '/api/tickets/kon-draft/schedule',
+        ]);
+        assert.equal(record.attempt, 3);
+        assert.deepEqual(fixture.enqueued, []);
+        await rail.getByRole('button', { name: 'Edit scheduled start', exact: true }).click();
+        await rail.getByLabel('Scheduled start', { exact: true }).fill('2099-10-01T10:00');
+        await rail.getByRole('button', { name: 'save', exact: true }).click();
+        await expect.poll(() => record.scheduled_at).toBe('2099-10-01T10:00:00Z');
+        await rail.getByRole('button', { name: 'run now', exact: true }).click();
+        const dialog = page.getByRole('dialog').filter({ visible: true });
+        await expect(dialog).toBeVisible();
+        assert.deepEqual(fixture.enqueued, []);
+        await dialog.getByRole('button', { name: 'start ticket', exact: true }).click();
+        await expect.poll(() => fixture.enqueued).toEqual([{ id: 'kon-draft', action: 'init' }]);
+        assert.equal(fixture.mutations.at(-1).path, '/api/tickets/kon-draft/init');
+        assert.equal(record.scheduled_at, undefined);
+        assert.equal(record.status, 'todo');
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).activeTab), 'summary');
+        await noPageOverflow(page);
+      }, { ticket: { status, stage, attempt: 3, history: coreHistory() }, config: { channels: ['fixture-chat'], default_channels: ['fixture-chat'] } });
+    });
+  }
+
+  test('desktop sidebar demo screenshot', { skip: !captureDirectory }, async t => {
+    const id = 'DEMO-1042';
+    const stages = ['plan', 'code', 'review'];
+    const summaries = [
+      'Keep the existing page size default. Add an opaque cursor and return `next_cursor` when more results exist.',
+      'Implemented cursor pagination for `GET /catalog/items`. Added coverage for empty pages and invalid cursors.',
+      'All focused tests pass. The response format stays compatible when no cursor is provided.',
+    ];
+    const history = stages.map((stage, i) => ({ stage, run: 0, agent: 'demo-agent', run_outcome: 'complete', exit_code: 0,
+      started_at: `2026-11-17T10:0${i * 3}:00Z`, completed_at: `2026-11-17T10:0${i * 3 + 2}:00Z`, summary: summaries[i] }));
+    const record = ticket(id, 'Add cursor pagination to the catalog API', { status: 'done', stage: 'review', stages, history,
+      agent: 'demo-agent', path: '/demo/projects/catalog-api', branch: 'feature/catalog-pagination', base_branch: 'main',
+      last_log: '/demo/logs/DEMO-1042.jsonl', created_at: '2026-11-17T09:00:00Z', completed_at: '2026-11-17T10:08:00Z',
+      summary: summaries[2], final_summary: 'Cursor pagination is complete.\n\n- Added optional `cursor` and `limit` parameters.\n- Added tests for invalid cursors and the final page.\n- Existing clients can keep using the first-page response.',
+      notify: ['human_review', 'done'], deps: [{ id: 'DEMO-1038', title: 'Define the catalog response format', status: 'done', source: 'primary' }] });
+    await withPage(t, 1440, 'dark', async page => {
+      await openTicket(page, id);
+      await page.locator('[data-ticket-detail]').getByRole('button', { name: 'summary', exact: true }).click();
+      await expect(page.locator('[data-ticket-details]').getByRole('button', { name: 'Copy ticket ID', exact: true })).toHaveText(id);
+      await expect(page.locator('.ticket-detail-rail')).toContainText('/demo/projects/catalog-api');
+      await noPageOverflow(page);
+      await mobileCapture(page, 1440, 'dark', 'desktop-sidebar-demo');
+    }, { records: [record, ticket('DEMO-1038', 'Define the catalog response format', { status: 'done', path: record.path })],
+      config: { agents: ['demo-agent'], pipeline_infos: [{ name: 'standard', stages }], channels: ['demo-chat'], default_channels: ['demo-chat'] },
+      costs: { [id]: { id, cost_usd: '1.84', tracked_runs: 3, priced_runs: 3,
+        stages: stages.map((name, i) => ({ name, cost_usd: ['0.28', '1.12', '0.44'][i], tracked_runs: 1, priced_runs: 1 })),
+        runs: history.map((h, i) => ({ history_index: i, stage: h.stage, cost_usd: ['0.28', '1.12', '0.44'][i], tracked_runs: 1, priced_runs: 1 })) } } });
+  });
+
   test('kon91cx lifecycle fixture contract table', async t => {
     await withPage(t, 390, 'dark', async (page, fixture) => {
       for (const [action, body, status, enqueue] of [

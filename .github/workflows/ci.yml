@@ -70,6 +70,10 @@ jobs:
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, webkit]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -89,10 +93,10 @@ jobs:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/kontora-playwright
         run: |
           npm ci --prefix internal/web/testdata --ignore-scripts --no-audit --no-fund
-          node internal/web/testdata/node_modules/playwright/cli.js install --with-deps chromium webkit
+          node internal/web/testdata/node_modules/playwright/cli.js install --with-deps ${{ matrix.browser }}
 
       - name: Test real embedded UI with offline browser fixtures
-        run: make test-browser BROWSER_CACHE="$RUNNER_TEMP/kontora-playwright"
+        run: make test-browser BROWSER_CACHE="$RUNNER_TEMP/kontora-playwright" BROWSER_ENGINE=${{ matrix.browser }}
 
   pi-sdk:
     runs-on: ubuntu-latest

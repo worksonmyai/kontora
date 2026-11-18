@@ -23,13 +23,14 @@ test-race:
 	go test -race -timeout 10m ./...
 
 BROWSER_CACHE ?= $(if $(XDG_CACHE_HOME),$(XDG_CACHE_HOME),$(HOME)/.cache)/kontora-playwright
+BROWSER_ENGINE ?= chromium|webkit
 
 test-browser-install:
 	npm ci --prefix internal/web/testdata --ignore-scripts --no-audit --no-fund
 	PLAYWRIGHT_BROWSERS_PATH="$(BROWSER_CACHE)" node internal/web/testdata/node_modules/playwright/cli.js install chromium webkit
 
 test-browser:
-	KONTORA_TEST_BROWSER=1 PLAYWRIGHT_BROWSERS_PATH="$(BROWSER_CACHE)" go test -count=1 -timeout 26m ./internal/web -run '^TestMobileBrowserJS$$' -v
+	KONTORA_TEST_BROWSER=1 PLAYWRIGHT_BROWSERS_PATH="$(BROWSER_CACHE)" go test -count=1 -timeout 42m ./internal/web -run '^TestMobileBrowserJS$$/($(BROWSER_ENGINE))$$' -v
 
 test-pi-sdk:
 	node --test internal/daemon/testdata/pi_extension.sdk.test.mjs

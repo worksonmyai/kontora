@@ -5916,7 +5916,7 @@ test('plaintext previews avoid repeated colorizing and truncated exports read th
     fetch: async url => { urls.push(url); return { ok: true, json: async () => ({ content: 'complete raw output' }) }; },
     Blob: class { constructor(parts) { blobs.push(parts.join('')); } },
     URL: { createObjectURL: () => 'blob:full-log' },
-    window: { innerWidth: 1200, open: url => opened.push(url) },
+    window: { innerWidth: 1200, open: () => rawLogPopup(opened) },
   });
   state.selectedTicket = { id: 'full', status: 'done', stage: 'code' };
   state.activityStage = 'code';
@@ -19284,13 +19284,24 @@ for (const mobile of [false, true]) {
   });
 }
 
+function rawLogPopup(opened = [], reserved = []) {
+  const popup = {
+    opener: {},
+    closed: false,
+    location: { replace: url => opened.push(url) },
+    close() { this.closed = true; },
+  };
+  reserved.push(popup);
+  return popup;
+}
+
 for (const mobile of [false, true]) for (const structured of [false, true]) {
   test(`activity Raw ignores a different cached Logs stage: mobile=${mobile}, structured=${structured}`, async () => {
     const opened = [], blobs = [], reads = [];
     const { state } = loadKontoraContext({
       Blob,
       URL: { createObjectURL: blob => { blobs.push(blob); return 'blob:activity-log'; } },
-      window: { open: url => opened.push(url) },
+      window: { open: () => rawLogPopup(opened) },
       fetch: async url => {
         reads.push(url);
         return { ok: true, json: async () => ({ content: 'code raw output' }) };
@@ -19314,7 +19325,7 @@ for (const issue of ['stale', 'unmarked preview', 'imported', 'missing']) test(`
   const { state } = loadKontoraContext({
     Blob,
     URL: { createObjectURL: blob => { blobs.push(blob); return 'blob:activity-log'; } },
-    window: { open() {} },
+    window: { open: () => rawLogPopup() },
     fetch: async url => {
       reads.push(url);
       if (url.endsWith('&run=1')) return { ok: false, status: 404 };
@@ -19338,25 +19349,90 @@ for (const issue of ['stale', 'unmarked preview', 'imported', 'missing']) test(`
   assert.equal(await blobs[0].text(), 'latest output');
 });
 
-for (const failure of [409, 503, 'network', 'invalid response']) test(`Raw retries the same occurrence after ${failure}`, async () => {
-  const reads = [], opened = [];
+for (const delayed of ['response', 'json']) test(`Raw reserves its tab before awaiting ${delayed}`, async () => {
+  const response = deferred(), opened = [], reserved = [];
+  const { state } = loadKontoraContext({
+    Blob, URL: { createObjectURL: () => 'blob:raw-output' },
+    window: { open: (url, target) => {
+      assert.equal(url, 'about:blank');
+      assert.equal(target, '_blank');
+      return rawLogPopup(opened, reserved);
+    } },
+    fetch: async () => {
+      assert.equal(reserved.length, 1);
+      assert.equal(reserved[0].opener, null);
+      if (delayed === 'response') await response.promise;
+      return { ok: true, json: async () => {
+        if (delayed === 'json') await response.promise;
+        return { content: 'selected output' };
+      } };
+    },
+  });
+  Object.assign(state, { selectedTicket: { id: 'kon-1' }, activeTab: 'activity', activityStage: 'code' });
+  const exported = state.openRawLog();
+  assert.equal(reserved.length, 1);
+  assert.deepEqual(opened, []);
+  await flushMicrotasks();
+  response.resolve();
+  await exported;
+  assert.deepEqual(opened, ['blob:raw-output']);
+  assert.equal(reserved[0].closed, false);
+  state._invalidateRawLog();
+  assert.equal(reserved[0].closed, false, 'completed exports remain open');
+});
+
+test('Raw reports when the reserved tab closes before the log arrives', async () => {
+  const response = deferred(), opened = [], reserved = [];
+  const { state } = loadKontoraContext({
+    Blob, URL: { createObjectURL: () => assert.fail('a closed tab must not create a blob URL') },
+    window: { open: () => rawLogPopup(opened, reserved) },
+    fetch: () => response.promise,
+  });
+  Object.assign(state, { selectedTicket: { id: 'kon-1' }, activeTab: 'activity', activityStage: 'code' });
+  const exported = state.openRawLog();
+  reserved[0].close();
+  response.resolve({ ok: true, json: async () => ({ content: 'selected output' }) });
+  await exported;
+  assert.deepEqual(opened, []);
+  assert.equal(state.rawLogError, 'The raw log tab was closed. Try exporting it again.');
+});
+
+for (const blocked of ['null', 'throws']) test(`Raw reports a blocked popup: ${blocked}`, async () => {
+  const { state } = loadKontoraContext({
+    window: { open() {
+      if (blocked === 'throws') throw new Error('popup blocked');
+      return null;
+    } },
+    fetch: () => assert.fail('a blocked popup must not fetch a log'),
+  });
+  Object.assign(state, { selectedTicket: { id: 'kon-1' }, activeTab: 'activity', activityStage: 'code' });
+  await state.openRawLog();
+  assert.equal(state.rawLogError, "Couldn't open the raw log. Allow popups and try again.");
+  assert.equal(state.rawLogCanExportLatest, false);
+});
+
+for (const failure of [404, 409, 503, 'network', 'invalid response', 'invalid JSON']) test(`Raw retries the same occurrence after ${failure}`, async () => {
+  const reads = [], opened = [], reserved = [];
   const { state } = loadKontoraContext({
     Blob,
     URL: { createObjectURL: () => 'blob:raw-output' },
-    window: { open: url => opened.push(url) },
+    window: { open: () => rawLogPopup(opened, reserved) },
     fetch: async url => {
       reads.push(url);
       if (reads.length > 1) return { ok: true, json: async () => ({ content: 'selected output' }) };
       if (failure === 'network') throw new Error('network failure');
       if (failure === 'invalid response') return { ok: true, json: async () => ({}) };
+      if (failure === 'invalid JSON') return { ok: true, json: async () => { throw new Error('invalid JSON'); } };
       return { ok: false, status: failure };
     },
   });
   Object.assign(state, { selectedTicket: { id: 'kon-1' }, activeTab: 'activity', activityStage: 'code', activityRun: 1 });
   await state.openRawLog();
-  assert.equal(state.rawLogError, "Couldn't load the selected run's raw log. Try Raw again.");
-  assert.equal(state.rawLogCanExportLatest, false);
-  await state.openRawLog(true);
+  assert.equal(reserved[0].closed, true);
+  assert.equal(state.rawLogError, failure === 404 ? 'Exact output is unavailable for the selected run.' :
+    "Couldn't load the selected run's raw log. Try Raw again.");
+  assert.equal(state.rawLogCanExportLatest, failure === 404);
+  if (failure !== 404) await state.openRawLog(true);
   assert.equal(reads.length, 1);
   assert.deepEqual(opened, []);
   await state.openRawLog();
@@ -19368,7 +19444,7 @@ for (const failure of [409, 503, 'network', 'invalid response']) test(`Raw retri
 test('Raw does not open results after the source changes to a ticket with the same ID', async () => {
   const response = deferred(), opened = [];
   const { state } = loadKontoraContext({
-    Blob, URL: { createObjectURL: () => 'blob:activity-log' }, window: { open: url => opened.push(url) },
+    Blob, URL: { createObjectURL: () => 'blob:activity-log' }, window: { open: () => rawLogPopup(opened) },
     fetch: url => {
       assert.equal(url, '/api/tickets/kon-1/logs?stage=code&run=0');
       return response.promise;
@@ -19407,7 +19483,7 @@ for (const owner of ['worker', 'epic']) {
           state.selectedTicket = { ...epic, kind: 'ticket' };
           state.activeTab = 'activity';
         } else state.epicSwitchTab('activity', false);
-        ctx.window.open = url => opened.push(url);
+        ctx.window.open = () => rawLogPopup(opened);
         const gate = deferred();
         let reads = 0;
         ctx.fetch = async url => {
@@ -19442,13 +19518,13 @@ for (const mobile of [false, true]) {
     for (const ok of [true, false]) {
       test(`raw epic output ignores stale ${ok ? 'success' : 'failure'} after ${supersession}: mobile=${mobile}`, async () => {
         const clock = supervisorClock();
-        const opened = [];
+        const opened = [], reserved = [];
         const { state, ctx, epic } = epicSupervisorUI({ mobile, overrides: { ...clock.overrides,
           Blob, URL: { createObjectURL: () => 'blob:stale-output' },
         } });
         epic.history = [{ stage: 'default', run: 0 }];
         await state.openEpic(epic.id);
-        ctx.window.open = url => opened.push(url);
+        ctx.window.open = () => rawLogPopup(opened, reserved);
         const originalFetch = ctx.fetch;
         const gate = deferred();
         ctx.fetch = async (url, opts) => {
@@ -19473,6 +19549,7 @@ for (const mobile of [false, true]) {
           state.epicSwitchTab('activity', false);
           await state.fetchActivity('default', 0);
         } else state.destroy();
+        assert.equal(reserved[0].closed, true, 'invalidation closes the reserved tab before the response');
         await flushMicrotasks();
         gate.resolve();
         await raw;

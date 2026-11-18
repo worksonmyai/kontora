@@ -679,8 +679,9 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		q.StageOnly = true
 	} else if hasRun {
-		run, err := strconv.ParseUint(params.Get("run"), 10, strconv.IntSize-1)
-		if len(runs) != 1 || err != nil {
+		raw := params.Get("run")
+		run, err := strconv.Atoi(raw)
+		if len(runs) != 1 || err != nil || strings.HasPrefix(raw, "+") || strings.HasPrefix(raw, "-") {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Pass run exactly once as a non-negative integer"})
 			return
 		}
@@ -688,7 +689,7 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "run requires exactly one valid stage parameter"})
 			return
 		}
-		q.Run = new(int(run))
+		q.Run = new(run)
 	} else if q.Stage != "" {
 		q.Stage = filepath.Base(q.Stage)
 	}

@@ -4684,6 +4684,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         const popupPromise = page.waitForEvent('popup');
         await detail.getByRole('button', { name: '⧉ raw', exact: true }).click();
         const popup = await popupPromise;
+        await popup.waitForURL('blob:**');
         await popup.waitForLoadState('domcontentloaded');
         const url = new URL(popup.url());
         assert.equal(url.protocol, 'blob:');
@@ -8508,12 +8509,32 @@ test('audit32-fixture populated Stats and exact raw run datasets', async t => {
   }, { populatedStats: true, distinctRaw: true });
 });
 
+test('Raw reserves a popup while the selected log request is pending', async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    await openTicket(page, 'kon-done');
+    await page.getByRole('region', { name: 'Run history' }).getByRole('button', { name: /failed code/ }).click();
+    const held = fixture.holdRead('/api/tickets/kon-done/logs');
+    try {
+      const pendingPopup = page.waitForEvent('popup');
+      await page.getByRole('button', { name: /raw/i }).filter({ visible: true }).click();
+      await held.started;
+      const popup = await pendingPopup;
+      assert.equal(popup.url(), 'about:blank');
+      assert.equal(await popup.evaluate(() => window.opener), null);
+      held.release();
+      await popup.waitForURL('blob:**');
+      await expect(popup.locator('body')).toHaveText(fixture.rawOutputs.get('kon-done/code/0'));
+      await popup.close();
+    } finally { held.release(); }
+  }, { distinctRaw: true });
+});
+
 test('audit32-export selected Raw bytes and separately requested latest stage', async t => {
   await withPage(t, 1280, 'light', async (page, fixture) => {
     await page.evaluate(() => {
       window.rawExports = [];
       URL.createObjectURL = blob => { window.rawExports.push(blob.text()); return 'blob:raw-export'; };
-      window.open = () => {};
+      window.open = () => ({ opener: null, closed: false, location: { replace() {} }, close() { this.closed = true; } });
     });
     await openTicket(page, 'kon-done');
     await page.getByRole('region', { name: 'Run history' }).getByRole('button', { name: /failed code/ }).click();

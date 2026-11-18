@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1879,6 +1881,11 @@ func TestHandleGetLogs_RawSelectors(t *testing.T) {
 	}{
 		{"stage=plan..review&run=0", LogQuery{ID: "t-001", Stage: "plan..review", Run: new(0)}},
 		{"stage=plan&run=2", LogQuery{ID: "t-001", Stage: "plan", Run: new(2)}},
+		{"stage=plan&run=000", LogQuery{ID: "t-001", Stage: "plan", Run: new(0)}},
+		{"stage=plan&run=002", LogQuery{ID: "t-001", Stage: "plan", Run: new(2)}},
+		{"stage=plan&run=" + strconv.Itoa(math.MaxInt-1), LogQuery{ID: "t-001", Stage: "plan", Run: new(math.MaxInt - 1)}},
+		{"stage=plan&run=" + strconv.Itoa(math.MaxInt), LogQuery{ID: "t-001", Stage: "plan", Run: new(math.MaxInt)}},
+		{"stage=plan&run=0" + strconv.Itoa(math.MaxInt), LogQuery{ID: "t-001", Stage: "plan", Run: new(math.MaxInt)}},
 		{"stage=plan..review&stage_only=true", LogQuery{ID: "t-001", Stage: "plan..review", StageOnly: true}},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
@@ -1899,7 +1906,13 @@ func TestHandleGetLogs_RejectsInvalidExactQuery(t *testing.T) {
 		"stage=../plan&run=0", "stage=plan&run", "stage=plan&run=",
 		"stage=plan&run=-1", "stage=plan&run=-0", "stage=plan&run=%2B1",
 		"stage=plan&run=+1", "stage=plan&run=1.5", "stage=plan&run=auto",
-		"stage=plan&run=%ZZ", "stage=plan&run=0&run=1",
+		"stage=plan&run=%2B0", "stage=plan&run=-00",
+		"stage=plan&run=%201", "stage=plan&run=1%20", "stage=plan&run=1%09",
+		"stage=plan&run=1_0", "stage=plan&run=0x10", "stage=plan&run=1e2",
+		"stage=plan&run=1%002", "stage=plan&run=%D9%A1",
+		"stage=plan&run=%ZZ", "stage=plan&run=0&run=1", "stage=plan&run=0&run=0",
+		"stage=plan&run=" + strconv.Itoa(math.MinInt),
+		"stage=plan&run=" + strconv.FormatUint(uint64(math.MaxInt)+1, 10),
 		"stage=plan&run=99999999999999999999999999999",
 		"stage=plan%5Creview&run=0", "stage=plan%00review&run=0",
 		"stage_only=true", "stage=plan&stage_only=false", "stage=plan&stage_only=true&run=0",

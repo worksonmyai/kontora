@@ -2524,7 +2524,211 @@
               </div>
             </template>
 
-            <button type="button" @click="switchTab('ticket')" class="text-left text-xs text-accent py-2">Ticket details and relationships →</button>
+            <div data-ticket-details class="flex flex-col gap-[9px]"
+                 :inert="detailLoading || lifecycleBusy(selectedTicket) || editorClaimLocked()">
+              <div class="h-px bg-surface-700" x-show="churn().count > 0 || selectedTicket?.history?.length > 0"></div>
+              <span class="side-label">details</span>
+              <div class="grid grid-cols-[58px_1fr] gap-x-[10px] gap-y-[6px] font-mono text-[11px] items-start">
+                <span class="text-surface-600">id</span>
+                <button type="button" class="copyable text-tx-2 hover:text-tx text-left break-all justify-self-start"
+                        aria-label="Copy ticket ID" @click.stop="copyTicketId(selectedTicket?.id)"
+                        x-text="copiedId ? '✓ copied' : selectedTicket?.id"></button>
+                <template x-if="chainSummary().total > 1 && chainSummary().place">
+                  <div class="col-span-2 grid grid-cols-[58px_1fr] gap-x-[10px] items-start">
+                    <span class="text-surface-600">chain</span>
+                    <span class="text-tx-2" x-text="chainSummary().place + ' · ' + chainVerdict()"></span>
+                  </div>
+                </template>
+                <template x-if="chainHolder() && chainHolder().direction === 'upstream'">
+                  <div class="col-span-2 grid grid-cols-[58px_1fr] gap-x-[10px] items-start">
+                    <span class="text-surface-600">blocked by</span>
+                    <button type="button" class="text-left break-all justify-self-start"
+                            :disabled="!relationKnown(chainHolder()) || !!chainHolder().missing"
+                            :class="relationChipClass(chainHolder())"
+                            :data-tip-e="ticketTip(chainHolder()).title"
+                            :data-tip-e-tag="ticketTip(chainHolder()).tag"
+                            :data-tip-e-tag-color="ticketTip(chainHolder()).tagColor"
+                            :data-tip-e-body="ticketTip(chainHolder()).body"
+                            :data-tip-e-hint="ticketTip(chainHolder()).hint"
+                            @click="openTicketRef(chainHolder())"
+                            x-text="chainHolder().id"></button>
+                  </div>
+                </template>
+                <template x-if="chainUnblocks().length > 0">
+                  <div class="col-span-2 grid grid-cols-[58px_1fr] gap-x-[10px] items-start">
+                    <span class="text-surface-600">unblocks</span>
+                    <div class="flex flex-wrap gap-[5px] items-center">
+                      <template x-for="n in chainUnblocks()" :key="n.id">
+                        <button type="button" class="break-all"
+                                :disabled="!relationKnown(n) || !!n.missing"
+                                :class="relationHueClass(n)"
+                                :data-tip-e="ticketTip(n).title"
+                                :data-tip-e-tag="ticketTip(n).tag"
+                                :data-tip-e-tag-color="ticketTip(n).tagColor"
+                                :data-tip-e-body="ticketTip(n).body"
+                                :data-tip-e-hint="ticketTip(n).hint"
+                                @click="openTicketRef(n)"
+                                x-text="n.id"></button>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+                <template x-for="row in relationRows()" :key="row.key">
+                  <div class="col-span-2 grid grid-cols-[58px_1fr] gap-x-[10px] items-start">
+                    <span class="text-surface-600" x-text="row.label"></span>
+                    <div class="flex flex-wrap gap-[5px] items-center">
+                      <template x-for="ref in relationRefs(row)" :key="ref.id">
+                        <button type="button" :class="relationChipClass(ref)"
+                                :disabled="!relationKnown(ref) || !!ref.missing"
+                                :data-tip-e="ticketTip(ref).title"
+                                :data-tip-e-tag="ticketTip(ref).tag"
+                                :data-tip-e-tag-color="ticketTip(ref).tagColor"
+                                :data-tip-e-body="ticketTip(ref).body"
+                                :data-tip-e-hint="ticketTip(ref).hint"
+                                @click="openTicketRef(ref)"
+                                x-text="ref.id"></button>
+                      </template>
+                      <button type="button" x-show="relationHidden(row) > 0"
+                              class="text-[10.5px] text-accent hover:underline"
+                              @click="relExpanded[row.key] = true"
+                              x-text="'+' + relationHidden(row) + ' more'"></button>
+                    </div>
+                  </div>
+                </template>
+                <template x-if="selectedTicket?.agent"><span class="text-surface-600">agent</span></template>
+                <template x-if="selectedTicket?.agent"><span class="text-tx-2 break-all" x-text="selectedTicket?.agent"></span></template>
+                <template x-if="selectedTicket?.stages?.length > 1"><span class="text-surface-600">stage</span></template>
+                <template x-if="selectedTicket?.stages?.length > 1">
+                  <span>
+                    <template x-if="ticketCanControl(selectedTicket) && canSetStage() && setStageOpen">
+                      <select aria-label="Stage" class="text-[11px] font-mono bg-surface-800 text-tx-3 border border-edge-input rounded px-1 py-0.5 outline-none focus:border-accent/40"
+                              @change="setStage($event.target.value); setStageOpen = false"
+                              @blur="setStageOpen = false"
+                              x-init="$nextTick(() => $el.focus())">
+                        <!-- An unset stage needs a placeholder so selecting the fallback stage emits change. -->
+                        <template x-if="!selectedTicket?.stage">
+                          <option value="" selected>set stage…</option>
+                        </template>
+                        <template x-for="s in selectedTicket?.stages || []" :key="s">
+                          <option :value="s" x-text="s" :selected="s === selectedTicket?.stage"></option>
+                        </template>
+                      </select>
+                    </template>
+                    <template x-if="!(ticketCanControl(selectedTicket) && canSetStage() && setStageOpen)">
+                      <button type="button" aria-label="Change stage" class="text-tx-2"
+                              :disabled="!canSetStage()"
+                              :class="ticketCanControl(selectedTicket) && canSetStage() ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
+                              :title="executionActive(selectedTicket) ? 'Pause first and wait for the agent to stop before changing stages.' : (plannotatorInFlight[selectedTicket?.id] ? 'Close the review before changing stages.' : '')"
+                              @click="setStageOpen = true"
+                              x-text="displayStage()"></button>
+                    </template>
+                  </span>
+                </template>
+                <template x-if="notifyCanEdit() && notifyEditing">
+                  <div class="col-span-2 flex flex-col gap-[7px] p-[9px] bg-surface-850 border border-edge-input rounded-[7px]">
+                    <div class="flex items-center gap-[10px]">
+                      <span class="text-surface-600">notify</span>
+                      <span x-show="notifySaving" class="ml-auto text-[10.5px] text-surface-600">saving…</span>
+                      <span x-show="notifySaved && !notifySaving" class="ml-auto text-[10.5px] text-ok/70">saved</span>
+                      <button type="button" class="text-[10.5px] text-accent hover:underline"
+                              :class="(notifySaving || notifySaved) ? '' : 'ml-auto'"
+                              :aria-expanded="notifyChips" @click="notifyChips = !notifyChips">custom</button>
+                      <button type="button" class="text-[10.5px] text-accent hover:underline"
+                              @click="closeNotifyEditor()">done</button>
+                    </div>
+                    <div class="notify-seg notify-seg-sm notify-seg-stack" role="radiogroup" aria-label="notify me">
+                      <template x-for="m in notifyModes()" :key="m.key">
+                        <button type="button" role="radio" :aria-checked="notifyModeOf(notifyDraft) === m.key"
+                                @click="notifyPickMode(notifyDraft, m.key); notifyChips = false"
+                                x-text="m.label"></button>
+                      </template>
+                    </div>
+                    <div x-show="notifyChips" class="flex flex-wrap items-center gap-[6px]">
+                      <template x-for="s in notifyStatuses()" :key="s">
+                        <button type="button" class="notify-chip" :data-status="s"
+                                :data-on="notifyStatusOn(notifyDraft, s) ? '1' : null"
+                                :aria-pressed="notifyStatusOn(notifyDraft, s)"
+                                @click="notifyToggleStatus(notifyDraft, s)" x-text="s"></button>
+                      </template>
+                    </div>
+                    <template x-if="notifyPicksChannel(notifyDraft)">
+                      <div class="flex flex-col gap-[6px]">
+                        <div class="flex flex-wrap items-center gap-[6px]">
+                          <template x-for="c in notifyChannelChips(notifyDraft)" :key="c.key">
+                            <button type="button" class="notify-chip" :data-kind="c.kind"
+                                    :data-on="c.on ? '1' : null" :aria-pressed="c.on"
+                                    @click="notifyToggleChannel(notifyDraft, c)" x-text="c.label"></button>
+                          </template>
+                        </div>
+                        <p class="m-0 font-sans text-[10.5px] leading-[1.5] text-surface-600" x-text="notifyChannelHint(notifyDraft)"></p>
+                      </div>
+                    </template>
+                    <span class="text-[10.5px] leading-[1.5] text-surface-600 break-all" x-text="notifyEcho(notifyDraft)"></span>
+                    <span x-show="notifyError" role="alert" class="text-[10.5px] text-err" x-text="notifyError"></span>
+                  </div>
+                </template>
+                <template x-if="!(notifyCanEdit() && notifyEditing)"><span class="text-surface-600">notify</span></template>
+                <template x-if="!(notifyCanEdit() && notifyEditing)">
+                  <button type="button" class="text-tx-2 text-left justify-self-start"
+                          :disabled="!notifyCanEdit()"
+                          :class="notifyCanEdit() ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
+                          @click="openNotifyEditor()" x-text="notifyRailLabel()"></button>
+                </template>
+                <template x-if="selectedTicket?.branch"><span class="text-surface-600">branch</span></template>
+                <template x-if="selectedTicket?.branch">
+                  <button type="button" class="copyable text-tx-2 hover:text-tx text-left break-all justify-self-start"
+                          aria-label="Copy branch" @click.stop="copyBranch(selectedTicket?.branch)"
+                          x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button>
+                </template>
+                <template x-if="selectedTicket?.base_branch"><span class="text-surface-600">base branch</span></template>
+                <template x-if="selectedTicket?.base_branch">
+                  <span class="text-tx-2 break-all" x-text="selectedTicket?.base_branch"></span>
+                </template>
+                <span class="text-surface-600">path</span>
+                <span class="text-tx-2 break-all" x-text="selectedTicket?.path" :title="selectedTicket?.path"></span>
+                <template x-if="!isSecondary(selectedTicket) && selectedTicket?.last_log"><span class="text-surface-600">log</span></template>
+                <template x-if="!isSecondary(selectedTicket) && selectedTicket?.last_log">
+                  <button type="button" class="copyable text-tx-2 hover:text-tx text-left break-all justify-self-start"
+                          aria-label="Copy log path" @click.stop="copyCmd(selectedTicket?.last_log)"
+                          x-text="copiedCmd === selectedTicket?.last_log ? '✓ copied' : selectedTicket?.last_log"></button>
+                </template>
+                <template x-if="selectedTicket?.created_at"><span class="text-surface-600">created</span></template>
+                <template x-if="selectedTicket?.created_at"><span class="text-tx-2" x-text="formatAbsDate(selectedTicket.created_at)"></span></template>
+                <template x-if="selectedTicket?.scheduled_at || canSchedule(selectedTicket)"><span class="text-surface-600">starts</span></template>
+                <template x-if="selectedTicket?.scheduled_at || canSchedule(selectedTicket)">
+                  <span>
+                    <template x-if="canSchedule(selectedTicket) && scheduleEditing">
+                      <span class="flex flex-wrap items-center gap-1.5">
+                        <input type="datetime-local" aria-label="Scheduled start" x-model="scheduleDraft" :min="scheduleMin()"
+                               class="text-[11px] font-mono bg-surface-800 text-tx-3 border border-edge-input rounded px-1 py-0.5 outline-none focus:border-accent/40">
+                        <button type="button" class="text-[10.5px] text-accent hover:underline disabled:opacity-50"
+                                :disabled="scheduleSubmitting" @click="submitSchedule()">save</button>
+                        <button type="button" class="text-[10.5px] text-surface-600 hover:text-tx-3"
+                                @click="closeScheduleEditor()">cancel</button>
+                      </span>
+                    </template>
+                    <template x-if="!(canSchedule(selectedTicket) && scheduleEditing)">
+                      <span class="flex flex-wrap items-center gap-1.5">
+                        <button type="button" aria-label="Edit scheduled start" class="text-tx-2 text-left"
+                                :disabled="!canSchedule(selectedTicket)"
+                                :class="canSchedule(selectedTicket) ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
+                                @click="openScheduleEditor()"
+                                x-text="scheduleLabel(selectedTicket) || 'not scheduled'"></button>
+                        <template x-if="selectedTicket?.scheduled_at && canSchedule(selectedTicket)">
+                          <button type="button" class="text-[10.5px] text-surface-600 hover:text-tx-3 disabled:opacity-50"
+                                  :disabled="scheduleSubmitting" @click="clearTicketSchedule()">clear</button>
+                        </template>
+                        <template x-if="selectedTicket?.scheduled_at && canSchedule(selectedTicket)">
+                          <button type="button" class="text-[10.5px] text-accent hover:underline"
+                                  @click="dispatchLifecycle(selectedTicket, 'start')">run now</button>
+                        </template>
+                      </span>
+                    </template>
+                    <span x-show="scheduleError" role="alert" class="block text-[10.5px] text-err mt-0.5" x-text="scheduleError"></span>
+                  </span>
+                </template>
+              </div>
+            </div>
 
           </div>
 

@@ -337,7 +337,9 @@ function fixtures(options = {}) {
       if (result.failure === 'json') return await route.fulfill({ contentType: 'application/json', body: '{invalid json', headers });
       const status = result.status || 200;
       if (status >= 400) expectedHTTPFailures.push(failureURL);
-      return await route.fulfill({ status, contentType: 'application/json', headers,
+      // Playwright's WebKit backend rejects every 3xx status, including 304.
+      if (status === 304) headers['X-Fixture-Status'] = '304';
+      return await route.fulfill({ status: status === 304 ? 200 : status, contentType: 'application/json', headers,
         body: status === 304 || status === 204 ? '' : JSON.stringify(result.value ?? snapshot) });
     } finally { held.signalDone(); }
   }
@@ -903,7 +905,13 @@ function fixtures(options = {}) {
     await context.addInitScript(() => {
       const nativeFetch = window.fetch;
       window.fetch = async (...args) => {
-        const response = await nativeFetch(...args), id = response.headers.get('X-Fixture-Decode');
+        let response = await nativeFetch(...args);
+        if (response.headers.get('X-Fixture-Status') === '304') {
+          const headers = new Headers(response.headers);
+          headers.delete('X-Fixture-Status');
+          response = new Response(null, { status: 304, headers });
+        }
+        const id = response.headers.get('X-Fixture-Decode');
         if (id !== null) {
           const json = response.json.bind(response);
           response.json = async () => { await window.__fixtureDecode(id); return json(); };

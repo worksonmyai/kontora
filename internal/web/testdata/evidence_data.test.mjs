@@ -153,13 +153,25 @@ for (const permission of ['not author', 'revoked']) test(`note permissions: ${pe
 
 test('note writes serialize per source-qualified ticket', async t => {
   const state = fixture({ source: 'team', can_edit: true, notes: [{ id: 'n', author: 'me' }] });
-  const gate = deferred(), calls = [];
-  t.mock.method(globalThis, 'fetch', async (url, opts) => { calls.push([url, opts.method]); if (calls.length === 1) await gate.promise; return response(state.selectedTicket); });
+  const gate = deferred(), tail = deferred(), calls = [];
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    calls.push([url, opts.method]);
+    await (calls.length === 1 ? gate.promise : tail.promise);
+    return response(state.selectedTicket);
+  });
   state.noteDraft = 'hello';
   const adding = state.submitNote();
   const reacting = state.toggleReaction(state.selectedTicket.notes[0], '👍');
+  const key = state.ticketKey(state.selectedTicket);
   await tick(); assert.equal(calls.length, 1);
-  gate.resolve(); await Promise.all([adding, reacting]);
+  gate.resolve(); await adding;
+  assert.equal(state._noteHasTail(key), true);
+  let drained = false;
+  const waiting = state._noteWaitForTail(key).then(() => { drained = true; });
+  await tick(); assert.equal(drained, false);
+  tail.resolve(); await Promise.all([reacting, waiting]);
+  assert.equal(state._noteHasTail(key), false);
+  assert.equal(drained, true);
   assert.deepEqual(calls, [['/api/sources/team/tickets/one/note', 'POST'], ['/api/sources/team/tickets/one/notes/n/reactions', 'POST']]);
 });
 
@@ -340,6 +352,38 @@ for (const source of ['primary', 'team']) test(`note acknowledgement preserves d
   assert.equal(state.editForm.body, 'newer unsaved editor text');
   assert.equal(state.noteReplyOn, 'mint');
 });
+
+for (const source of ['primary', 'team']) for (const kind of ['Reply', 'Edit', 'Reaction']) {
+  test(`failed delete acknowledgement invalidates queued legacy ${kind}: ${source}`, async t => {
+    const state = fixture({ source, can_edit: true, notes: [legacy('#0', 'removed'), legacy('#1', 'intended'), legacy('#2', 'wrong')] });
+    const gate = deferred(), calls = [];
+    let persisted = structuredClone(state.selectedTicket);
+    t.mock.method(globalThis, 'fetch', async (url, opts) => {
+      calls.push([url, opts?.method || 'GET']);
+      if (calls.length === 1) {
+        await gate.promise;
+        persisted.notes = [legacy('#0', 'intended'), legacy('#1', 'wrong')];
+        return { ok: false, status: 500, json: async () => ({ error: 'ticket read failed' }) };
+      }
+      return response(persisted);
+    });
+    state.noteAskDelete(state.selectedTicket.notes[0]);
+    const first = state.confirmDeleteNote();
+    const target = state.selectedTicket.notes[1];
+    let second;
+    if (kind === 'Reply') { state.noteOpenReply(target); state.noteReplyDraft = 'queued'; second = state.submitReply(); }
+    if (kind === 'Edit') { state.noteOpenEdit(target); state.noteEditDraft = 'queued'; second = state.saveNoteEdit(); }
+    if (kind === 'Reaction') second = state.toggleReaction(target, '👀');
+    gate.resolve(); await Promise.all([first, second]);
+    assert.deepEqual(persisted.notes.map(n => n.text), ['intended', 'wrong']);
+    assert.equal(calls.length, 1, 'no queued mutation uses the old positional ID');
+    const recoveries = state.noteRecoveryItems();
+    assert.ok(recoveries.some(r => r.kind === 'Delete' && /Outcome uncertain/.test(r.reason)));
+    assert.ok(recoveries.some(r => r.kind === kind && r.unresolved && /Not sent/.test(r.reason)));
+    state._noteApplyTicket(state.ticketKey(persisted), persisted);
+    assert.ok(state.noteRecoveryItems().some(r => r.kind === kind && r.unresolved), 'a later snapshot cannot revive an invalidated target');
+  });
+}
 
 for (const failure of ['lost status', 'lost body', 'failed refresh']) test(`unavailable acknowledgement never dispatches a stale legacy target: ${failure}`, async t => {
   const state = fixture({ notes: [legacy('#0')] });

@@ -315,7 +315,7 @@ export function kontoraNotes() {
     },
 
     async _noteWaitForTail(key) {
-      while (requests.has(key)) await requests.get(key);
+      while (requests.has(key)) await requests.get(key).promise;
     },
 
     // ---- writing -----------------------------------------------------------
@@ -471,7 +471,7 @@ export function kontoraNotes() {
       var mine = () => this.ticketKey(this.selectedTicket) === id && epoch === this._noteDraftEpoch && detail === this._ticketDetailSeq;
       var feedback = () => mine() && (!owner || this._noteDraftCurrent(owner));
       var retain = reason => this._noteRetain(id, kind, owner?.text || body?.emoji || '', ref, reason);
-      var previous = requests.get(id);
+      var previous = requests.get(id)?.promise;
       var request = (async () => {
         if (previous) await previous;
         // Accepted commands outlive selection; the server checks captured-ticket permissions.
@@ -486,12 +486,13 @@ export function kontoraNotes() {
         }
         return this._noteSend(t, resolvedPath, method, body, failure, mine, feedback, retain);
       })();
-      requests.set(id, request);
+      var tail = { promise: request };
+      requests.set(id, tail);
       try { return await request; }
       finally {
         if (owner) owner.pending = false;
         if (ref) ref.pending--;
-        if (requests.get(id) === request) requests.delete(id);
+        if (requests.get(id) === tail) requests.delete(id);
         this._notePruneTargets();
       }
     },
@@ -514,7 +515,9 @@ export function kontoraNotes() {
         if (!res.ok) {
           var err = await res.json().catch(function () { return {}; });
           var reason = err.error || failure;
-          retain(reason);
+          // The mutation can persist before the response's ticket read fails.
+          if (snapshots.has(id)) this._noteReconcileTicket({ ...t, notes: snapshots.get(id) }, true);
+          retain('Outcome uncertain: ' + reason + '. Check the conversation before submitting again.');
           if (feedback()) this.error = reason;
           return false;
         }

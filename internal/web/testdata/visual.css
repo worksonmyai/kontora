@@ -1,0 +1,4 @@
+/* The embedded asset server picks a different loopback port on each run. */
+aside span[x-text="window.location.host"] {
+  visibility: hidden;
+}

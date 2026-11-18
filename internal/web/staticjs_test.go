@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -68,6 +69,42 @@ func TestMobileBrowserJS(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Fatal("Browser tests require Node.js 20 or later on PATH. Install Node.js, then run make test-browser-install.")
 	}
+	assets := serveBrowserAssets(t)
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	for _, engine := range []string{"chromium", "webkit"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Minute)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "node", "--test",
+				filepath.Join(filepath.Dir(thisFile), "testdata", "mobile_browser.test.mjs"),
+				filepath.Join(filepath.Dir(thisFile), "testdata", "tooltips_browser.test.mjs"))
+			cmd.Env = append(cmd.Environ(), assets.env(engine)...)
+			out, runErr := cmd.CombinedOutput()
+			if runErr != nil {
+				if ctx.Err() != nil {
+					t.Fatalf("browser tests stopped (%v):\n%s", ctx.Err(), out)
+				}
+				t.Fatalf("browser tests failed (%v):\n%s", runErr, out)
+			}
+			t.Logf("%s", out)
+		})
+	}
+}
+
+type browserAssets struct {
+	url      string
+	manifest string
+}
+
+func (a browserAssets) env(engine string) []string {
+	return []string{"KONTORA_BROWSER_URL=" + a.url, "KONTORA_BROWSER_ASSETS=" + a.manifest, "KONTORA_BROWSER_ENGINE=" + engine}
+}
+
+func serveBrowserAssets(t *testing.T) browserAssets {
+	t.Helper()
 	// Never use the developer overlay, a daemon, or a ticket store. This loopback
 	// server serves embedded assets and one fixed authentication redirect.
 	t.Setenv("KONTORA_WEB_DIR", "")
@@ -84,55 +121,104 @@ func TestMobileBrowserJS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var mu sync.Mutex
-	var leaked []string
-	server := httptest.NewServer(securityMiddleware(nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var escaped browserRequestLog
+	server := httptest.NewServer(browserAssetHandler(s, &escaped))
+	t.Cleanup(func() {
+		server.Close()
+		if requests := escaped.snapshot(); len(requests) > 0 {
+			t.Errorf("requests escaped browser interception: %v", requests)
+		}
+	})
+	return browserAssets{url: server.URL, manifest: string(manifest)}
+}
+
+type browserRequestLog struct {
+	mu       sync.Mutex
+	requests []string
+}
+
+func (l *browserRequestLog) add(r *http.Request) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.requests = append(l.requests, r.Method+" "+r.URL.RequestURI())
+}
+
+func (l *browserRequestLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string{}, l.requests...)
+}
+
+const browserEscapedRequestsPath = "/__visual/escaped-requests"
+
+func browserAssetHandler(s *Server, escaped *browserRequestLog) http.Handler {
+	secured := securityMiddleware(nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == browserEscapedRequestsPath && r.Header.Get("X-Kontora-Visual-Diagnostics") == "1" {
+			writeJSON(w, http.StatusOK, escaped.snapshot())
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/" && r.URL.RawQuery == "token=fixture-token" {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		s.serveAsset(w, r)
+	}))
+	deny := securityMiddleware(nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "browser fixture interception missed a request", http.StatusForbidden)
+	}))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(r.URL.Path, "/")
 		if name == "" {
 			name = "index.html"
 		}
 		query := r.URL.Query()
-		if r.Method == http.MethodGet && r.URL.Path == "/" && r.URL.RawQuery == "token=fixture-token" {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
-			return
-		}
 		query.Del("v")
-		if r.Method != http.MethodGet || assets[name] == nil || len(query) > 0 {
-			mu.Lock()
-			leaked = append(leaked, r.Method+" "+r.URL.String())
-			mu.Unlock()
-			http.Error(w, "browser fixture interception missed a request", http.StatusForbidden)
+		if r.Method == http.MethodGet && r.Header.Get("Upgrade") == "" && ((s.assets[name] != nil && len(query) == 0) ||
+			(r.URL.Path == "/" && r.URL.RawQuery == "token=fixture-token") ||
+			(r.URL.Path == browserEscapedRequestsPath && r.Header.Get("X-Kontora-Visual-Diagnostics") == "1")) {
+			secured.ServeHTTP(w, r)
 			return
 		}
-		s.serveAsset(w, r)
-	})))
-	defer server.Close()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	for _, engine := range []string{"chromium", "webkit"} {
-		t.Run(engine, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Minute)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, "node", "--test",
-				filepath.Join(filepath.Dir(thisFile), "testdata", "mobile_browser.test.mjs"),
-				filepath.Join(filepath.Dir(thisFile), "testdata", "tooltips_browser.test.mjs"))
-			cmd.Env = append(os.Environ(), "KONTORA_BROWSER_URL="+server.URL, "KONTORA_BROWSER_ASSETS="+string(manifest), "KONTORA_BROWSER_ENGINE="+engine)
-			out, runErr := cmd.CombinedOutput()
-			if runErr != nil {
-				if ctx.Err() != nil {
-					t.Fatalf("browser tests stopped (%v):\n%s", ctx.Err(), out)
-				}
-				t.Fatalf("browser tests failed (%v):\n%s", runErr, out)
+		// Security middleware can reject an escaped request before it reaches the asset handler.
+		escaped.add(r)
+		deny.ServeHTTP(w, r)
+	})
+}
+
+func TestBrowserAssetInterception(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, path, origin, mediaType string
+		wantStatus                            int
+	}{
+		{"unknown asset", http.MethodGet, "/not-an-asset.js", "", "", http.StatusForbidden},
+		{"unknown API rejected by origin check", http.MethodPost, "/api/unexpected", "https://example.test", "", http.StatusForbidden},
+		{"unknown API rejected by media type check", http.MethodPost, "/api/unexpected", "", "text/plain", http.StatusUnsupportedMediaType},
+		{"diagnostic path without header", http.MethodGet, browserEscapedRequestsPath, "", "", http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var escaped browserRequestLog
+			handler := browserAssetHandler(&Server{}, &escaped)
+			req := httptest.NewRequest(tc.method, "http://127.0.0.1"+tc.path, strings.NewReader("synthetic request"))
+			req.Header.Set("Origin", tc.origin)
+			req.Header.Set("Content-Type", tc.mediaType)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, req)
+			if response.Code != tc.wantStatus {
+				t.Fatalf("status = %d; want %d", response.Code, tc.wantStatus)
 			}
-			t.Logf("%s", out)
+
+			req = httptest.NewRequest(http.MethodGet, "http://127.0.0.1"+browserEscapedRequestsPath, nil)
+			req.Header.Set("X-Kontora-Visual-Diagnostics", "1")
+			response = httptest.NewRecorder()
+			handler.ServeHTTP(response, req)
+			var got []string
+			if err := json.Unmarshal(response.Body.Bytes(), &got); response.Code != http.StatusOK || err != nil {
+				t.Fatalf("reading diagnostics: status %d, body %q, error %v", response.Code, response.Body, err)
+			}
+			if want := []string{tc.method + " " + tc.path}; !slices.Equal(got, want) {
+				t.Fatalf("escaped requests = %q; want %q", got, want)
+			}
 		})
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(leaked) > 0 {
-		t.Errorf("requests escaped browser interception: %v", leaked)
 	}
 }
 

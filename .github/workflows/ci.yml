@@ -98,6 +98,17 @@ jobs:
       - name: Test real embedded UI with offline browser fixtures
         run: make test-browser BROWSER_CACHE="$RUNNER_TEMP/kontora-playwright" BROWSER_ENGINE=${{ matrix.browser }}
 
+  visual:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Compare UI screenshots in the pinned renderer
+        run: make test-visual
+
   pi-sdk:
     runs-on: ubuntu-latest
     container: node:26

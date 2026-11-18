@@ -322,9 +322,29 @@ Pane-stream clients must suppress replies to `CSI c`, `CSI > c`, `CSI n`,
 Suppress OSC 4/10/11/12 only when every colour specification is `?`.
 The browser registers xterm.js parser handlers for these queries. tmux answers
 supported queries itself; unmatched palette queries remain unanswered.
-Focus reports remain input. Inline applications get local scrollback;
-applications using the alternate screen do not. Snapshots cannot restore the
-current text attributes, saved cursor, character sets or custom tab stops from tmux.
+Focus reports remain input.
+
+The browser retains up to 5000 scrollback rows in the normal buffer on mobile and
+desktop. On mobile, read-only vertical touch gestures scroll these local rows without
+sending input, changing input permission, focusing the terminal, or requesting a pane size.
+Incoming output continues while the viewport stays above the latest output.
+The mobile Jump to live button returns to the bottom without reconnecting.
+Terminal history does not change Activity's follow setting.
+
+Alternate screens have no local screen history. The browser does not expose the
+hidden normal buffer as alternate-screen history. On mobile, View Activity opens
+the current run's transcript, not an older selected run. If the current run is not yet
+addressable, the browser reports that Activity is unavailable. Activity cannot
+replay previous terminal screens or recover erased output.
+
+A reset replaces the buffer and reading position after pending writes finish.
+The browser cancels any history gesture and reports a refreshed view if the reset
+interrupts history review. Replacement snapshots are not appended to local
+history. Reconnecting or opening another subject also replaces the local buffer.
+Scrollback is not durable history and does not bound the browser's total memory.
+
+Snapshots cannot restore the current text attributes, saved cursor, character sets
+or custom tab stops from tmux.
 With tmux before 3.7, snapshots also reset bracketed paste and synchronized output
 because tmux does not expose those modes.
 

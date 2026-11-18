@@ -4626,6 +4626,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           const status = page.locator('.mobile-detail .mobile-terminal-status');
           assert.equal(await page.locator('.mobile-detail-actions').isVisible(), false);
           await page.evaluate(() => { window.__fixtureHoldOpen = true; });
+          await mobileTerminalSurface(page).locator('.mobile-reading-bar').getByRole('button', { name: 'Back', exact: true }).focus();
           await page.getByRole('button', { name: 'Type in terminal', exact: true }).filter({ visible: true }).click();
           await page.waitForFunction(() => window.__fixturePendingOpens.length > 0);
           await mobileTerminalLayout(page, true, height, height === 900 ? 0 : 12);
@@ -5389,6 +5390,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await epic.getByRole('button', { name: 'Terminal', exact: true }).click();
         await visible(page.locator('#epic-terminal-mobile .xterm'));
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        await epic.locator('.mobile-reading-bar').getByRole('button', { name: 'Back', exact: true }).focus();
         await epic.getByRole('button', { name: 'Type in terminal', exact: true }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         assert.equal(await page.locator('#epic-terminal-mobile textarea').evaluate(el => el.readOnly), false);

@@ -623,6 +623,8 @@ export function kontoraMobile() {
     },
 
     _mobileTerminalFocusout(event) {
+      // Entering input hides the reading header and can blur its focused Back button.
+      if (event.target?.closest('.mobile-reading-bar')) return;
       if (!this.mobileTerminalTyping() || !event.target?.closest('.mobile-terminal-dock, .mobile-terminal-host, .mobile-terminal-bar')) return;
       const owner = lifecycle;
       const sequence = ++terminalFocusSequence;

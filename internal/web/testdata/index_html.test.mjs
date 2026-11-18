@@ -2377,6 +2377,30 @@ for (const subject of ['ticket', 'epic']) {
   });
 }
 
+for (const subject of ['ticket', 'epic']) for (const socketOpens of [false, true]) {
+  test(`mobile ${subject} direct input survives reading-header focusout, socket opens=${socketOpens}`, async () => {
+    const { state, ctx, dom } = await inlineMobileTerminal(subject);
+    const bar = dom.node({ class: 'mobile-terminal-bar mobile-reading-bar' });
+    const back = dom.node({}, bar);
+    back.focus();
+    state.mobileBeginTerminalDirect();
+    const rw = ctx.termState.ws;
+    if (socketOpens) {
+      rw.readyState = 1;
+      rw.onopen();
+    }
+    back.blur();
+    dom.document.emit('focusout', { target: back });
+    await flushMicrotasks();
+    assert.equal(state.mobileTerminalInputTarget, 'terminal');
+    assert.equal(state.terminalRW, true);
+    assert.equal(state.terminalConnected, socketOpens);
+    assert.equal(ctx.termState.ws, rw);
+    assert.equal(dom.document.activeElement, null, 'socket readiness cannot open the keyboard');
+    state.destroy();
+  });
+}
+
 for (const region of ['dock', 'host', 'bar', 'outside', 'unrelated blur']) for (const socketOpens of [false, true]) {
   test(`deferred terminal focusout reconciles the new focus in ${region}, socket opens=${socketOpens}`, async () => {
     const { state, ctx, dom, composer, dock, host } = await inlineMobileTerminal('ticket');

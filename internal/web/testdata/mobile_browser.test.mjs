@@ -902,9 +902,17 @@ function fixtures(options = {}) {
       assert.ok(held, `Unknown decode gate: ${id}`);
       held.signalDecoding(); await held.body.promise;
     });
-    await context.addInitScript(() => {
+    await context.addInitScript(materializeMultipart => {
       const nativeFetch = window.fetch;
       window.fetch = async (...args) => {
+        const init = args[1];
+        if (materializeMultipart && init?.body instanceof FormData) {
+          // WebKit omits file parts from intercepted FormData bodies.
+          const body = new Response(init.body);
+          const headers = new Headers(init.headers);
+          if (!headers.has('Content-Type')) headers.set('Content-Type', body.headers.get('Content-Type'));
+          args[1] = { ...init, headers, body: await body.arrayBuffer() };
+        }
         let response = await nativeFetch(...args);
         if (response.headers.get('X-Fixture-Status') === '304') {
           const headers = new Headers(response.headers);
@@ -918,7 +926,7 @@ function fixtures(options = {}) {
         }
         return response;
       };
-    });
+    }, engine === 'webkit');
     // Install BOTH interception layers before creating/navigating the page.
     // No catch-all API success, external fallthrough, service worker or live WS.
     await context.route('**/*', async route => {
@@ -939,8 +947,8 @@ function fixtures(options = {}) {
           authNavigations.push({ token, accepted });
           if (accepted) {
             behavior.authRequired = false;
-            // No fragment in Location: browser redirect inheritance is real.
-            return await route.fulfill({ status: 303, headers: { Location: '/' }, body: '' });
+            // WebKit cannot fulfill redirects. The test server sends the 303.
+            return await route.continue();
           }
           // The real server still serves index.html for a rejected token. Fetch
           // only that fixed embedded asset, never the token-bearing URL.

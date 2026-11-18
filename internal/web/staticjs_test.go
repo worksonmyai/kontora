@@ -60,8 +60,8 @@ func TestMobileBrowserJS(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Fatal("Browser tests require Node.js 20 or later on PATH. Install Node.js, then run make test-browser-install.")
 	}
-	// Never use the developer overlay, a daemon, or a ticket store. Only the
-	// actual embedded asset handler is reachable on this ephemeral loopback port.
+	// Never use the developer overlay, a daemon, or a ticket store. This loopback
+	// server serves embedded assets and one fixed authentication redirect.
 	t.Setenv("KONTORA_WEB_DIR", "")
 	assets, err := buildAssets()
 	if err != nil {
@@ -84,6 +84,10 @@ func TestMobileBrowserJS(t *testing.T) {
 			name = "index.html"
 		}
 		query := r.URL.Query()
+		if r.Method == http.MethodGet && r.URL.Path == "/" && r.URL.RawQuery == "token=fixture-token" {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
 		query.Del("v")
 		if r.Method != http.MethodGet || assets[name] == nil || len(query) > 0 {
 			mu.Lock()

@@ -15,12 +15,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/tmux"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
-func TestExecutionRealTmuxAPIRetryReleasesCapacity(t *testing.T) {
+func setupExecutionTmux(t *testing.T) {
+	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux unavailable")
 	}
@@ -31,11 +33,15 @@ func TestExecutionRealTmuxAPIRetryReleasesCapacity(t *testing.T) {
 	t.Cleanup(func() { _ = exec.Command("tmux", "kill-server").Run(); _ = os.RemoveAll(dir) })
 	out, err := exec.Command("tmux", "-f", "/dev/null", "new-session", "-d", "-s", "unrelated", "-n", "anchor", "--", "sleep", "60").CombinedOutput()
 	require.NoError(t, err, "%s", out)
+}
+
+func TestExecutionRealTmuxAPIRetryReleasesCapacity(t *testing.T) {
+	setupExecutionTmux(t)
 	h := newHarness(t)
 	h.cfg.MaxConcurrentAgents = 1
 	marker := filepath.Join(t.TempDir(), "first-attempt")
 	agent := filepath.Join(t.TempDir(), "agent")
-	require.NoError(t, os.WriteFile(agent, []byte(fmt.Sprintf("#!/bin/sh\nif [ \"$%s\" = tst-retry ] && [ ! -f %q ]; then touch %q; exit 1; fi\nexit 0\n", config.TicketEnvVar, marker, marker)), 0o755))
+	require.NoError(t, os.WriteFile(agent, []byte(fmt.Sprintf("#!/bin/sh\necho KONTORA_AGENT_OUTPUT\nif [ \"$%s\" = tst-retry ] && [ ! -f %q ]; then touch %q; exit 1; fi\nexit 0\n", config.TicketEnvVar, marker, marker)), 0o755))
 	agentCfg := h.cfg.Agents["agent1"]
 	agentCfg.Binary = agent
 	h.cfg.Agents["agent1"] = agentCfg
@@ -71,6 +77,12 @@ func TestExecutionRealTmuxAPIRetryReleasesCapacity(t *testing.T) {
 	require.Len(t, got.History, 2)
 	assert.Equal(t, 1, got.History[0].ExitCode)
 	assert.Zero(t, got.History[1].ExitCode)
+	for _, id := range []string{"tst-retry", "tst-queued"} {
+		require.Eventually(t, func() bool {
+			data, err := os.ReadFile(stageLogPath(h.cfg, id, "step1"))
+			return err == nil && strings.Contains(string(data), "KONTORA_AGENT_OUTPUT")
+		}, 5*time.Second, 10*time.Millisecond, "sink must capture output instead of launching tests")
+	}
 	windows, err = tmux.ListWindows(h.tmuxSession)
 	require.NoError(t, err)
 	for _, window := range windows {
@@ -82,4 +94,99 @@ func TestExecutionRealTmuxAPIRetryReleasesCapacity(t *testing.T) {
 	assert.Empty(t, d.executions)
 	assert.Zero(t, d.sem.used)
 	d.mu.Unlock()
+}
+
+func TestExecutionRealTmuxFailurePatternsBeyondLogCap(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		retry bool
+		fails bool
+		empty bool
+	}{
+		{name: "late error", fails: true},
+		{name: "clean capped output"},
+		{name: "error on capped retry", retry: true, fails: true},
+		{name: "clean capped retry", retry: true},
+		{name: "empty pattern on capped retry", retry: true, fails: true, empty: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setupExecutionTmux(t)
+			h := newHarness(t)
+			marker := filepath.Join(t.TempDir(), "first-attempt")
+			agent := filepath.Join(t.TempDir(), "agent")
+			flood := "dd if=/dev/zero bs=1048576 count=17 2>/dev/null\n"
+			script := "#!/bin/sh\n"
+			pipeline := "one-stage"
+			if tc.retry {
+				pipeline = "retry-stage"
+				path := stageLogPath(h.cfg, "tst-stream", "step1")
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+				file, err := os.Create(path)
+				require.NoError(t, err)
+				_, err = file.WriteString("provider rejected\n")
+				require.NoError(t, err)
+				require.NoError(t, file.Truncate(16<<20))
+				require.NoError(t, file.Close())
+				script += fmt.Sprintf("if [ ! -f %q ]; then touch %q; printf '\\nprovider rejected\\n'; exit 1; fi\n", marker, marker)
+			} else {
+				script += flood
+			}
+			if tc.fails {
+				script += "printf '\\nprovider rejected\\n'\n"
+			} else {
+				script += "printf '\\nall good\\n'\n"
+			}
+			script += "exit 0\n"
+			require.NoError(t, os.WriteFile(agent, []byte(script), 0o755))
+			agentCfg := h.cfg.Agents["agent1"]
+			agentCfg.Binary = agent
+			pattern := "provider rejected"
+			if tc.empty {
+				pattern = ""
+			}
+			agentCfg.FailurePatterns = []string{pattern}
+			h.cfg.Agents["agent1"] = agentCfg
+			exits := make(chan int, 2)
+			runner := func(ctx context.Context, p RunnerParams) (process.Result, error) {
+				result, err := tmuxRunner(ctx, p)
+				exits <- result.ExitCode
+				return result, err
+			}
+			d := h.newDaemon(h.cfg, WithRunner(runner), WithExecutionPreparer(tmux.EnsureWindowAbsent))
+			h.writeTicket("tst-stream.md", h.taskMD("tst-stream", "todo", pipeline))
+			stop := startDaemon(t, d)
+			defer stop()
+			want := ticket.StatusDone
+			if tc.fails {
+				want = ticket.StatusPaused
+			}
+			got := h.waitForStatus("tst-stream.md", want, 20*time.Second)
+			waitForAgentsDone(t, d, 5*time.Second)
+			if tc.fails {
+				assert.Contains(t, got.LastError, fmt.Sprintf("output matched failure pattern %q", pattern))
+			}
+			attempts := 1
+			if tc.retry {
+				attempts++
+			}
+			for i := range attempts {
+				select {
+				case code := <-exits:
+					if i == attempts-1 {
+						assert.Zero(t, code)
+					} else {
+						assert.Equal(t, 1, code)
+					}
+				default:
+					t.Fatal("runner did not report every attempt")
+				}
+			}
+			if !tc.fails {
+				require.Len(t, got.History, attempts)
+			}
+			info, err := os.Stat(stageLogPath(h.cfg, "tst-stream", "step1"))
+			require.NoError(t, err)
+			assert.EqualValues(t, 16<<20, info.Size())
+		})
+	}
 }

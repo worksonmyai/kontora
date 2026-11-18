@@ -30,9 +30,11 @@ type RunParams struct {
 	TicketID string
 	// AttemptID scopes the window and default hook channels to one execution.
 	// Empty preserves the ticket's existing window and channel names.
-	AttemptID   string
-	SessionName string // tmux session name; defaults to DefaultSessionName if empty
-	LogFile     string
+	AttemptID       string
+	SessionName     string // tmux session name; defaults to DefaultSessionName if empty
+	LogFile         string
+	FailurePatterns []string
+	logScan         *paneLogScan
 	// RequireTermination rejects completion unless the tmux window is confirmed
 	// gone. It also disables the noninteractive failure debug shell. Window
 	// absence does not prove that detached descendants stopped.
@@ -90,7 +92,7 @@ func (p RunParams) WindowName() string {
 }
 
 func (p RunParams) stableIdentity() bool {
-	return p.StableWindowIdentity || p.OnWindowCreated != nil || p.ExpectedIdentity != nil
+	return p.StableWindowIdentity || p.OnWindowCreated != nil || p.ExpectedIdentity != nil || p.logScan != nil
 }
 
 func createRunWindow(p RunParams, script string) (idleTmux, error) {
@@ -116,6 +118,10 @@ func createRunWindow(p RunParams, script string) (idleTmux, error) {
 
 func pipeRunPane(tm idleTmux, p RunParams) error {
 	if identity, ok := tm.(identityTmux); ok {
+		if p.logScan != nil {
+			p.logScan.window = &identity
+			return identity.pipePane(p.LogFile, p.logScan.path)
+		}
 		return identity.pipePane(p.LogFile)
 	}
 	return PipePaneTo(p.session(), p.WindowName(), p.LogFile)
@@ -154,10 +160,31 @@ func Run(ctx context.Context, p RunParams) (process.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return process.Result{ExitCode: -1}, err
 	}
-	if p.Interactive {
-		return runInteractive(ctx, p)
+	if len(p.FailurePatterns) > 0 {
+		scan, err := newPaneLogScan(p.FailurePatterns)
+		if err != nil {
+			return process.Result{ExitCode: -1, ExitedAt: time.Now(), Termination: process.TerminationNotStarted}, fmt.Errorf("preparing PTY failure scan: %w", err)
+		}
+		p.logScan = scan
+		defer scan.close()
 	}
-	return runStandard(ctx, p)
+	var result process.Result
+	var err error
+	if p.Interactive {
+		result, err = runInteractive(ctx, p)
+	} else {
+		result, err = runStandard(ctx, p)
+	}
+	if p.logScan != nil && result.ExitCode == 0 && err == nil {
+		if p.Timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(ctx, result.StartedAt.Add(p.Timeout))
+			defer cancel()
+		}
+		// Successful exits need EOF coverage. Disabling pipe-pane here could drop queued terminal output.
+		result.FailurePattern, err = p.logScan.wait(ctx)
+	}
+	return result, err
 }
 
 // runInteractive executes an interactive agent (e.g. Claude) that signals it is
@@ -166,7 +193,7 @@ func Run(ctx context.Context, p RunParams) (process.Result, error) {
 // with /exit.
 func runInteractive(ctx context.Context, p RunParams) (process.Result, error) {
 	cmd := append([]string{p.Binary}, p.Args...)
-	usePipePaneLogging := p.LogFile != ""
+	usePipePaneLogging := p.LogFile != "" || p.logScan != nil
 
 	var gateFile string
 	if usePipePaneLogging || p.stableIdentity() {
@@ -282,7 +309,7 @@ func runStandard(ctx context.Context, p RunParams) (process.Result, error) {
 	if p.stableIdentity() && ctx.Err() != nil {
 		return windowResult(tm, -1, startedAt, errors.Join(ctx.Err(), stopWindow(tm)), p.RequireTermination)
 	}
-	if p.LogFile != "" {
+	if p.LogFile != "" || p.logScan != nil {
 		if err := pipeRunPane(tm, p); err != nil {
 			return windowResult(tm, -1, startedAt, errors.Join(err, stopWindow(tm)), p.RequireTermination)
 		}

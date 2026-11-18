@@ -234,6 +234,19 @@ persistence before continuing. Do not silently weaken acceptance requirements or
 substitute emulation for required real-device evidence. If no authorized work
 remains, submit `blocked` with an actionable `next_step` and stop.
 
+A local environment failure is not a code or test failure. Record the limitation
+once; retry the unavailable setup only after the environment changes. Inspect
+existing CI workflows and saved decisions before asking for another runner or
+waiving checks. Use approved CI when it covers a missing check. Remote writes
+still require specific user approval.
+
+An operator may defer verification to CI or final cutover. Intermediate stages
+can then complete once their remaining assigned work is done. Keep the configured
+review, fix, and commit stages, including stage-specific commit or push restrictions.
+Record each missing check, its execution location, and the exact commit or tree
+it verifies. A draft pull request is a verification handoff, not acceptance.
+Missing checks remain unverified until matching results exist.
+
 Activated supervisors and their children must submit an invocation-bound
 `complete` or `blocked` result for each stage, including resumed and rework
 execution. The requirement is independent of a custom `system_prompt`. Missing
@@ -243,7 +256,13 @@ children, annotations, and assistant-only runs retain their existing
 requirements. Graph agent nodes independently require version 2 results, or version 3 with `wake`.
 See [Supervised results](cli.md#supervised-results) for schema and transports.
 
-The supervisor must not publish or make off-machine writes, including through children, scripts, or tools. This prohibits pushes, pull requests, remote issues or comments, messages, uploads, and releases. Read-only external lookups are allowed. Results and progress notes stay local. These are agent instructions, not runtime enforcement.
+Publication requires explicit user approval for the specific off-machine action
+and destination, including actions through children, scripts, or tools. A pipeline
+name, stage prompt, or epic activation does not grant that approval. Reuse applicable
+recorded approval rather than asking again for the same action. Approval to push
+a work branch or open a draft pull request does not authorize merging, deployment,
+unrelated publication, or another destination. Read-only lookups remain allowed.
+These are agent instructions, not runtime enforcement.
 
 Supervisors use a separate pool: `max_concurrent_epic_supervisors`, default `4`, in addition to `max_concurrent_agents`. At default settings, epics can add four agent processes beyond the worker limit. The queue chooses the oldest eligible ticket whose pool has capacity.
 

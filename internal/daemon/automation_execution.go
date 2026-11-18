@@ -118,9 +118,9 @@ func (d *Daemon) completeAutomationRun(ctx context.Context, run automation.Run, 
 	materialized.LogFile = launch.Paths.Agent
 	d.materializeAgentLogs(d.log, materialized, launch.Paths.Events, runScope{startedAt: run.StartedAt})
 	outcome, summary := automationResult(ctx, run, result, runnerErr)
-	reason, _, detected := d.detectAgentError(launch.Agent.config(), materialized, 0, run.StartedAt)
+	reason, _, detected := d.detectAgentError(launch.Agent.config(), materialized, 0, run.StartedAt, result)
 	if !detected {
-		reason, _, detected = d.detectAgentError(launch.Agent.config(), params, 0, run.StartedAt)
+		reason, _, detected = d.detectAgentError(launch.Agent.config(), params, 0, run.StartedAt, result)
 	}
 	if detected {
 		outcome, summary = "failed", reason
@@ -247,7 +247,7 @@ func (d *Daemon) automationRunnerParams(ctx context.Context, run automation.Run,
 	if err != nil {
 		return RunnerParams{}, err
 	}
-	return RunnerParams{Binary: launch.Executable, Args: args, Dir: run.Worktree, Timeout: launch.Timeout, TicketID: run.Window, SessionName: run.Session, LogFile: launch.Paths.Capture, Interactive: agent.IsClaude(), SessionID: sessionID, SessionDir: sessionDir, Env: env, RequireTermination: true, StableWindowIdentity: true, TerminalReported: func() bool { return terminalReported(inv.ResultPath) }}, nil
+	return RunnerParams{Binary: launch.Executable, Args: args, Dir: run.Worktree, Timeout: launch.Timeout, TicketID: run.Window, SessionName: run.Session, LogFile: launch.Paths.Capture, FailurePatterns: append([]string(nil), agent.FailurePatterns...), Interactive: agent.IsClaude(), SessionID: sessionID, SessionDir: sessionDir, Env: env, RequireTermination: true, StableWindowIdentity: true, TerminalReported: func() bool { return terminalReported(inv.ResultPath) }}, nil
 }
 
 func (d *Daemon) automationRunnerCallbacks(ctx context.Context, cancel context.CancelFunc, run automation.Run, launch automationLaunch, params *RunnerParams) func() {

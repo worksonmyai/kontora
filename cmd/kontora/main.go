@@ -29,6 +29,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/daemon"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
+	"github.com/worksonmyai/kontora/internal/tmux"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -151,6 +152,17 @@ func main() {
 		// verb only the assistant's own agent ever runs does not belong in
 		// either. It is spawned by a claude PreToolUse hook, never typed.
 		cmdAssistantGate()
+		return
+	case "pty-log-sink":
+		// Only tmux pipe-pane calls this helper. It needs no config or daemon.
+		if len(os.Args) != 3 && len(os.Args) != 4 {
+			fmt.Fprintln(os.Stderr, "usage: kontora pty-log-sink LOG_PATH [SCAN_PATH]")
+			os.Exit(2)
+		}
+		if err := tmux.DrainPaneLog(os.Stdin, os.Args[2], os.Args[3:]...); err != nil {
+			fmt.Fprintln(os.Stderr, "raw PTY log:", err)
+			os.Exit(1)
+		}
 		return
 	}
 

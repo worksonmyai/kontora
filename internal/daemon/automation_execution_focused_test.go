@@ -52,24 +52,35 @@ func TestAutomationExecutionRejectsStaleResultAndLateCallbacks(t *testing.T) {
 }
 
 func TestAutomationExecutionUsesFrozenFailurePatternsOnRawCapture(t *testing.T) {
-	_, d, definition, cfg := frozenAutomationFixture(t, "repo")
-	agent := cfg.Agents[definition.Agent]
-	agent.FailurePatterns = []string{"ACCEPTED_PATTERN"}
-	cfg.Agents[definition.Agent] = agent
-	run := freezeTestAutomation(t, d, definition, cfg, "run")
-	agent.FailurePatterns = []string{"EDITED_PATTERN"}
-	cfg.Agents[definition.Agent] = agent
-	d.runner = func(_ context.Context, p RunnerParams) (process.Result, error) {
-		if err := os.WriteFile(p.LogFile, []byte("ACCEPTED_PATTERN"), 0o600); err != nil {
-			return process.Result{Termination: process.TerminationNotStarted}, err
-		}
-		return process.Result{Termination: process.TerminationProcessGroupGone}, os.WriteFile(p.Env["KONTORA_RESULT_FILE"], []byte(`{"outcome":"complete","summary":"not authoritative"}`), 0o600)
+	for _, streamed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "raw capture", true: "streamed after cap"}[streamed], func(t *testing.T) {
+			_, d, definition, cfg := frozenAutomationFixture(t, "repo")
+			agent := cfg.Agents[definition.Agent]
+			agent.FailurePatterns = []string{"ACCEPTED_PATTERN"}
+			cfg.Agents[definition.Agent] = agent
+			run := freezeTestAutomation(t, d, definition, cfg, "run")
+			agent.FailurePatterns = []string{"EDITED_PATTERN"}
+			cfg.Agents[definition.Agent] = agent
+			d.runner = func(_ context.Context, p RunnerParams) (process.Result, error) {
+				require.Equal(t, []string{"ACCEPTED_PATTERN"}, p.FailurePatterns)
+				content := "ACCEPTED_PATTERN"
+				result := process.Result{Termination: process.TerminationProcessGroupGone}
+				if streamed {
+					content = "display capture ended before the error"
+					result.FailurePattern = new("ACCEPTED_PATTERN")
+				}
+				if err := os.WriteFile(p.LogFile, []byte(content), 0o600); err != nil {
+					return process.Result{Termination: process.TerminationNotStarted}, err
+				}
+				return result, os.WriteFile(p.Env["KONTORA_RESULT_FILE"], []byte(`{"outcome":"complete","summary":"not authoritative"}`), 0o600)
+			}
+			require.True(t, executeFrozenAutomation(d, run))
+			saved, err := d.automationStore.GetRun(run.AutomationID, run.N)
+			require.NoError(t, err)
+			require.Equal(t, "failed", saved.Outcome)
+			require.Contains(t, saved.Result, "ACCEPTED_PATTERN")
+		})
 	}
-	require.True(t, executeFrozenAutomation(d, run))
-	saved, err := d.automationStore.GetRun(run.AutomationID, run.N)
-	require.NoError(t, err)
-	require.Equal(t, "failed", saved.Outcome)
-	require.Contains(t, saved.Result, "ACCEPTED_PATTERN")
 }
 
 func TestAutomationExecutionLateStopOverridesSuccessfulResult(t *testing.T) {

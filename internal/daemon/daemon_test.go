@@ -2962,55 +2962,66 @@ func TestPipelinePausesOnFailurePattern(t *testing.T) {
 }
 
 func TestFailurePatternNotPoisonedByPreviousAttempt(t *testing.T) {
-	h := newHarness(t)
+	for _, capped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("capped=%t", capped), func(t *testing.T) {
+			h := newHarness(t)
 
-	// Attempt 1 fails (non-zero) and appends an error line matching the pattern;
-	// attempt 2 appends clean output and exits 0. Because stage logs accumulate
-	// across retries, detection must only scan the current run's output, or the
-	// clean retry would keep matching attempt 1's stale error and pause forever.
-	var attempt int
-	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
-		attempt++
-		require.NoError(t, os.MkdirAll(filepath.Dir(p.LogFile), 0o755))
-		f, err := os.OpenFile(p.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		require.NoError(t, err)
-		defer f.Close()
-		if attempt == 1 {
-			_, _ = f.WriteString("attempt 1\nError: quota exceeded for today\n")
-			return process.Result{ExitCode: 1, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
-		}
-		_, _ = f.WriteString("attempt 2\nall good\n")
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+			// Attempt 1 fails (non-zero) and appends an error line matching the pattern;
+			// attempt 2 produces clean output and exits 0. Because stage logs accumulate
+			// across retries, detection must only scan the current run's output, or the
+			// clean retry would keep matching attempt 1's stale error and pause forever.
+			var attempt int
+			runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+				attempt++
+				require.NoError(t, os.MkdirAll(filepath.Dir(p.LogFile), 0o755))
+				if attempt == 2 && capped {
+					require.NoError(t, tmux.DrainPaneLog(strings.NewReader("attempt 2\nall good\n"), p.LogFile))
+					return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+				}
+				f, err := os.OpenFile(p.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+				require.NoError(t, err)
+				defer f.Close()
+				if attempt == 1 {
+					_, _ = f.WriteString("attempt 1\nError: quota exceeded for today\n")
+					if capped {
+						require.NoError(t, f.Truncate((16<<20)+1))
+					}
+					return process.Result{ExitCode: 1, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+				}
+				_, _ = f.WriteString("attempt 2\nall good\n")
+				return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+			}
+
+			cfg := h.defaultConfig("some-agent", "some-agent")
+			cfg.Agents["agent1"] = config.Agent{Binary: "some-agent", FailurePatterns: []string{"(?i)quota exceeded"}}
+
+			d := New(cfg,
+				WithLogger(testLogger(t)),
+				WithDebounce(50*time.Millisecond),
+				WithLockPath(h.lockPath),
+				WithRunner(runner),
+				WithAgentLookup(passthroughAgentLookup),
+				WithSkipOrphanCleanup(),
+			)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			time.Sleep(200 * time.Millisecond)
+
+			// retry-stage: on_failure retry (max_retries 1), on_success done.
+			h.writeTicket("tst-poison.md", h.taskMD("tst-poison", "todo", "retry-stage"))
+
+			// Attempt 1 exits non-zero -> retry; attempt 2 exits 0 with a clean log.
+			// The stale attempt-1 error must not trip detection on attempt 2.
+			h.waitForStatus("tst-poison.md", ticket.StatusDone, 10*time.Second)
+			assert.Equal(t, 2, attempt)
+
+			cancel()
+			require.NoError(t, <-errCh)
+		})
 	}
-
-	cfg := h.defaultConfig("some-agent", "some-agent")
-	cfg.Agents["agent1"] = config.Agent{Binary: "some-agent", FailurePatterns: []string{"(?i)quota exceeded"}}
-
-	d := New(cfg,
-		WithLogger(testLogger(t)),
-		WithDebounce(50*time.Millisecond),
-		WithLockPath(h.lockPath),
-		WithRunner(runner),
-		WithAgentLookup(passthroughAgentLookup),
-		WithSkipOrphanCleanup(),
-	)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run(ctx) }()
-	time.Sleep(200 * time.Millisecond)
-
-	// retry-stage: on_failure retry (max_retries 1), on_success done.
-	h.writeTicket("tst-poison.md", h.taskMD("tst-poison", "todo", "retry-stage"))
-
-	// Attempt 1 exits non-zero -> retry; attempt 2 exits 0 with a clean log.
-	// The stale attempt-1 error must not trip detection on attempt 2.
-	h.waitForStatus("tst-poison.md", ticket.StatusDone, 10*time.Second)
-	assert.Equal(t, 2, attempt)
-
-	cancel()
-	require.NoError(t, <-errCh)
 }
 
 func TestNonClaudeAgentStillUsesPipePaneLogging(t *testing.T) {

@@ -391,6 +391,19 @@ operator answers from assumptions; confirm persistence before continuing. Do not
 silently weaken acceptance requirements or substitute emulation for required
 real-device evidence. If no authorized work remains, submit blocked and stop.
 
+Distinguish code or test failures from checks the local environment cannot run.
+Record an environment limitation once; repeat that setup only after it changes.
+Read existing CI workflows and saved decisions before requesting another runner
+or waiving checks. Use approved CI when it covers a missing check; remote writes
+still need specific user approval.
+
+When the operator defers verification to CI or final cutover, intermediate stages
+may complete once their remaining assigned work is done. Preserve the configured
+review, fix, and commit stages and their commit or push restrictions. Record each
+missing check, where it will run, and the exact commit or tree it verifies. A draft
+pull request is a verification handoff, not acceptance. Missing checks remain
+unverified until matching results exist.
+
 Supervisors and their actual children must submit an invocation-bound `complete`
 or `blocked` result for the current stage, including resumed and rework execution,
 independently of a custom `system_prompt`. Stage completion is not whole-ticket
@@ -399,10 +412,13 @@ notes and exit zero are not substitutes. Unrelated tickets, passive-epic childre
 annotations, and assistant-only runs retain their existing requirements. See
 `kontora skills show cli 'kontora result'` for schema, environment, and transports.
 
-The supervisor must not publish or make off-machine writes, including through
-children, scripts, or tools. This prohibits pushes, pull requests, remote issues
-or comments, messages, uploads, and releases. Read-only external lookups are
-allowed. Results and progress notes stay local.
+Publication requires explicit user approval for the specific off-machine action
+and destination, including actions through children, scripts, or tools. A pipeline
+name, stage prompt, or epic activation does not grant publication approval. Reuse
+applicable recorded approval rather than asking again for the same action. Approval
+to push a work branch or open a draft pull request does not authorize merging,
+deployment, unrelated publication, or another destination. Read-only lookups remain
+allowed.
 
 Supervisors use `max_concurrent_epic_supervisors`, default `4`, separately from
 `max_concurrent_agents`. This allows four additional agent processes. The queue

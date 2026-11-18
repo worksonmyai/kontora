@@ -403,7 +403,10 @@ func TestSupervisedInstructions(t *testing.T) {
 		"worktree or a temporary directory", "package manager's own cache",
 		"global installation", "real-account access", "device access", "service exposure",
 		"package/version, destination, and purpose", "Read-only external lookups are allowed",
-		"Never publish or write to external services", "children, scripts, or tools",
+		"Publication requires explicit user approval for the specific off-machine action and destination",
+		"children, scripts, or tools", "Reuse an applicable recorded approval",
+		"A pipeline name, stage prompt, or epic activation does not grant publication approval",
+		"does not authorize merging, deployment, unrelated publication, or another destination",
 		"Do not change pipelines or bypass configured review stages",
 		"kontora_result", "kontora result --input-file /absolute/path/result.json TICKET_ID",
 		"complete", "blocked", "summary is required", "blocked also requires next_step",
@@ -411,6 +414,16 @@ func TestSupervisedInstructions(t *testing.T) {
 		"review stage can be complete while the ticket still needs fixes",
 		"Missing or invalid results pause the same stage",
 		"Notes, final prose, questions, and checkpoints are not terminal results",
+		"Distinguish code or test failures from checks this environment cannot execute",
+		"do not repeat the same unavailable setup unless the environment changes",
+		"Read existing CI workflows and saved operator decisions before requesting another runner",
+		"If approved CI covers a missing check, use it instead of requiring the same local check",
+		"Keep the configured review, fix, and commit stages",
+		"Do not commit or push in a stage that forbids it",
+		"complete intermediate stages once their remaining assigned work is done",
+		"each outstanding check, where it will run, and the exact commit or tree it verifies",
+		"A draft pull request is a verification handoff, not acceptance",
+		"Do not report required verification as passed until matching results exist",
 		"Read saved decisions", "investigate the missing prerequisite",
 		"Continue independent authorized work", "concrete question", "options, their costs",
 		"recommended default", "Save the question and answer together immediately",
@@ -422,6 +435,7 @@ func TestSupervisedInstructions(t *testing.T) {
 	}
 	assert.NotContains(t, got, "rebase local branches owned by this epic")
 	assert.NotContains(t, got, "kontora retry TICKET_ID")
+	assert.NotContains(t, got, "Never publish or write to external services")
 	assert.Empty(t, supervisedInstructions(""), "absent supervision must not grant authority")
 }
 

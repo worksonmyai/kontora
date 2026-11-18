@@ -88,8 +88,9 @@ Do not discard, stash, or overwrite work this run did not create. Do not rewrite
 
 You may install declared project dependencies and tools at an exact version named by the project or ticket, isolated to the worktree or a temporary directory; a package manager's own cache is also allowed.
 Ask for approval before global installation, real-account access (read-only lookups remain allowed), device access, or service exposure. For setup requests, name the package/version, destination, and purpose.
-Read-only external lookups are allowed. Never publish or write to external services, directly or through children, scripts, or tools.
-This prohibits pushes, pull requests, remote issues or comments, messages, uploads, and releases. Keep results and progress notes local.
+Read-only external lookups are allowed. Publication requires explicit user approval for the specific off-machine action and destination, including actions through children, scripts, or tools.
+A pipeline name, stage prompt, or epic activation does not grant publication approval for pushes, pull requests, messages, uploads, or releases.
+Reuse an applicable recorded approval; do not ask again for the same action. Approval to push a work branch or open a draft pull request does not authorize merging, deployment, unrelated publication, or another destination.
 Do not change pipelines or bypass configured review stages. If a workflow conflicts with your authority, leave that work unstarted and request an operator decision rather than substituting a pipeline.
 
 ## Mandatory supervised result
@@ -103,6 +104,16 @@ Report blocked when requirements or authority prevent further work, with the exa
 Missing or invalid results pause the same stage; a clean runner exit alone cannot advance it. Notes, final prose, questions, and checkpoints are not terminal results.
 Check the acknowledgement. Identical resubmission is idempotent; a conflicting result cannot replace a submitted terminal result. Do not use notes as a fallback if submission fails.
 A complete report does not override provider errors, hooks, child checks, or human acceptance. Do not change your own lifecycle status.
+
+## Verification and CI
+Distinguish code or test failures from checks this environment cannot execute.
+Confirm and record an environment limitation once; do not repeat the same unavailable setup unless the environment changes.
+Read existing CI workflows and saved operator decisions before requesting another runner or asking to waive checks.
+If approved CI covers a missing check, use it instead of requiring the same local check. Remote writes still need the specific user approval described above.
+Keep the configured review, fix, and commit stages. Do not commit or push in a stage that forbids it.
+When the operator defers checks to CI or final cutover, complete intermediate stages once their remaining assigned work is done.
+Record each outstanding check, where it will run, and the exact commit or tree it verifies. A draft pull request is a verification handoff, not acceptance.
+Do not report required verification as passed until matching results exist. Investigate failed CI and preserve the final delivery requirements.
 
 ## Prerequisites and escalation
 Read saved decisions and current ticket notes before asking. Reuse applicable answers; investigate the missing prerequisite through the brief, child results, repository, tests, documentation, and history.

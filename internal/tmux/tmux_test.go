@@ -21,6 +21,17 @@ import (
 var testSession = fmt.Sprintf("kontora-tmuxtest-%d", os.Getpid())
 
 func TestMain(m *testing.M) {
+	// The test executable also runs the sink that pipe-pane starts.
+	if len(os.Args) >= 2 && os.Args[1] == "pty-log-sink" {
+		if len(os.Args) != 3 && len(os.Args) != 4 {
+			os.Exit(2)
+		}
+		if err := DrainPaneLog(os.Stdin, os.Args[2], os.Args[3:]...); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	// A separate session alone still shares the developer's live server. Clear
 	// the inherited socket and use a short private directory (macOS sun_path
 	// is limited to about 104 bytes) for every integration test in this package.
@@ -317,21 +328,18 @@ func TestPipePaneTo(t *testing.T) {
 
 	ticketID := "test-pipe-" + randomSuffix()
 	dir := t.TempDir()
-	logPath := filepath.Join(dir, "output.log")
-
-	startTestWindow(t, ticketID, dir, "sh", "-c", "echo KONTORA_TEST_OUTPUT; sleep 1")
+	logPath := filepath.Join(dir, "nested dir", "output '雪 $(printf bad) #{pid}.log")
+	gate := filepath.Join(dir, "gate")
+	script, err := writeInteractiveWrapper([]string{"sh", "-c", "echo KONTORA_TEST_OUTPUT; sleep 1"}, gate, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Remove(script) })
+	startTestWindow(t, ticketID, dir, script)
 	t.Cleanup(func() { _ = KillWindow(testSession, ticketID) })
 
-	waitForWindow(t, ticketID, true, 5*time.Second)
-
 	require.NoError(t, PipePaneTo(testSession, ticketID, logPath))
-
-	// Wait for the window to exit.
-	waitForWindow(t, ticketID, false, 30*time.Second)
-
-	if data, err := os.ReadFile(logPath); err == nil {
-		t.Logf("captured log: %q", string(data))
-	}
+	require.NoError(t, os.WriteFile(gate, []byte("go"), 0o644))
+	requireFileContains(t, logPath, "KONTORA_TEST_OUTPUT", 5*time.Second)
+	waitForWindow(t, ticketID, false, 5*time.Second)
 }
 
 func TestWriteInteractiveWrapper(t *testing.T) {

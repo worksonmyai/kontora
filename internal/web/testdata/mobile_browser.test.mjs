@@ -199,6 +199,7 @@ function fixtures(options = {}) {
         exit_code: 0, run_outcome: 'complete', summary: 'Second code run complete.' },
     ] }));
   put(ticket('kon-epic', 'Passive fixture epic', { kind: 'epic', epic_mode: 'passive' }));
+  if (options.onlyRecords) records.clear();
   for (const record of options.records || []) put(record);
   if (options.empty) records.clear();
   const config = { config_path: '/fixtures/config.yaml', pipelines: ['standard'], default_pipeline: 'standard',
@@ -6465,15 +6466,38 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       last_log: '/demo/logs/DEMO-1042.jsonl', created_at: '2026-11-17T09:00:00Z', completed_at: '2026-11-17T10:08:00Z',
       summary: summaries[2], final_summary: 'Cursor pagination is complete.\n\n- Added optional `cursor` and `limit` parameters.\n- Added tests for invalid cursors and the final page.\n- Existing clients can keep using the first-page response.',
       notify: ['human_review', 'done'], deps: [{ id: 'DEMO-1038', title: 'Define the catalog response format', status: 'done', source: 'primary' }] });
-    await withPage(t, 1440, 'dark', async page => {
+    const runningSince = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+    const boardRecords = [record, ...[
+      ['DEMO-1038', 'Define the catalog response format', 'done', 'review'],
+      ['DEMO-1043', 'Cache catalog metadata', 'in_progress', 'code'],
+      ['DEMO-1044', 'Add structured request logging', 'in_progress', 'code'],
+      ['DEMO-1045', 'Handle rate limits in the catalog client', 'paused', 'code'],
+      ['DEMO-1046', 'Add integration tests for token refresh', 'todo', 'plan'],
+      ['DEMO-1047', 'Add a request timeout to the SDK', 'open', 'plan'],
+      ['DEMO-1048', 'Document pagination examples', 'open', 'plan'],
+      ['DEMO-1049', 'Add a health-check endpoint', 'human_review', 'review'],
+      ['DEMO-1050', 'Improve audit event formatting', 'human_review', 'review'],
+      ['DEMO-1051', 'Normalize validation errors', 'paused', 'code'],
+    ].map(([demoID, title, status, stage]) => ticket(demoID, title, { status, stage, stages,
+      path: record.path, agent: record.agent, branch: 'demo/' + demoID.toLowerCase(),
+      ...(status === 'in_progress' ? { started_at: runningSince, can_edit: false } : {}) }))];
+    await withPage(t, 1840, 'dark', async page => {
+      await expect(page.locator('#board-cols [data-ticket-id]')).toHaveCount(boardRecords.length);
+      await inViewport(page.locator('#col-done .kt-card').first());
+      await noPageOverflow(page);
+      await mobileCapture(page, 1840, 'dark', 'desktop-board-demo');
+      await page.getByRole('button', { name: 'Hide sidebar', exact: true }).click();
+      await page.setViewportSize({ width: 1440, height: 900 });
       await openTicket(page, id);
       await page.locator('[data-ticket-detail]').getByRole('button', { name: 'summary', exact: true }).click();
       await expect(page.locator('[data-ticket-details]').getByRole('button', { name: 'Copy ticket ID', exact: true })).toHaveText(id);
       await expect(page.locator('.ticket-detail-rail')).toContainText('/demo/projects/catalog-api');
       await noPageOverflow(page);
       await mobileCapture(page, 1440, 'dark', 'desktop-sidebar-demo');
-    }, { records: [record, ticket('DEMO-1038', 'Define the catalog response format', { status: 'done', path: record.path })],
-      config: { agents: ['demo-agent'], pipeline_infos: [{ name: 'standard', stages }], channels: ['demo-chat'], default_channels: ['demo-chat'] },
+    }, { onlyRecords: true, records: boardRecords, sidebar: true,
+      config: { agents: ['demo-agent'], agent_infos: [{ name: 'demo-agent', binary: 'pi' }], pipeline_infos: [{ name: 'standard', stages }],
+        projects: [{ name: 'Catalog API', path: record.path, agent: record.agent, pipeline: 'standard' }],
+        channels: ['demo-chat'], default_channels: ['demo-chat'] },
       costs: { [id]: { id, cost_usd: '1.84', tracked_runs: 3, priced_runs: 3,
         stages: stages.map((name, i) => ({ name, cost_usd: ['0.28', '1.12', '0.44'][i], tracked_runs: 1, priced_runs: 1 })),
         runs: history.map((h, i) => ({ history_index: i, stage: h.stage, cost_usd: ['0.28', '1.12', '0.44'][i], tracked_runs: 1, priced_runs: 1 })) } } });

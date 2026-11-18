@@ -8,8 +8,9 @@ import { expect } from 'playwright/test';
 const engine = process.env.KONTORA_BROWSER_ENGINE || 'chromium';
 assert.ok(['chromium', 'webkit'].includes(engine));
 const tipsPath = fileURLToPath(new URL('../static/tips.js', import.meta.url));
-const modules = ['board', 'relations'].map(name =>
-  readFileSync(new URL(`../ui/${name}.js`, import.meta.url), 'utf8').replaceAll('export function ', 'function '));
+const modules = ['dialogs', 'board', 'relations'].map(name =>
+  readFileSync(new URL(`../ui/${name}.js`, import.meta.url), 'utf8').replace(/^import .*$/gm, '').replaceAll('export function ', 'function '));
+const compiledCSS = readFileSync(new URL('../static/app.css', import.meta.url), 'utf8');
 let browser;
 before(async () => { browser = await ({ chromium, webkit })[engine].launch({ headless: true }); });
 after(async () => { await browser?.close(); });
@@ -20,7 +21,7 @@ async function fixture(t, markup, setup = () => {}) {
   page.on('pageerror', error => errors.push(error.message));
   t.after(async () => { await page.close(); assert.deepEqual(errors, []); });
   await page.setContent(`
-    <style>[role="tooltip"] { position: fixed; pointer-events: none; }</style>
+    <style>${compiledCSS}\n[role="tooltip"] { position: fixed; pointer-events: none; }</style>
     <div id="global-tip"></div><div id="global-tip-t"></div>
     <div id="global-tip-e"><div><span></span><span></span></div><div></div><div></div></div>
     <main id="mount">${markup}</main>

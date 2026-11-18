@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { kontoraAssistantMarkup } from '../ui/assistant_markup.js';
+import { DETAIL_NOTES } from '../ui/detail_markup/notes.js';
 import { kontoraMarkdown } from '../ui/markdown.js';
 import { kontoraNotify } from '../ui/notify.js';
 import { kontoraRelations } from '../ui/relations.js';
@@ -222,4 +224,33 @@ test('context invalidation and separate elements reuse the text-keyed sanitizer 
   state.ticketChanges.commits[0].subject = 'Changed'; state.setSummaryProse(el, text);
   state.setProse(doc.createElement('div'), text);
   assert.deepEqual(counts, { parse: 1, sanitize: 1 });
+});
+
+test('recorded Assistant replies use shared prose styling in both shells without ticket-read', () => {
+  const { assistantTranscriptMarkup, assistantSheetTranscriptMarkup } = kontoraAssistantMarkup();
+  for (const transcript of [assistantTranscriptMarkup, assistantSheetTranscriptMarkup]) {
+    const classes = transcript.match(/<div class="([^"]+)" x-effect="setProse\(\$el, row\.event\.text\)"><\/div>/)?.[1].split(/\s+/) || [];
+    assert.ok(classes.includes('ticket-prose'));
+    assert.ok(classes.includes('prose-assistant'), 'keeps the Assistant-only styling hook');
+    assert.ok(!classes.includes('ticket-read'));
+  }
+});
+
+test('shared Notes headings, lifecycle and byline metadata use the readable text token', () => {
+  const token = /(?:^|\s)!?text-tx-3(?:\s|$)/;
+  const spans = [...DETAIL_NOTES.matchAll(/<span\b[^>]*>/g)].map(match => match[0]);
+  const readable = tag => token.test(tag?.match(/\bclass="([^"]+)"/)?.[1] || '');
+  for (const binding of [
+    'noteLastAgo()', 'item.label', 'item.meta', 'noteAgo(item.at)',
+    'noteRole(item.note)', 'noteAgo(item.note.at)', 'noteRole(r)', 'noteAgo(r.at)',
+  ]) {
+    assert.ok(readable(spans.find(span => span.includes(`x-text="${binding}"`))), binding);
+  }
+  for (const edited of ['item.note.edited', 'r.edited']) {
+    assert.ok(readable(spans.find(span => span.includes(`x-show="${edited}"`))), edited);
+  }
+  for (const heading of ['Notes', 'No notes yet']) {
+    const tag = DETAIL_NOTES.match(new RegExp(`<(?:h2|span)\\b[^>]*>(?=${heading}<)`))?.[0];
+    assert.ok(readable(tag), heading);
+  }
 });

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/companion"
+	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
@@ -659,12 +661,38 @@ func (s *Server) handleUploadTickets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	stage := r.URL.Query().Get("stage")
-	if stage != "" {
-		stage = filepath.Base(stage)
+	params, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid logs query"})
+		return
 	}
-	content, err := s.svc.GetLogs(id, stage)
+	q := LogQuery{ID: r.PathValue("id"), Stage: params.Get("stage")}
+	runs, hasRun := params["run"]
+	if values, present := params["stage_only"]; present {
+		if len(values) != 1 || values[0] != "true" || hasRun {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Pass stage_only=true exactly once and omit run"})
+			return
+		}
+		if len(params["stage"]) != 1 || !session.ValidLogStage(q.Stage) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stage_only requires exactly one valid stage parameter"})
+			return
+		}
+		q.StageOnly = true
+	} else if hasRun {
+		run, err := strconv.ParseUint(params.Get("run"), 10, strconv.IntSize-1)
+		if len(runs) != 1 || err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Pass run exactly once as a non-negative integer"})
+			return
+		}
+		if len(params["stage"]) != 1 || !session.ValidLogStage(q.Stage) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "run requires exactly one valid stage parameter"})
+			return
+		}
+		q.Run = new(int(run))
+	} else if q.Stage != "" {
+		q.Stage = filepath.Base(q.Stage)
+	}
+	content, err := s.svc.GetLogs(q)
 	if err != nil {
 		writeServiceError(w, err)
 		return

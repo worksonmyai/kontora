@@ -1,3 +1,7 @@
+import { blockingInteraction, canReturnInteractionFocus, focusAvailable, mobileDetailCovered, syncInteractionCoverage } from './dialogs.js';
+
+const mobileDetailSelector = '.mobile-detail, .mobile-epic';
+
 export function kontoraDetailView() {
   const views = new Map();
   const noteScrolls = new WeakMap();
@@ -123,29 +127,34 @@ export function kontoraDetailView() {
       return true;
     },
 
+    focusMobileDetail() {
+      if (this._appDestroyed || !mobileDetailCovered(this) || blockingInteraction(this)) return;
+      const root = this.selectedEpic ? document.querySelector('.mobile-epic') : this.detailViewRoot();
+      if (!root || root.contains(document.activeElement)) return;
+      const target = [...root.querySelectorAll('button')].find(focusAvailable) || root;
+      if (focusAvailable(target)) target.focus({ preventScroll: true });
+    },
+
     syncDetailCoverage() {
-      if (typeof document === 'undefined') return;
-      const covered = this.isMobile && this.currentView === 'board' && !!(this.selectedTicket || this.selectedEpic);
-      document.querySelectorAll('[data-mobile-board-background]').forEach(el => { el.inert = covered; });
-      if (covered && !returnFocus) {
+      if (typeof document === 'undefined' || this._appDestroyed) return;
+      const covered = mobileDetailCovered(this);
+      if (covered && !returnFocus && !blockingInteraction(this)) {
         const active = document.activeElement;
-        if (!active?.closest('.mobile-detail, .mobile-epic')) {
+        if (!active?.closest(mobileDetailSelector)) {
           returnFocus = active;
           const key = this.ticketKey(this.selectedTicket || this.selectedEpic);
           this.$nextTick(() => {
-            if (!this.isMobile || this.currentView !== 'board' || this.sheet || this.ticketKey(this.selectedTicket || this.selectedEpic) !== key ||
-                document.activeElement?.closest('.mobile-detail, .mobile-epic')) return;
-            const root = this.selectedEpic ? document.querySelector('.mobile-epic') : this.detailViewRoot();
-            root?.querySelector('button')?.focus({ preventScroll: true });
+            if (this.ticketKey(this.selectedTicket || this.selectedEpic) === key) this.focusMobileDetail();
           });
         }
       } else if (!covered && returnFocus) {
         const target = returnFocus;
         returnFocus = null;
         this.$nextTick(() => {
-          if (!this.selectedTicket && !this.selectedEpic && this._mobileFocusAvailable(target)) target.focus({ preventScroll: true });
+          if (!mobileDetailCovered(this) && canReturnInteractionFocus(this, target)) target.focus({ preventScroll: true });
         });
       }
+      syncInteractionCoverage(this);
     },
   };
 }

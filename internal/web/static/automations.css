@@ -16,17 +16,19 @@
 .automations-view .automations-log-line > * { min-width: 0; }
 .automations-view .automations-run-mark { min-width: 3px; height: 5px; }
 .automations-view .automations-editor :is(input, textarea):focus { outline: 1px solid rgba(var(--accent), .4); }
-@container automations (min-width: 1101px) {
-  .automations-view .automations-editor > aside { display: flex; }
-}
+.automations-view .automations-editor-preview { display: flex; }
+.automations-view .automations-editor-agent-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @container automations (max-width: 1100px) {
-  .automations-view .automations-editor > aside { display: none; }
+  .automations-view .automations-editor-preview { display: none; }
   .automations-view .automations-detail { overflow-y: auto; }
   .automations-view .automations-detail-body { flex-direction: column; min-height: 180px; overflow-y: auto; overscroll-behavior: contain; }
   .automations-view .automations-detail-main { flex: none; height: 65svh; min-height: 280px; }
   .automations-view .automations-rail { flex: none; width: 100%; overflow: visible; border-left: 0; border-top: 1px solid rgb(var(--surface-700)); }
   .automations-view .automations-run-strip { flex-wrap: wrap; }
   .automations-view .automations-meters { border-left: 0; padding-left: 0; }
+}
+@container automations (max-width: 650px) {
+  .automations-view .automations-editor-agent-fields { grid-template-columns: minmax(0, 1fr); }
 }
 @media (pointer: coarse) {
   .automations-view .automations-table td:last-child button { min-width: 44px; min-height: 44px; }

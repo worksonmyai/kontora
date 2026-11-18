@@ -23,6 +23,14 @@ func TestStaticIndexJS(t *testing.T) {
 	}
 }
 
+func TestDialogsJS(t *testing.T) {
+	cmd := nodeTest(t, "dialogs.test.mjs")
+	cmd.Env = append(os.Environ(), "KONTORA_BUNDLE="+writeBundle(t))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("node dialog tests failed:\n%s", out)
+	}
+}
+
 func TestSettingsJS(t *testing.T) {
 	bundle := writeBundle(t)
 	for _, name := range []string{"settings.test.mjs", "settings_picker.test.mjs", "settings_routes.test.mjs", "automations.test.mjs", "graph.test.mjs", "wait_projection.test.mjs", "review_15_deployment_checkout_regression.test.mjs", "detail_view.test.mjs", "lifecycle.test.mjs", "evidence_data.test.mjs", "epic_management.test.mjs", "creation_navigation.test.mjs", "assistant_presentation.test.mjs", "prose_preferences.test.mjs", "assistant_ownership.test.mjs", "schedule_validation.test.mjs"} {

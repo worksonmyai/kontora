@@ -8,7 +8,7 @@ import { kontoraAssistantMarkup } from '../ui/assistant_markup.js';
 
 const web = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = name => fs.readFileSync(path.join(web, name), 'utf8');
-const assistant = source('ui/assistant.js').replaceAll('export ', '');
+const assistant = source('ui/assistant.js').replace(/^import .*$/gm, '').replaceAll('export ', '');
 const companion = source('ui/companion.js').replaceAll('export ', '');
 const markup = source('ui/assistant_markup.js').replaceAll('export ', '');
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };

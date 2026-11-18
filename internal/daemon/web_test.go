@@ -2235,12 +2235,89 @@ history:
 	assert.Equal(t, "local", got.Content)
 }
 
+func TestDaemon_GetLogsExact(t *testing.T) {
+	for _, tc := range []struct {
+		name, stage, want string
+		run               int
+		registered        *liveRun
+		running           bool
+	}{
+		{name: "unproven latest legacy log", stage: "step1", run: 2},
+		{name: "unproven older legacy log", stage: "step1", run: 1},
+		{name: "imported", stage: "step1"},
+		{name: "no matching occurrence", stage: "step1", run: 10},
+		{name: "missing file", stage: "plan"},
+		{name: "registration pending", stage: "step1", run: 3, running: true},
+		{name: "legacy while rerunning", stage: "step1", run: 2, running: true},
+		{name: "registered rework despite ticket stage", stage: "rework", want: "registered capture", running: true,
+			registered: &liveRun{stage: "rework", rawPath: "selected.log"}},
+		{name: "rework cannot answer for interrupted stage", stage: "step1", run: 3, running: true,
+			registered: &liveRun{stage: "rework", params: RunnerParams{LogFile: "selected.log"}}},
+		{name: "missing live capture does not fall back", stage: "rework", running: true,
+			registered: &liveRun{stage: "rework", rawPath: "missing.log"}},
+		{name: "matching live occurrence", stage: "step1", run: 3, want: "registered capture", running: true,
+			registered: &liveRun{stage: "step1", run: 3, rawPath: "selected.log"}},
+		{name: "live occurrence with only a shared capture", stage: "rework", running: true,
+			registered: &liveRun{stage: "rework", params: RunnerParams{LogFile: "rework.log"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.cfg)
+			path := h.writeTicket("tst-raw.md", `---
+id: tst-raw
+status: paused
+stage: step1
+imported_history_count: 1
+history:
+  - {stage: step1}
+  - {stage: plan}
+  - {stage: step1}
+  - {stage: step1}
+---
+# Raw logs
+`)
+			tk, err := ticket.ParseFile(path)
+			require.NoError(t, err)
+			if tc.running {
+				require.NoError(t, tk.SetField("status", ticket.StatusInProgress))
+			}
+			d.tickets[tk.ID] = newTicketState(tk, path)
+			// Exact export works from the daemon's tracked ticket, not disk state.
+			require.NoError(t, os.Remove(path))
+			dir := session.TicketDir(h.logsDir, tk.ID)
+			require.NoError(t, os.MkdirAll(dir, 0o755))
+			for name, content := range map[string]string{
+				"step1.log": "shared legacy", "rework.log": "unrelated rework", "selected.log": "registered capture",
+				"plan.0.events.json": `{"version":1,"events":[{"kind":"text","text":"not raw output"}]}`,
+			} {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600))
+			}
+			if tc.registered != nil {
+				lr := *tc.registered
+				if lr.rawPath != "" {
+					lr.rawPath = filepath.Join(dir, lr.rawPath)
+				}
+				d.setLiveRun(tk.ID, lr)
+			}
+			got, err := d.GetLogs(web.LogQuery{ID: tk.ID, Stage: tc.stage, Run: &tc.run})
+			if tc.want == "" {
+				require.ErrorIs(t, err, web.ErrLogNotFound)
+				assert.Empty(t, got)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, got)
+			}
+		})
+	}
+}
+
 func TestDaemon_ActivityPreviewAndExactIdentity(t *testing.T) {
 	h := newHarness(t)
 	d := h.newDaemon(h.cfg)
 	path := h.writeTicket("tst-preview.md", h.taskMD("tst-preview", "paused", "one-stage"))
 	tk, err := ticket.ParseFile(path)
 	require.NoError(t, err)
+	require.NoError(t, tk.SetField("history", []ticket.HistoryEntry{{Stage: "step1"}}))
 	d.tickets[tk.ID] = newTicketState(tk, path)
 	// Neither endpoint needs the ticket file or a store-wide prefix resolver.
 	require.NoError(t, os.Remove(path))
@@ -2278,22 +2355,27 @@ func TestDaemon_ActivityPreviewAndExactIdentity(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, again.NotModified)
 			assert.Empty(t, again.Content)
-			exported, err := d.GetLogs(tk.ID, "step1")
-			require.NoError(t, err)
-			assert.Equal(t, full, exported)
+			for _, stageOnly := range []bool{false, true} {
+				exported, err := d.GetLogs(web.LogQuery{ID: tk.ID, Stage: "step1", StageOnly: stageOnly})
+				require.NoError(t, err)
+				assert.Equal(t, full, exported)
+			}
+			_, err = d.GetLogs(web.LogQuery{ID: tk.ID, Stage: "step1", Run: new(0)})
+			assert.ErrorIs(t, err, web.ErrLogNotFound)
 		})
 	}
 }
 
 func TestDaemon_ActivityGraphVisitPreviews(t *testing.T) {
 	for _, tc := range []struct {
-		name, visit string
-		run         int
-		stale       bool
+		name, visit, invocation string
+		run                     int
+		stale                   bool
 	}{
 		{name: "earlier visit", visit: "execution.1"},
 		{name: "retried visit", visit: "execution.2", run: 1, stale: true},
-		{name: "latest retry", visit: "execution.2", run: 2},
+		{name: "retained invocation on retried visit", visit: "execution.2", invocation: "inv-1", run: 1},
+		{name: "latest retry with no invocation log", visit: "execution.2", run: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -2303,13 +2385,19 @@ func TestDaemon_ActivityGraphVisitPreviews(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, tk.SetField("history", []ticket.HistoryEntry{
 				{Stage: "check", NodeVisitID: "execution.1"},
-				{Stage: "check", Run: 1, NodeVisitID: "execution.2"},
-				{Stage: "check", Run: 2, NodeVisitID: "execution.2"},
+				{Stage: "check", Run: 1, NodeVisitID: "execution.2", InvocationID: "inv-1"},
+				{Stage: "check", Run: 2, NodeVisitID: "execution.2", InvocationID: "inv-2"},
 			}))
 			d.tickets[tk.ID] = newTicketState(tk, path)
 			log := session.GraphLogPath(h.logsDir, tk.ID, "check", tc.visit)
 			require.NoError(t, os.MkdirAll(filepath.Dir(log), 0o755))
 			require.NoError(t, os.WriteFile(log, []byte("prefix "+tc.visit), 0o600))
+			full := "prefix " + tc.visit
+			if tc.invocation != "" {
+				full = "invocation " + tc.visit
+				log = session.GraphLogPath(h.logsDir, tk.ID, "check", tc.visit, tc.invocation)
+				require.NoError(t, os.WriteFile(log, []byte(full), 0o600))
+			}
 			require.NoError(t, os.WriteFile(session.LogPath(h.logsDir, tk.ID, "check"), []byte("wrong legacy log"), 0o600))
 			q := web.ActivityQuery{ID: tk.ID, Stage: "check", Run: tc.run, LogTailBytes: len(tc.visit)}
 			got, err := d.GetActivity(q)
@@ -2321,6 +2409,19 @@ func TestDaemon_ActivityGraphVisitPreviews(t *testing.T) {
 			again, err := d.GetActivity(q)
 			require.NoError(t, err)
 			assert.True(t, again.NotModified)
+
+			export := web.LogQuery{ID: tk.ID, Stage: "check", Run: &tc.run}
+			raw, err := d.GetLogs(export)
+			if tc.invocation == "" {
+				require.ErrorIs(t, err, web.ErrLogNotFound)
+				assert.Empty(t, raw)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, full, raw)
+				require.NoError(t, os.Remove(log))
+				_, err = d.GetLogs(export)
+				assert.ErrorIs(t, err, web.ErrLogNotFound, "the visit log still exists")
+			}
 		})
 	}
 }

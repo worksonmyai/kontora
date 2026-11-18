@@ -3,6 +3,7 @@
 // bottom sheets for actions and navigation. It reuses the desktop
 // board's ticket data and operations — only the layout and a few view-state
 // fields (activeColumn, detailTab, sheet) are its own.
+import { activeDialog, blockingInteraction, canReturnInteractionFocus, dialogFocusable, focusAvailable, stepDialogTab, syncInteractionCoverage } from './dialogs.js';
 import { isoWithOffset, localScheduleText, parseScheduleInput, pickerToScheduleText, schedulePresets } from './format.js';
 
 export function kontoraMobile() {
@@ -207,7 +208,7 @@ export function kontoraMobile() {
       await this.$nextTick();
       if (sequence !== descriptionSequence || this._appDestroyed || !this.mobileCanEditDescription() || !this.editingBody ||
           detailSequence !== this._ticketDetailSeq || this.ticketKey(this.selectedTicket) !== key || generation !== this._editorGeneration) return false;
-      this.$refs.mobileDescriptionEditor?.focus({ preventScroll: true });
+      if (!blockingInteraction(this)) this.$refs.mobileDescriptionEditor?.focus({ preventScroll: true });
       return true;
     },
 
@@ -225,79 +226,66 @@ export function kontoraMobile() {
       return saved;
     },
 
-    // Inert only siblings of the sheet. Native picker popovers stay in its DOM subtree.
+    // Native picker popovers stay in the sheet's DOM subtree.
     _syncMobileSheet() {
       if (!lifecycle || this._appDestroyed) return;
       const sheet = this.isMobile ? this.sheet : null;
       if (sheetFocus?.sheet === sheet) return;
       if (sheetFocus?.sheet?.type === 'assistant' && this.assistantOpen) this.closeAssistant();
       const returnFocus = sheetFocus?.returnFocus || document.activeElement;
-      this._releaseMobileSheetFocus(!sheet);
+      const keepCoverage = !!(sheet && sheetFocus?.dialog);
+      this._releaseMobileSheetFocus(!sheet, keepCoverage);
       if (!sheet) return;
       const owner = lifecycle;
-      const focus = sheetFocus = { sheet, returnFocus, dialog: null, backgrounds: [] };
+      const focus = sheetFocus = { sheet, returnFocus, dialog: null };
       this.$nextTick(() => {
         if (lifecycle !== owner || sheetFocus !== focus || this.sheet !== sheet || !this.isMobile || this._appDestroyed) return;
         const dialog = document.querySelector('[data-mobile-sheet-dialog]') || document.querySelector('.sheet-panel');
         if (!dialog) return;
         focus.dialog = dialog;
-        document.querySelectorAll('[data-mobile-sheet-background]').forEach(el => {
-          if (el.contains(dialog) || dialog.contains(el)) return;
-          focus.backgrounds.push({ el, inert: el.hasAttribute('inert'), hidden: el.getAttribute('aria-hidden') });
-          el.setAttribute('inert', '');
-          el.setAttribute('aria-hidden', 'true');
-        });
-        const initial = this._mobileSheetFocusable().find(el => el.hasAttribute('data-mobile-sheet-initial-focus'));
-        (initial || this._mobileSheetFocusable()[0] || dialog).focus({ preventScroll: true });
+        syncInteractionCoverage(this);
+        this._focusMobileSheet();
       });
     },
 
-    _releaseMobileSheetFocus(restore) {
+    _releaseMobileSheetFocus(restore, keepCoverage = false) {
       const focus = sheetFocus;
       sheetFocus = null;
-      if (!focus) return;
-      focus.backgrounds.forEach(({ el, inert, hidden }) => {
-        if (!inert) el.removeAttribute('inert');
-        if (hidden === null) el.removeAttribute('aria-hidden');
-        else el.setAttribute('aria-hidden', hidden);
-      });
-      if (!restore) return;
-      const target = this._mobileFocusAvailable(focus.returnFocus) ? focus.returnFocus
+      syncInteractionCoverage(this, keepCoverage);
+      if (!focus || !restore || activeDialog(this)) return;
+      const target = canReturnInteractionFocus(this, focus.returnFocus) ? focus.returnFocus
         : document.querySelector('[data-mobile-focus-fallback]');
-      if (this._mobileFocusAvailable(target)) target.focus({ preventScroll: true });
+      if (canReturnInteractionFocus(this, target)) target.focus({ preventScroll: true });
+      else this.focusMobileDetail?.();
+    },
+
+    _focusMobileSheet() {
+      const dialog = sheetFocus?.dialog;
+      if (!dialog || activeDialog(this) || !focusAvailable(dialog)) return;
+      const items = this._mobileSheetFocusable();
+      const initial = items.find(el => el.hasAttribute('data-mobile-sheet-initial-focus'));
+      (initial || items[0] || dialog).focus({ preventScroll: true });
     },
 
     _mobileFocusAvailable(el) {
-      return !!el?.isConnected && typeof el.focus === 'function' && !el.closest('[inert], [hidden], [aria-hidden="true"]') &&
-        !el.matches(':disabled') && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+      return focusAvailable(el);
     },
 
     _mobileSheetFocusable() {
       const dialog = sheetFocus?.dialog;
-      if (!dialog) return [];
-      return Array.from(dialog.querySelectorAll('a[href], button, input, select, textarea, [tabindex], [contenteditable="true"]'))
-        .filter(el => el.tabIndex >= 0 && this._mobileFocusAvailable(el) && !el.closest('[data-agent-picker-panel]'));
+      return dialog ? dialogFocusable(dialog) : [];
     },
 
     // The picker calls this with its trigger on Tab, so closing the top-layer
     // panel advances within the sheet rather than escaping to the page behind.
     mobileSheetTab(event, from) {
       const dialog = sheetFocus?.dialog;
-      if (!dialog || !this.sheet || !this.isMobile) return false;
-      const items = this._mobileSheetFocusable();
-      const active = from || document.activeElement;
-      const index = items.indexOf(active);
-      const next = index < 0 ? (event.shiftKey ? items.length - 1 : 0) : index + (event.shiftKey ? -1 : 1);
-      if (from || index < 0 || next < 0 || next >= items.length) {
-        event.preventDefault();
-        const target = items.length ? items[(next + items.length) % items.length] : dialog;
-        target.focus();
-      }
-      return true;
+      if (!dialog || !this.sheet || !this.isMobile || activeDialog(this)) return false;
+      return stepDialogTab(event, dialog, from);
     },
 
     _mobileSheetKeydown(event) {
-      if (!sheetFocus?.dialog || !this.sheet || !this.isMobile || event.defaultPrevented) return;
+      if (!sheetFocus?.dialog || !this.sheet || !this.isMobile || activeDialog(this) || event.defaultPrevented) return;
       if (this._agentPickerOpenHost) {
         if (event.key !== 'Escape') return;
         event.preventDefault();
@@ -325,7 +313,7 @@ export function kontoraMobile() {
 
     _mobileSheetFocusin(event) {
       const dialog = sheetFocus?.dialog;
-      if (!dialog || !this.sheet || !this.isMobile || dialog.contains(event.target)) return;
+      if (!dialog || !this.sheet || !this.isMobile || activeDialog(this) || dialog.contains(event.target)) return;
       if (this.agentPickerOwnsTarget(event.target)) return;
       (this._mobileSheetFocusable()[0] || dialog).focus({ preventScroll: true });
     },

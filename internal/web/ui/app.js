@@ -322,6 +322,8 @@ export function kontoraApp() {
       this._invalidateStageLogs();
       this._invalidateRawLog();
       this.destroyMobile();
+      this.destroyDialogs?.();
+      this._disposeBoardEvents?.();
       this._destroyEditorRetirements();
       this.destroyAgentPicker();
       this.destroySettingsLifecycle?.();

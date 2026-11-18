@@ -433,6 +433,27 @@ export function kontoraCreate() {
       return true;
     },
 
+    onUploadDragEnter(event) {
+      if (!event.dataTransfer?.types.includes('Files')) return;
+      event.preventDefault();
+      this.uploadDragging = !this.interactionOwner();
+    },
+
+    onUploadDragOver(event) {
+      if (!event.dataTransfer?.types.includes('Files')) return;
+      event.preventDefault();
+      if (this.interactionOwner()) event.dataTransfer.dropEffect = 'none';
+    },
+
+    onUploadDrop(event) {
+      const files = event.dataTransfer?.files;
+      if (!files?.length && !event.dataTransfer?.types.includes('Files')) return;
+      // Cancel even a blocked file drop so the browser cannot open the file.
+      event.preventDefault();
+      this.uploadDragging = false;
+      if (files?.length && !this.interactionOwner()) return this.handleUpload(files);
+    },
+
     async handleUpload(fileList) {
       const mdFiles = [...fileList].filter(f => f.name.toLowerCase().endsWith('.md'));
       if (!mdFiles.length) {
@@ -447,11 +468,18 @@ export function kontoraCreate() {
           headers: { 'X-Kontora-Confirm': 'upload-tickets' },
           body: form,
         });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok && data.error) {
-          this.error = data.error;
-        } else if (data.errors && data.errors.length) {
-          this.error = data.errors.map(e => e.file + ': ' + e.error).join('; ');
+        const data = await res.json().catch(() => null);
+        const details = [typeof data?.error === 'string' ? data.error.trim() : ''];
+        if (Array.isArray(data?.errors)) {
+          for (const entry of data.errors) {
+            if (entry?.file && entry?.error) details.push(entry.file + ': ' + entry.error);
+          }
+        }
+        const message = details.filter(Boolean).join('; ');
+        if (!res.ok) this.error = 'Upload failed (HTTP ' + res.status + ')' + (message ? ': ' + message : '');
+        else if (message) {
+          const ids = Array.isArray(data?.tickets) ? data.tickets.map(ticket => ticket?.id).filter(Boolean) : [];
+          this.error = ids.length ? 'Created tickets: ' + ids.join(', ') + '. Upload errors: ' + message : message;
         }
       } catch (e) {
         this.error = 'Upload failed: ' + e.message;
@@ -468,6 +496,7 @@ export function kontoraCreate() {
 
     async openInitModal(ticket) {
       if (!this.ticketCanControl(ticket)) return;
+      const origin = this.dialogTrigger?.('init', this.ticketKey(ticket));
       const command = this.lifecycleCommand(ticket, 'initialize');
       this.closeAgentPicker(false);
       var seq = ++this._initContextSeq;
@@ -522,6 +551,7 @@ export function kontoraCreate() {
       var currentForm = () => this.initModal && form === this.initForm && navigation === this._navigationSeq;
       this.initNotifyOpen = false;
       this.initError = null;
+      this.rememberDialogTrigger?.('init', origin);
       this.initModal = true;
       if (!this.configCache) {
         try {
@@ -542,7 +572,7 @@ export function kontoraCreate() {
       this.initForm.pipelineChoice = ticket.pipeline ? 'pipeline:' + ticket.pipeline : 'inherit';
       this.onInitPipelineChange();
       this.initForm.agent = agent;
-      document.getElementById(ticket.kind === 'epic' ? 'init-agent' : 'init-pipeline')?.focus();
+      if (!this.dialogFocusManaged?.()) document.getElementById(ticket.kind === 'epic' ? 'init-agent' : 'init-pipeline')?.focus();
     },
 
     syncInitNotifyDefaults() {

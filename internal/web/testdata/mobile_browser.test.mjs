@@ -356,7 +356,8 @@ function fixtures(options = {}) {
       : /\/runs$/.test(path) ? ['offset', 'limit']
       : /\/runs\/\d+\/log$/.test(path) ? ['raw']
       : /^\/api\/assistant\/threads\/[^/]+\/activity$/.test(path) ? ['after']
-      : /\/(logs|activity)$/.test(path) ? ['stage', 'run', 'offset', 'limit', 'after', 'log_tail_bytes'] : [];
+      : /\/logs$/.test(path) ? ['stage', 'run', 'stage_only']
+      : /\/activity$/.test(path) ? ['stage', 'run', 'offset', 'limit', 'after', 'log_tail_bytes'] : [];
     assert.ok([...url.searchParams.keys()].every(k => allowedQuery.includes(k)), `Unexpected query: ${url}`);
     if (behavior.authRequired && method === 'GET' && ['/api/config', '/api/tickets', '/api/assistant'].includes(path)) {
       expectedHTTPFailures.push(base + path);
@@ -564,7 +565,8 @@ function fixtures(options = {}) {
       }
       // Deliberately no invented ticket import: callers provide the success
       // receipt (and records) they need. Failed requests never mutate records.
-      return json(route, { created: [], errors: files.map(file => ({ file: file.name, error: 'Fixture import not configured' })) });
+      expectedHTTPFailures.push(base + path);
+      return json(route, { tickets: [], errors: files.map(file => ({ file: file.name, error: 'Fixture import not configured' })) }, 400);
     }
     if (method === 'POST' && path === '/api/tickets') {
       if (behavior.createWait) await behavior.createWait;
@@ -827,13 +829,14 @@ function fixtures(options = {}) {
             if (!options.distinctRaw) return readResponse(route, path, { content: `${id} ${url.searchParams.get('stage') || 'code'} fixture log revision ${behavior.outputRevision}\n` });
             const stage = url.searchParams.get('stage');
             const runText = url.searchParams.get('run');
+            const stageOnly = url.searchParams.get('stage_only') === 'true';
             assert.ok(stage, 'Distinct raw fixtures require a stage');
             assert.ok(runText === null || /^(0|[1-9]\d*)$/.test(runText), 'Raw run must be a nonnegative occurrence');
             const occurrences = (record.history || []).filter(h => h.stage === stage);
             const latest = active(record) && record.stage === stage ? occurrences.length : occurrences.length - 1;
             const run = runText === null ? latest : Number(runText), outputKey = `${id}/${stage}/${run}`;
             const failure = behavior.rawFailures.get(outputKey);
-            artifactReads.push({ id, stage, run, raw: true });
+            artifactReads.push({ id, stage, run, raw: true, stageOnly });
             if (failure || occurrences[run]?.imported || !rawOutputs.has(outputKey)) {
               expectedHTTPFailures.push(url.href);
               return json(route, { error: failure?.error || 'Exact raw run output unavailable' }, failure?.status || 404);
@@ -1510,7 +1513,7 @@ describe('Settings configuration workflows', { concurrency: 2 }, () => {
         fixture.behavior.saveResponse = { status: 500, body: { code: 'config_saved_reload_failed', error: 'Configuration saved but reload failed: fixture reload refused' } };
         await guard.getByRole('button', { name: 'save & leave', exact: true }).click();
         const warning = settingsView(page).getByRole('alert').filter({ hasText: 'fixture reload refused' });
-        await visible(warning);
+        await visible(guard.getByRole('alert').filter({ hasText: 'fixture reload refused' }));
         await page.waitForFunction(() => !Alpine.$data(document.body).settingsSaving);
         assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsDirty()), false);
         assert.ok(await page.evaluate(() => Alpine.$data(document.body).settingsReloadWarning));
@@ -1967,7 +1970,7 @@ describe('Settings final review regressions', { concurrency: 2 }, () => {
       await visible(guard);
       await expect.poll(() => new URL(page.url()).hash).toBe('#/settings/web');
       await ready(page);
-      await expect(settingsView(page).getByRole('heading', { name: 'Server & access', exact: true, level: 1 })).toBeVisible();
+      await expect(settingsView(page).getByRole('heading', { name: 'Server & access', exact: true, level: 1, includeHidden: true })).toBeVisible();
       await guard.getByRole('button', { name: 'keep editing', exact: true }).click();
       await page.goBack();
       await page.waitForURL('**/#/settings/general');
@@ -2160,7 +2163,7 @@ describe('Settings final review regressions', { concurrency: 2 }, () => {
       await visible(guard);
       await expect.poll(() => new URL(page.url()).hash).toBe('#/settings/stages');
       await ready(page);
-      await expect(settingsView(page).getByRole('heading', { name: 'Stages', exact: true, level: 1 })).toBeVisible();
+      await expect(settingsView(page).getByRole('heading', { name: 'Stages', exact: true, level: 1, includeHidden: true })).toBeVisible();
       assert.equal(await page.evaluate(() => Alpine.$data(document.body).routeHash()), '#/settings/stages');
       assert.deepEqual(await page.evaluate(() => window.__reviewFieldFocus), [], 'Obsolete reveals must not focus a field behind the guard');
       await guard.getByRole('button', { name: 'keep editing', exact: true }).click();
@@ -3207,11 +3210,17 @@ describe('desktop automation handoff', { concurrency: 2 }, () => {
         await page.waitForURL('**/#/automations/new');
         assert.equal(await model(page, 'automationsDraft.name').inputValue(), 'Repository review (copy)');
         assert.equal(await view.getByRole('switch', { name: 'Runs on schedule' }).getAttribute('aria-checked'), 'false');
-        const editor = view.locator('.automations-editor'), preview = view.locator('aside:visible'); await visible(preview);
-        near((await preview.boundingBox()).width, 420, 'YAML preview'); near((await view.boundingBox()).x, 220, 'editor retains sidebar');
-        await page.waitForFunction(() => Alpine.$data(document.body).automationsYAML.includes('enabled: false'));
-        assert.match(await preview.innerText(), /automations:[\s\S]*repository-review-copy:[\s\S]*prompt:[\s\S]*overlap: skip/);
-        await automationToken(preview, 'backgroundColor', '--surface-deep'); await automationToken(model(page, 'automationsDraft.name'), 'backgroundColor', '--surface-800');
+        const editor = view.locator('.automations-editor'), preview = view.locator('.automations-editor-preview');
+        near((await view.boundingBox()).x, 220, 'editor retains sidebar');
+        if (stacked) await expect(preview).toBeHidden();
+        else {
+          await visible(preview);
+          near((await preview.boundingBox()).width, 420, 'YAML preview');
+          await page.waitForFunction(() => Alpine.$data(document.body).automationsYAML.includes('enabled: false'));
+          assert.match(await preview.innerText(), /automations:[\s\S]*repository-review-copy:[\s\S]*prompt:[\s\S]*overlap: skip/);
+          await automationToken(preview, 'backgroundColor', '--surface-deep');
+        }
+        await automationToken(model(page, 'automationsDraft.name'), 'backgroundColor', '--surface-800');
         assert.match(await editor.locator('label').first().evaluate(el => getComputedStyle(el).fontFamily), /JetBrains Mono/);
         for (const field of [model(page, 'automationsDraft.name'), model(page, 'automationsDraft.prompt')]) {
           await field.focus();
@@ -8444,7 +8453,7 @@ test('audit32-fixture multipart uploads and one-time stylesheet failures', async
       { status: 503, contentType: 'text/plain', body: 'Upload unavailable' },
       { status: 502, contentType: 'text/plain', body: '' },
       { status: 500, contentType: 'application/json', body: '{invalid' },
-      { status: 200, contentType: 'application/json', body: JSON.stringify({ created: [], errors: [{ file: 'fixture.md', error: 'Permission refused' }] }) },
+      { status: 400, contentType: 'application/json', body: JSON.stringify({ tickets: [], errors: [{ file: 'fixture.md', error: 'Permission refused' }] }) },
     ]) {
       fixture.behavior.uploadResponse = failure;
       const received = await page.evaluate(async () => {
@@ -8497,6 +8506,488 @@ test('audit32-fixture populated Stats and exact raw run datasets', async t => {
     fixture.behavior.rawFailures.set('kon-done/code/0', { status: 409, error: 'Recorded bytes are stale' });
     assert.equal((await raw('/api/tickets/kon-done/logs?stage=code&run=0')).status, 409);
   }, { populatedStats: true, distinctRaw: true });
+});
+
+test('audit32-export selected Raw bytes and separately requested latest stage', async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    await page.evaluate(() => {
+      window.rawExports = [];
+      URL.createObjectURL = blob => { window.rawExports.push(blob.text()); return 'blob:raw-export'; };
+      window.open = () => {};
+    });
+    await openTicket(page, 'kon-done');
+    await page.getByRole('region', { name: 'Run history' }).getByRole('button', { name: /failed code/ }).click();
+    const raw = page.getByRole('button', { name: /raw/i }).filter({ visible: true });
+    await raw.click();
+    await expect.poll(() => page.evaluate(() => Promise.all(window.rawExports))).toEqual([fixture.rawOutputs.get('kon-done/code/0')]);
+    const latest = page.getByRole('button', { name: 'Export latest stage log' });
+    fixture.behavior.rawFailures.set('kon-done/code/0', { status: 503, error: 'Temporary failure' });
+    await raw.click();
+    await expect(page.getByText("Couldn't load the selected run's raw log. Try Raw again.").filter({ visible: true })).toBeVisible();
+    await expect(latest).toBeHidden();
+    fixture.behavior.rawFailures.set('kon-done/code/0', { status: 404, error: 'Exact output unavailable' });
+    await raw.click();
+    await expect(page.getByText('Exact output is unavailable for the selected run.').filter({ visible: true })).toBeVisible();
+    await latest.click();
+    await expect.poll(() => page.evaluate(() => Promise.all(window.rawExports))).toEqual([
+      fixture.rawOutputs.get('kon-done/code/0'), fixture.rawOutputs.get('kon-done/code/1'),
+    ]);
+    assert.deepEqual(fixture.artifactReads.filter(read => read.raw).at(-1),
+      { id: 'kon-done', stage: 'code', run: 1, raw: true, stageOnly: true });
+  }, { distinctRaw: true });
+});
+
+test('audit32-recovery terminal stylesheet retries', async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    await openTicket(page, 'kon-live');
+    await page.getByRole('button', { name: 'retry connection', exact: true }).click();
+    await expect.poll(() => fixture.stylesheetRequests.length).toBe(2);
+    await expect.poll(() => fixture.sockets.length).toBeGreaterThan(0);
+  }, { stylesheetFailures: 1 });
+});
+
+for (const { name, response, message, files } of [
+  {
+    name: 'failure keeps HTTP status',
+    response: { status: 502, contentType: 'text/plain', body: 'Bad gateway' },
+    message: 'Upload failed (HTTP 502)',
+    files: ['broken.md'],
+  },
+  {
+    name: 'partial success identifies created tickets and failed files',
+    response: { status: 201, contentType: 'application/json', body: JSON.stringify({
+      tickets: [{ id: 'kon-imported' }], errors: [{ file: 'broken.md', error: 'Invalid title' }],
+    }) },
+    message: 'Created tickets: kon-imported. Upload errors: broken.md: Invalid title',
+    files: ['good.md', 'broken.md'],
+  },
+]) test(`audit32-recovery upload ${name}`, async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    await page.locator('input[type=file]').setInputFiles(files.map(name => ({
+      name, mimeType: 'text/markdown', buffer: Buffer.from('# Ticket'),
+    })));
+    await expect(page.getByText(message, { exact: true })).toBeVisible();
+    assert.deepEqual(fixture.uploads.map(upload => upload.files.map(file => file.name)), [files]);
+  }, { uploadResponse: response });
+});
+
+test('review-dialog trusted Tab during palette composition stays on the query', { skip: engine !== 'chromium' }, async t => {
+  await withPage(t, 1280, 'light', async page => {
+    await page.keyboard.press('ControlOrMeta+k');
+    const input = page.getByRole('combobox', { name: 'Command palette input' });
+    await expect(input).toBeFocused();
+    const cdp = await page.context().newCDPSession(page);
+    try {
+      await cdp.send('Input.imeSetComposition', { text: 'kon-done', selectionStart: 8, selectionEnd: 8 });
+      const selected = page.getByRole('option', { selected: true });
+      await expect(selected).toHaveAttribute('id', 'palette-row-ticket:kon-done');
+      await input.evaluate(el => el.addEventListener('keydown', event => {
+        el.dataset.tabDuringComposition = String(event.key === 'Tab' && event.isTrusted && event.isComposing);
+      }, { once: true }));
+      await page.keyboard.press('Tab');
+      await expect(input).toHaveAttribute('data-tab-during-composition', 'true');
+      await expect(input).toBeFocused();
+      await expect(selected).toHaveAttribute('id', 'palette-row-ticket:kon-done');
+      await cdp.send('Input.imeSetComposition', { text: '', selectionStart: 0, selectionEnd: 0 });
+      await input.fill('kon-done');
+      await expect(selected).toHaveAttribute('id', 'palette-row-ticket:kon-done');
+      await page.keyboard.press('Tab');
+      await expect(input).toHaveAttribute('placeholder', 'Action for kon-done…');
+      await expect(input).toBeFocused();
+    } finally { await cdp.detach(); }
+  });
+});
+
+test('review-dialog keyboard palette ticket retires the card menu before Escape', async t => {
+  await withPage(t, 1280, 'light', async page => {
+    const kebab = page.locator('[data-ticket-id="kon-draft"] .card-menu-btn');
+    await kebab.press('Enter');
+    await expect(kebab).toHaveAttribute('aria-expanded', 'true');
+    await page.keyboard.press('ControlOrMeta+k');
+    const input = page.getByRole('combobox', { name: 'Command palette input' });
+    await expect(input).toBeFocused();
+    await input.fill('kon-done');
+    await expect(page.getByRole('option', { selected: true })).toHaveAttribute('id', 'palette-row-ticket:kon-done');
+    await page.keyboard.press('Enter');
+    await page.waitForURL('**/#/t/kon-done');
+    await ready(page);
+    await page.keyboard.press('Escape');
+    await page.waitForURL('**/#/');
+    await expect(kebab).toHaveAttribute('aria-expanded', 'false');
+  });
+});
+
+test('review-dialog canceling palette navigation from dirty Settings restores the edited field', async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    await routeTo(page, '#/settings/general');
+    const worker = page.locator('#gen-max_concurrent_agents');
+    await worker.fill('5');
+    await expect(worker).toBeFocused();
+    await page.keyboard.press('ControlOrMeta+k');
+    const input = page.getByRole('combobox', { name: 'Command palette input' });
+    await expect(input).toBeFocused();
+    await input.fill('archive');
+    await expect(page.getByRole('option', { selected: true })).toHaveAttribute('id', 'palette-row-nav-archive');
+    await page.keyboard.press('Enter');
+    const guard = page.getByRole('dialog', { name: 'Leave settings?' });
+    const keepEditing = guard.getByRole('button', { name: 'keep editing', exact: true });
+    await expect(keepEditing).toBeFocused();
+    await keepEditing.press('Enter');
+    await expect(guard).toBeHidden();
+    await expect(worker).toBeFocused();
+    await expect(worker).toHaveValue('5');
+    assert.equal(new URL(page.url()).hash, '#/settings/general');
+    assert.deepEqual(settingsWrites(fixture), []);
+  });
+});
+
+for (const [action, title] of [['archive…', 'Archive kon-done'], ['delete file', 'Delete ticket file']]) {
+  test(`review-dialog canceling desktop ${title} returns focus to More Actions`, async t => {
+    await withPage(t, 1280, 'light', async (page, fixture) => {
+      await openTicket(page, 'kon-done');
+      const trigger = page.getByRole('banner').getByRole('button', { name: 'More actions', exact: true });
+      await trigger.press('Enter');
+      const item = page.getByRole('menu').getByRole('button', { name: action, exact: true });
+      await item.press('Enter');
+      const cancel = page.getByRole('dialog', { name: title, exact: true }).getByRole('button', { name: 'cancel', exact: true });
+      await expect(cancel).toBeFocused();
+      await cancel.press('Enter');
+      await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      await expect(trigger).toBeFocused();
+      assert.deepEqual(fixture.mutations, []);
+    });
+  });
+}
+
+async function dispatchTicketFileDrag(page, events, name) {
+  return page.evaluate(({ events, name }) => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(new File(['# Ticket'], name, { type: 'text/markdown' }));
+    return events.map(type => {
+      const target = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+      return !target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer }));
+    });
+  }, { events, name });
+}
+
+for (const layer of ['init', 'delete']) test(`review-dialog body file drop is blocked over ${layer} and works after closing`, async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    const overlay = page.getByText('Drop .md files here', { exact: true });
+    const kebab = page.locator('[data-ticket-id="kon-draft"] .card-menu-btn');
+    if (layer === 'init') {
+      await kebab.click();
+      const initialize = page.locator('[data-ticket-id="kon-draft"] .card-menu [data-act="init"]');
+      await expect(initialize).toBeVisible();
+      // A drag that was already showing the overlay cannot survive the dialog opening.
+      await dispatchTicketFileDrag(page, ['dragenter'], 'blocked.md');
+      await expect(overlay).toBeVisible();
+      await initialize.press('Enter');
+    } else {
+      await openTicket(page, 'kon-draft');
+      await page.getByRole('banner').getByRole('button', { name: 'More actions', exact: true }).click();
+      await page.getByRole('menu').getByRole('button', { name: 'delete file', exact: true }).click();
+    }
+    const dialog = page.locator(`[data-dialog-layer="${layer}"] [role="dialog"]`);
+    await expect(dialog).toBeVisible();
+    await expect(overlay).toBeHidden();
+    assert.deepEqual(await dispatchTicketFileDrag(page, ['dragenter', 'dragover', 'drop'], 'blocked.md'), [true, true, true]);
+    await expect(overlay).toBeHidden();
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    await expect(overlay).toBeHidden();
+    await dispatchTicketFileDrag(page, ['dragenter'], 'allowed.md');
+    await expect(overlay).toBeVisible();
+    await dispatchTicketFileDrag(page, ['dragover', 'drop'], 'allowed.md');
+    await expect(overlay).toBeHidden();
+    await expect.poll(() => fixture.uploads.flatMap(u => u.files.map(f => f.name))).toEqual(['allowed.md']);
+    assert.deepEqual(fixture.mutations, []);
+  }, { ticket: { kontora: false }, uploadResponse: { status: 200, contentType: 'application/json', body: '{"tickets":[],"errors":[]}' } });
+});
+
+test('review-dialog mobile note deletion returns focus to the visible detail Back control', async t => {
+  await withPage(t, 390, 'light', async (page, fixture) => {
+    await openTicket(page, 'kon-draft');
+    await detailPanel(page, 'Notes');
+    const notes = audit32Notes(page);
+    await model(page, 'noteDraft').fill('This note will be removed.');
+    await notes.getByRole('button', { name: 'Add note', exact: true }).click();
+    await expect(notes.getByText('This note will be removed.', { exact: true })).toBeVisible();
+    const remove = notes.getByRole('button', { name: 'Delete', exact: true });
+    await remove.press('Enter');
+    const dialog = page.getByRole('dialog', { name: 'Delete note', exact: true });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'delete note', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect(remove).toHaveCount(0);
+    const detail = page.locator('.mobile-detail');
+    await expect(detail.getByRole('button', { name: 'Back', exact: true })).toBeFocused();
+    assert.deepEqual(fixture.records.get('primary/kon-draft').notes, []);
+  }, { config: { author: 'Browser author' }, hasTouch: true });
+});
+
+test('audit32-dialog short Archive traps focus and returns to the card kebab', async t => {
+  await withPage(t, 1280, 'light', async page => {
+    await page.setViewportSize({ width: 1280, height: 293 });
+    const kebab = page.locator('[data-ticket-id="kon-done"] .card-menu-btn');
+    await kebab.focus();
+    await kebab.press('Enter');
+    const archive = page.locator('[data-ticket-id="kon-done"] .card-menu [data-act="archive"]');
+    await archive.click();
+    const dialog = page.getByRole('dialog', { name: 'Archive kon-done' });
+    await expect(dialog).toBeVisible();
+    const cancel = dialog.getByRole('button', { name: 'cancel' });
+    const confirm = dialog.getByRole('button', { name: 'archive' });
+    await expect(cancel).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(confirm).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(dialog.locator('textarea')).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(confirm).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(kebab).toBeFocused();
+  });
+});
+
+test('audit32-archive duplicate terms and scrolled empty state stay operable', async t => {
+  await withPage(t, 390, 'dark', async page => {
+    await routeTo(page, '#/archive');
+    const track = page.getByRole('region', { name: /archived tickets table/i });
+    await expect(track.getByText('Archived fixture')).toBeVisible();
+    await track.hover();
+    await page.mouse.wheel(900, 0);
+    await expect.poll(() => track.evaluate(el => el.scrollLeft)).toBeGreaterThan(0);
+    await page.getByRole('textbox', { name: 'Filter archive' }).fill('agent:missing agent:missing');
+    await expect(page.getByRole('button', { name: /agent:missing/ })).toHaveCount(1);
+    await expect(page.getByText('Nothing archived matches')).toBeVisible();
+    await page.getByRole('button', { name: 'reset filters' }).click();
+    await expect(track.getByText('Archived fixture')).toBeVisible();
+    await noPageOverflow(page);
+  });
+});
+
+for (const [width, touch] of [[390, false], [1280, true]]) test(`audit32-stats chart targets align and scroll locally / ${width}px`, async t => {
+  await withPage(t, width, 'light', async page => {
+    await routeTo(page, '#/stats');
+    await page.getByRole('button', { name: '26w', exact: true }).click();
+    const heat = page.getByRole('region', { name: 'Stage runs heatmap' });
+    const targets = heat.locator('.stats-heat-target[data-tip-info]');
+    await expect(targets).toHaveCount(182);
+    const geometry = await heat.evaluate(el => {
+      const rect = node => node.getBoundingClientRect();
+      const month = el.querySelector('.stats-heat-months span');
+      const cells = el.querySelectorAll('.stats-heat-week');
+      const week = cells[Number(month.style.getPropertyValue('--heat-week'))];
+      const mark = el.querySelector('[data-tip-info] .stats-heat-mark');
+      const mon = el.querySelector('.stats-heat-weekdays span');
+      const box = rect(week.querySelectorAll('.stats-heat-target')[1]);
+      return { width: box.width, height: box.height, mark: rect(mark).width, labelY: rect(mon).y + rect(mon).height / 2 - (box.y + box.height / 2),
+        labelX: rect(month).x + rect(month).width / 2 - (box.x + box.width / 2), left: el.scrollLeft };
+    });
+    assert.equal(geometry.width, 44); assert.equal(geometry.height, 44); assert.equal(geometry.mark, 13);
+    assert.ok(Math.abs(geometry.labelX) < 1 && Math.abs(geometry.labelY) < 1, JSON.stringify(geometry));
+    assert.equal(geometry.left, 0);
+    await expectLocalChartScroll(page, heat);
+    await page.getByRole('button', { name: '1d', exact: true }).click();
+    for (const name of ['Ticket throughput buckets', 'Token usage buckets']) {
+      const track = page.getByRole('region', { name });
+      await expect(track.locator('.stats-bucket-target')).toHaveCount(24);
+      const target = track.locator('.stats-bucket-target').first();
+      assert.ok(await target.evaluate(el => el.offsetWidth >= 44 && el.offsetHeight >= 44 &&
+        [...el.children].every(bar => Math.abs(bar.getBoundingClientRect().height - parseFloat(bar.style.height)) < 1)));
+      await expectLocalChartScroll(page, track);
+    }
+    await noPageOverflow(page);
+  }, { populatedStats: true, hasTouch: touch });
+});
+
+async function expectLocalChartScroll(page, region) {
+  const dimensions = el => ({ left: el.scrollLeft, width: el.clientWidth, content: el.scrollWidth });
+  await region.hover();
+  const before = await region.evaluate(dimensions);
+  assert.equal(before.left, 0);
+  assert.ok(before.content > before.width, `Chart must overflow locally: ${JSON.stringify(before)}`);
+  await page.mouse.wheel(before.content, 0);
+  await expect.poll(async () => {
+    const after = await region.evaluate(dimensions);
+    return after.left > 0 && after.left + after.width >= after.content - 1;
+  }).toBe(true);
+  const stats = await page.locator('#stats-view').evaluate(dimensions);
+  assert.equal(stats.left, 0);
+  assert.ok(stats.content <= stats.width + 1, `Stats must not overflow horizontally: ${JSON.stringify(stats)}`);
+}
+
+test('audit32-stats fine-pointer phone-wide heatmap hit targets match their marks', async t => {
+  await withPage(t, 750, 'light', async page => {
+    assert.ok(await page.evaluate(() => matchMedia('(pointer:fine)').matches));
+    await routeTo(page, '#/stats');
+    await page.getByRole('button', { name: '26w', exact: true }).click();
+    const heat = page.getByRole('region', { name: 'Stage runs heatmap' });
+    await expect(heat.locator('.stats-heat-target[data-tip-info]')).toHaveCount(182);
+    const weeks = heat.locator('.stats-heat-week');
+    const dates = [weeks.nth(1).locator('.stats-heat-mark').nth(1),
+      weeks.nth(1).locator('.stats-heat-mark').nth(2), weeks.nth(2).locator('.stats-heat-mark').nth(1)];
+    const tip = page.locator('#global-tip-t');
+    for (const mark of dates) {
+      const target = mark.locator('..');
+      await expect(target).toHaveAttribute('aria-label', /runs? · /);
+      const label = await target.getAttribute('aria-label');
+      await mark.scrollIntoViewIfNeeded();
+      const box = await mark.boundingBox();
+      assert.equal(box.width, 13);
+      assert.equal(box.height, 13);
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await expect(tip).toHaveAttribute('aria-hidden', 'false');
+      await expect(tip).toHaveText(label);
+    }
+    const first = await weeks.nth(1).locator('.stats-heat-target').nth(1).boundingBox();
+    const below = await weeks.nth(1).locator('.stats-heat-target').nth(2).boundingBox();
+    const right = await weeks.nth(2).locator('.stats-heat-target').nth(1).boundingBox();
+    assert.equal(first.width, 44);
+    assert.equal(first.height, 44);
+    assert.ok(first.y + first.height <= below.y && first.x + first.width <= right.x);
+  }, { populatedStats: true });
+});
+
+test('audit32-stats range changes leave no tooltip or tab stop on blank heatmap cells', async t => {
+  await withPage(t, 1280, 'light', async page => {
+    await routeTo(page, '#/stats');
+    const stats = page.locator('#stats-view');
+    const heat = stats.getByRole('region', { name: 'Stage runs heatmap' });
+    const days = heat.getByRole('button');
+    await stats.getByRole('button', { name: '26w', exact: true }).click();
+    await expect(days).toHaveCount(182);
+    await stats.getByRole('button', { name: '1d', exact: true }).click();
+    await expect(days).toHaveCount(1);
+    await expect(days).toHaveAccessibleName('120 runs · Nov 18');
+    await expect(heat.locator('.stats-heat-target:is([data-tip-t], [aria-label], [tabindex])')).toHaveCount(1);
+    await heat.focus();
+    await page.keyboard.press('Tab');
+    await expect(days).toBeFocused();
+    const tip = page.locator('#global-tip-t');
+    await expect(tip).toHaveText('120 runs · Nov 18');
+    await page.keyboard.press('Tab');
+    await expect(stats.getByRole('region', { name: 'Ticket throughput buckets' })).toBeFocused();
+    await expect(tip).toHaveAttribute('aria-hidden', 'true');
+    await heat.locator('.stats-heat-target').nth(2).hover();
+    await expect(tip).toHaveAttribute('aria-hidden', 'true');
+  }, { populatedStats: true });
+});
+
+test('audit32-stats stage toggle remains clickable as the Assistant narrows Stats', async t => {
+  await withPage(t, 1280, 'light', async page => {
+    await routeTo(page, '#/stats');
+    await openAssistantControl(page);
+    await expect(page.locator('[data-assistant-sidebar]')).toBeVisible();
+    const stats = page.locator('#stats-view');
+    assert.ok(await stats.evaluate(el => el.clientWidth <= 640));
+    const stage = stats.locator('.stats-card').filter({ hasText: 'where the time goes' });
+    const agents = stats.locator('.stats-card').filter({ hasText: 'agents & models' });
+    await stage.getByRole('button', { name: 'tokens', exact: true }).click();
+    await expect(stats.getByText('where the tokens go', { exact: true })).toBeVisible();
+    const [stageBox, agentsBox] = await Promise.all([
+      stats.locator('.stats-card').filter({ hasText: 'where the tokens go' }).boundingBox(), agents.boundingBox(),
+    ]);
+    assert.ok(stageBox.y + stageBox.height <= agentsBox.y);
+    assert.ok(await stats.evaluate(el => el.scrollWidth <= el.clientWidth + 1));
+  }, { populatedStats: true, sidebar: true });
+});
+
+test('audit32-stats heatmap responds to a horizontal touch gesture', { skip: engine !== 'chromium' }, async t => {
+  await withPage(t, 390, 'light', async page => {
+    await routeTo(page, '#/stats');
+    await page.getByRole('button', { name: '26w', exact: true }).tap();
+    const heat = page.getByRole('region', { name: 'Stage runs heatmap' });
+    await expect(heat.locator('.stats-heat-target[data-tip-info]')).toHaveCount(182);
+    const box = await heat.boundingBox();
+    const session = await page.context().newCDPSession(page);
+    const y = Math.round(box.y + box.height / 2);
+    const point = fraction => [{ x: Math.round(box.x + box.width * fraction), y }];
+    try {
+      await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: point(0.9) });
+      for (const fraction of [0.75, 0.6, 0.45, 0.3, 0.15]) {
+        await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: point(fraction) });
+      }
+      await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await expect.poll(() => heat.evaluate(el => el.scrollLeft)).toBeGreaterThan(50);
+    } finally { await session.detach(); }
+  }, { populatedStats: true, hasTouch: true });
+});
+
+test('audit32-layout epic stacks Brief and wraps child titles with sidebar and Assistant open', async t => {
+  await withPage(t, 1360, 'light', async page => {
+    await openAssistantControl(page);
+    await routeTo(page, '#/e/kon-order');
+    const pane = page.locator('#assistant-pane');
+    const epic = page.locator('.epic-panes');
+    const actions = epic.locator('.epic-managed-row summary:visible').first();
+    await expect(actions).toBeVisible();
+    assert.equal(await epic.evaluate(el => getComputedStyle(el).flexDirection), 'column');
+    assert.equal(await epic.locator('.epic-meta-label:visible').first().textContent(), 'Stage: ');
+    await actions.click();
+    const width = await pane.evaluate(el => el.offsetWidth);
+    await page.setViewportSize({ width: 800, height: 900 });
+    await expect.poll(() => pane.evaluate(el => el.offsetWidth)).toBe(340);
+    await page.setViewportSize({ width: 1360, height: 900 });
+    await expect.poll(() => pane.evaluate(el => el.offsetWidth)).toBe(width);
+    await noPageOverflow(page);
+  }, { records: parityEpicRecords(), sidebar: true });
+});
+
+test('audit32-layout short stacked epic scrolls from its identity to Sub-tickets', async t => {
+  const records = parityEpicRecords();
+  records[0].title = 'Release epic with a detailed title; '.repeat(8).trim();
+  await withPage(t, 800, 'light', async page => {
+    await page.setViewportSize({ width: 800, height: 390 });
+    await openAssistantControl(page);
+    await expect(page.locator('[data-assistant-sidebar]')).toBeVisible();
+    await routeTo(page, '#/e/kon-order');
+    const title = page.getByRole('heading', { name: /Release epic with a detailed title/, level: 1 });
+    const subTickets = page.getByRole('button', { name: /^sub-tickets\s+4$/i });
+    await expect(title).toBeVisible();
+    const subTicketsHit = () => subTickets.evaluate(el => {
+      const r = el.getBoundingClientRect();
+      return el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+    });
+    assert.equal(await subTicketsHit(), false, 'fixture must start with the tab below the viewport');
+    const titleBox = await title.boundingBox();
+    await page.mouse.move(titleBox.x + titleBox.width / 2, titleBox.y + 10);
+    await page.mouse.wheel(0, titleBox.height);
+    await expect.poll(subTicketsHit).toBe(true);
+    await subTickets.click();
+    await page.getByRole('button', { name: 'Approval holder', exact: true }).click();
+    await expect(page).toHaveURL(/#\/t\/kon-review$/);
+  }, { records, sidebar: true });
+});
+
+for (const theme of ['light', 'dark']) test(`audit32-notes meaningful metadata meets 4.5:1 contrast in ${theme}`, async t => {
+  await withPage(t, 1280, theme, async page => {
+    await openTicket(page, 'kon-live');
+    await page.getByRole('button', { name: 'notes', exact: true }).filter({ visible: true }).click();
+    const notes = audit32Notes(page);
+    await expect(notes.locator('.detail-note-byline')).toBeVisible();
+    await expect(notes.locator('.note-dot').first()).toBeVisible();
+    const failing = await notes.evaluate(root => {
+      const rgba = text => [...text.matchAll(/[\d.]+/g)].map(m => Number(m[0]));
+      const over = (top, bottom) => bottom.map((value, i) => top[i] * (top[3] ?? 1) + value * (1 - (top[3] ?? 1)));
+      const lum = color => color.map(c => c / 255).map(c => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+        .reduce((n, c, i) => n + c * [0.2126, 0.7152, 0.0722][i], 0);
+      const labels = root.querySelectorAll('.detail-note-byline > span, .note-dot ~ span');
+      return [...labels].filter(el => el.getClientRects().length && el.textContent.trim()).flatMap(el => {
+        const stack = [];
+        for (let node = el; node; node = node.parentElement) stack.unshift(rgba(getComputedStyle(node).backgroundColor));
+        const bg = stack.reduce((under, top) => over(top, under), [255, 255, 255]);
+        const fg = over(rgba(getComputedStyle(el).color), bg);
+        const a = lum(bg), b = lum(fg);
+        const ratio = (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+        return ratio < 4.5 ? [{ text: el.textContent, ratio }] : [];
+      });
+    });
+    assert.deepEqual(failing, []);
+  }, { records: [ticket('kon-live', liveTitle, { status: 'in_progress', stage: 'code', started_at: stamp,
+    history: [{ stage: 'plan', run: 0, started_at: stamp, completed_at: stamp, exit_code: 0 }],
+    notes: [{ id: 'contrast-note', author: 'Fixture reviewer', role: 'human', at: stamp, edited: true, text: 'Check the metadata.' }] })] });
 });
 
 test('audit32-fixture strict interception rejects unknown APIs assets queries and sockets', async () => {

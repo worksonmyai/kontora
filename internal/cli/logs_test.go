@@ -37,6 +37,12 @@ func TestLogsExactPreservesFallbacks(t *testing.T) {
 			assert.Equal(t, exact.String(), prefix.String())
 			assert.Contains(t, exact.String(), tc.want)
 			if tc.logs {
+				if tc.stage == "missing" {
+					dir := filepath.Join(logsDir, "act-exact")
+					data, err := ReadLogFile(dir, filepath.Join(dir, "missing.log"))
+					require.ErrorIs(t, err, os.ErrNotExist)
+					assert.Empty(t, data)
+				}
 				require.NoError(t, os.Remove(filepath.Join(ticketsDir, "act-exact.md")))
 				exact.Reset()
 				require.NoError(t, LogsExact(ticketsDir, logsDir, "act-exact", tc.stage, &exact))

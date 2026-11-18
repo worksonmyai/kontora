@@ -21,6 +21,145 @@ const alpine = vm.createContext({
 vm.runInContext(fs.readFileSync(new URL('../static/vendor/alpinejs@3.14.8/cdn.min.js', import.meta.url), 'utf8'), alpine);
 alpine.queueMicrotask = queueMicrotask;
 
+function assistantWidthFixture(t, hostWidth = 1100, sidebarWidth = 220) {
+  const frames = new Map(), listeners = new Map(), observers = [], writes = [];
+  let frameID = 0, reads = 0;
+  const state = assistant();
+  state.assistantOpen = true;
+  state.sidebarHidden = false;
+  state.assistantWidth = 640;
+  const sidebar = { getBoundingClientRect: () => ({ width: sidebarWidth }) };
+  const host = {
+    getBoundingClientRect() { reads++; return { width: hostWidth }; },
+    querySelector(selector) {
+      assert.equal(selector, '[data-assistant-sidebar]');
+      return sidebar;
+    },
+  };
+  const pane = { parentElement: host, isConnected: true };
+  const globals = {
+    requestAnimationFrame: cb => { frames.set(++frameID, cb); return frameID; },
+    cancelAnimationFrame: id => frames.delete(id),
+    ResizeObserver: class {
+      constructor(callback) { this.callback = callback; this.targets = []; observers.push(this); }
+      observe(target) { this.targets.push(target); }
+      disconnect() { this.targets.length = 0; }
+    },
+    window: {
+      addEventListener(type, callback) { assert.ok(!listeners.has(type), type); listeners.set(type, callback); },
+      removeEventListener(type, callback) { if (listeners.get(type) === callback) listeners.delete(type); },
+    },
+    localStorage: { setItem(key, value) { if (key === 'kontora-assistant-width') writes.push(value); } },
+  };
+  for (const [key, value] of Object.entries(globals)) {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+    t.after(() => previous ? Object.defineProperty(globalThis, key, previous) : delete globalThis[key]);
+  }
+  // Exercise the same init/destroy contract as the desktop x-data owner.
+  const mount = () => {
+    const owner = state.assistantWidthOwner();
+    owner.$el = pane;
+    owner.init();
+    return owner;
+  };
+  const flush = () => {
+    for (const [id, run] of [...frames]) { frames.delete(id); run(); }
+  };
+  return { state, mount, flush, frames, listeners, observers, writes, host, sidebar,
+    reads: () => reads, resize(width, sidebarSize) {
+      hostWidth = width;
+      sidebarWidth = sidebarSize;
+      observers.at(-1).callback();
+    },
+  };
+}
+
+test('Assistant width follows available host space without rewriting the saved preference', t => {
+  const { state, mount, flush, resize, observers, writes, frames, host, sidebar, reads } = assistantWidthFixture(t);
+  assert.match(state.assistantPaneStyle(), /min\(640px,.*var\(--assistant-sidebar-width/);
+  const owner = mount();
+  assert.deepEqual(observers[0].targets, [host, sidebar]);
+  for (const [width, side, rendered] of [[1100, 220, 560], [1100, 0, 640], [800, 180, 340], [500, 180, 320], [150, 180, 0], [1200, 220, 640]]) {
+    const before = reads();
+    resize(width, side);
+    resize(width, side);
+    assert.equal(frames.size, 1, 'repeated notifications coalesce');
+    assert.equal(reads(), before, 'DOM is measured in the frame, not the observer');
+    flush();
+    assert.equal(state.assistantRenderedWidth, rendered, `host ${width}, sidebar ${side}`);
+    assert.equal(state.assistantPaneStyle(), `width:${rendered}px`);
+    assert.equal(state.assistantWidth, 640);
+  }
+  assert.deepEqual(writes, []);
+  owner.destroy();
+});
+
+test('Assistant drag starts at rendered width and only persists an explicit resize', t => {
+  const { state, mount, flush, listeners, writes } = assistantWidthFixture(t);
+  const owner = mount();
+  flush();
+  assert.equal(state.assistantRenderedWidth, 560);
+  state.startAssistantResize({ clientX: 700 });
+  listeners.get('mouseup')();
+  assert.deepEqual(writes, [], 'press/release leaves the saved 640px preference intact');
+  state.startAssistantResize({ clientX: 700 });
+  listeners.get('mousemove')({ clientX: 660 });
+  listeners.get('mouseup')();
+  assert.equal(state.assistantWidth, 640, 'dragging against the layout limit leaves the preference intact');
+  assert.deepEqual(writes, []);
+  state.startAssistantResize({ clientX: 700 });
+  listeners.get('mousemove')({ clientX: 730 });
+  assert.equal(state.assistantWidth, 530, '30px inward from the visible width, not the preference');
+  assert.equal(state.assistantRenderedWidth, 530);
+  assert.deepEqual(writes, []);
+  listeners.get('mouseup')();
+  assert.deepEqual(writes, ['530']);
+  assert.equal(listeners.size, 0);
+  owner.destroy();
+});
+
+for (const reason of ['close', 'collapse', 'responsive removal', 'destroy']) {
+  test(`Assistant width resources retire on ${reason}`, t => {
+    const { state, mount, flush, resize, observers, frames, listeners, writes, reads } = assistantWidthFixture(t);
+    const owner = mount();
+    flush();
+    state.startAssistantResize({ clientX: 700 });
+    const staleMove = listeners.get('mousemove'), staleUp = listeners.get('mouseup');
+    staleMove({ clientX: 720 });
+    assert.equal(state.assistantWidth, 540, 'the interrupted drag was in progress');
+    resize(1000, 220);
+    const staleFrame = frames.values().next().value;
+    const before = reads();
+    if (reason === 'close') state.closeAssistant();
+    if (reason === 'collapse') state.toggleAssistantRail();
+    if (reason === 'responsive removal') { state.isMobile = true; owner.destroy(); }
+    if (reason === 'destroy') state.assistantDestroy();
+    assert.equal(frames.size, 0);
+    assert.deepEqual(observers[0].targets, []);
+    assert.equal(listeners.size, 0);
+    observers[0].callback();
+    staleFrame();
+    staleMove({ clientX: 600 });
+    staleUp();
+    assert.equal(frames.size, 0, 'a retired observer cannot schedule a frame');
+    assert.equal(reads(), before, 'a retired frame cannot read layout');
+    assert.deepEqual(writes, []);
+    assert.equal(state.assistantWidth, 640);
+    if (reason !== 'destroy') {
+      state.assistantOpen = true;
+      state.assistantRail = false;
+      state.isMobile = false;
+      const replacement = mount();
+      owner.destroy(); // Late cleanup must not dispose the replacement.
+      flush();
+      assert.equal(state.assistantRenderedWidth, 460);
+      assert.equal(observers[1].targets.length, 2);
+      replacement.destroy();
+    }
+  });
+}
+
 const press = (state, init = {}) => {
   const result = { prevented: false, stopped: false };
   state.assistantComposerKey({ key: 'Enter', preventDefault() { result.prevented = true; }, stopPropagation() { result.stopped = true; }, ...init });

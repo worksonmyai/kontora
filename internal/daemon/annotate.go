@@ -563,6 +563,7 @@ func (d *Daemon) finishAnnotationRun(ctx context.Context, log *slog.Logger, p an
 			SessionReused: p.run.Resumed,
 			SessionKind:   p.run.SessionKind,
 			SessionRef:    p.run.SessionRef,
+			RawLogID:      p.run.RawLogID,
 		})
 		_ = t2.SetField("history", history)
 

@@ -438,13 +438,15 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	// Rework always opens a session of its own, so nothing in it belongs to an
 	// earlier run and the scope carries no prior usage.
 	scope := runScope{startedAt: time.Now()}
-	d.setLiveRun(ticketID, liveRun{stage: config.ReworkStageName, agent: agentName, run: runIndex, params: params, startedAt: scope.startedAt})
+	capture, rawID := captureRunnerParams(log, cfg.LogsDir, ticketID, config.ReworkStageName, params, false)
+	d.setLiveRun(ticketID, liveRun{stage: config.ReworkStageName, agent: agentName, run: runIndex, params: capture,
+		startedAt: scope.startedAt, rawPath: capture.LogFile})
 	// The built-in rework stage calls the runner directly and never reaches
 	// spawnAgentRun, so it records its own stage run. Without this every
 	// built-in rework run would be invisible.
 	started := time.Now()
-	logStart := fileSize(params.LogFile)
-	result, runnerErr := d.runner(taskCtx, params)
+	logStart := fileSize(capture.LogFile)
+	result, runnerErr := d.runner(taskCtx, capture)
 	if errors.Is(runnerErr, process.ErrTerminationUncertain) {
 		retainOrdinaryReservation(taskCtx)
 		log.Error("rework termination unconfirmed; execution state retained", "err", runnerErr)
@@ -454,7 +456,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	if execution == nil {
 		d.recordReworkRun(taskCtx, agentName, t.Pipeline, result, runnerErr, time.Since(started))
 	}
-	run := agentRun{Result: result, Model: effModel, Effort: effEffort, Execution: execution}
+	run := agentRun{Result: result, Model: effModel, Effort: effEffort, Execution: execution, RawLogID: rawID}
 	defer func() {
 		d.recordStoppedInvocation(ctx, taskCtx, filePath, agentName, config.ReworkStageName, runIndex, run)
 	}()
@@ -493,7 +495,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	d.recordTokens(taskCtx, config.ReworkStageName, agentName, usage, usageComplete)
 	sessionKind, sessionRef := runSessionRef(cfg, ticketID, params, scope.startedAt)
 	run.SessionKind, run.SessionRef = sessionKind, sessionRef
-	validated := d.validateAgentAttempt(taskCtx, p, params, logStart, scope.startedAt, run)
+	validated := d.validateAgentAttempt(taskCtx, p, logDetectionParams(params, capture), logStart, scope.startedAt, run)
 	if !validated.ok {
 		d.runStageEndHooksAfterFailure(taskCtx, p, validated)
 		d.pauseExecution(taskCtx, t, filePath, validated.pauseReason)

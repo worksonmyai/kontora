@@ -209,7 +209,7 @@ func TestSecondaryRefusesLifecycleAndArtifacts(t *testing.T) {
 		{"POST", "/skip"}, {"POST", "/set-stage"}, {"POST", "/schedule"}, {"POST", "/move"},
 		{"POST", "/archive"}, {"POST", "/restore"}, {"POST", "/init"},
 		{"POST", "/plannotator-review"}, {"POST", "/plannotator-annotate"},
-		{"GET", "/logs"}, {"GET", "/activity"}, {"GET", "/changes"}, {"GET", "/chain"}, {"GET", "/cost"},
+		{"GET", "/logs"}, {"GET", "/logs?stage=plan&run=0"}, {"GET", "/activity"}, {"GET", "/changes"}, {"GET", "/chain"}, {"GET", "/cost"},
 		{"POST", "/unknown"}, {"PATCH", ""}, {"OPTIONS", "/notes/n001"},
 	} {
 		t.Run(tc.method+tc.suffix, func(t *testing.T) {

@@ -395,8 +395,7 @@ export function kontoraActivity() {
     // A failure is expanded on first render: it is why the reader opened the
     // tape. Everything else starts collapsed.
     toolExpanded(ev, i) {
-      if (ev.is_error && !this.tapePartial('is_error')) return true;
-      return !!this.expandedTools[this.toolKey(ev, i)];
+      return this.expandedTools[this.toolKey(ev, i)] ?? this.toolFailed(ev);
     },
 
     toolFailed(ev) {
@@ -405,7 +404,7 @@ export function kontoraActivity() {
 
     toggleTool(ev, i) {
       var k = this.toolKey(ev, i);
-      this.expandedTools[k] = !this.expandedTools[k];
+      this.expandedTools[k] = !this.toolExpanded(ev, i);
     },
 
     eventTime(ev) {

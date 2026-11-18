@@ -99,6 +99,26 @@ func TestClient_NoTokenNoHeader(t *testing.T) {
 	assert.False(t, hasAuth, "no Authorization header expected when token is empty")
 }
 
+func TestClient_LogsOmitsRun(t *testing.T) {
+	for _, tc := range []struct{ name, stage, query string }{
+		{name: "latest"},
+		{name: "stage", stage: "build & test", query: "stage=build+%26+test"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodGet, r.Method)
+				assert.Equal(t, "/api/tickets/t-001/logs", r.URL.Path)
+				assert.Equal(t, tc.query, r.URL.RawQuery)
+				_, _ = w.Write([]byte(`{"content":"full output"}`))
+			}))
+			defer srv.Close()
+			content, err := New(srv.URL, "").Logs("t-001", tc.stage)
+			require.NoError(t, err)
+			assert.Equal(t, "full output", content)
+		})
+	}
+}
+
 func TestClient_BearerOnPostAction(t *testing.T) {
 	var gotAuth, gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -289,7 +289,7 @@ func (m *mockTerminalService) ClearParent(_ string) error                       
 func (m *mockTerminalService) SetChildOrder(_ string, _ []string) error               { return nil }
 func (m *mockTerminalService) UpdateTicket(_ string, _ UpdateTicketRequest) error     { return nil }
 func (m *mockTerminalService) UploadTicket(_ []byte) (TicketInfo, error)              { return TicketInfo{}, nil }
-func (m *mockTerminalService) GetLogs(_ string, _ string) (string, error) {
+func (m *mockTerminalService) GetLogs(LogQuery) (string, error) {
 	return "", nil
 }
 func (m *mockTerminalService) GetActivity(ActivityQuery) (ActivityInfo, error) {

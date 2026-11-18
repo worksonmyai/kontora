@@ -46,7 +46,7 @@ const ASSISTANT_TRANSCRIPT = `
     <template x-if="row.event">
       <div class="min-w-0">
         <template x-if="row.event.kind === 'text'">
-          <div class="prose-assistant text-[12.5px] leading-[1.6] text-tx-2" x-effect="setProse($el, row.event.text)"></div>
+          <div class="ticket-prose prose-assistant min-w-0 text-[12.5px]" x-effect="setProse($el, row.event.text)"></div>
         </template>
         <template x-if="row.event.kind === 'model'">
           <div class="font-mono text-[10.5px] text-surface-600" x-text="row.event.model"></div>

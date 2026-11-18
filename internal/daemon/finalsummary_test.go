@@ -933,6 +933,12 @@ func TestFinalSummaryTerminalStates(t *testing.T) {
 			entries, err := os.ReadDir(filepath.Join(h.logsDir, "tst-fin"))
 			require.NoError(t, err)
 			for _, e := range entries {
+				if e.IsDir() && e.Name() == "raw" {
+					captures, err := os.ReadDir(filepath.Join(h.logsDir, "tst-fin", e.Name()))
+					require.NoError(t, err)
+					assert.Len(t, captures, len(result.History), "only stage runs retain captures")
+					continue
+				}
 				assert.Regexp(t, `^step[0-9]+\.`, e.Name(), "only stage runs write to the log directory")
 			}
 

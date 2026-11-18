@@ -43,7 +43,7 @@ When the web server is enabled, the following endpoints are exposed:
 | `GET /api/config` | Available pipelines, agents, and projects (JSON). `agents` remains the sorted agent-name list; `agent_infos` adds sorted `{name, model, effort}` metadata for each agent. The top-level `default_pipeline` exposes the global pipeline default. Projects are sorted by name and carry `name`, `path`, `resolved_path` (`~` expanded), `pipeline`, `epic_child_pipeline`, `agent`, optional `notify`, and `notify_channels`. Optional top-level `default_notify` exposes `notifications.default_statuses`. `channels` and `default_channels` are the configured notification channel names and `notifications.default`; names only, never a chat id or a webhook URL. |
 | `GET /api/config/raw` | Read the full on-disk YAML configuration as JSON `content`, without redaction. See [Raw configuration](#raw-configuration). |
 | `PUT /api/config/raw` | Validate, replace, and reload the configuration using `content` and optional `expected_content`. See [Raw configuration](#raw-configuration). |
-| `GET /api/tickets/{id}/logs` | Get uncapped agent logs for a ticket (optional `?stage=` query param). |
+| `GET /api/tickets/{id}/logs` | Get uncapped raw logs, optionally by `stage` or by exact `stage` and `run`. |
 | `GET /api/tickets/{id}/activity` | Get structured stage activity or plaintext fallback. Supports `stage`, `run`, `after`, and `log_tail_bytes`. |
 | `POST /api/tickets/{id}/summary` | Set the ticket's `summary` field (`{"text": "..."}` body). |
 | `GET /api/tickets/{id}/changes` | Commits and changed files on the ticket's branch relative to its `base_branch`, or the repo's default branch when unset. Empty payload when the ticket has no branch or the branch was deleted. |
@@ -577,9 +577,26 @@ A sidecar or live session takes priority over plaintext, even when the plaintext
 file has not changed. A missing named stage never returns another stage's activity.
 Imported runs have no local activity and return 404.
 
-`GET /api/tickets/{id}/logs` and CLI log output remain uncapped. Export clients
-must fetch `/logs` rather than reuse an activity response with `content_truncated`.
-Without `stage`, log reads keep the newest-log and ticket-history fallback.
+`GET /api/tickets/{id}/logs` returns uncapped raw output as `{"content":"…"}`.
+For an exact export, pass both `stage` and `run`. `run` is the zero-based
+occurrence of that stage (including `run=0`), not a stored attempt number.
+A registered live occurrence uses its capture. A recorded occurrence uses its
+retained capture or its invocation-specific graph log. The server does not use
+Activity tapes or shared stage or graph visit logs for exact export. Invalid
+values or duplicate selectors return 400. Imported occurrences and occurrences
+without a retained capture return 404, even if Activity shows a preview.
+
+Omitting `run` keeps CLI selection. If `stage` resolves to a graph log, a
+missing file returns 404. Otherwise, the server tries the named stage, then
+the newest ticket log by modification time, then ticket history. The newest
+log can belong to another stage. If none exists, `content` says `no logs found`.
+Pass `stage` and `run` for an exact export instead of using a truncated
+Activity preview.
+
+To export the latest log for a named stage only, pass `stage` and
+`stage_only=true` and omit `run`. This log may contain output from a different
+run of the named stage. If the stage has no log, the server returns 404. It does
+not return another stage's log or ticket history.
 
 The daemon reuses parsed live session files across response-only changes.
 The cache retains at most 32 entries and 32 MiB of accounted content. Oversized

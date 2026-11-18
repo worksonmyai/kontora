@@ -463,25 +463,18 @@ export function kontoraAutomations() {
       } catch (error) { this.automationsError = error.message; }
       finally { this.automationsPending = false; }
     },
-    automationsOpenDelete() {
+    automationsOpenDelete(trigger = globalThis.document?.activeElement) {
       if (!this.automationsRow() || this.automationsPending) return;
+      const menu = trigger?.closest?.('[role="menu"]');
+      this.rememberDialogTrigger?.('automation-delete', menu?.parentElement?.querySelector('[data-automations-menu-trigger]') || trigger);
       this.automationsDeleteTarget = { ...this.automationsRow() };
       this.automationsError = '';
       this.automationsDeleteOpen = true;
       this.automationsMenu = false;
-      this.$nextTick(() => this.$refs.automationsDeleteCancel?.focus());
     },
     automationsCloseDelete() {
       if (this.automationsPending) return;
       this.automationsDeleteOpen = false;
-      this.$nextTick(() => [...document.querySelectorAll('[data-automations-menu-trigger], [data-automations-delete-trigger]')].find(button => button.getClientRects().length)?.focus());
-    },
-    automationsTrapDelete(event) {
-      const buttons = [...event.currentTarget.querySelectorAll('button:not(:disabled)')].filter(button => button.getClientRects().length);
-      if (!buttons.length) { event.preventDefault(); return; }
-      const index = buttons.indexOf(document.activeElement);
-      if (event.shiftKey && index <= 0) { event.preventDefault(); buttons.at(-1).focus(); }
-      else if (!event.shiftKey && (index < 0 || index === buttons.length - 1)) { event.preventDefault(); buttons[0].focus(); }
     },
     async automationsDelete() {
       const row = this.automationsDeleteTarget;

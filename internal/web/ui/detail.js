@@ -1828,40 +1828,52 @@ export function kontoraDetail() {
     },
 
     _rawLogEpoch: 0,
+    _rawLogRequest: 0,
+    rawLogError: '',
+    rawLogCanExportLatest: false,
 
     // Polling must not cancel a pending raw-log request.
     _invalidateRawLog() {
       this._rawLogEpoch++;
+      this.rawLogError = '';
+      this.rawLogCanExportLatest = false;
     },
 
-    // Open the currently viewed log as plain text in a new tab.
-    async openRawLog() {
-      var subject = this.outputSubject();
-      if (!subject || this._appDestroyed || this.importedRun(this.activityStage, this.activityRun)) return;
-      var generation = this._rawLogEpoch;
-      var viewingActivity = this.outputTab() === 'activity';
-      var content = this.selectedEpic || viewingActivity ? null : this.logViewContent;
-      if (content === null && this.activity && !this.activity.tape && !this.activity.content_truncated) content = this.activity.content;
-      if (content === null || content === undefined) {
+    async openRawLog(latest = false) {
+      const subject = this.outputSubject();
+      if (!subject || this._appDestroyed || this.isSecondary(subject)) return;
+      const key = this.ticketKey(subject);
+      const generation = this._rawLogEpoch;
+      const stage = this.activityStage;
+      const run = this.activityRun;
+      if (!stage || (latest && !this.rawLogCanExportLatest)) return;
+      const request = ++this._rawLogRequest;
+      if (!latest) this.rawLogCanExportLatest = false;
+      let unavailable = !latest && this.importedRun(stage, run);
+      let content;
+      if (!unavailable) {
         try {
-          var url = '/api/tickets/' + encodeURIComponent(subject.id) + '/logs';
-          var stage = viewingActivity ? this.activityStage : this.logViewStage;
-          stage = stage || subject.stage;
-          if (stage) url += '?stage=' + encodeURIComponent(stage);
-          var res = await fetch(url);
-          if (res.ok) {
-            var data = await res.json();
-            content = data.content || '';
-          }
-        } catch (e) { /* fall through to the guard below */ }
+          const url = this.ticketURL(subject, '/logs') + '?stage=' + encodeURIComponent(stage) +
+            (latest ? '&stage_only=true' : '&run=' + run);
+          const res = await fetch(url);
+          unavailable = res.status === 404;
+          if (res.ok) content = (await res.json())?.content;
+        } catch (e) {}
       }
-      if (this._appDestroyed || generation !== this._rawLogEpoch || this.outputSubject()?.id !== subject.id) return;
-      if (content === null || content === undefined) {
-        this.error = 'No log available yet';
-        return;
+      if (this._appDestroyed || generation !== this._rawLogEpoch || request !== this._rawLogRequest ||
+          key !== this.ticketKey(this.outputSubject()) || stage !== this.activityStage || run !== this.activityRun) return;
+      if (!latest && this.importedRun(stage, run)) unavailable = true;
+      if (unavailable) {
+        this.rawLogError = latest ? 'Latest stage output is unavailable.' : 'Exact output is unavailable for the selected run.';
+        this.rawLogCanExportLatest = true;
+      } else if (typeof content !== 'string') {
+        this.rawLogError = latest ? "Couldn't load the latest stage log. Try exporting it again." :
+          "Couldn't load the selected run's raw log. Try Raw again.";
+      } else {
+        this.rawLogError = latest ? 'Exact output is unavailable for the selected run.' : '';
+        const blob = new Blob([content], { type: 'text/plain' });
+        window.open(URL.createObjectURL(blob));
       }
-      var blob = new Blob([content], { type: 'text/plain' });
-      window.open(URL.createObjectURL(blob));
     },
 
     // ─── Imperative board card rendering ───

@@ -267,6 +267,30 @@ test('upload reuses the existing input handler and confirmation contract without
   } finally { globalThis.fetch = previousFetch; }
 });
 
+for (const [status, body, message] of [
+  [502, undefined, 'Upload failed (HTTP 502)'],
+  [502, null, 'Upload failed (HTTP 502)'],
+  [502, { error: 'Upload is disabled' }, 'Upload failed (HTTP 502): Upload is disabled'],
+  [502, { errors: [{ file: 'ticket.md', error: 'Invalid title' }] }, 'Upload failed (HTTP 502): ticket.md: Invalid title'],
+  [201, { tickets: [{ id: 'kon-a' }, { id: 'kon-b' }], errors: [{ file: 'ticket.md', error: 'Invalid title' }] }, 'Created tickets: kon-a, kon-b. Upload errors: ticket.md: Invalid title'],
+]) test(`upload reports results without resubmitting (HTTP ${status}): ${JSON.stringify(body)}`, async () => {
+  const { state } = harness();
+  const previousFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests++;
+    return { ok: status < 400, status, json: async () => {
+      if (body === undefined) throw new SyntaxError('Response is not JSON');
+      return body;
+    } };
+  };
+  try {
+    await state.handleUpload([new File(['# Ticket'], 'ticket.md')]);
+    assert.equal(state.error, message);
+    assert.equal(requests, 1);
+  } finally { globalThis.fetch = previousFetch; }
+});
+
 test('archive row actions keep the clicked owner, not the current selection', () => {
   const state = kontoraArchive();
   const calls = [];

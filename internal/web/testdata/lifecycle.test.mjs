@@ -16,7 +16,7 @@ function app(extra = {}) {
   return Object.assign({}, kontoraSources(), kontoraTickets(), kontoraDetail(), kontoraEpics(), kontoraLifecycle(), {
     tickets: [{ id: 'a', status: 'paused', kontora: true, stage: 'code', attempt: 2 }, { id: 'b', status: 'paused', kontora: true }],
     selectedTicket: null, selectedEpic: null, configCache: { custom_statuses: ['waiting_external'] },
-    _editorSaves: {}, plannotatorInFlight: {}, editing: false,
+    _editorSaves: {}, _editorAckVersions: Object.create(null), plannotatorInFlight: {}, editing: false,
     recomputeBoard() {}, applyTicketUpdate(t) { this._touchTicket(t); const i = this.tickets.findIndex(x => x.id === t.id); if (i >= 0) this.tickets[i] = t; },
     needsInitModal: () => false,
     boardEntry: t => t, ...extra,

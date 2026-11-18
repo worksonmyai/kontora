@@ -121,7 +121,7 @@ func StageActivity(tasksDir, logsDir, taskID, stage string, run int) (tape *logf
 	if err != nil {
 		return nil, "", err
 	}
-	defer a.File.Close()
+	defer a.Close()
 	if a.Source == "events" {
 		tape, err := a.Tape()
 		return tape, "", err

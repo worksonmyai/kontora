@@ -172,7 +172,7 @@ export function kontoraDetail() {
       if (!this.executionActive(this.selectedTicket) && this.selectedTicket?.status !== 'todo' && this.selectedTicket?.status !== 'open'
           && this.selectedTicket?.history?.length > 0) {
         var latest = this.latestCompletedRun();
-        if (latest && !this.isMobile) this.fetchActivity(latest.stage, latest.run);
+        if (latest && (!this.isMobile || !this.summaryFirst(this.selectedTicket))) this.fetchActivity(latest.stage, latest.run);
         // Finished tickets with a summary open on the summary tab; the
         // transcript stays prefetched for the desktop activity tab.
         this.activeTab = this.summaryFirst(this.selectedTicket) ? 'summary' : 'activity';

@@ -13,7 +13,7 @@ const response = data => ({ ok: true, headers: { get: () => null }, json: async 
 function fixture(ticket = {}) {
   const state = Object.assign({}, kontoraSources(), kontoraActivity(), kontoraDetail(), kontoraNotes(), kontoraNotify(), { mobileSwitchTab: kontoraMobile().mobileSwitchTab }, {
     selectedTicket: { id: 'one', status: 'open', notify: [], notify_channels: [], notes: [], description: 'Description\n', description_tail: '', ...ticket },
-    tickets: [], secondaryTickets: [], _selectedTicketUpdateSeq: 0, _ticketDetailSeq: 1, _editorSaves: {},
+    tickets: [], secondaryTickets: [], _selectedTicketUpdateSeq: 0, _ticketDetailSeq: 1, _editorSaves: {}, _editorAckVersions: Object.create(null),
     _activityLoadSeq: 0, _activityPoll: null, activityStage: null, activityRun: 0, activity: null,
     configCache: { author: 'me', default_channels: ['ops'] }, error: null, activeTab: 'ticket',
     outputSubject() { return this.isSecondary(this.selectedTicket) ? null : this.selectedTicket; },
@@ -52,7 +52,7 @@ for (const [name, history, expected] of [
     assert.equal(state.activityHistoryRecord(), history[row.historyIndex]);
   }
   assert.equal(calls.length, history.filter(h => !h.imported).length);
-  assert.ok(calls.includes('/api/tickets/one/activity?stage=code&run=' + rows.at(-1).run));
+  assert.ok(calls.includes('/api/tickets/one/activity?stage=code&run=' + rows.at(-1).run + '&log_tail_bytes=262144'));
   state.selectedTicket.execution_active = true;
   state.selectedTicket.stage = 'code';
   assert.equal(state.runningRun().run, history.filter(h => h.stage === 'code').length);

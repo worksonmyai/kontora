@@ -14,12 +14,15 @@ import (
 	"github.com/worksonmyai/kontora/internal/logfmt"
 )
 
-// Artifact owns an open descriptor. The caller must close File.
+// Artifact keeps its directory open so validation cannot follow an escaping symlink.
+// The caller must call Close.
 type Artifact struct {
 	File   *os.File
 	Info   os.FileInfo
 	Path   string
 	Source string
+	root   *os.Root
+	name   string
 }
 
 // OpenActivity opens the requested run's sidecar or the stage's shared log.
@@ -88,17 +91,32 @@ func openArtifact(dir, path, source string) (*Artifact, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
 	f, err := root.Open(name)
 	if err != nil {
+		root.Close()
 		return nil, err
 	}
 	st, err := f.Stat()
 	if err != nil {
 		f.Close()
+		root.Close()
 		return nil, err
 	}
-	return &Artifact{File: f, Info: st, Path: path, Source: source}, nil
+	return &Artifact{File: f, Info: st, Path: path, Source: source, root: root, name: name}, nil
+}
+
+func (a *Artifact) Close() error {
+	return errors.Join(a.File.Close(), a.root.Close())
+}
+
+func (a *Artifact) Stable() bool {
+	after, err := a.File.Stat()
+	if err != nil {
+		return false
+	}
+	current, err := a.root.Stat(a.name)
+	before := a.Info
+	return err == nil && os.SameFile(before, after) && os.SameFile(before, current) && before.Size() == after.Size() && before.Size() == current.Size() && before.ModTime().Equal(after.ModTime()) && before.ModTime().Equal(current.ModTime())
 }
 
 func FileVersion(path string, st os.FileInfo) string {

@@ -55,9 +55,11 @@ const ASSISTANT_TRANSCRIPT = `
               <span class="font-mono text-[11px] text-surface-600 truncate min-w-0" x-text="row.event.arg"></span>
               <span class="font-mono text-[10px] text-tx-faint shrink-0 ml-auto" x-text="assistantEventTime(row.event)"></span>
             </button>
-            <div x-show="assistantToolExpanded(row.event, row.index)" x-cloak class="px-2 pb-1.5">
-              <pre class="font-mono text-[10.5px] leading-[1.5] text-tx-3 whitespace-pre-wrap m-0 max-h-[240px] overflow-y-auto" x-text="row.event.result || row.event.summary"></pre>
-            </div>
+            <template x-if="assistantToolExpanded(row.event, row.index)">
+              <div class="px-2 pb-1.5">
+                <pre class="font-mono text-[10.5px] leading-[1.5] text-tx-3 whitespace-pre-wrap m-0 max-h-[240px] overflow-y-auto" x-text="row.event.result || row.event.summary"></pre>
+              </div>
+            </template>
           </div>
         </template>
       </div>

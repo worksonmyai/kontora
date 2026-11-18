@@ -45,7 +45,7 @@ func TestOpenActivity(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			defer a.File.Close()
+			defer a.Close()
 			assert.True(t, filepath.IsAbs(a.Path))
 			assert.Equal(t, tc.source, a.Source)
 			if a.Source == "events" {
@@ -104,7 +104,7 @@ func TestActivityLogBoundary(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			defer a.File.Close()
+			defer a.Close()
 			if mode == "sidecar wins visit" {
 				assert.Equal(t, "events", a.Source)
 			} else {
@@ -112,6 +112,47 @@ func TestActivityLogBoundary(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, "tput", content)
 			}
+		})
+	}
+}
+
+func TestActivityStable(t *testing.T) {
+	for _, change := range []string{"unchanged", "append", "truncate", "replace same metadata", "remove", "symlink outside", "symlink inside", "closed"} {
+		t.Run(change, func(t *testing.T) {
+			root := t.TempDir()
+			dir := TicketDir(root, "ticket")
+			require.NoError(t, os.Mkdir(dir, 0o755))
+			path := LogPath(root, "ticket", "review")
+			require.NoError(t, os.WriteFile(path, []byte("content"), 0o600))
+			a, err := OpenActivity(root, "ticket", "review", 0)
+			require.NoError(t, err)
+			defer a.Close()
+			require.True(t, a.Stable())
+			switch change {
+			case "append":
+				require.NoError(t, os.WriteFile(path, []byte("longer content"), 0o600))
+			case "truncate":
+				require.NoError(t, os.Truncate(path, 0))
+			case "replace same metadata":
+				require.NoError(t, os.WriteFile(path+".new", []byte("changed"), 0o600))
+				require.NoError(t, os.Chtimes(path+".new", a.Info.ModTime(), a.Info.ModTime()))
+				require.NoError(t, os.Rename(path+".new", path))
+			case "remove":
+				require.NoError(t, os.Remove(path))
+			case "symlink outside", "symlink inside":
+				target := filepath.Join(dir, "moved.log")
+				if change == "symlink outside" {
+					target = filepath.Join(root, "outside.log")
+				}
+				require.NoError(t, os.Rename(path, target))
+				if change == "symlink inside" {
+					target = filepath.Base(target)
+				}
+				require.NoError(t, os.Symlink(target, path))
+			case "closed":
+				require.NoError(t, a.Close())
+			}
+			assert.Equal(t, change == "unchanged" || change == "symlink inside", a.Stable())
 		})
 	}
 }
@@ -139,7 +180,7 @@ func TestActivityContentSuffix(t *testing.T) {
 			require.NoError(t, os.WriteFile(LogPath(root, "id", "s"), []byte(tc.content), 0o644))
 			a, err := OpenActivity(root, "id", "s", 0)
 			require.NoError(t, err)
-			defer a.File.Close()
+			defer a.Close()
 			got, start, size, err := a.Content(tc.tail)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got)
@@ -173,7 +214,7 @@ func TestActivityContentShrink(t *testing.T) {
 			require.NoError(t, os.WriteFile(path, []byte("previous longer output"), 0o644))
 			a, err := OpenActivity(root, "id", "s", 0)
 			require.NoError(t, err)
-			defer a.File.Close()
+			defer a.Close()
 			before := FileVersion(a.Path, a.Info)
 			require.NoError(t, os.WriteFile(path, []byte(tc.replacement), 0o644))
 			got, start, size, err := a.Content(tc.tail)
@@ -196,7 +237,7 @@ func TestActivityContentReadFailure(t *testing.T) {
 	require.NoError(t, os.WriteFile(LogPath(root, "id", "s"), []byte("content"), 0o644))
 	a, err := OpenActivity(root, "id", "s", 0)
 	require.NoError(t, err)
-	require.NoError(t, a.File.Close())
+	require.NoError(t, a.Close())
 	content, start, size, err := a.Content(3)
 	require.ErrorIs(t, err, os.ErrClosed)
 	assert.Empty(t, content)
@@ -234,7 +275,7 @@ func BenchmarkActivitySuffix(b *testing.B) {
 				a, err := OpenActivity(root, "id", "s", 0)
 				require.NoError(b, err)
 				_, _, _, err = a.Content(tail)
-				a.File.Close()
+				a.Close()
 				require.NoError(b, err)
 			}
 		})

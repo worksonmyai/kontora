@@ -4,11 +4,13 @@ import path from 'node:path';
 import vm from 'node:vm';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { kontoraAssistantMarkup } from '../ui/assistant_markup.js';
 
 const web = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = name => fs.readFileSync(path.join(web, name), 'utf8');
 const assistant = source('ui/assistant.js').replaceAll('export ', '');
 const companion = source('ui/companion.js').replaceAll('export ', '');
+const markup = source('ui/assistant_markup.js').replaceAll('export ', '');
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const response = (data = {}, etag = '', status = 200) => ({ ok: status === 200, status, headers: { get: () => etag }, json: async () => data });
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
@@ -17,7 +19,7 @@ const plain = value => JSON.parse(JSON.stringify(value));
 function harness(fetcher = async () => response()) {
   const timers = new Map(), intervals = new Map(), frames = new Map(), listeners = new Set(), streams = [], requests = [], ticks = [];
   let serial = 0;
-  const scroll = { scrollHeight: 1000, scrollTop: 940, clientHeight: 60 };
+  const scroll = { scrollHeight: 1000, scrollTop: 940, clientHeight: 60, focus() {} };
   const context = vm.createContext({
     AbortController, TextEncoder, Date, console,
     localStorage: { getItem: () => null, setItem() {} },
@@ -41,6 +43,7 @@ function harness(fetcher = async () => response()) {
     $nextTick: cb => ticks.push(cb), tickets: [], selectedTicket: null });
   return { state, requests, timers, intervals, frames, listeners, streams, context, stream: context.stream, scroll,
     tick() { for (const cb of ticks.splice(0)) cb?.(); },
+    paint() { const pending = [...frames.entries()]; for (const [id, cb] of pending) { frames.delete(id); cb(); } },
     poll() { const entry = [...timers.entries()][0]; assert.ok(entry); timers.delete(entry[0]); entry[1].cb(); } };
 }
 
@@ -422,18 +425,26 @@ for (const action of ['closeAssistant', 'assistantDestroy', 'assistantEscape']) 
     h.streams[0].onerror();
     const pending = h.state._loadAssistantActivity(); await flush();
     assert.equal(h.frames.size, 1);
+    const streamFrame = h.stream.raf;
     h.state[action]();
     assert.equal(h.requests[0].options.signal.aborted, true);
-    for (const resource of [h.timers, h.intervals, h.frames, h.listeners]) assert.equal(resource.size, 0);
+    assert.equal(h.frames.has(streamFrame), false, 'the retired stream frame is canceled');
+    assert.equal(h.stream.queued, false);
+    assert.equal(h.stream.raf, null);
+    assert.equal(h.timers.size, action === 'assistantDestroy' ? 0 : 1, 'only the read-only badge poll survives dismissal');
+    for (const resource of [h.intervals, h.listeners]) assert.equal(resource.size, 0);
     body.resolve({ running: true, partial: 'late', gate: { id: 'late' } });
     await pending; h.tick();
+    assert.ok(h.frames.size <= 1, 'dismissal may schedule one focus-return frame');
+    h.paint();
     assert.equal(h.state.assistantDraft, 'keep draft');
     assert.equal(h.state.assistantThread.id, 'a');
     assert.equal(h.state.assistantStreaming, true);
     assert.equal(h.state.assistantGate.id, 'keep-approval');
     assert.equal(h.state.assistantPartial, '');
     assert.equal(h.requests.length, 1, 'closing must send no server mutation');
-    for (const resource of [h.timers, h.intervals, h.frames, h.listeners]) assert.equal(resource.size, 0);
+    assert.equal(h.timers.size, action === 'assistantDestroy' ? 0 : 1);
+    for (const resource of [h.intervals, h.frames, h.listeners]) assert.equal(resource.size, 0);
   });
 }
 
@@ -619,8 +630,12 @@ test('a reader holding older history keeps the visible start when new rows arriv
 
 test('shipped desktop tool bodies use x-if, and both histories expose load-earlier controls', () => {
   const html = source('static/index.html');
-  assert.match(html, /<template x-if="assistantToolExpanded\(row.event, row.index\)">/);
-  assert.doesNotMatch(html, /<div x-show="assistantToolExpanded/);
+  const fragments = kontoraAssistantMarkup();
+  for (const name of ['assistantTranscriptMarkup', 'assistantSheetTranscriptMarkup']) {
+    assert.match(html, new RegExp(`x-html="${name}"`));
+    assert.match(fragments[name], /<template x-if="assistantToolExpanded\(row.event, row.index\)">/);
+    assert.doesNotMatch(fragments[name], /<div x-show="assistantToolExpanded/);
+  }
   assert.equal((html.match(/@click="assistantLoadEarlier\(\)"/g) || []).length, 2);
 });
 
@@ -637,9 +652,9 @@ test('actual Alpine mounts the shipped pane, memoizes proxy reads and defers too
     const end = html.indexOf('</aside>', begin) + '</aside>'.length;
     const pane = html.slice(begin, end) + '</template>';
     await page.setContent(`<div id="root" x-data="fixture()">${pane}</div>`);
-    await page.addScriptTag({ content: assistant + '\n' + companion + `
+    await page.addScriptTag({ content: assistant + '\n' + companion + '\n' + markup + `
       window.fixture = () => {
-        const state = Object.assign(kontoraAssistant(), kontoraCompanion(), {
+        const state = Object.assign(kontoraAssistant(), kontoraCompanion(), kontoraAssistantMarkup(), {
           assistantOpen: true, assistantAgent: { enabled: true }, assistantThread: { id: 'a' }, isMobile: false,
           selectedTicket: null, tickets: [], isSecondary: () => false,
           setProse(el, text) { el.textContent = text; },
@@ -692,9 +707,9 @@ test('actual Alpine mounts the shipped pane, memoizes proxy reads and defers too
     await page.waitForFunction(() => !document.getElementById('assistant-pane'));
     const retired = await page.evaluate(() => {
       const a = Alpine.$data(document.getElementById('root'));
-      return [a.assistantStreaming, a._assistantPoll, a._assistantTick, assistantStream.es, assistantStream.raf, assistantStream.retry, a.assistantGate];
+      return [a.assistantStreaming, a._assistantPoll !== null, a._assistantTick, assistantStream.es, assistantStream.raf, assistantStream.retry, a.assistantGate];
     });
-    assert.deepEqual(retired, [true, null, null, null, null, null, null]);
+    assert.deepEqual(retired, [true, true, null, null, null, null, null], 'only the read-only badge poll survives dismissal');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });
@@ -723,8 +738,8 @@ test('actual Alpine recovers failed writes without changing replacement panes', 
         page.on('pageerror', error => errors.push(error.message));
         try {
           await page.setContent(`<div id="root" x-data="fixture()">${pane}</div>`);
-          await page.addScriptTag({ content: assistant + '\n' + companion + `
-            window.fixture = () => Object.assign(kontoraAssistant(), kontoraCompanion(), {
+          await page.addScriptTag({ content: assistant + '\n' + companion + '\n' + markup + `
+            window.fixture = () => Object.assign(kontoraAssistant(), kontoraCompanion(), kontoraAssistantMarkup(), {
               assistantOpen: true, assistantAgent: { enabled: true }, assistantThread: { id: 'a' }, isMobile: false,
               selectedTicket: null, tickets: [], isSecondary: () => false,
               setProse(el, text) { el.textContent = text; },

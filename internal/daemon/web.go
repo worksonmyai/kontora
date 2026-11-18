@@ -1362,13 +1362,13 @@ func (d *Daemon) recordedActivity(q web.ActivityQuery, live, fallbackStale bool,
 		return web.ActivityInfo{}, err
 	}
 
-	defer a.File.Close()
+	defer a.Close()
 	info := web.ActivityInfo{Source: a.Source, Stage: q.Stage, Run: q.Run, Live: live}
 	if a.Source == "log" && q.Stage != "" {
 		info.Stale = fallbackStale
 	}
 	info.ETag = activityETag(session.FileVersion(a.Path, a.Info), q, info)
-	if (a.Source != "log" || q.LogTailBytes > 0) && info.ETag == q.IfNoneMatch && transcriptStable(a.Path, a.File, a.Info) {
+	if (a.Source != "log" || q.LogTailBytes > 0) && info.ETag == q.IfNoneMatch && a.Stable() {
 		return web.ActivityInfo{NotModified: true, ETag: info.ETag}, nil
 	}
 	if a.Source == "events" {
@@ -1385,7 +1385,7 @@ func (d *Daemon) recordedActivity(q web.ActivityQuery, live, fallbackStale bool,
 	if a.Source == "log" && q.LogTailBytes == 0 {
 		info.ETag = activityETag(session.FileVersion(a.Path, a.Info)+web.ContentETag([]byte(info.Content), ""), q, info)
 	}
-	if !transcriptStable(a.Path, a.File, a.Info) {
+	if !a.Stable() {
 		info.ETag = ""
 	}
 	if info.ETag != "" && info.ETag == q.IfNoneMatch {

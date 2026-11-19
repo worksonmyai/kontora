@@ -55,7 +55,7 @@ before(async () => { browser = await ({ chromium, webkit })[engine].launch({ hea
 after(async () => { await browser?.close(); });
 
 async function withPage(t, width, theme, run, options = {}) {
-  const viewport = { width, height: options.video ? options.height || 900 : 900 };
+  const viewport = { width, height: options.height ?? 900 };
   const videoPath = options.video ? join(options.video, engine, 'mobile-terminal-demo.webm') : null;
   if (videoPath) await mkdir(join(options.video, engine), { recursive: true });
   const context = await browser.newContext({ viewport, colorScheme: theme,
@@ -3655,6 +3655,32 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
     });
   });
 
+  test('pane snapshots ignore inherited overrides on connect and resize', async t => {
+    const terminalSnapshots = Object.create({ 'kon-live': 'Inherited transcript' });
+    await withPage(t, 1280, 'dark', async page => {
+      const frames = await page.evaluate(() => new Promise((resolve, reject) => {
+        const url = new URL('/ws/terminal/kon-live?stream=pane&cols=80&rows=24', location.href);
+        url.protocol = 'ws:';
+        const ws = new WebSocket(url);
+        ws.binaryType = 'arraybuffer';
+        ws.onerror = () => reject(new Error('Fixture terminal did not connect'));
+        const frames = [];
+        ws.onmessage = ({ data }) => {
+          frames.push(typeof data === 'string' ? JSON.parse(data) : new TextDecoder().decode(data));
+          if (frames.length === 2) ws.send(JSON.stringify({ type: 'resize', cols: 100, rows: 30 }));
+          if (frames.length === 4) {
+            ws.close();
+            resolve(frames);
+          }
+        };
+      }));
+      assert.deepEqual(frames, [
+        { type: 'reset', cols: 80, rows: 24 }, 'Offline fixture terminal\r\n$ ',
+        { type: 'reset', cols: 100, rows: 30 }, 'Offline fixture terminal\r\n$ ',
+      ]);
+    }, { terminalSnapshots });
+  });
+
   test('read-only pane history scrolls locally without socket input', async t => {
     await withPage(t, 1280, 'dark', async (page, fixture) => {
       await openTerminalSubject(page, 'kon-live');
@@ -6151,56 +6177,139 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
     });
   }
 
-  test('desktop sidebar demo screenshot', { skip: !captureDirectory }, async t => {
-    const id = 'DEMO-1042';
+  test('README screenshots', { skip: !captureDirectory }, async t => {
+    const width = 1280;
+    const now = new Date('2026-11-17T10:30:00Z');
+    const ago = minutes => new Date(now.getTime() - minutes * 60_000).toISOString();
+    const id = 'DEMO-1042', live = 'DEMO-1044';
+    const agent = 'demo-agent';
+    const catalog = '/demo/projects/catalog-api', sdk = '/demo/projects/web-sdk';
     const stages = ['plan', 'code', 'review'];
     const summaries = [
-      'Keep the existing page size default. Add an opaque cursor and return `next_cursor` when more results exist.',
-      'Implemented cursor pagination for `GET /catalog/items`. Added coverage for empty pages and invalid cursors.',
-      'All focused tests pass. The response format stays compatible when no cursor is provided.',
+      'Keep the default page size. Return `next_cursor` when more results exist.',
+      'Added cursor pagination to `GET /catalog/items` and tests for invalid cursors.',
+      'Focused tests passed. Requests without a cursor keep the same response format.',
     ];
-    const history = stages.map((stage, i) => ({ stage, run: 0, agent: 'demo-agent', run_outcome: 'complete', exit_code: 0,
-      started_at: `2026-11-17T10:0${i * 3}:00Z`, completed_at: `2026-11-17T10:0${i * 3 + 2}:00Z`, summary: summaries[i] }));
-    const record = ticket(id, 'Add cursor pagination to the catalog API', { status: 'done', stage: 'review', stages, history,
-      agent: 'demo-agent', path: '/demo/projects/catalog-api', branch: 'feature/catalog-pagination', base_branch: 'main',
-      last_log: '/demo/logs/DEMO-1042.jsonl', created_at: '2026-11-17T09:00:00Z', completed_at: '2026-11-17T10:08:00Z',
-      summary: summaries[2], final_summary: 'Cursor pagination is complete.\n\n- Added optional `cursor` and `limit` parameters.\n- Added tests for invalid cursors and the final page.\n- Existing clients can keep using the first-page response.',
-      notify: ['human_review', 'done'], deps: [{ id: 'DEMO-1038', title: 'Define the catalog response format', status: 'done', source: 'primary' }] });
-    const runningSince = new Date(Date.now() - 6 * 60 * 1000).toISOString();
-    const boardRecords = [record, ...[
-      ['DEMO-1038', 'Define the catalog response format', 'done', 'review'],
-      ['DEMO-1043', 'Cache catalog metadata', 'in_progress', 'code'],
-      ['DEMO-1044', 'Add structured request logging', 'in_progress', 'code'],
-      ['DEMO-1045', 'Handle rate limits in the catalog client', 'paused', 'code'],
-      ['DEMO-1046', 'Add integration tests for token refresh', 'todo', 'plan'],
-      ['DEMO-1047', 'Add a request timeout to the SDK', 'open', 'plan'],
-      ['DEMO-1048', 'Document pagination examples', 'open', 'plan'],
-      ['DEMO-1049', 'Add a health-check endpoint', 'human_review', 'review'],
-      ['DEMO-1050', 'Improve audit event formatting', 'human_review', 'review'],
-      ['DEMO-1051', 'Normalize validation errors', 'paused', 'code'],
-    ].map(([demoID, title, status, stage]) => ticket(demoID, title, { status, stage, stages,
-      path: record.path, agent: record.agent, branch: 'demo/' + demoID.toLowerCase(),
-      ...(status === 'in_progress' ? { started_at: runningSince, can_edit: false } : {}) }))];
-    await withPage(t, 1840, 'dark', async page => {
-      await expect(page.locator('#board-cols [data-ticket-id]')).toHaveCount(boardRecords.length);
-      await inViewport(page.locator('#col-done .kt-card').first());
-      await noPageOverflow(page);
-      await mobileCapture(page, 1840, 'dark', 'desktop-board-demo');
-      await page.getByRole('button', { name: 'Hide sidebar', exact: true }).click();
-      await page.setViewportSize({ width: 1440, height: 900 });
-      await openTicket(page, id);
-      await page.locator('[data-ticket-detail]').getByRole('button', { name: 'summary', exact: true }).click();
-      await expect(page.locator('[data-ticket-details]').getByRole('button', { name: 'Copy ticket ID', exact: true })).toHaveText(id);
-      await expect(page.locator('.ticket-detail-rail')).toContainText('/demo/projects/catalog-api');
-      await noPageOverflow(page);
-      await mobileCapture(page, 1440, 'dark', 'desktop-sidebar-demo');
-    }, { onlyRecords: true, records: boardRecords, sidebar: true,
-      config: { agents: ['demo-agent'], agent_infos: [{ name: 'demo-agent', binary: 'pi' }], pipeline_infos: [{ name: 'standard', stages }],
-        projects: [{ name: 'Catalog API', path: record.path, agent: record.agent, pipeline: 'standard' }],
+    const history = stages.map((stage, i) => ({ stage, run: 0, agent, run_outcome: 'complete', exit_code: 0,
+      started_at: ago(30 - i * 3), completed_at: ago(28 - i * 3), summary: summaries[i] }));
+    const outcome = 'Cursor pagination is complete.';
+    const record = ticket(id, 'Add cursor pagination', { status: 'done', stage: 'review', stages, history,
+      agent, path: catalog, branch: 'feature/catalog-pagination', base_branch: 'main',
+      last_log: '/demo/logs/DEMO-1042.jsonl', created_at: ago(90), updated_at: ago(22), completed_at: ago(22),
+      summary: summaries[2], final_summary: outcome + '\n\n- Added optional `cursor` and `limit` parameters.\n- Tested invalid cursors and the final page.\n- Kept the first-page response compatible with existing clients.',
+      notify: ['human_review', 'done'] });
+    const rows = [
+      ['DEMO-1038', 'Define the response format', { path: catalog, status: 'done', stage: 'review', completed_at: ago(180) }],
+      [live, 'Add structured request logging', { path: catalog, status: 'in_progress', stage: 'code', started_at: ago(6), can_edit: false }],
+      ['DEMO-1046', 'Test token refresh', { path: sdk, status: 'todo', stage: 'plan' }],
+      ['DEMO-1047', 'Add a request timeout', { path: sdk, status: 'open', stage: 'plan' }],
+      ['DEMO-1048', 'Document pagination examples', { path: catalog, status: 'open', stage: 'plan' }],
+      ['DEMO-1049', 'Add a health-check endpoint', { path: catalog, status: 'human_review', stage: 'review', finished_at: ago(14) }],
+      ['DEMO-1050', 'Handle rate-limit responses', { path: sdk, status: 'human_review', stage: 'review', finished_at: ago(38) }],
+      ['DEMO-1039', 'Publish typed errors', { path: sdk, status: 'done', stage: 'review', completed_at: ago(100) }],
+      ['DEMO-1051', 'Retry metadata lookups', { path: catalog, status: 'todo', stage: 'plan' }],
+      ['DEMO-1052', 'Show timeout examples', { path: sdk, status: 'open', stage: 'plan' }],
+      ['DEMO-1053', 'Validate item filters', { path: catalog, status: 'human_review', stage: 'review', finished_at: ago(20) }],
+    ];
+    const records = [record, ...rows.map(([demoID, title, overrides], i) => {
+      const created_at = ago(240 - i * 17);
+      const { completed_at, finished_at, started_at } = overrides;
+      return ticket(demoID, title, { stages, agent, created_at,
+        updated_at: completed_at ?? finished_at ?? started_at ?? created_at, ...overrides });
+    })];
+    const transcript = [
+      '$ go test ./internal/catalog -run TestRequestLogging',
+      'ok  example.com/catalog/internal/catalog  0.018s',
+      '',
+      'Checking the request log fields before review.',
+    ];
+    const prices = ['0.28', '1.12', '0.44'];
+    const options = {
+      onlyRecords: true, records, sidebar: false,
+      beforeNavigation: page => page.clock.setFixedTime(now),
+      config: { agents: [agent], agent_infos: [{ name: agent, binary: 'pi' }], pipeline_infos: [{ name: 'standard', stages }],
+        projects: [{ name: 'Catalog API', path: catalog, agent, pipeline: 'standard' },
+          { name: 'Web SDK', path: sdk, agent, pipeline: 'standard' }],
         channels: ['demo-chat'], default_channels: ['demo-chat'] },
       costs: { [id]: { id, cost_usd: '1.84', tracked_runs: 3, priced_runs: 3,
-        stages: stages.map((name, i) => ({ name, cost_usd: ['0.28', '1.12', '0.44'][i], tracked_runs: 1, priced_runs: 1 })),
-        runs: history.map((h, i) => ({ history_index: i, stage: h.stage, cost_usd: ['0.28', '1.12', '0.44'][i], tracked_runs: 1, priced_runs: 1 })) } } });
+        stages: stages.map((name, i) => ({ name, cost_usd: prices[i], tracked_runs: 1, priced_runs: 1 })),
+        runs: history.map((h, i) => ({ history_index: i, stage: h.stage, cost_usd: prices[i], tracked_runs: 1, priced_runs: 1 })) } },
+      terminalSnapshots: { [live]: transcript.join('\r\n') + '\r\n' },
+    };
+    const capture = async (page, theme, scene) => {
+      await page.mouse.move(0, page.viewportSize().height - 1);
+      await page.waitForFunction(() => [...document.querySelectorAll('[role="tooltip"]')]
+        .every(tip => tip.getAttribute('aria-hidden') === 'true' && getComputedStyle(tip).opacity === '0'));
+      await noPageOverflow(page);
+      await mobileCapture(page, width, theme, scene);
+    };
+    for (const theme of themes) await withPage(t, width, theme, async page => {
+      const board = page.locator('#board-cols');
+      await expect(board.locator('.kt-card')).toHaveCount(records.length);
+      for (const [column, label] of [['open', 'Open'], ['in_progress', 'In Progress'], ['human_review', 'Human Review'], ['done', 'Done']]) {
+        const header = board.locator(`.col-head[data-status="${column}"]`);
+        await expect(header.locator('.col-head-label')).toHaveText(label);
+        await inViewport(header);
+      }
+      for (const { id: ticketID, status, path } of records) {
+        const column = status === 'todo' ? 'in_progress' : status;
+        const card = board.locator(`#col-${column} [data-ticket-id="${ticketID}"]`);
+        await expect(card.locator('.title-tag')).toHaveText(`[${path.split('/').at(-1)}]`);
+        await inViewport(card);
+        await expect(card).toBeInViewport({ ratio: 0.99 });
+      }
+      await expect(board.locator(`[data-ticket-id="${live}"]`)).toHaveClass(/card-state-running/);
+      await inViewport(board.getByRole('button', { name: 'Expand Cancelled column' }));
+      await capture(page, theme, 'readme-board');
+    }, { ...options, height: 520 });
+
+    await withPage(t, width, 'dark', async page => {
+      await openTicket(page, id);
+      const detail = page.locator('[data-ticket-detail]');
+      await detail.getByRole('button', { name: 'summary', exact: true }).click();
+      const final = detail.locator('.final-card');
+      await expect(final).toContainText(outcome);
+      await inViewport(final);
+      await expect(detail.locator('.stage-card-name')).toHaveText(['review', 'code', 'plan']);
+      await detail.getByRole('button', { name: 'collapse all', exact: true }).click();
+      for (const card of await detail.locator('.stage-card').all()) {
+        await inViewport(card);
+        await expect(card).toBeInViewport({ ratio: 0.99 });
+      }
+      await inViewport(detail.getByText('$1.84', { exact: true }));
+      await capture(page, 'dark', 'readme-summary');
+    }, { ...options, height: 820 });
+
+    await withPage(t, width, 'dark', async (page, fixture) => {
+      await openTicket(page, live);
+      const detail = page.locator('[data-ticket-detail]');
+      await detail.getByRole('button', { name: 'session', exact: true }).click();
+      const readOnly = detail.getByRole('button', { name: 'read-only', exact: true });
+      const waitForTranscript = async () => {
+        await page.waitForFunction(lines => {
+          const term = window.termState.term;
+          if (!term || !Alpine.$data(document.body).terminalConnected || window.termState.ws?.readyState !== WebSocket.OPEN) return false;
+          const buffer = term.buffer.active;
+          for (let i = 0; i < buffer.length; i++) {
+            if ((buffer.getLine(i)?.translateToString(true) ?? '') !== (lines[i] ?? '')) return false;
+          }
+          return buffer.length >= lines.length;
+        }, transcript);
+        await terminalGridFits(page);
+        await inViewport(readOnly);
+      };
+      await waitForTranscript();
+      const { resizeBefore, resetBefore } = await page.evaluate(() => ({
+        resizeBefore: window.termState.term.rows, resetBefore: window.termState.historyResetSeq,
+      }));
+      await page.setViewportSize({ width, height: 660 });
+      await expect.poll(() => fixture.messages.findLast(m => m.type === 'resize' && m.rows !== resizeBefore)?.rows).toBeGreaterThan(0);
+      await page.waitForFunction(before => window.termState.historyResetSeq > before, resetBefore);
+      await waitForTranscript();
+      await capture(page, 'dark', 'readme-session');
+      assert.deepEqual(fixture.sockets.map(url => [url.pathname, url.searchParams.get('rw')]), [[`/ws/terminal/${live}`, null]]);
+      assert.deepEqual(fixture.messages.filter(message => message.type === 'input'), []);
+    }, { ...options, height: 600 });
   });
 
   test('kon91cx lifecycle fixture contract table', async t => {

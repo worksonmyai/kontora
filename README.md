@@ -10,13 +10,19 @@ Each ticket gets a branch and a separate checkout, called a Git worktree. Use on
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/light.png">
-  <img alt="Kontora web dashboard" src="docs/dark.png">
+  <img alt="Kontora board showing Catalog API and Web SDK tickets in Open, In Progress, Human Review, and Done. An agent is working on the request logging ticket." src="docs/dark.png">
 </picture>
+
+<details>
+<summary>Completed ticket summary</summary>
+<br>
+<img alt="Completed cursor pagination ticket. The API accepts optional cursor and limit parameters and keeps the first-page response compatible. Tests cover invalid cursors and the final page. Plan, code, and review are complete. Estimated cost: $1.84." src="docs/ticket-summary.png">
+</details>
 
 <details>
 <summary>Live agent terminal</summary>
 <br>
-<img alt="A ticket's terminal tab showing live agent output" src="docs/dark-tmux.png">
+<img alt="Read-only session for the running request logging ticket. The request logging test passed, and the agent is checking the log fields before review." src="docs/dark-tmux.png">
 </details>
 
 ## Install

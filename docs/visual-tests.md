@@ -54,6 +54,47 @@ tracked baselines.
 The separate `visual` CI job only checks baselines. Leave existing PNGs
 unchanged when adding scenes unless you are also reviewing an intended UI change.
 
+## Refresh the README screenshots
+
+Run `make test-browser-install` if you do not have the browser dependencies.
+From the repository root, capture twice and keep both output directories:
+
+```sh
+capture_dir=$(mktemp -d /tmp/kontora-readme-captures.XXXXXX)
+KONTORA_MOBILE_CAPTURE_DIR="$capture_dir" KONTORA_BROWSER_TEST_FILTER='^README screenshots$' make test-browser BROWSER_ENGINE=chromium
+verify_dir=$(mktemp -d /tmp/kontora-readme-captures.XXXXXX)
+KONTORA_MOBILE_CAPTURE_DIR="$verify_dir" KONTORA_BROWSER_TEST_FILTER='^README screenshots$' make test-browser BROWSER_ENGINE=chromium
+```
+
+Confirm that `README screenshots` passes in both runs. Compare the filenames,
+dimensions, and visible ticket states in `$capture_dir` and `$verify_dir`.
+Host Chromium output can vary by platform. The capture uses synthetic data
+and does not start Kontora, an agent, or tmux. It does not update the docs
+or visual regression baselines.
+
+Review the four candidates at GitHub README width before copying them:
+
+| Candidate under `$capture_dir` | Size | Destination |
+| --- | --- | --- |
+| `chromium/1280-dark/readme-board.png` | 1280 × 520 | `docs/dark.png` |
+| `chromium/1280-light/readme-board.png` | 1280 × 520 | `docs/light.png` |
+| `chromium/1280-dark/readme-summary.png` | 1280 × 820 | `docs/ticket-summary.png` |
+| `chromium/1280-dark/readme-session.png` | 1280 × 660 | `docs/dark-tmux.png` |
+
+Preview the shared images in a temporary copy of the landing page:
+
+```sh
+preview_dir=$(mktemp -d /tmp/kontora-landing-preview.XXXXXX)
+cp docs/index.html "$preview_dir/index.html"
+cp "$capture_dir/chromium/1280-dark/readme-board.png" "$preview_dir/dark.png"
+cp "$capture_dir/chromium/1280-dark/readme-session.png" "$preview_dir/dark-tmux.png"
+```
+
+Open `index.html` from `$preview_dir` in a browser. Check the board and the
+full session transcript at desktop, 899 px, and phone widths. The landing page
+crops the session image from the top left. After review, copy the approved
+candidates to the destinations in the table.
+
 ## Baseline review
 
 Alexander Akhmetov approved the original 12 baseline images on November 18, 2026.

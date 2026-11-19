@@ -950,11 +950,14 @@ export function fixtures({ base, assets, engine }, options = {}) {
         sockets.push(url);
         socketRoutes.push(ws);
         // Do not call connectToServer(): there is no terminal server at all.
+        const ticketID = paneStream ? decodeURIComponent(url.pathname.split('/').at(-1)) : null;
+        const snapshots = options.terminalSnapshots;
+        const transcript = ticketID !== null && snapshots && Object.hasOwn(snapshots, ticketID) ? snapshots[ticketID] : undefined;
         const snapshot = (cols, rows) => {
           if (paneStream) ws.send(JSON.stringify({ type: 'reset', cols, rows }));
           const marker = terminalMarkers.get(ws);
-          ws.send(Buffer.from('Offline fixture terminal\r\n$ ' + (behavior.bracketedPaste ? '\x1b[?2004h' : '')
-            + (marker ? `\x1b[${rows};1H${marker}` : '')));
+          const content = transcript ?? ('Offline fixture terminal\r\n$ ' + (behavior.bracketedPaste ? '\x1b[?2004h' : ''));
+          ws.send(Buffer.from(content + (marker ? `\x1b[${rows};1H${marker}` : '')));
         };
         ws.onMessage(message => {
           try {

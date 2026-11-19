@@ -104,7 +104,11 @@ jobs:
           NODE
 
       - name: Test real embedded UI with offline browser fixtures
-        run: make test-browser BROWSER_CACHE=/ms-playwright BROWSER_ENGINE=${{ matrix.browser }}
+        env:
+          KONTORA_TEST_BROWSER: '1'
+          PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+          BROWSER_ENGINE: ${{ matrix.browser }}
+        run: go test -count=1 -timeout 42m ./internal/web -run "^TestMobileBrowserJS$/^${BROWSER_ENGINE}$" -v
 
   visual:
     runs-on: ubuntu-latest

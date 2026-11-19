@@ -39,9 +39,9 @@ func (s evidenceService) GetActivity(q web.ActivityQuery) (web.ActivityInfo, err
 
 func (s evidenceService) GetChanges(id string) (web.ChangesInfo, error) { return s.changes(id) }
 
-func startEvidenceServer(t *testing.T, svc evidenceService) []string {
+func startCLIHTTPServer(t *testing.T, svc web.TicketService) []string {
 	t.Helper()
-	const token = "evidence-token"
+	const token = "fixture-token"
 	srv, err := web.New(svc, nil, "127.0.0.1", 0, token, nil, "", slog.Default())
 	require.NoError(t, err)
 	require.NoError(t, srv.Start())
@@ -86,7 +86,7 @@ func TestCLIActivity(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			env := startEvidenceServer(t, evidenceService{activity: func(q web.ActivityQuery) (web.ActivityInfo, error) {
+			env := startCLIHTTPServer(t, evidenceService{activity: func(q web.ActivityQuery) (web.ActivityInfo, error) {
 				assert.Equal(t, web.ActivityQuery{ID: evidenceTicketID, Stage: tc.stage, Run: tc.run}, q)
 				return tc.info, tc.err
 			}})
@@ -137,7 +137,7 @@ func TestCLIChanges(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			env := startEvidenceServer(t, evidenceService{changes: func(id string) (web.ChangesInfo, error) {
+			env := startCLIHTTPServer(t, evidenceService{changes: func(id string) (web.ChangesInfo, error) {
 				assert.Equal(t, evidenceTicketID, id)
 				return tc.info, tc.err
 			}})

@@ -13,7 +13,7 @@ import * as yaml from '../static/vendor/yaml@2.8.1/yaml.mjs';
 import {
   fixtureSession, fixtures as createFixtures, unloadFixtureDocuments,
   source, sourcePath, secondSource, unavailablePath, longID, tail, stamp, liveTitle, liveBranch, liveAgent,
-  supervisorID, ticket, settingsRaw, deferred, detailPath, ready, routeTo, openTicket,
+  supervisorID, ticket, settingsRaw, deferred, detailPath, ready, routeTo, openTicket, populatedStats,
 } from './browser_fixture.mjs';
 import {
   assistantSurface, automationDetailReady, detailPanel, inViewport, openAssistantControl, ordinaryThreadID,
@@ -8079,6 +8079,37 @@ test('audit32-stats fine-pointer phone-wide heatmap hit targets match their mark
     assert.equal(first.height, 44);
     assert.ok(first.y + first.height <= below.y && first.x + first.width <= right.x);
   }, { populatedStats: true });
+});
+
+test('Stats combines project and pipeline filters and clears only the selected filter', async t => {
+  const project = 'Research & Design', pipeline = 'review+ship';
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    await routeTo(page, '#/stats');
+    const stats = page.locator('#stats-view');
+    const shipped = stats.locator('.stats-kpi').filter({ has: page.getByText('shipped', { exact: true }) });
+    const initial = populatedStats();
+    await expect(shipped.getByText(String(initial.totals.shipped), { exact: true })).toBeVisible();
+    const projectFilter = stats.getByRole('combobox', { name: /^project/i });
+    const pipelineFilter = stats.getByRole('combobox', { name: /^pipeline/i });
+    for (const { control, value, filters, count } of [
+      { control: projectFilter, value: project, filters: { project }, count: 6 },
+      { control: pipelineFilter, value: pipeline, filters: { project, pipeline }, count: 2 },
+      { control: projectFilter, value: 'all', filters: { pipeline }, count: 11 },
+    ]) {
+      const held = fixture.holdRead('/api/stats');
+      try {
+        const nextRead = page.waitForRequest(request => new URL(request.url()).pathname === '/api/stats');
+        await control.selectOption(value);
+        const request = await nextRead;
+        await held.started;
+        assert.deepEqual(Object.fromEntries(new URL(request.url()).searchParams), { range: '90d', ...filters });
+        held.release({ value: { ...initial, totals: { ...initial.totals, shipped: count } } });
+        await expect(shipped.getByText(String(count), { exact: true })).toBeVisible();
+      } finally { held.release(); }
+    }
+    await expect(projectFilter).toHaveValue('all');
+    await expect(pipelineFilter).toHaveValue(pipeline);
+  }, { populatedStats: true, config: { projects: [{ name: project, path: '/fixtures/research' }], pipelines: [pipeline] } });
 });
 
 test('audit32-stats range changes leave no tooltip or tab stop on blank heatmap cells', async t => {

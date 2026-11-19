@@ -258,9 +258,11 @@ func (m *mockTerminalService) GetTicket(_ string) (TicketInfo, error) {
 func (m *mockTerminalService) CreateTicket(_ CreateTicketRequest) (TicketInfo, error) {
 	return TicketInfo{}, nil
 }
-func (m *mockTerminalService) GetConfig() ConfigInfo                                  { return ConfigInfo{} }
-func (m *mockTerminalService) ThemePreference() string                                { return "system" }
-func (m *mockTerminalService) PutThemePreference(string) error                        { return nil }
+func (m *mockTerminalService) GetConfig() ConfigInfo   { return ConfigInfo{} }
+func (m *mockTerminalService) ThemePreference() string { return "system" }
+func (m *mockTerminalService) PutThemePreference(theme string) (ThemeSnapshot, error) {
+	return ThemeSnapshot{Preference: theme}, nil
+}
 func (m *mockTerminalService) DeleteTicket(_ string) error                            { return nil }
 func (m *mockTerminalService) PauseTicket(_ string) error                             { return nil }
 func (m *mockTerminalService) RetryTicket(_ string) error                             { return nil }

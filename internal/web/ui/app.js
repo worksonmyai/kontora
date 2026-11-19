@@ -7,6 +7,7 @@ const THEME_MODES = ['system', 'light', 'dark'];
 // Component core: the state every other mixin reads, the app-wide bits
 // (auth, routing, toast, theme) and the date formatting the templates call.
 export function kontoraApp() {
+  let configTheme;
   return {
     tickets: [],
     runningAgents: 0,
@@ -422,6 +423,12 @@ export function kontoraApp() {
       this.updateFavicon();
     },
 
+    applyConfigTheme(config) {
+      if (!THEME_MODES.includes(config.theme)) return;
+      configTheme = config;
+      this.applyThemePreference(config.theme);
+    },
+
     toggleTheme() {
       return this.saveThemePreference(THEME_MODES[(THEME_MODES.indexOf(this.themePreference) + 1) % THEME_MODES.length]);
     },
@@ -445,7 +452,7 @@ export function kontoraApp() {
       this.themeSaving = true;
       this.closeAgentPicker?.(false);
       this.invalidateConfigReads();
-      const configBeforeSave = this.configCache;
+      const themeReadBeforeSave = configTheme;
       const unknown = 'Could not confirm whether the theme was saved. Check config.yaml before retrying.';
       let mayHaveWritten = true;
       try {
@@ -456,8 +463,11 @@ export function kontoraApp() {
         });
         if (this._appDestroyed) return;
         if (res.status === 204) {
-          // A reload can publish a newer daemon value before this response arrives.
-          if (this.configCache === configBeforeSave) this.applyThemePreference(mode);
+          const revision = Number(res.headers.get('X-Kontora-Config-Revision'));
+          // A read during the save may see either side of the reload.
+          if (configTheme === themeReadBeforeSave || !(configTheme?.revision > revision)) {
+            this.applyThemePreference(res.headers.get('X-Kontora-Theme') || mode);
+          }
         } else {
           mayHaveWritten = ![400, 401, 403, 409, 415, 501].includes(res.status);
           const data = await res.json().catch(() => ({}));

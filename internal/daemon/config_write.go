@@ -25,52 +25,62 @@ func (d *Daemon) PutRawConfigIf(content, expected string) error {
 }
 
 // PutThemePreference patches the current document rather than replacing it with a UI draft.
-func (d *Daemon) PutThemePreference(theme string) error {
+func (d *Daemon) PutThemePreference(theme string) (web.ThemeSnapshot, error) {
 	if err := config.ValidateWebTheme(theme); err != nil {
-		return fmt.Errorf("%w: %v", web.ErrInvalidConfig, err)
+		return web.ThemeSnapshot{}, fmt.Errorf("%w: %v", web.ErrInvalidConfig, err)
 	}
 	d.configMutationMu.Lock()
 	defer d.configMutationMu.Unlock()
 	_, before, _, err := d.configDocument()
 	if err != nil {
-		return err
+		return web.ThemeSnapshot{}, err
 	}
 	after, err := themeYAML(before, theme)
 	if err != nil {
-		return fmt.Errorf("%w: %v", web.ErrInvalidConfig, err)
+		return web.ThemeSnapshot{}, fmt.Errorf("%w: %v", web.ErrInvalidConfig, err)
 	}
 	expected := string(before)
-	return d.replaceConfig(string(after), &expected)
+	cfg, err := d.replaceConfigSnapshot(string(after), &expected)
+	if err != nil {
+		return web.ThemeSnapshot{}, err
+	}
+	return web.ThemeSnapshot{Preference: cfg.Web.ThemePreference(), Revision: cfg.RuntimeRevision}, nil
 }
 
 func (d *Daemon) replaceConfig(content string, expected *string) error {
+	_, err := d.replaceConfigSnapshot(content, expected)
+	return err
+}
+
+func (d *Daemon) replaceConfigSnapshot(content string, expected *string) (*config.Config, error) {
 	path, before, mode, err := d.configDocument()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if expected != nil && *expected != string(before) {
-		return fmt.Errorf("%w: config changed; reload before saving", automation.ErrConflict)
+		return nil, fmt.Errorf("%w: config changed; reload before saving", automation.ErrConflict)
 	}
 	if _, err := config.LoadReader(strings.NewReader(content)); err != nil {
-		return fmt.Errorf("%w: %s", web.ErrInvalidConfig, err)
+		return nil, fmt.Errorf("%w: %s", web.ErrInvalidConfig, err)
 	}
 	if err := rejectExtraYAML([]byte(content)); err != nil {
-		return fmt.Errorf("%w: %s", web.ErrInvalidConfig, err)
+		return nil, fmt.Errorf("%w: %s", web.ErrInvalidConfig, err)
 	}
 	currentPath, current, _, err := d.configDocument()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if path != currentPath || !bytes.Equal(before, current) {
-		return fmt.Errorf("%w: config changed during save", automation.ErrConflict)
+		return nil, fmt.Errorf("%w: config changed during save", automation.ErrConflict)
 	}
 	if err := durableConfigWrite(path, []byte(content), mode); err != nil {
-		return err
+		return nil, err
 	}
-	if err := d.reloadConfig(); err != nil {
-		return &web.ConfigSavedReloadError{Err: err}
+	cfg, err := d.reloadConfigSnapshot()
+	if err != nil {
+		return nil, &web.ConfigSavedReloadError{Err: err}
 	}
-	return nil
+	return cfg, nil
 }
 
 func (d *Daemon) configDocument() (string, []byte, os.FileMode, error) {

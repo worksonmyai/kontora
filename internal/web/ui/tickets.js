@@ -39,7 +39,7 @@ export function kontoraTickets() {
         const config = await res.json();
         if (fresh()) {
           this.configCache = config;
-          this.applyThemePreference(config.theme);
+          this.applyConfigTheme(config);
         }
       } catch (e) {
         if (fresh()) throw e;

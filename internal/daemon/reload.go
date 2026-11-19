@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
@@ -29,18 +30,23 @@ var errNoConfigPath = errors.New("no config path set")
 // Agents already running keep the prompt, arguments, timeout, and binary they
 // started with. A reload affects the next stage that starts.
 func (d *Daemon) reloadConfig() error {
+	_, err := d.reloadConfigSnapshot()
+	return err
+}
+
+func (d *Daemon) reloadConfigSnapshot() (*config.Config, error) {
 	// Serializes reloads from the different triggers: SIGHUP, the config file
 	// watcher, and the config mutation endpoints.
 	d.reloadMu.Lock()
 	defer d.reloadMu.Unlock()
 
 	if d.configPath == "" {
-		return errNoConfigPath
+		return nil, errNoConfigPath
 	}
 
 	next, err := config.Load(d.configPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Same order as startup: the file, then the environment, then the
 	// command-line overrides. The environment runs before the restart-only pin
@@ -51,13 +57,15 @@ func (d *Daemon) reloadConfig() error {
 		d.configOverride(next)
 	}
 	if _, err := next.SecondarySources(); err != nil {
-		return err
+		return nil, err
 	}
 
 	cur := d.config()
 	pinRestartOnly(cur, next, d.log)
+	// Clock adjustments must not move revisions backwards within a daemon.
+	next.RuntimeRevision = max(d.configRevision(cur)+1, time.Now().UnixMicro())
 	if err := d.publishAutomationConfig(next); err != nil {
-		return err
+		return nil, err
 	}
 	d.applyNotifications(next)
 	d.mu.Lock()
@@ -90,7 +98,7 @@ func (d *Daemon) reloadConfig() error {
 	if d.broker != nil {
 		d.broker.Broadcast(web.TicketEvent{Type: "config_reloaded"})
 	}
-	return nil
+	return next, nil
 }
 
 // pinRestartOnly copies the settings a live reload cannot apply from the

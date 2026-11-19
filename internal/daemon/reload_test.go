@@ -361,7 +361,12 @@ func TestPutThemePreference_PreservesConfig(t *testing.T) {
 			ch, unsubscribe := d.broker.Subscribe()
 			defer unsubscribe()
 			require.NoError(t, os.Chmod(h.configPath, 0o600))
-			require.NoError(t, d.PutThemePreference("dark"))
+			beforeRevision := d.GetConfig().Revision
+			savedTheme, err := d.PutThemePreference("dark")
+			require.NoError(t, err)
+			assert.Equal(t, "dark", savedTheme.Preference)
+			assert.Greater(t, savedTheme.Revision, beforeRevision)
+			assert.Equal(t, savedTheme.Revision, d.GetConfig().Revision)
 			var reloaded bool
 			for len(ch) > 0 {
 				reloaded = (<-ch).Type == "config_reloaded" || reloaded
@@ -387,7 +392,9 @@ func TestPutThemePreference_PreservesConfig(t *testing.T) {
 
 			// An older raw Settings draft cannot overwrite the theme save.
 			require.ErrorIs(t, d.PutRawConfigIf(original, original), automation.ErrConflict)
-			require.NoError(t, d.PutThemePreference("system"))
+			resetTheme, err := d.PutThemePreference("system")
+			require.NoError(t, err)
+			assert.Greater(t, resetTheme.Revision, savedTheme.Revision)
 			assert.Equal(t, "system", d.ThemePreference())
 			saved, err := os.ReadFile(h.configPath)
 			require.NoError(t, err)
@@ -418,7 +425,7 @@ func TestPutThemePreference_RejectsUnsafeConfig(t *testing.T) {
 			before := d.config()
 			onDisk := strings.Replace(original, "web:\n  enabled: false\n", tc.prefix+tc.web, 1) + tc.suffix
 			h.writeConfig(t, onDisk)
-			err := d.PutThemePreference(tc.theme)
+			_, err := d.PutThemePreference(tc.theme)
 			require.ErrorIs(t, err, web.ErrInvalidConfig)
 			if tc.wantError != "" {
 				assert.ErrorContains(t, err, tc.wantError)
@@ -438,7 +445,8 @@ func TestPutThemePreference_ReloadFailure(t *testing.T) {
 	secondary := t.TempDir()
 	h.writeConfig(t, h.yaml(configOpts{extra: fmt.Sprintf("secondary_tickets_dirs: [%q, %q]\n", secondary, secondary)}))
 	var savedErr *web.ConfigSavedReloadError
-	require.ErrorAs(t, d.PutThemePreference("dark"), &savedErr)
+	_, err := d.PutThemePreference("dark")
+	require.ErrorAs(t, err, &savedErr)
 	assert.Same(t, before, d.config())
 	assert.Equal(t, "system", d.ThemePreference())
 	onDisk, err := config.Load(h.configPath)

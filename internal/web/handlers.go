@@ -862,7 +862,12 @@ func (s *Server) handlePutThemePreference(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, http.StatusBadRequest, "`theme` must be `system`, `light`, or `dark`.")
 		return
 	}
-	writeConfigMutationResult(w, s.svc.PutThemePreference(theme))
+	snapshot, err := s.svc.PutThemePreference(theme)
+	if err == nil {
+		w.Header().Set("X-Kontora-Theme", snapshot.Preference)
+		w.Header().Set("X-Kontora-Config-Revision", strconv.FormatInt(snapshot.Revision, 10))
+	}
+	writeConfigMutationResult(w, err)
 }
 
 func writeConfigMutationResult(w http.ResponseWriter, err error) {

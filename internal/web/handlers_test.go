@@ -199,11 +199,13 @@ func (m *mockService) ThemePreference() string {
 	return m.configInfo.Theme
 }
 
-func (m *mockService) PutThemePreference(theme string) error {
+func (m *mockService) PutThemePreference(theme string) (ThemeSnapshot, error) {
 	if m.putThemeFn != nil {
-		return m.putThemeFn(theme)
+		if err := m.putThemeFn(theme); err != nil {
+			return ThemeSnapshot{}, err
+		}
 	}
-	return nil
+	return ThemeSnapshot{Preference: theme, Revision: 42}, nil
 }
 func (m *mockService) DeleteTicket(id string) error {
 	if m.deleteFn != nil {
@@ -2269,6 +2271,7 @@ func TestHandleConfig(t *testing.T) {
 	svc := &mockService{
 		configInfo: ConfigInfo{
 			Theme:     "dark",
+			Revision:  42,
 			Pipelines: []string{"default", "review"},
 			Agents:    []string{"opus", "sonnet"},
 			AgentInfos: []AgentInfo{
@@ -2285,6 +2288,7 @@ func TestHandleConfig(t *testing.T) {
 	var cfg ConfigInfo
 	require.NoError(t, json.Unmarshal([]byte(res.body), &cfg))
 	assert.Equal(t, "dark", cfg.Theme)
+	assert.Equal(t, int64(42), cfg.Revision)
 	assert.Contains(t, res.body, `"theme":"dark"`)
 	assert.Equal(t, []string{"default", "review"}, cfg.Pipelines)
 	assert.Equal(t, []string{"opus", "sonnet"}, cfg.Agents, "the legacy agent name list remains in the response")
@@ -2504,8 +2508,11 @@ func TestHandlePutThemePreference_Outcomes(t *testing.T) {
 			assert.Equal(t, tc.want, res.statusCode)
 			if tc.err == nil {
 				assert.Empty(t, res.body)
+				assert.Equal(t, mode, res.headers.Get("X-Kontora-Theme"))
+				assert.Equal(t, "42", res.headers.Get("X-Kontora-Config-Revision"))
 				return
 			}
+			assert.Empty(t, res.headers.Get("X-Kontora-Config-Revision"))
 			var body map[string]string
 			require.NoError(t, json.Unmarshal([]byte(res.body), &body))
 			assert.Equal(t, tc.err.Error(), body["error"])
@@ -2820,6 +2827,7 @@ type httpResult struct {
 	statusCode  int
 	contentType string
 	etag        string
+	headers     http.Header
 	body        string
 }
 
@@ -2872,7 +2880,7 @@ func put(t *testing.T, srv *Server, path string, jsonBody string) httpResult {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	return httpResult{statusCode: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), body: string(body)}
+	return httpResult{statusCode: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), headers: resp.Header, body: string(body)}
 }
 
 func patch(t *testing.T, srv *Server, path string, jsonBody string) httpResult {

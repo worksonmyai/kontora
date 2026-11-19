@@ -208,7 +208,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
   if (options.onlyRecords) records.clear();
   for (const record of options.records || []) put(record);
   if (options.empty) records.clear();
-  const config = { config_path: '/fixtures/config.yaml', theme: options.themePreference ?? 'system', pipelines: ['standard'], default_pipeline: 'standard',
+  const config = { config_path: '/fixtures/config.yaml', theme: options.themePreference ?? 'system', revision: 1, pipelines: ['standard'], default_pipeline: 'standard',
     pipeline_infos: [{ name: 'standard', stages: ['plan', 'code'] }],
     agents: ['fixture-agent'], agent_infos: [{ name: 'fixture-agent', binary: 'pi' }],
     projects: [{ name: 'Fixture repository', path: '/fixtures/repository-with-a-long-name', agent: 'fixture-agent', pipeline: 'standard' }],
@@ -495,7 +495,10 @@ export function fixtures({ base, assets, engine }, options = {}) {
         return json(route, { error: failure.error, code: failure.code }, failure.status);
       }
       config.theme = body.theme;
-      return route.fulfill({ status: 204 });
+      config.revision++;
+      return route.fulfill({ status: 204, headers: {
+        'X-Kontora-Theme': config.theme, 'X-Kontora-Config-Revision': String(config.revision),
+      } });
     }
     if (method === 'PUT' && path === '/api/config/raw') {
       const body = request.postDataJSON();

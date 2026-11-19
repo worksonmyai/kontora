@@ -154,6 +154,9 @@ type Config struct {
 	// `stages.rework:` block, signalling the daemon to leave routing to the
 	// user's pipeline/on_success config.
 	ReworkIsBuiltin bool `yaml:"-"`
+
+	// RuntimeRevision orders snapshots published by the daemon. It is not saved to disk.
+	RuntimeRevision int64 `yaml:"-"`
 }
 
 const (

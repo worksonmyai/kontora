@@ -29,6 +29,12 @@ for (const [preference, prefersDark, palette] of [
 }
 const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve)); };
 
+function themeSaved(config) {
+  return { status: 204, headers: new Headers({
+    'X-Kontora-Theme': config.theme, 'X-Kontora-Config-Revision': String(config.revision),
+  }) };
+}
+
 function harness({ status = 200, preference = 'system', dark = true, saveTheme, readConfig } = {}) {
   const root = { dataset: { themePreference: preference }, style: {} };
   const mediaListeners = new Set();
@@ -52,7 +58,7 @@ function harness({ status = 200, preference = 'system', dark = true, saveTheme, 
     replaceState(state, _title, hash) { this.state = state; location.hash = hash; },
   };
   const bodies = {
-    '/api/config': { theme: preference },
+    '/api/config': { theme: preference, revision: 1 },
     '/api/tickets': { tickets: [{ id: 'kon-1', title: 'Primary', status: 'open' }] },
     '/api/ticket-sources': [{ id: 'primary' }, { id: 'team', available: true }],
     '/api/sources/team/tickets': [{ id: 'sec-1', title: 'Secondary', status: 'open' }],
@@ -84,7 +90,8 @@ function harness({ status = 200, preference = 'system', dark = true, saveTheme, 
         const mode = JSON.parse(options.body).theme;
         if (saveTheme) return saveTheme(mode, bodies['/api/config']);
         bodies['/api/config'].theme = mode;
-        return { ok: true, status: 204 };
+        bodies['/api/config'].revision++;
+        return themeSaved(bodies['/api/config']);
       }
       if (url === '/api/config' && readConfig) return readConfig(bodies[url]);
       return { ok: true, status: 200, json: async () => structuredClone(bodies[url]) };
@@ -277,26 +284,35 @@ test('a stalled resolved-config read does not hold the theme controls', async ()
   }
 });
 
-test('a late theme save response does not replace a newer running theme', async () => {
-  let acknowledge;
-  const response = new Promise(resolve => { acknowledge = resolve; });
-  let configReadFails = false;
-  const h = harness({
-    saveTheme: () => response,
-    readConfig: config => configReadFails ? { ok: false, status: 503 }
-      : { ok: true, json: async () => structuredClone(config) },
+for (const [name, duringSave, expected, nextMode] of [
+  ['a pre-commit config read cannot hide a successful theme save', { theme: 'system', revision: 1 }, 'light', 'dark'],
+  ['a late theme save response does not replace a newer running theme', { theme: 'dark', revision: 3 }, 'dark', 'system'],
+  ['a newer reload can restore the original preference', { theme: 'system', revision: 3 }, 'system', 'light'],
+]) {
+  test(name, async () => {
+    let acknowledge;
+    const response = new Promise(resolve => { acknowledge = resolve; });
+    let configReadFails = false;
+    const h = harness({
+      saveTheme: () => response,
+      readConfig: config => configReadFails ? { ok: false, status: 503 }
+        : { ok: true, json: async () => structuredClone(config) },
+    });
+    await h.state.refreshConfigCache();
+    const save = h.state.toggleTheme();
+    Object.assign(h.config, duringSave);
+    await h.state.refreshConfigCache();
+    assert.equal(h.state.themePreference, duringSave.theme);
+    configReadFails = true;
+    acknowledge(themeSaved({ theme: 'light', revision: 2 }));
+    await save;
+    await settle();
+    assert.equal(h.state.themePreference, expected);
+    assert.equal(h.root.style.colorScheme, expected === 'system' ? 'dark' : expected);
+    await h.state.toggleTheme();
+    assert.deepEqual(h.writes.map(request => JSON.parse(request.body).theme), ['light', nextMode]);
   });
-  const save = h.state.toggleTheme();
-  h.config.theme = 'dark';
-  await h.state.refreshConfigCache();
-  assert.equal(h.state.themePreference, 'dark');
-  configReadFails = true;
-  acknowledge({ status: 204 });
-  await save;
-  await settle();
-  assert.equal(h.state.themePreference, 'dark');
-  assert.equal(h.root.style.colorScheme, 'dark');
-});
+}
 
 test('a pending Settings save asks the user to wait before changing the theme', async () => {
   const h = harness();

@@ -70,6 +70,10 @@ jobs:
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    container:
+      # Use the same image as hack/visual.Dockerfile to avoid installing Ubuntu packages on each run.
+      image: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:9beb546099e11f52d62e505537914870e01a67e0e6b00ae41da4775324e73dbe
+      options: --init --shm-size=1g
     strategy:
       fail-fast: false
       matrix:
@@ -88,15 +92,19 @@ jobs:
         with:
           node-version: '26'
 
-      - name: Install exact test-only Playwright and browsers
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/kontora-playwright
+      - name: Install Playwright and check the browser image version
         run: |
           npm ci --prefix internal/web/testdata --ignore-scripts --no-audit --no-fund
-          node internal/web/testdata/node_modules/playwright/cli.js install --with-deps ${{ matrix.browser }}
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const { readFileSync } = require('node:fs');
+          const { version } = require('./internal/web/testdata/node_modules/playwright/package.json');
+          const { driverVersion } = JSON.parse(readFileSync('/ms-playwright/.docker-info', 'utf8'));
+          assert.equal(driverVersion, version, 'The browser image must match the Playwright npm package');
+          NODE
 
       - name: Test real embedded UI with offline browser fixtures
-        run: make test-browser BROWSER_CACHE="$RUNNER_TEMP/kontora-playwright" BROWSER_ENGINE=${{ matrix.browser }}
+        run: make test-browser BROWSER_CACHE=/ms-playwright BROWSER_ENGINE=${{ matrix.browser }}
 
   visual:
     runs-on: ubuntu-latest

@@ -818,8 +818,8 @@ export function kontoraBoard() {
       removeBoardEvents = removeGlobalEvents = null;
     },
 
-    // Two-key sequences, vim style: "c" then "t" within KEY_SEQ_MS toggles the
-    // theme. A key that starts no sequence, or arrives too late, resets the
+    // Pressing "c" then "t" within KEY_SEQ_MS cycles the saved theme preference.
+    // A key that starts no sequence, or arrives too late, resets the
     // buffer, so a stray "c" never leaves the next keystroke armed.
     _handleKeySequence(e) {
       if (e.ctrlKey || e.metaKey || e.altKey || this._isTypingTarget(e.target)) {

@@ -24,6 +24,25 @@ func (d *Daemon) PutRawConfigIf(content, expected string) error {
 	return d.replaceConfig(content, &expected)
 }
 
+// PutThemePreference patches the current document rather than replacing it with a UI draft.
+func (d *Daemon) PutThemePreference(theme string) error {
+	if err := config.ValidateWebTheme(theme); err != nil {
+		return fmt.Errorf("%w: %v", web.ErrInvalidConfig, err)
+	}
+	d.configMutationMu.Lock()
+	defer d.configMutationMu.Unlock()
+	_, before, _, err := d.configDocument()
+	if err != nil {
+		return err
+	}
+	after, err := themeYAML(before, theme)
+	if err != nil {
+		return fmt.Errorf("%w: %v", web.ErrInvalidConfig, err)
+	}
+	expected := string(before)
+	return d.replaceConfig(string(after), &expected)
+}
+
 func (d *Daemon) replaceConfig(content string, expected *string) error {
 	path, before, mode, err := d.configDocument()
 	if err != nil {
@@ -78,15 +97,20 @@ func (d *Daemon) configDocument() (string, []byte, os.FileMode, error) {
 }
 
 func rejectExtraYAML(b []byte) error {
+	_, err := parseConfigYAML(b)
+	return err
+}
+
+func parseConfigYAML(b []byte) (*yaml.Node, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	var doc yaml.Node
 	if err := dec.Decode(&doc); err != nil {
-		return err
+		return nil, err
 	}
 	if err := dec.Decode(new(yaml.Node)); !errors.Is(err, io.EOF) {
-		return errors.New("config must contain one YAML document")
+		return nil, errors.New("config must contain one YAML document")
 	}
-	return nil
+	return &doc, nil
 }
 
 func durableConfigWrite(path string, data []byte, mode os.FileMode) error {
@@ -122,12 +146,70 @@ func durableConfigWrite(path string, data []byte, mode os.FileMode) error {
 	return dir.Sync()
 }
 
-func automationYAML(content []byte, key string, spec *automation.Spec) ([]byte, error) {
-	if err := rejectExtraYAML(content); err != nil {
+func themeYAML(content []byte, theme string) ([]byte, error) {
+	doc, err := parseConfigYAML(content)
+	if err != nil {
 		return nil, err
 	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(content, &doc); err != nil {
+	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode || doc.Content[0].Anchor != "" {
+		return nil, errors.New("use a top-level YAML mapping without an anchor")
+	}
+	root := doc.Content[0]
+	var webNode *yaml.Node
+	rootMerge := false
+	for i := 0; i < len(root.Content); i += 2 {
+		key, value := root.Content[i], root.Content[i+1]
+		switch {
+		case key.ShortTag() == "!!merge":
+			rootMerge = true
+		case key.Value == "web":
+			isNull := value.Kind == yaml.ScalarNode && value.ShortTag() == "!!null"
+			if webNode != nil || yamlShared(key) || value.Anchor != "" || (value.Kind != yaml.MappingNode && !isNull) {
+				return nil, errors.New("define `web` once as a mapping without anchors or aliases on the key or value")
+			}
+			webNode = value
+		}
+	}
+	if webNode == nil {
+		if rootMerge {
+			return nil, errors.New("edit `config.yaml` directly; if a YAML merge supplies `web`, copy all inherited web settings before defining `web` directly")
+		}
+		webNode = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "web"}, webNode)
+	} else if webNode.Kind == yaml.ScalarNode {
+		webNode.Kind, webNode.Tag, webNode.Value, webNode.Style = yaml.MappingNode, "!!map", "", 0
+	}
+	var current *yaml.Node
+	for i := 0; i < len(webNode.Content); i += 2 {
+		key, value := webNode.Content[i], webNode.Content[i+1]
+		switch {
+		case key.ShortTag() == "!!merge":
+			return nil, errors.New("theme edits do not support YAML merges in web")
+		case key.Value == "theme":
+			if current != nil || yamlShared(key) || value.Kind != yaml.ScalarNode || value.Anchor != "" {
+				return nil, errors.New("define `web.theme` once as a scalar without anchors or aliases on the key or value")
+			}
+			current = value
+		}
+	}
+	if current == nil {
+		webNode.Content = append(webNode.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "theme"},
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: theme},
+		)
+	} else {
+		if current.ShortTag() == "!!str" && current.Value == theme {
+			return content, nil
+		}
+		current.Tag = "!!str"
+		current.Value = theme
+	}
+	return yaml.Marshal(doc)
+}
+
+func automationYAML(content []byte, key string, spec *automation.Spec) ([]byte, error) {
+	doc, err := parseConfigYAML(content)
+	if err != nil {
 		return nil, err
 	}
 	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
@@ -171,7 +253,7 @@ func automationYAML(content []byte, key string, spec *automation.Spec) ([]byte, 
 		}
 		if spec == nil {
 			entries.Content = append(entries.Content[:i], entries.Content[i+2:]...)
-			return yaml.Marshal(&doc)
+			return yaml.Marshal(doc)
 		}
 		var node yaml.Node
 		if err := node.Encode(spec); err != nil {
@@ -180,7 +262,7 @@ func automationYAML(content []byte, key string, spec *automation.Spec) ([]byte, 
 		preserveYAMLComments(entries.Content[i+1], &node)
 		literalPrompt(&node)
 		entries.Content[i+1] = &node
-		return yaml.Marshal(&doc)
+		return yaml.Marshal(doc)
 	}
 	if spec == nil {
 		return content, nil
@@ -191,7 +273,7 @@ func automationYAML(content []byte, key string, spec *automation.Spec) ([]byte, 
 	}
 	literalPrompt(&node)
 	entries.Content = append(entries.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, &node)
-	return yaml.Marshal(&doc)
+	return yaml.Marshal(doc)
 }
 
 func preserveYAMLComments(before, after *yaml.Node) {

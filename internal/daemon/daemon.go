@@ -465,7 +465,7 @@ type Daemon struct {
 	configOverride func(*config.Config)
 
 	// reloadMu serializes config reloads from the different triggers (SIGHUP,
-	// the config file watcher, and the raw-config endpoint).
+	// the config file watcher, and the config mutation endpoints).
 	reloadMu sync.Mutex
 
 	secondaryMu     sync.Mutex

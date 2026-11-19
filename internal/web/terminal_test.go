@@ -259,6 +259,8 @@ func (m *mockTerminalService) CreateTicket(_ CreateTicketRequest) (TicketInfo, e
 	return TicketInfo{}, nil
 }
 func (m *mockTerminalService) GetConfig() ConfigInfo                                  { return ConfigInfo{} }
+func (m *mockTerminalService) ThemePreference() string                                { return "system" }
+func (m *mockTerminalService) PutThemePreference(string) error                        { return nil }
 func (m *mockTerminalService) DeleteTicket(_ string) error                            { return nil }
 func (m *mockTerminalService) PauseTicket(_ string) error                             { return nil }
 func (m *mockTerminalService) RetryTicket(_ string) error                             { return nil }

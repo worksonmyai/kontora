@@ -1306,6 +1306,37 @@ func TestLoadWebConfigDefaults(t *testing.T) {
 	assert.Equal(t, 8080, cfg.Web.Port)
 }
 
+func TestLoadWebTheme(t *testing.T) {
+	base := "agents:\n  claude:\n    binary: claude\n"
+	for _, tc := range []struct{ name, input, want string }{
+		{name: "absent web", want: "system"},
+		{name: "absent theme", input: "web: {enabled: false}\n", want: "system"},
+		{name: "system", input: "web: {theme: system}\n", want: "system"},
+		{name: "light", input: "web: {theme: light}\n", want: "light"},
+		{name: "dark", input: "web: {theme: dark}\n", want: "dark"},
+		{name: "invalid mode", input: "web: {theme: auto}\n"},
+		{name: "uppercase", input: "web: {theme: Dark}\n"},
+		{name: "whitespace", input: "web: {theme: ' dark '}\n"},
+		{name: "empty string", input: "web: {theme: ''}\n"},
+		{name: "null", input: "web: {theme: null}\n"},
+		{name: "boolean", input: "web: {theme: false}\n"},
+		{name: "sequence", input: "web: {theme: [dark]}\n"},
+		{name: "merge", input: "web: {<<: {theme: dark}}\n", want: "dark"},
+		{name: "merge with null", input: "web: {<<: {theme: null}}\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadReader(strings.NewReader(base + tc.input))
+			if tc.want == "" {
+				require.ErrorContains(t, err, "web.theme")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.Web.Theme)
+			assert.Equal(t, tc.want, cfg.Web.ThemePreference())
+		})
+	}
+}
+
 func TestLoadMetrics(t *testing.T) {
 	base := `
 tickets_dir: /tmp/tasks

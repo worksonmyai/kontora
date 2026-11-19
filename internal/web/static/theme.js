@@ -1,14 +1,12 @@
-// Runs before first paint so the page never renders in the wrong palette.
-// Both palettes live in app.css under :root[data-theme="..."], so setting the
-// attribute is all this has to do.
-function getStoredTheme() {
-  try { return localStorage.getItem('kontora-theme'); } catch (e) { return null; }
+function themeMediaQuery() {
+  return typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null;
 }
-function setStoredTheme(t) {
-  try { localStorage.setItem('kontora-theme', t); } catch (e) {}
+function resolveTheme(preference, query = themeMediaQuery()) {
+  if (preference === 'light' || preference === 'dark') return preference;
+  return (query?.matches ?? true) ? 'dark' : 'light';
 }
-function applyTheme(t) {
-  document.documentElement.dataset.theme = t;
-  document.documentElement.style.colorScheme = t;
+function applyTheme(palette) {
+  document.documentElement.dataset.theme = palette;
+  document.documentElement.style.colorScheme = palette;
 }
-applyTheme(getStoredTheme() === 'light' ? 'light' : 'dark');
+applyTheme(resolveTheme(document.documentElement.dataset.themePreference));

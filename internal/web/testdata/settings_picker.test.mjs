@@ -17,7 +17,7 @@ function harness() {
     window: { innerWidth: 1280, matchMedia: () => ({ matches: false }), addEventListener() {}, removeEventListener() {} },
     document: { getElementById: id => elements.get(id), addEventListener() {}, removeEventListener() {} },
     localStorage: { getItem: () => null, setItem: (...args) => writes.push(args) },
-    navigator: { platform: '' }, getStoredTheme: () => 'dark',
+    navigator: { platform: '' },
     requestAnimationFrame: () => 1, cancelAnimationFrame() {},
   };
   vm.createContext(context);

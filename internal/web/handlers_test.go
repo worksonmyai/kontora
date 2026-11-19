@@ -61,6 +61,7 @@ type mockService struct {
 	rawConfig      string
 	rawConfigErr   error
 	putRawConfigFn func(content string) error
+	putThemeFn     func(theme string) error
 	configInfo     ConfigInfo
 
 	assistantConfig    AssistantConfigInfo
@@ -190,6 +191,20 @@ func (m *mockService) UploadTicket(content []byte) (TicketInfo, error) {
 	return TicketInfo{}, nil
 }
 func (m *mockService) GetConfig() ConfigInfo { return m.configInfo }
+
+func (m *mockService) ThemePreference() string {
+	if m.configInfo.Theme == "" {
+		return "system"
+	}
+	return m.configInfo.Theme
+}
+
+func (m *mockService) PutThemePreference(theme string) error {
+	if m.putThemeFn != nil {
+		return m.putThemeFn(theme)
+	}
+	return nil
+}
 func (m *mockService) DeleteTicket(id string) error {
 	if m.deleteFn != nil {
 		return m.deleteFn(id)
@@ -2253,6 +2268,7 @@ func TestHandleGetStats(t *testing.T) {
 func TestHandleConfig(t *testing.T) {
 	svc := &mockService{
 		configInfo: ConfigInfo{
+			Theme:     "dark",
 			Pipelines: []string{"default", "review"},
 			Agents:    []string{"opus", "sonnet"},
 			AgentInfos: []AgentInfo{
@@ -2268,6 +2284,8 @@ func TestHandleConfig(t *testing.T) {
 
 	var cfg ConfigInfo
 	require.NoError(t, json.Unmarshal([]byte(res.body), &cfg))
+	assert.Equal(t, "dark", cfg.Theme)
+	assert.Contains(t, res.body, `"theme":"dark"`)
 	assert.Equal(t, []string{"default", "review"}, cfg.Pipelines)
 	assert.Equal(t, []string{"opus", "sonnet"}, cfg.Agents, "the legacy agent name list remains in the response")
 	assert.Equal(t, []AgentInfo{
@@ -2359,24 +2377,31 @@ func TestHandlePutRawConfig_ReloadErrorWraps(t *testing.T) {
 	assert.Same(t, err, got)
 }
 
-func TestHandlePutRawConfig_Outcomes(t *testing.T) {
+type configMutationOutcome struct {
+	name string
+	err  error
+	want int
+	code string
+}
+
+func configMutationOutcomes() []configMutationOutcome {
 	reloadFailure := &ConfigSavedReloadError{Err: errors.New("reload unavailable")}
 	reloadConflict := &ConfigSavedReloadError{Err: fmt.Errorf("reconcile: %w", automation.ErrConflict)}
+	return []configMutationOutcome{
+		{name: "success", want: http.StatusNoContent},
+		{name: "no path", err: ErrConfigPathNotSet, want: http.StatusNotImplemented},
+		{name: "invalid", err: fmt.Errorf("%w: bad agent", ErrInvalidConfig), want: http.StatusBadRequest},
+		{name: "pre-write conflict", err: fmt.Errorf("%w: config changed", automation.ErrConflict), want: http.StatusConflict},
+		{name: "write failure", err: errors.New("write unavailable"), want: http.StatusInternalServerError},
+		{name: "reload failure", err: reloadFailure, want: http.StatusInternalServerError, code: "config_saved_reload_failed"},
+		{name: "reload conflict", err: reloadConflict, want: http.StatusInternalServerError, code: "config_saved_reload_failed"},
+		{name: "wrapped reload conflict", err: fmt.Errorf("apply config: %w", reloadConflict), want: http.StatusInternalServerError, code: "config_saved_reload_failed"},
+	}
+}
+
+func TestHandlePutRawConfig_Outcomes(t *testing.T) {
 	for _, conditional := range []bool{false, true} {
-		for _, tc := range []struct {
-			name string
-			err  error
-			want int
-			code string
-		}{
-			{name: "success", want: http.StatusNoContent},
-			{name: "invalid", err: fmt.Errorf("%w: bad agent", ErrInvalidConfig), want: http.StatusBadRequest},
-			{name: "pre-write conflict", err: fmt.Errorf("%w: config changed", automation.ErrConflict), want: http.StatusConflict},
-			{name: "write failure", err: errors.New("write unavailable"), want: http.StatusInternalServerError},
-			{name: "reload failure", err: reloadFailure, want: http.StatusInternalServerError, code: "config_saved_reload_failed"},
-			{name: "reload conflict", err: reloadConflict, want: http.StatusInternalServerError, code: "config_saved_reload_failed"},
-			{name: "wrapped reload conflict", err: fmt.Errorf("apply config: %w", reloadConflict), want: http.StatusInternalServerError, code: "config_saved_reload_failed"},
-		} {
+		for _, tc := range configMutationOutcomes() {
 			t.Run(fmt.Sprintf("conditional=%t/%s", conditional, tc.name), func(t *testing.T) {
 				calls := 0
 				mock := &mockService{putRawConfigFn: func(content string) error {
@@ -2434,6 +2459,65 @@ func TestHandlePutRawConfig_BadJSON(t *testing.T) {
 	res := put(t, srv, "/api/config/raw", `{not json`)
 	assert.Equal(t, http.StatusBadRequest, res.statusCode)
 	assert.Contains(t, res.body, "invalid JSON body")
+}
+
+func TestHandlePutThemePreference_Validation(t *testing.T) {
+	srv := startHandlerTestServer(t, &mockService{putThemeFn: func(string) error {
+		t.Error("invalid requests must not call the service")
+		return nil
+	}})
+	const shape = "Send one JSON object up to 4096 bytes with only a string `theme` field."
+	const mode = "`theme` must be `system`, `light`, or `dark`."
+	for _, tc := range []struct{ name, body, wantError string }{
+		{"malformed", `{not json`, shape},
+		{"missing", `{}`, shape},
+		{"empty", `{"theme":""}`, mode},
+		{"null", `{"theme":null}`, shape},
+		{"non-string", `{"theme":true}`, shape},
+		{"unknown mode", `{"theme":"auto"}`, mode},
+		{"uppercase", `{"theme":"Dark"}`, mode},
+		{"whitespace", `{"theme":" dark "}`, mode},
+		{"wrong field name", `{"Theme":"dark"}`, shape},
+		{"extra field", `{"theme":"dark","content":"draft"}`, shape},
+		{"extra document", `{"theme":"dark"} {}`, shape},
+		{"oversize", `{"theme":"dark"}` + strings.Repeat(" ", 4096), shape},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := put(t, srv, "/api/config/theme", tc.body)
+			assert.Equal(t, http.StatusBadRequest, res.statusCode)
+			assert.Contains(t, res.body, tc.wantError)
+			assert.Equal(t, "application/json", res.contentType)
+		})
+	}
+}
+
+func TestHandlePutThemePreference_Outcomes(t *testing.T) {
+	check := func(mode string, tc configMutationOutcome) {
+		t.Run(mode+"/"+tc.name, func(t *testing.T) {
+			var gotTheme string
+			srv := startHandlerTestServer(t, &mockService{putThemeFn: func(theme string) error {
+				gotTheme = theme
+				return tc.err
+			}})
+			res := put(t, srv, "/api/config/theme", fmt.Sprintf(`{"theme":%q}`, mode))
+			assert.Equal(t, mode, gotTheme)
+			assert.Equal(t, tc.want, res.statusCode)
+			if tc.err == nil {
+				assert.Empty(t, res.body)
+				return
+			}
+			var body map[string]string
+			require.NoError(t, json.Unmarshal([]byte(res.body), &body))
+			assert.Equal(t, tc.err.Error(), body["error"])
+			assert.Equal(t, tc.code, body["code"])
+		})
+	}
+	for _, tc := range configMutationOutcomes() {
+		check("dark", tc)
+	}
+	for _, mode := range []string{"system", "light"} {
+		check(mode, configMutationOutcome{name: "success", want: http.StatusNoContent})
+	}
 }
 
 func TestHandleCreateTicket_WithAgent(t *testing.T) {

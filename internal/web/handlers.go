@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/companion"
+	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
@@ -846,6 +847,25 @@ func (s *Server) handlePutRawConfig(w http.ResponseWriter, r *http.Request) {
 	} else {
 		err = s.svc.PutRawConfig(body.Content)
 	}
+	writeConfigMutationResult(w, err)
+}
+
+func (s *Server) handlePutThemePreference(w http.ResponseWriter, r *http.Request) {
+	var body map[string]*string
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	if err := dec.Decode(&body); err != nil || len(body) != 1 || body["theme"] == nil || !errors.Is(dec.Decode(new(json.RawMessage)), io.EOF) {
+		writeJSONError(w, http.StatusBadRequest, "Send one JSON object up to 4096 bytes with only a string `theme` field.")
+		return
+	}
+	theme := *body["theme"]
+	if err := config.ValidateWebTheme(theme); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "`theme` must be `system`, `light`, or `dark`.")
+		return
+	}
+	writeConfigMutationResult(w, s.svc.PutThemePreference(theme))
+}
+
+func writeConfigMutationResult(w http.ResponseWriter, err error) {
 	if err != nil {
 		if _, ok := errors.AsType[*ConfigSavedReloadError](err); ok {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{

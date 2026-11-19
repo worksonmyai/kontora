@@ -23,7 +23,6 @@ function harness(reactive = false) {
     console, setTimeout, clearTimeout, structuredClone, TextEncoder,
     setInterval() {}, clearInterval() {},
     localStorage: { getItem() { return null; }, setItem() {} },
-    getStoredTheme() { return null; }, setStoredTheme() {}, applyTheme() {},
     window: { innerWidth: 1200, addEventListener() {} },
     document: { documentElement: { style: {} }, getElementById() { return null; } },
     navigator: {}, location: { protocol: 'http:', host: 'localhost' },

@@ -44,6 +44,8 @@ const (
 	// It and its sourcemap are the only assets with no file behind them.
 	uiBundleAsset    = "app.js"
 	uiSourceMapAsset = "app.js.map"
+
+	documentTheme = `data-theme-preference="system"`
 )
 
 // staticAsset is one embedded UI file, read into memory once with everything a
@@ -66,6 +68,9 @@ type staticAsset struct {
 	// compressed at startup; the dev bundle defers the work, so a 304 or an
 	// identity request does not pay for it.
 	gzipBody func() []byte
+
+	// Prebuilt variants of the embedded document. Each variant keeps the original asset URLs.
+	themeVariants map[string]*staticAsset
 }
 
 // loadAssets builds the table on first use. The daemon calls it at startup, so
@@ -107,8 +112,21 @@ func buildAssets() (map[string]*staticAsset, error) {
 		// request, so no URL may promise fixed bytes.
 		versionAssetURLs(assets)
 	}
+	if index := assets["index.html"]; index != nil {
+		index.themeVariants = make(map[string]*staticAsset, 2)
+		for _, mode := range []string{"light", "dark"} {
+			index.themeVariants[mode] = newAsset("index.html", themedDocument(index.body, mode))
+		}
+	}
 
 	return assets, nil
+}
+
+func themedDocument(body []byte, mode string) []byte {
+	if mode != "light" && mode != "dark" {
+		return body
+	}
+	return bytes.Replace(body, []byte(documentTheme), []byte(`data-theme-preference="`+mode+`"`), 1)
 }
 
 // versionAssetURLs points index.html at /<name>?v=<content hash> for each
@@ -326,6 +344,12 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 
 	h := w.Header()
 	if name == "index.html" {
+		mode := s.svc.ThemePreference()
+		if variant := a.themeVariants[mode]; variant != nil {
+			a = variant
+		} else if a != s.assets[name] && (mode == "light" || mode == "dark") {
+			a = newLazyAsset(name, themedDocument(a.body, mode))
+		}
 		// The one response that is a document, so the only one that needs to
 		// load anything. Everything else keeps the baseline policy.
 		h.Set("Content-Security-Policy", documentCSP)

@@ -29,7 +29,7 @@ export function kontoraPalette() {
       { id: 'nav-new',      view: 'new',      label: 'New ticket',     glyph: '+' },
       { id: 'nav-settings', view: 'settings', label: 'Settings',       glyph: '⚙' },
       { id: 'nav-sidebar',  act: 'sidebar',   label: 'Toggle sidebar', glyph: '⌸' },
-      { id: 'nav-theme',    act: 'theme',     label: 'Toggle theme',   glyph: '☀', meta: 'c t' },
+      { id: 'nav-theme',    act: 'theme',     label: 'Cycle theme',   glyph: '☀', meta: 'c t' },
     ],
 
     // Row glyph and hue per status: a mark for the three in-flight statuses, "#"

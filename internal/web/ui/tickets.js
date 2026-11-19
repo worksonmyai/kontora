@@ -19,6 +19,10 @@ export function kontoraTickets() {
   let configGeneration = 0;
 
   return {
+    invalidateConfigReads() {
+      ++configGeneration;
+    },
+
     // Startup, dialogs and reloads share one request order. A dialog guard alone
     // cannot stop its older response from replacing a newer reload in that dialog.
     async loadConfigCache({ current = () => true, required = true } = {}) {
@@ -33,7 +37,10 @@ export function kontoraTickets() {
           throw new Error('Failed to load config');
         }
         const config = await res.json();
-        if (fresh()) this.configCache = config;
+        if (fresh()) {
+          this.configCache = config;
+          this.applyThemePreference(config.theme);
+        }
       } catch (e) {
         if (fresh()) throw e;
       }
@@ -101,6 +108,7 @@ export function kontoraTickets() {
     },
 
     async init() {
+      this.initTheme();
       this.initDialogs?.();
       this.initMobile();
       this.setupSettingsLifecycle?.();
@@ -645,7 +653,11 @@ export function kontoraTickets() {
           }
         }
         if (initialSnapshot) this._releaseInitialSnapshot();
-        else this.resyncTickets();
+        else {
+          this.resyncTickets();
+          this.refreshConfigCache();
+          this._settingsRefreshForm();
+        }
       });
       es.addEventListener('automations_updated', () => { this.automationsRefresh(); });
       es.addEventListener('companion_updated', () => { this.companionRefresh(); });

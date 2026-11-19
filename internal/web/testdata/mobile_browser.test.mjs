@@ -6267,6 +6267,54 @@ const coreHistory = () => [
 const coreChanges = { base: 'main', branch: 'fixture/core', commits: [{ sha: 'b0123456789', subject: 'Independent Changes fixture commit' }],
   files: [{ path: 'internal/core-fixture.go', added: 17, deleted: 4 }] };
 
+for (const [width, entry] of [[390, 'Changes tab'], [1280, 'sidebar overflow']]) {
+  test(`ticket Changes shows committed branch details via ${entry}`, async t => {
+    const title = 'Export report update';
+    const branch = 'fixture/export-report', baseRef = 'release/2.x';
+    const commits = [
+      { sha: '7cd8abc', subject: 'Retain export markers' },
+      { sha: 'c5b10ef', subject: 'Record rejected exports' },
+    ];
+    const files = [
+      { path: 'docs/export.md', added: 1, deleted: 0 },
+      { path: 'internal/export/report.go', added: 15, deleted: 4 },
+      { path: 'internal/export/report_test.go', added: 12, deleted: 0 },
+      { path: 'internal/export/legacy.go', added: 0, deleted: 5 },
+    ];
+    await withPage(t, width, 'light', async (page, fixture) => {
+      if (entry === 'sidebar overflow') {
+        await page.getByRole('listitem', { name: `Ticket kon-export: ${title}`, exact: true }).click();
+        const more = page.getByRole('button', { name: '1 more in diff →', exact: true });
+        await expect(more).toBeVisible();
+        await expect(page.getByText('docs/export.md', { exact: true }).filter({ visible: true })).toHaveCount(0);
+        await more.click();
+      } else {
+        await page.getByText(title, { exact: true }).click();
+        await page.getByRole('button', { name: 'Changes', exact: true }).click();
+      }
+      const changes = page.getByRole('region', { name: 'Changes', exact: true });
+      await expect(changes.getByText(`vs ${baseRef}`, { exact: true })).toBeVisible();
+      await expect(changes.getByRole('heading', { name: 'Commits', exact: true })).toBeVisible();
+      for (const { sha, subject } of commits) {
+        const commit = changes.locator('.detail-commit').filter({ has: page.getByText(subject, { exact: true }) });
+        await expect(commit.getByText(subject, { exact: true })).toBeVisible();
+        await expect(commit.getByText(sha, { exact: true })).toBeVisible();
+      }
+      await expect(changes.getByRole('heading', { name: '4 changed files', exact: true })).toBeVisible();
+      await expect(changes.getByText('+28', { exact: true })).toBeVisible();
+      await expect(changes.getByText('−9', { exact: true })).toBeVisible();
+      for (const { path, added, deleted } of files) {
+        const file = changes.locator('.detail-file').filter({ has: page.getByText(path, { exact: true }) });
+        await expect(file.getByText(path, { exact: true })).toBeVisible();
+        await expect(file.getByText(`+${added}`, { exact: true })).toBeVisible();
+        await expect(file.getByText(`−${deleted}`, { exact: true })).toBeVisible();
+      }
+      assert.deepEqual(fixture.mutations, []);
+    }, { onlyRecords: true, records: [ticket('kon-export', title, { branch })],
+      changes: { 'kon-export': { base: baseRef, branch, commits, files } } });
+  });
+}
+
 describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
   for (const [width, theme, tab, status] of [
     [768, 'dark', 'summary', 'done'],

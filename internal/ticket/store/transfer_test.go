@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -443,6 +444,67 @@ func TestCommittedRecoveryNeverDeletesRecreatedSource(t *testing.T) {
 	got, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, "recreated source", string(got))
+}
+
+func TestCommittedRecoveryPreservesEditedDestination(t *testing.T) {
+	for _, tc := range []struct{ name, suffix string }{
+		{"ticket markdown", ".md"},
+		{"note reactions", ".notes.json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := transferFixture(t, "", true)
+			interrupted := errors.New("stop before cleanup")
+			_, err := transfer(req, func(step string) error {
+				if step == "committed" {
+					return interrupted
+				}
+				return nil
+			})
+			require.ErrorIs(t, err, interrupted)
+
+			published := filepath.Join(req.DestinationDir, req.ID+tc.suffix)
+			original, err := os.ReadFile(published)
+			require.NoError(t, err)
+			edited := append(slices.Clone(original), '\n')
+			require.NoError(t, os.WriteFile(published, edited, 0o644))
+
+			root := filepath.Join(req.SourceDir, captureDirectory)
+			entries, err := os.ReadDir(root)
+			require.NoError(t, err)
+			require.Len(t, entries, 1)
+			capture := filepath.Join(root, entries[0].Name())
+			backups := make(map[string][]byte)
+			for _, name := range []string{"markdown", "reactions"} {
+				path := filepath.Join(capture, name)
+				backups[path], err = os.ReadFile(path)
+				require.NoError(t, err)
+			}
+
+			blocked, err := RecoverTransfers(req.DestinationDir)
+			require.ErrorContains(t, err, "transfer contents changed")
+			assert.Equal(t, map[string]bool{req.ID: true}, blocked)
+			got, err := os.ReadFile(published)
+			require.NoError(t, err)
+			assert.Equal(t, edited, got)
+			for path, before := range backups {
+				after, err := os.ReadFile(path)
+				require.NoError(t, err)
+				assert.Equal(t, before, after, path)
+			}
+
+			require.NoError(t, os.WriteFile(published, original, 0o644))
+			blocked, err = RecoverTransfers(req.DestinationDir)
+			require.NoError(t, err)
+			assert.Empty(t, blocked)
+			assert.NoDirExists(t, capture)
+			pending, err := HasPendingTransfer(req.DestinationDir, req.ID)
+			require.NoError(t, err)
+			assert.False(t, pending)
+			got, err = os.ReadFile(published)
+			require.NoError(t, err)
+			assert.Equal(t, original, got)
+		})
+	}
 }
 
 func TestTransferRecoveryAtCheckpoints(t *testing.T) {

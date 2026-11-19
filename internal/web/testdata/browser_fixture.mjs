@@ -13,6 +13,7 @@ export const liveTitle = 'Running fixture with a long title explaining terminal 
 export const liveBranch = 'fixture/mobile-terminal-keyboard-layout-and-input-lifecycle-with-long-metadata';
 export const liveAgent = 'fixture-agent-with-a-long-descriptive-name';
 export const supervisorID = 'abcdef-abcd';
+const themeModes = new Set(['system', 'light', 'dark']);
 
 export function ticket(id, title, extra = {}) {
   const description = `# ${title}\n\nFixture description.\n\n`;
@@ -207,7 +208,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
   if (options.onlyRecords) records.clear();
   for (const record of options.records || []) put(record);
   if (options.empty) records.clear();
-  const config = { config_path: '/fixtures/config.yaml', pipelines: ['standard'], default_pipeline: 'standard',
+  const config = { config_path: '/fixtures/config.yaml', theme: options.themePreference ?? 'system', revision: 1, pipelines: ['standard'], default_pipeline: 'standard',
     pipeline_infos: [{ name: 'standard', stages: ['plan', 'code'] }],
     agents: ['fixture-agent'], agent_infos: [{ name: 'fixture-agent', binary: 'pi' }],
     projects: [{ name: 'Fixture repository', path: '/fixtures/repository-with-a-long-name', agent: 'fixture-agent', pipeline: 'standard' }],
@@ -233,7 +234,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
     automationFailure: null, automationReadFailure: null, automationWait: null, automationsAvailable: true, loseCreate: false, loseRun: false,
     unavailableFolder: false, sourcesFailure: false, configFailure: options.configFailure || false,
     rawConfigUnavailable: options.rawConfigUnavailable || false, rawReadWait: null, configRefreshWait: null,
-    saveWait: null, saveResponse: null, conflictOnSave: false,
+    saveWait: null, saveResponse: null, conflictOnSave: false, themeWait: null, themeFailure: null,
     assistantConfig: options.assistantConfig || { enabled: true, hint: '', autonomy: 'ask' },
     companionSnapshot: structuredClone(options.companionSnapshot || { enabled: true, name: 'Kotik', health: 'ok', ai_available: false, items: [], revision: 1 }),
     companionWait: options.companionWait || null, companionFailure: null, assistantStopFailure: null };
@@ -474,6 +475,30 @@ export function fixtures({ base, assets, engine }, options = {}) {
           : { totals: { done: 1, runs: 2, first_pass_pct: 50 }, live: {}, days: [], buckets: [], stages: [], agents: [], projects: [] });
         case '/api/tickets/archived': return json(route, { tickets: [records.get('primary/kon-archived')] });
       }
+    }
+    if (method === 'PUT' && path === '/api/config/theme') {
+      assert.match(request.headers()['content-type'] || '', /^application\/json(?:;|$)/i);
+      const body = request.postDataJSON();
+      assert.deepEqual(Object.keys(body), ['theme']);
+      assert.ok(themeModes.has(body.theme), `Unexpected theme preference: ${body.theme}`);
+      mutations.push({ method, path, body });
+      if (behavior.themeWait) await behavior.themeWait;
+      const failure = behavior.themeFailure;
+      if ((!failure || failure.written) && !behavior.rawConfigUnavailable) {
+        const doc = yaml.parseDocument(rawConfig);
+        if (!doc.get('web')) doc.set('web', doc.createNode({}));
+        doc.setIn(['web', 'theme'], body.theme);
+        rawConfig = String(doc);
+      }
+      if (failure) {
+        expectedHTTPFailures.push(base + path);
+        return json(route, { error: failure.error, code: failure.code }, failure.status);
+      }
+      config.theme = body.theme;
+      config.revision++;
+      return route.fulfill({ status: 204, headers: {
+        'X-Kontora-Theme': config.theme, 'X-Kontora-Config-Revision': String(config.revision),
+      } });
     }
     if (method === 'PUT' && path === '/api/config/raw') {
       const body = request.postDataJSON();
@@ -855,6 +880,18 @@ export function fixtures({ base, assets, engine }, options = {}) {
     throw new Error(`Unmodelled API request: ${method} ${url}`);
   }
 
+  async function themedDocument(route, url) {
+    assert.ok(themeModes.has(config.theme), `Unexpected fixture theme: ${config.theme}`);
+    const response = await route.fetch({ url, maxRedirects: 0 });
+    assert.equal(response.status(), 200, `Could not read embedded document: ${url}`);
+    const body = await response.text();
+    const marker = /(<html\b[^>]*\bdata-theme-preference=")(system|light|dark)(")/;
+    assert.match(body, marker, 'Embedded document must declare a theme preference on <html>');
+    const headers = response.headers();
+    for (const header of ['content-encoding', 'content-length', 'etag']) delete headers[header];
+    return route.fulfill({ response, headers, body: body.replace(marker, (_, prefix, _mode, suffix) => prefix + config.theme + suffix) });
+  }
+
   async function install(context) {
     // Delay JSON decoding, not arbitrary app state. Headers and wire bytes have
     // already arrived; tests release this second boundary independently.
@@ -913,12 +950,12 @@ export function fixtures({ base, assets, engine }, options = {}) {
           }
           // The real server still serves index.html for a rejected token. Fetch
           // only that fixed embedded asset, never the token-bearing URL.
-          const response = await route.fetch({ url: base + '/', maxRedirects: 0 });
-          return await route.fulfill({ response });
+          return await themedDocument(route, base + '/');
         }
         assert.equal(request.method(), 'GET');
         // index.html names its scripts and stylesheets with a ?v= content hash.
         assert.ok(assets.has(url.pathname) && (!url.search || /^\?v=[0-9a-f]+$/.test(url.search)), `Unknown asset: ${url}`);
+        if (url.pathname === '/' || url.pathname === '/index.html') return await themedDocument(route, url.href);
         if (url.pathname === '/vendor/xterm@5.5.0/xterm.css') {
           stylesheetRequests.push(url.href);
           if (behavior.stylesheetFailures > 0) {
@@ -1028,7 +1065,7 @@ export function fixtureSession(context, environment, options = {}) {
   const fixture = fixtures(environment, options), errors = [];
   const { base } = environment;
 
-  async function preparePage(theme) {
+  async function preparePage() {
     await fixture.install(context);
     if (options.noNavigation) await context.addInitScript(() => {
       Object.defineProperty(window, 'navigation', { configurable: true, value: undefined });
@@ -1036,10 +1073,9 @@ export function fixtureSession(context, environment, options = {}) {
     if (options.nativeAgentPicker) await context.addInitScript(() => {
       Object.defineProperty(HTMLElement.prototype, 'showPopover', { configurable: true, value: undefined });
     });
-    await context.addInitScript(({ theme, sidebar, savedThread, assistantOpen, base }) => {
+    await context.addInitScript(({ sidebar, savedThread, assistantOpen, base }) => {
       // Teardown navigates to an opaque about:blank document with no storage.
       if (location.origin !== base) return;
-      if (localStorage.getItem('kontora-theme') === null) localStorage.setItem('kontora-theme', theme);
       localStorage.setItem('kontora-assistant-open', assistantOpen ? '1' : '0');
       if (savedThread) localStorage.setItem('kontora-assistant-thread', savedThread);
       localStorage.setItem('kontora-sidebar-hidden', sidebar ? '0' : '1');
@@ -1052,7 +1088,7 @@ export function fixtureSession(context, environment, options = {}) {
         emit(type, data = {}) { if (!this.closed) this.dispatchEvent(new MessageEvent(type, { data: JSON.stringify(data) })); }
         close() { this.closed = true; }
       };
-    }, { theme, sidebar: options.sidebar, savedThread: options.savedThread, assistantOpen: options.assistantOpen, base });
+    }, { sidebar: options.sidebar, savedThread: options.savedThread, assistantOpen: options.assistantOpen, base });
     const page = await context.newPage();
     page.setDefaultTimeout(4000);
     page.setDefaultNavigationTimeout(15000);

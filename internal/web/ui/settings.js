@@ -125,7 +125,7 @@ const SETTINGS_SECTIONS = [
   { key: 'assistant', label: 'assistant', blurb: 'Board chat and the companion inbox. The inbox works without an agent.' },
   { key: 'plannotator', label: 'plannotator', blurb: 'Human review of the diff, and annotation of the ticket. Review notes feed the rework stage; ticket notes rewrite the ticket.' },
   { key: 'notifications', label: 'notifications', blurb: 'Default notification statuses and delivery destinations. Ticket and project choices take precedence.' },
-  { key: 'display', label: 'display', blurb: 'Browser-local. Never written to config.yaml.' },
+  { key: 'display', label: 'display' },
 ];
 
 // The rail's four clusters. Every SETTINGS_SECTIONS key appears in exactly one
@@ -134,7 +134,7 @@ const SETTINGS_NAV_GROUPS = [
   { title: 'runtime', hue: 'indigo', keys: ['general', 'environment', 'web'] },
   { title: 'orchestration', hue: 'cyan', keys: ['agents', 'stages', 'pipelines', 'statuses', 'projects'] },
   { title: 'human in the loop', hue: 'mauve', keys: ['assistant', 'plannotator', 'notifications'] },
-  { title: 'this browser', hue: 'green', keys: ['display'] },
+  { title: 'interface', hue: 'green', keys: ['display'] },
 ];
 
 // config.NotifyTelegram, NotifyMattermost, NotifyWebhook, with what each one
@@ -192,7 +192,7 @@ const SETTINGS_FIELD_HELP = {
   'notifications.enabled': 'Enable notification delivery. Ticket status choices still determine when notifications are requested.',
   'notifications.default': 'Used when neither the ticket nor its project sets notification channels.',
   'notifications.default_statuses': 'Used for new ordinary tickets and explicit starts when neither the ticket nor its project sets notification statuses. Destinations and delivery enablement are separate. Waiting applies only to live Pi questions.',
-  'display.theme': 'Changes apply immediately in this browser. Never written to config.yaml.',
+  'display.theme': 'Saved in config.yaml for browsers connected to this daemon. System follows the device. Press c then t to cycle through the modes.',
   'display.pipeline_badges': 'Show pipeline labels on ticket cards in this browser.',
   'display.agent_meta': 'Show agent details on ticket cards in this browser.',
   'stages.timeout': 'Maximum duration of the stage. Empty or zero leaves the stage without a timer.',
@@ -282,6 +282,7 @@ export function kontoraSettings() {
     settingsErrors: [],
     settingsLoading: false,
     settingsSaving: false,
+    settingsThemeBaselinePending: false,
     settingsSavedAt: '',
     settingsSavedRestart: false,
     settingsDiffOpen: false,
@@ -362,6 +363,10 @@ export function kontoraSettings() {
       return this.settingsSaving || this.settingsDirty() || this._settingsHasDrafts();
     },
 
+    settingsEditsLocked() {
+      return this.settingsSaving || this.themeSaving || this.settingsThemeBaselinePending;
+    },
+
     settingsGuardCancel() {
       return this.settingsGuardKeepEditing();
     },
@@ -386,6 +391,12 @@ export function kontoraSettings() {
       this.currentView = 'settings';
       if (this.settingsLoading || (this.settingsConfig && !this.settingsLoadError)) return;
       await this._settingsRefreshForm(true);
+    },
+
+    _settingsRefreshAfterThemeWrite() {
+      if (!this.settingsConfig && !this.settingsLoading) return;
+      this.settingsThemeBaselinePending = true;
+      void this._settingsRefreshForm(true);
     },
 
     async _settingsRefreshForm(initial = false) {
@@ -413,12 +424,11 @@ export function kontoraSettings() {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
         if (!canApply()) return;
-        const text = data.content || '';
-        if (config && text === this._settingsRawText) {
-          this.settingsState = 'ok';
-          return;
-        }
-        await this._settingsParse(text, canApply);
+        if (typeof data.content !== 'string') throw new Error('Could not read the current configuration.');
+        const text = data.content;
+        if (config && text === this._settingsRawText) this.settingsState = 'ok';
+        else await this._settingsParse(text, canApply);
+        if (seq === this._settingsRefreshSeq) this.settingsThemeBaselinePending = false;
       } catch (e) {
         if (!canApply()) return;
         this.settingsState = config ? 'ok' : 'parse-error';
@@ -687,7 +697,7 @@ export function kontoraSettings() {
     // ---- saving ------------------------------------------------------------
 
     async saveSettings() {
-      if (this.settingsSaving || !this.settingsConfig) return false;
+      if (this.settingsEditsLocked() || !this.settingsConfig) return false;
       if (this._settingsHasDrafts()) {
         this.settingsErrors = ['Add or cancel unfinished rows before saving.'];
         this.settingsDiffOpen = true;
@@ -820,7 +830,7 @@ export function kontoraSettings() {
     },
 
     discardSettings() {
-      if (this.settingsSaving) return false;
+      if (this.settingsEditsLocked()) return false;
       this._settingsCancelRead();
       this.settingsNewStage = '';
       this.settingsNewStageOpen = false;
@@ -1325,7 +1335,7 @@ export function kontoraSettings() {
       }
       if (key === 'statuses') return `${SETTINGS_BUILTIN_STATUSES.length} built-in · ${cfg.statuses.length} custom`;
       if (key === 'display') {
-        return `${this.showPipelineBadges ? 'badges' : 'no badges'}, ${this.lightTheme ? 'light' : 'dark'} theme`;
+        return `${this.showPipelineBadges ? 'badges' : 'no badges'}, ${this.themePreference} theme`;
       }
       return '';
     },
@@ -1375,7 +1385,8 @@ export function kontoraSettings() {
         target: 'notif-' + key,
         help: this.settingsNotificationFields.find(field => field.key === key)?.help || SETTINGS_FIELD_HELP['notifications.' + key] || '',
       });
-      for (const key of ['theme', 'pipeline_badges', 'agent_meta']) add('display', ['display', key], { local: true, configKey: '', label: this.settingsFieldLabel(key) });
+      add('display', ['display', 'theme'], { configKey: 'web.theme' });
+      for (const key of ['pipeline_badges', 'agent_meta']) add('display', ['display', key], { local: true, configKey: '', label: this.settingsFieldLabel(key) });
       if (!cfg) return fields;
       for (const name of Object.keys(cfg.environment)) add('environment', ['environment', name], { label: 'Environment variable', entity: name });
       for (const name of this.settingsAgentNames()) {

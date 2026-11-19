@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -147,7 +148,7 @@ func TestAuthorityOperatorRoutesRejectWorkers(t *testing.T) {
 	// Workers must not bypass authority by moving or editing the backing ticket.
 	routes := []string{
 		"GET /api/tickets", "POST /api/tickets", "POST /api/tickets/upload",
-		"GET /api/stats", "GET /api/config", "GET /api/config/raw", "PUT /api/config/raw",
+		"GET /api/stats", "GET /api/config", "GET /api/config/raw", "PUT /api/config/raw", "PUT /api/config/theme",
 		"GET /api/tickets/t", "GET /api/tickets/archived", "DELETE /api/tickets/t", "PUT /api/tickets/t",
 		"GET /api/tickets/t/cost", "GET /api/tickets/t/logs", "GET /api/tickets/t/activity",
 		"GET /api/tickets/t/changes", "GET /api/tickets/t/chain", "GET /api/events",
@@ -324,6 +325,60 @@ func TestAuthorityOrdinaryCompatibility(t *testing.T) {
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, r)
 			assert.Equal(t, tc.want, w.Code)
+		})
+	}
+}
+
+func TestThemePreferenceRouteSecurity(t *testing.T) {
+	for _, tc := range []struct {
+		name, header, value, origin, contentType string
+		authority, open                          bool
+		want                                     int
+	}{
+		{name: "open", open: true, want: http.StatusNoContent},
+		{name: "missing token", want: http.StatusUnauthorized},
+		{name: "shared bearer", header: "Authorization", value: "Bearer shared-secret", want: http.StatusNoContent},
+		{name: "same-origin session", header: "Cookie", value: tokenCookieName + "=shared-secret", origin: "http://127.0.0.1:8080", want: http.StatusNoContent},
+		{name: "cross-origin session", header: "Cookie", value: tokenCookieName + "=shared-secret", origin: "http://other.example", want: http.StatusForbidden},
+		{name: "wrong media type", open: true, contentType: "text/plain", want: http.StatusUnsupportedMediaType},
+		{name: "worker", authority: true, header: "Authorization", value: "Bearer worker-secret", want: http.StatusForbidden},
+		{name: "reader", authority: true, header: "Authorization", value: "Bearer reader-secret", want: http.StatusForbidden},
+		{name: "shared token in authority mode", authority: true, header: "Authorization", value: "Bearer shared-secret", want: http.StatusUnauthorized},
+		{name: "operator", authority: true, header: OperatorTokenHeader, value: "operator-secret", want: http.StatusNoContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			svc := &mockService{putThemeFn: func(theme string) error {
+				called = true
+				assert.Equal(t, "dark", theme)
+				return nil
+			}}
+			var options []ServerOption
+			if tc.authority {
+				options = append(options, WithAuthority(*testAuthorityConfig()))
+			}
+			token := "shared-secret"
+			if tc.open {
+				token = ""
+			}
+			s, err := New(svc, NewSSEBroker(), "127.0.0.1", 0, token, nil, "test", slog.Default(), options...)
+			require.NoError(t, err)
+			r := httptest.NewRequest(http.MethodPut, "http://127.0.0.1:8080/api/config/theme", strings.NewReader(`{"theme":"dark"}`))
+			contentType := tc.contentType
+			if contentType == "" {
+				contentType = "application/json"
+			}
+			r.Header.Set("Content-Type", contentType)
+			if tc.header != "" {
+				r.Header.Set(tc.header, tc.value)
+			}
+			if tc.origin != "" {
+				r.Header.Set("Origin", tc.origin)
+			}
+			w := httptest.NewRecorder()
+			s.httpSrv.Handler.ServeHTTP(w, r)
+			assert.Equal(t, tc.want, w.Code, w.Body.String())
+			assert.Equal(t, tc.want == http.StatusNoContent, called)
 		})
 	}
 }

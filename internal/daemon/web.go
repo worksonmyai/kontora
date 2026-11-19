@@ -352,6 +352,15 @@ func expandUploadAliases(node *yaml.Node, active map[*yaml.Node]bool, budget *up
 	return &cloned, nil
 }
 
+// ThemePreference returns the running dashboard preference without projecting the full config.
+func (d *Daemon) ThemePreference() string {
+	return d.config().Web.ThemePreference()
+}
+
+func (d *Daemon) configRevision(cfg *config.Config) int64 {
+	return max(d.initialConfigRevision, cfg.RuntimeRevision)
+}
+
 // GetConfig returns available pipelines, agents and the daemon's runtime identity.
 func (d *Daemon) GetConfig() web.ConfigInfo {
 	cfg := d.config()
@@ -412,6 +421,8 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 		TicketsDir:      ticketsDir,
 		TmuxSession:     d.tmuxSession,
 		TmuxSocket:      socket,
+		Theme:           cfg.Web.ThemePreference(),
+		Revision:        d.configRevision(cfg),
 		Pipelines:       pipelines,
 		PipelineInfos:   infos,
 		Agents:          agents,

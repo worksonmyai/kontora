@@ -81,7 +81,7 @@ function fixture() {
       observe() {}
       disconnect() { observers.delete(this); }
     },
-    navigator: { platform: 'Win32' }, localStorage: { getItem() { return null; } }, getStoredTheme: () => 'dark',
+    navigator: { platform: 'Win32' }, localStorage: { getItem() { return null; } },
   };
   const { navigator: _, ...nodeGlobals } = globals;
   Object.assign(globalThis, nodeGlobals);

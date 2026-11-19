@@ -2,9 +2,12 @@ import { TAPE_WINDOW_SIZE } from './activity.js';
 import { newCreateForm } from './create.js';
 import { termState } from './terminal.js';
 
+const THEME_MODES = ['system', 'light', 'dark'];
+
 // Component core: the state every other mixin reads, the app-wide bits
 // (auth, routing, toast, theme) and the date formatting the templates call.
 export function kontoraApp() {
+  let configTheme;
   return {
     tickets: [],
     runningAgents: 0,
@@ -218,7 +221,9 @@ export function kontoraApp() {
     childrenExpanded: false,
     deleteSubmitting: false,
     uploadDragging: false,
-    lightTheme: getStoredTheme() === 'light',
+    themePreference: document.documentElement?.dataset?.themePreference || 'system',
+    lightTheme: document.documentElement?.dataset?.theme === 'light',
+    themeSaving: false,
     sidebarHidden: (function() { try { return localStorage.getItem('kontora-sidebar-hidden') !== '0'; } catch (e) { return true; } })(),
     // Columns collapsed to a vertical rail. Cancelled starts collapsed unless
     // the user has saved their own set.
@@ -315,6 +320,7 @@ export function kontoraApp() {
 
     destroy() {
       this._appDestroyed = true;
+      this._themeUnsubscribe?.();
       if (this._boardRaf !== null) cancelAnimationFrame(this._boardRaf);
       if (this._searchRaf !== null) cancelAnimationFrame(this._searchRaf);
       this._boardRaf = null;
@@ -394,13 +400,92 @@ export function kontoraApp() {
       return Math.floor(diff / 604800) + 'w';
     },
 
-    toggleTheme() {
-      this.lightTheme = !this.lightTheme;
-      var t = this.lightTheme ? 'light' : 'dark';
-      applyTheme(t);
-      setStoredTheme(t);
+    initTheme() {
+      const query = themeMediaQuery();
+      const change = () => {
+        if (this.themePreference === 'system') this.applyThemePreference('system', query);
+      };
+      query?.addEventListener?.('change', change);
+      this._themeUnsubscribe = () => query?.removeEventListener?.('change', change);
+      this.applyThemePreference(this.themePreference, query);
+    },
+
+    applyThemePreference(mode, query) {
+      if (!THEME_MODES.includes(mode)) return;
+      const palette = resolveTheme(mode, query);
+      this.themePreference = mode;
+      const root = document.documentElement;
+      root.dataset.themePreference = mode;
+      this.lightTheme = palette === 'light';
+      if (root.dataset.theme === palette) return;
+      applyTheme(palette);
       if (termState.term) this._applyTerminalTheme();
       this.updateFavicon();
+    },
+
+    applyConfigTheme(config) {
+      if (!THEME_MODES.includes(config.theme)) return;
+      configTheme = config;
+      this.applyThemePreference(config.theme);
+    },
+
+    toggleTheme() {
+      return this.saveThemePreference(THEME_MODES[(THEME_MODES.indexOf(this.themePreference) + 1) % THEME_MODES.length]);
+    },
+
+    changeThemePreference(select) {
+      const mode = select.value;
+      select.value = this.themePreference;
+      return this.saveThemePreference(mode);
+    },
+
+    async saveThemePreference(mode) {
+      if (this.themeSaving || !THEME_MODES.includes(mode) || mode === this.themePreference) return;
+      if (this.settingsSaving) {
+        this.error = 'Wait for the Settings save to finish.';
+        return;
+      }
+      if (this.settingsNeedsProtection()) {
+        this.error = 'Save or discard your Settings changes before changing the theme.';
+        return;
+      }
+      this.themeSaving = true;
+      this.closeAgentPicker?.(false);
+      this.invalidateConfigReads();
+      const themeReadBeforeSave = configTheme;
+      const unknown = 'Could not confirm whether the theme was saved. Check config.yaml before retrying.';
+      let mayHaveWritten = true;
+      try {
+        const res = await fetch('/api/config/theme', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ theme: mode }),
+        });
+        if (this._appDestroyed) return;
+        if (res.status === 204) {
+          const revision = Number(res.headers.get('X-Kontora-Config-Revision'));
+          // A read during the save may see either side of the reload.
+          if (configTheme === themeReadBeforeSave || !(configTheme?.revision > revision)) {
+            this.applyThemePreference(res.headers.get('X-Kontora-Theme') || mode);
+          }
+        } else {
+          mayHaveWritten = ![400, 401, 403, 409, 415, 501].includes(res.status);
+          const data = await res.json().catch(() => ({}));
+          if (this._appDestroyed) return;
+          if (res.status === 401) this.needsAuth = true;
+          this.error = res.status === 500 && data?.code === 'config_saved_reload_failed'
+            ? (data.error || 'Configuration saved, but reload failed.')
+            : mayHaveWritten ? unknown : (data?.error || `Could not save the theme (HTTP ${res.status}).`);
+        }
+      } catch {
+        if (!this._appDestroyed) this.error = unknown;
+      } finally {
+        if (!this._appDestroyed) {
+          if (mayHaveWritten) this._settingsRefreshAfterThemeWrite();
+          void this.refreshConfigCache();
+        }
+        this.themeSaving = false;
+      }
     },
   };
 }

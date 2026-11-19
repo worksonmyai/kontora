@@ -395,8 +395,14 @@ web:
 | `enabled` | no | `true` | Start the web server when the daemon runs. |
 | `host` | no | `127.0.0.1` | Bind address. Set to a tailnet IP to allow remote access. |
 | `port` | no | `8080` | Listen port. |
+| `theme` | no | `system` | Dashboard theme preference. Accepts `system`, `light`, or `dark` (lowercase). Reloads live. |
 | `allowed_hosts` | no | `[]` | Extra `Host` header values the server answers. |
 | `token` | no | `""` | Shared bearer token. When set, `/api/*` and `/ws/*` require it (via `Authorization: Bearer`, a `kontora_token` cookie, or a `token` query param); empty leaves the API open. `GET /health` and the static UI stay public. |
+
+The dashboard saves the theme preference to `web.theme` in `config.yaml`, so
+it is shared by all browsers connected to the daemon. With `system`, each
+browser follows its own device appearance without changing the file. The
+dashboard ignores old browser-local theme choices.
 
 ### Host and origin checks
 
@@ -424,8 +430,8 @@ the daemon cannot tell which port an `Origin` that omits its own port means, so
 it accepts only the default port of the origin's own scheme. The header also
 decides whether the auth cookie gets its `Secure` flag.
 
-`allowed_hosts` is read at startup only. Changing it needs a daemon restart,
-like the rest of the `web` block.
+Changing `allowed_hosts` or any other `web` setting except `web.theme`
+requires a daemon restart.
 
 ### Content Security Policy
 
@@ -1851,9 +1857,9 @@ change a prompt or an agent's arguments while agents are working.
 `agents`, `stages`, `pipelines`, `projects`, `statuses`, `environment`,
 `auto_pick_up`, `default_agent`, `default_pipeline`, `branch_prefix`, `branch_naming`,
 `resume_prompt`, `annotation_prompt`, `summary_model`, `summary_effort`,
-`max_concurrent_agents`, `max_concurrent_epic_supervisors`, and the whole
-`notifications` and `assistant` blocks. The `plannotator` block reloads live
-except for `plannotator.reviews_dir`.
+`max_concurrent_agents`, `max_concurrent_epic_supervisors`, `web.theme`, and
+the whole `notifications` and `assistant` blocks. The `plannotator` block
+reloads live except for `plannotator.reviews_dir`.
 
 A run reads the prompts and the live `plannotator` fields when it starts.
 A reload changes the next run, never one already going.
@@ -1878,10 +1884,11 @@ daemon names an existing ticket whose branch is still empty.
 ### What needs a restart
 
 `tickets_dir`, `secondary_tickets_dirs`, `worktrees_dir`, `logs_dir`, `instance_name`,
-`tmux_session`, `plannotator.reviews_dir`, and the whole `web` and `metrics` blocks
-(`metrics.enabled`, `metrics.endpoint`, `metrics.insecure`, `metrics.interval`,
-`metrics.headers`). These fields set directories, the claim name, the tmux session,
-the HTTP listener and the metric exporter at startup. Keeping `plannotator.reviews_dir`
+`tmux_session`, `plannotator.reviews_dir`, the rest of `web` (everything except
+`web.theme`), and the whole `metrics` block (`metrics.enabled`,
+`metrics.endpoint`, `metrics.insecure`, `metrics.interval`, `metrics.headers`).
+These fields set directories, the claim name, the tmux session, the HTTP listener
+and the metric exporter at startup. Keeping `plannotator.reviews_dir`
 fixed lets running agents find pending review and annotation feedback.
 
 A reload keeps the running value and logs one warning per field that differs

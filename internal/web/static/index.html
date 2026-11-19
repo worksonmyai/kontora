@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- Icons: Lucide (https://lucide.dev) — ISC License -->
-<html lang="en" class="h-full">
+<html lang="en" class="h-full" data-theme-preference="system">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -1266,7 +1266,7 @@
       <div x-show="settingsReloadWarning" role="alert" class="settings-reload-warning mb-3">
         <p>Configuration was saved to disk, but the daemon did not reload. Retry apply, leave without applying, or keep editing.</p>
         <p x-text="settingsReloadWarning"></p>
-        <button type="button" @click="settingsRetryApply()" :disabled="settingsSaving || settingsDirty() || _settingsHasDrafts()" class="settings-button">Retry apply</button>
+        <button type="button" @click="settingsRetryApply()" :disabled="settingsEditsLocked() || settingsDirty() || _settingsHasDrafts()" class="settings-button">Retry apply</button>
         <p x-show="settingsDirty() || _settingsHasDrafts()">Save or discard new edits before retrying the saved configuration.</p>
       </div>
       <p x-show="settingsSavedAt && !settingsDirty() && !_settingsHasDrafts() && !settingsReloadWarning && !settingsSaving" role="status" class="text-sm text-tx-2 mb-3">Configuration was saved to disk. The daemon reloaded.<span x-show="settingsSavedRestart"> Restart to apply restart-only settings.</span></p>
@@ -1465,7 +1465,7 @@
       </button>
       <button @click="toggleTheme()"
               class="w-7 h-7 rounded-[7px] border border-edge-input text-surface-600 hover:text-tx-3 hover:border-edge-hover transition-colors flex items-center justify-center"
-              aria-label="Toggle theme" title="Toggle theme (press c then t)">
+              :disabled="themeSaving" aria-label="Cycle theme" title="Cycle theme: System, Light, Dark (press c then t)">
         <svg x-show="!lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
         <svg x-show="lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
@@ -1633,7 +1633,7 @@
           <span class="assistant-launch-state" x-show="assistantLaunchLabel()" x-text="assistantLaunchLabel()"></span>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-3 3V11.5a10 10 0 0 1 20 0z"/></svg>
         </button>
-        <button @click="toggleTheme()" style="width:34px;height:34px;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);color:rgba(var(--surface-600),1);border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Toggle theme">
+        <button @click="toggleTheme()" :disabled="themeSaving" style="width:34px;height:34px;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);color:rgba(var(--surface-600),1);border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Cycle theme">
           <svg x-show="!lightTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
           <svg x-show="lightTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
         </button>
@@ -4228,7 +4228,7 @@
             <div class="flex items-start justify-between gap-4">
               <div class="flex flex-col gap-1 min-w-0">
                 <h1 class="text-[20px] font-semibold text-tx-hi tracking-[-.01em] capitalize m-0" x-text="settingsQuery.trim() ? 'Search settings' : sectionTitle(settingsSection)"></h1>
-                <p x-show="!settingsQuery.trim()" class="m-0 text-[12.5px] text-tx-3 max-w-[52ch]" x-text="settingsSection === 'plannotator' ? 'Configure Plannotator for diff review and ticket annotations.' : settingsSection === 'display' ? 'Changes apply immediately in this browser. Appearance is not written to config.yaml.' : settingsSections.find(s => s.key === settingsSection)?.blurb"></p>
+                <p x-show="!settingsQuery.trim()" class="m-0 text-[12.5px] text-tx-3 max-w-[52ch]" x-text="settingsSection === 'plannotator' ? 'Configure Plannotator for diff review and ticket annotations.' : settingsSections.find(s => s.key === settingsSection)?.blurb"></p>
               </div>
               <div x-show="settingsState === 'ok'" x-cloak class="flex items-center gap-2 shrink-0">
                 <span x-show="settingsClientErrors().length" class="text-err text-sm" x-text="settingsClientErrors().length + ' problems to fix'"></span>
@@ -4239,7 +4239,9 @@
             </div>
 
             <!-- Load states -->
-            <div x-show="settingsLoading && settingsSection !== 'display'" role="status" class="font-mono text-sm text-surface-600">Loading configuration…</div>
+            <div x-show="settingsSection !== 'display' && (themeSaving || (settingsThemeBaselinePending && settingsLoading))" role="status" class="font-mono text-sm text-surface-600"
+                 x-text="themeSaving ? 'Saving theme. Wait before editing Settings.' : 'Reading config.yaml after the theme save. Wait before editing Settings.'"></div>
+            <div x-show="settingsLoading && !themeSaving && !settingsThemeBaselinePending && settingsSection !== 'display'" role="status" class="font-mono text-sm text-surface-600">Loading configuration…</div>
 
             <div x-show="!settingsLoading && settingsState === 'unavailable' && settingsSection !== 'display'" x-cloak
                  class="border border-edge-card rounded-lg bg-surface-900 p-5">
@@ -4252,7 +4254,7 @@
               <div class="settings-label text-err mb-1.5">Could not read config.yaml</div>
               <p class="settings-technical leading-[1.6] text-tx-2 m-0 whitespace-pre-wrap break-words" x-text="settingsLoadError"></p>
               <p x-show="settingsConfig" class="text-[12px] text-tx-3">Showing the last loaded config.</p>
-              <button type="button" @click="_settingsRefreshForm(true)" :disabled="settingsDirty() || _settingsHasDrafts() || settingsSaving"
+              <button type="button" @click="_settingsRefreshForm(true)" :disabled="settingsDirty() || _settingsHasDrafts() || settingsSaving || themeSaving"
                       class="font-mono text-sm text-accent disabled:opacity-50">retry</button>
             </div>
 
@@ -4281,7 +4283,7 @@
             </section>
 
             <template x-if="settingsState === 'ok'">
-              <fieldset :disabled="settingsSaving" :aria-busy="settingsSaving" x-show="!settingsQuery.trim()" class="settings-daemon-fields flex flex-col gap-6">
+              <fieldset :disabled="settingsEditsLocked()" :aria-busy="settingsEditsLocked()" x-show="!settingsQuery.trim()" class="settings-daemon-fields flex flex-col gap-6">
 
                 <!-- ===== stages ===== -->
                 <div id="settings-section-stages" tabindex="-1" aria-label="Stage settings" x-show="settingsSection === 'stages'" class="flex flex-col gap-2.5">
@@ -5243,13 +5245,13 @@
               </fieldset>
             </template>
 
-                <!-- ===== display (localStorage, never written to YAML) ===== -->
+                <!-- Appearance: theme in config.yaml; board card preferences in localStorage. -->
                 <div id="settings-section-display" tabindex="-1" aria-label="Appearance settings" x-show="settingsSection === 'display' && !settingsQuery.trim()" class="flex flex-col gap-[18px]">
                   <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
                     <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="green">
                       <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
-                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">Board</h2>
-                      <span class="text-[11.5px] text-tx-4">Stored in this browser, never written to config.yaml.</span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">Preferences</h2>
+                      <span class="text-[11.5px] text-tx-4">Board card options stay in this browser.</span>
                     </header>
 
                     <div
@@ -5286,14 +5288,15 @@
                          class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                       <div class="flex flex-col gap-1 min-w-0">
                         <label :for="settingsFieldID(['display', 'theme'])" class="settings-label">Theme</label>
-                        <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="fieldInfo(['display', 'theme']).help">Also togglable with c then t.</span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="fieldInfo(['display', 'theme']).help"></span>
                       </div>
-                      <select :id="settingsFieldID(['display', 'theme'])" :value="lightTheme ? 'light' : 'dark'" @change="if (lightTheme !== ($event.target.value === 'light')) toggleTheme()" aria-label="Theme" class="settings-input">
-                        <option value="dark">Dark</option><option value="light">Light</option>
+                      <select :id="settingsFieldID(['display', 'theme'])" :value="themePreference" :disabled="themeSaving" @change="changeThemePreference($event.target)" aria-label="Theme" class="settings-input">
+                        <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
                       </select>
                     </div>
                   </section>
-                  <p x-show="settingsDirty() || _settingsHasDrafts()" class="settings-help">Daemon settings still have unsaved changes. Appearance changes do not save that draft.</p>
+                  <p x-show="settingsSaving" class="settings-help">Wait for the Settings save to finish.</p>
+                  <p x-show="!settingsSaving && (settingsDirty() || _settingsHasDrafts())" class="settings-help">Save or discard your Settings changes before changing the theme.</p>
                 </div>
           </div>
         </div>
@@ -5301,7 +5304,7 @@
         <!-- Save outcomes remain visible after the submitted draft becomes clean. -->
         <div x-show="settingsReloadWarning" x-cloak role="alert" class="settings-reload-warning">
           <p x-text="settingsReloadWarning"></p>
-          <button type="button" @click="settingsRetryApply()" :disabled="settingsSaving || settingsDirty() || _settingsHasDrafts()" class="settings-button">Retry apply</button>
+          <button type="button" @click="settingsRetryApply()" :disabled="settingsEditsLocked() || settingsDirty() || _settingsHasDrafts()" class="settings-button">Retry apply</button>
           <p x-show="settingsDirty() || _settingsHasDrafts()">Save or discard new edits before retrying the saved configuration.</p>
         </div>
         <div x-show="settingsErrors.length" x-cloak role="alert" class="settings-save-errors">

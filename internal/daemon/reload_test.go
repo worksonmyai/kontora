@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/automation"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
@@ -207,6 +208,7 @@ func TestReload_InvalidConfigKeepsRunning(t *testing.T) {
 		{"unknown field", h.yaml(configOpts{extra: "unknown_field: x\n"})},
 		{"project references a missing epic child pipeline", h.yaml(configOpts{extra: fmt.Sprintf("projects:\n  repo:\n    path: %s\n    epic_child_pipeline: missing\n", h.repoDir)})},
 		{"negative supervisor capacity", h.yaml(configOpts{extra: "max_concurrent_epic_supervisors: -1\n"})},
+		{"invalid theme", strings.Replace(h.yaml(configOpts{}), "web:\n", "web:\n  theme: auto\n", 1)},
 		{"pipeline references a missing stage", h.yaml(configOpts{pipelines: `  one-stage:
     - stage: nonexistent
       agent: agent1
@@ -323,6 +325,135 @@ func TestReload_NoConfigPath(t *testing.T) {
 	require.ErrorIs(t, d.reloadConfig(), errNoConfigPath)
 }
 
+func TestReload_ThemePreference(t *testing.T) {
+	h := newReloadHarness(t)
+	original := h.yaml(configOpts{})
+	d := h.newDaemonWithConfig(t, original)
+	assert.Equal(t, "system", d.ThemePreference())
+	assert.Equal(t, "system", d.GetConfig().Theme)
+	before := d.config().Web
+
+	changed := strings.Replace(original, "  enabled: false", "  enabled: true\n  host: 0.0.0.0\n  port: 9090\n  theme: dark", 1)
+	h.writeConfig(t, changed)
+	require.NoError(t, d.reloadConfig())
+	assert.Equal(t, "dark", d.ThemePreference())
+	assert.Equal(t, "dark", d.GetConfig().Theme)
+	before.Theme = "dark"
+	assert.Equal(t, before, d.config().Web, "listener settings stay pinned")
+	assert.NotContains(t, h.logBuf.String(), "field=web.theme")
+
+	h.writeConfig(t, original)
+	require.NoError(t, d.reloadConfig())
+	assert.Equal(t, "system", d.ThemePreference(), "removing the field restores the default")
+}
+
+func TestPutThemePreference_PreservesConfig(t *testing.T) {
+	for _, webBlock := range []string{
+		"", "web:\n", "web: null # keep null comment\n", "web: ~\n",
+		"web:\n  enabled: false # keep enabled\n", "web:\n  theme: 'light' # keep theme comment\n  enabled: false # keep enabled\n",
+	} {
+		t.Run(fmt.Sprintf("web=%q", webBlock), func(t *testing.T) {
+			h := newReloadHarness(t)
+			original := "# keep file comment\n" + strings.Replace(h.yaml(configOpts{}), "web:\n  enabled: false\n", webBlock, 1)
+			d := h.newDaemonWithConfig(t, original)
+			before, err := config.Load(h.configPath)
+			require.NoError(t, err)
+			ch, unsubscribe := d.broker.Subscribe()
+			defer unsubscribe()
+			require.NoError(t, os.Chmod(h.configPath, 0o600))
+			beforeRevision := d.GetConfig().Revision
+			savedTheme, err := d.PutThemePreference("dark")
+			require.NoError(t, err)
+			assert.Equal(t, "dark", savedTheme.Preference)
+			assert.Greater(t, savedTheme.Revision, beforeRevision)
+			assert.Equal(t, savedTheme.Revision, d.GetConfig().Revision)
+			var reloaded bool
+			for len(ch) > 0 {
+				reloaded = (<-ch).Type == "config_reloaded" || reloaded
+			}
+			assert.True(t, reloaded, "theme save must broadcast a reload")
+			assert.Equal(t, "dark", d.ThemePreference())
+			assert.Equal(t, "dark", d.GetConfig().Theme)
+			onDisk, err := os.ReadFile(h.configPath)
+			require.NoError(t, err)
+			assert.Contains(t, string(onDisk), "# keep file comment")
+			for _, comment := range []string{"# keep enabled", "# keep theme comment", "# keep null comment"} {
+				if strings.Contains(original, comment) {
+					assert.Contains(t, string(onDisk), comment)
+				}
+			}
+			info, err := os.Stat(h.configPath)
+			require.NoError(t, err)
+			assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+			cfg, err := config.Load(h.configPath)
+			require.NoError(t, err)
+			before.Web.Theme = "dark"
+			assert.Equal(t, before, cfg, "the document's only setting change is web.theme")
+
+			// An older raw Settings draft cannot overwrite the theme save.
+			require.ErrorIs(t, d.PutRawConfigIf(original, original), automation.ErrConflict)
+			resetTheme, err := d.PutThemePreference("system")
+			require.NoError(t, err)
+			assert.Greater(t, resetTheme.Revision, savedTheme.Revision)
+			assert.Equal(t, "system", d.ThemePreference())
+			saved, err := os.ReadFile(h.configPath)
+			require.NoError(t, err)
+			assert.Regexp(t, `theme: '?system'?`, string(saved))
+		})
+	}
+}
+
+func TestPutThemePreference_RejectsUnsafeConfig(t *testing.T) {
+	for _, tc := range []struct{ name, web, prefix, suffix, theme, wantError string }{
+		{name: "invalid mode", web: "web: {enabled: false}\n", theme: "Dark"},
+		{name: "anchored web", web: "web: &shared {enabled: false}\n", theme: "dark"},
+		{name: "anchored null web", web: "web: &shared null\n", theme: "dark", wantError: "without anchors or aliases on the key or value"},
+		{name: "aliased web", web: "web: *shared\n", prefix: "environment: &shared {token: secret}\n", theme: "dark"},
+		{name: "anchored theme", web: "web: {theme: &shared light}\n", theme: "dark"},
+		{name: "aliased theme", web: "web: {theme: *shared}\n", prefix: "author: &shared light\n", theme: "dark"},
+		{name: "non-mapping web", web: "web: []\n", theme: "dark"},
+		{name: "duplicate web", web: "web: {}\nweb: {}\n", theme: "dark"},
+		{name: "duplicate theme", web: "web: {theme: light, theme: dark}\n", theme: "dark"},
+		{name: "merge in web", web: "web: {<<: {enabled: false, theme: light}}\n", theme: "dark"},
+		{name: "web inherited through root merge", web: "<<: {web: {enabled: false, port: 9090}}\n", theme: "dark", wantError: "copy all inherited web settings before defining `web` directly"},
+		{name: "extra document", web: "web: {}\n", suffix: "---\nweb: {}\n", theme: "dark"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newReloadHarness(t)
+			original := h.yaml(configOpts{})
+			d := h.newDaemonWithConfig(t, original)
+			before := d.config()
+			onDisk := strings.Replace(original, "web:\n  enabled: false\n", tc.prefix+tc.web, 1) + tc.suffix
+			h.writeConfig(t, onDisk)
+			_, err := d.PutThemePreference(tc.theme)
+			require.ErrorIs(t, err, web.ErrInvalidConfig)
+			if tc.wantError != "" {
+				assert.ErrorContains(t, err, tc.wantError)
+			}
+			assert.Same(t, before, d.config())
+			data, err := os.ReadFile(h.configPath)
+			require.NoError(t, err)
+			assert.Equal(t, onDisk, string(data))
+		})
+	}
+}
+
+func TestPutThemePreference_ReloadFailure(t *testing.T) {
+	h := newReloadHarness(t)
+	d := h.newDaemonWithConfig(t, h.yaml(configOpts{}))
+	before := d.config()
+	secondary := t.TempDir()
+	h.writeConfig(t, h.yaml(configOpts{extra: fmt.Sprintf("secondary_tickets_dirs: [%q, %q]\n", secondary, secondary)}))
+	var savedErr *web.ConfigSavedReloadError
+	_, err := d.PutThemePreference("dark")
+	require.ErrorAs(t, err, &savedErr)
+	assert.Same(t, before, d.config())
+	assert.Equal(t, "system", d.ThemePreference())
+	onDisk, err := config.Load(h.configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "dark", onDisk.Web.Theme)
+}
+
 func TestReload_PinsRestartOnlyFields(t *testing.T) {
 	h := newReloadHarness(t)
 	metricsBefore := `metrics:
@@ -390,7 +521,7 @@ notifications:
 	assert.Equal(t, 8, got.MaxConcurrentAgents)
 	assert.Equal(t, 8, got.MaxConcurrentEpicSupervisors)
 	assert.Equal(t, reviewsDir, got.Plannotator.ReviewsDir)
-	assert.Equal(t, before.Web, got.Web, "the web block is pinned whole")
+	assert.Equal(t, before.Web, got.Web, "web listener settings are pinned")
 	assert.Equal(t, before.Metrics, got.Metrics, "the metrics block is pinned whole")
 	assert.Equal(t, "localhost:4318", got.Metrics.Endpoint, "the running exporter's endpoint survives the reload")
 	assert.False(t, *got.Notifications.Enabled)

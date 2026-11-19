@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -118,6 +120,55 @@ func TestServer_VersionedAssetURLs(t *testing.T) {
 			// current bytes must not answer for as immutable.
 			stale := rawGet(t, srv, tc.path+"?v=000000000000", gzipHeader())
 			assert.Equal(t, cacheRevalidate, stale.get("Cache-Control"))
+		})
+	}
+}
+
+type documentThemeService struct {
+	mockService
+	mode string
+}
+
+func (s *documentThemeService) ThemePreference() string { return s.mode }
+
+func TestServer_DocumentTheme(t *testing.T) {
+	for _, dev := range []bool{false, true} {
+		name := "embedded"
+		if dev {
+			name = "development"
+		}
+		t.Run(name, func(t *testing.T) {
+			if dev {
+				dir := t.TempDir()
+				static := filepath.Join(dir, "internal", "web", "static")
+				require.NoError(t, os.MkdirAll(static, 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(static, "index.html"),
+					[]byte(`<html `+documentTheme+`>development document</html>`), 0o600))
+				t.Setenv(webDirEnv, dir)
+			}
+			assets, err := buildAssets()
+			require.NoError(t, err)
+			svc := &documentThemeService{mode: `" invalid="`}
+			srv := Server{assets: assets, svc: svc}
+			get := func(etag string) *httptest.ResponseRecorder {
+				r := httptest.NewRequest(http.MethodGet, "/", nil)
+				r.Header.Set("Accept-Encoding", "gzip")
+				r.Header.Set("If-None-Match", etag)
+				w := httptest.NewRecorder()
+				srv.serveAsset(w, r)
+				return w
+			}
+			before := get("")
+			require.Equal(t, http.StatusOK, before.Code)
+			assert.Contains(t, string(gunzip(t, before.Body.Bytes())), documentTheme)
+			svc.mode = "light"
+			after := get(before.Header().Get("ETag"))
+			require.Equal(t, http.StatusOK, after.Code)
+			assert.Equal(t, strconv.Itoa(after.Body.Len()), after.Header().Get("Content-Length"))
+			html := string(gunzip(t, after.Body.Bytes()))
+			assert.Contains(t, html, `data-theme-preference="light"`)
+			assert.Equal(t, dev, strings.Contains(html, "development document"))
+			assert.Equal(t, http.StatusNotModified, get(after.Header().Get("ETag")).Code)
 		})
 	}
 }

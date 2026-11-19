@@ -411,6 +411,7 @@ var defaultWindowOps = windowOps{list: tmux.ListWindows, kill: tmux.KillWindow}
 
 type Daemon struct {
 	cfg                       atomic.Pointer[config.Config]
+	initialConfigRevision     int64
 	worktrees                 *worktree.Manager
 	runner                    RunnerFunc
 	executionPreparer         ExecutionPreparer
@@ -465,7 +466,7 @@ type Daemon struct {
 	configOverride func(*config.Config)
 
 	// reloadMu serializes config reloads from the different triggers (SIGHUP,
-	// the config file watcher, and the raw-config endpoint).
+	// the config file watcher, and the config mutation endpoints).
 	reloadMu sync.Mutex
 
 	secondaryMu     sync.Mutex
@@ -660,6 +661,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		automationRoot:      os.Getenv("KONTORA_AUTOMATIONS_ROOT"),
 		stats:               newStatsCache(),
 	}
+	d.initialConfigRevision = time.Now().UnixMicro()
 	d.cfg.Store(cfg)
 	for _, opt := range opts {
 		opt(d)

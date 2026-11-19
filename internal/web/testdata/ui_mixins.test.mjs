@@ -14,7 +14,7 @@ const entry = path.join(uiDir, "index.js");
 globalThis.window = { innerWidth: 1280, matchMedia: () => ({ matches: false, addEventListener() {} }) };
 globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
 Object.defineProperty(globalThis, "navigator", { value: { platform: "" }, configurable: true });
-globalThis.getStoredTheme = () => "dark";
+globalThis.document = { documentElement: { dataset: { themePreference: 'system', theme: 'dark' } } };
 
 // Every kontora* factory the tree exports, found by importing each module
 // rather than by reading index.js. A module that index.js forgot to merge is

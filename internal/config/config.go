@@ -154,6 +154,9 @@ type Config struct {
 	// `stages.rework:` block, signalling the daemon to leave routing to the
 	// user's pipeline/on_success config.
 	ReworkIsBuiltin bool `yaml:"-"`
+
+	// RuntimeRevision orders snapshots published by the daemon. It is not saved to disk.
+	RuntimeRevision int64 `yaml:"-"`
 }
 
 const (
@@ -333,6 +336,8 @@ type Web struct {
 	Enabled *bool  `yaml:"enabled"`
 	Host    string `yaml:"host"`
 	Port    int    `yaml:"port"`
+	// Theme is live-reloadable. An unset preference follows the browser's device.
+	Theme string `yaml:"theme,omitempty"`
 	// Token, when non-empty, gates /api/ and /ws/ requests with a shared
 	// bearer token. Empty (the default) disables auth and preserves the
 	// original open-access behavior. This is a daemon-side setting only; the
@@ -344,6 +349,25 @@ type Web struct {
 	// accepted; anything else (a tailnet name, a reverse proxy's hostname) has
 	// to be listed here or the request is refused as a DNS rebinding attempt.
 	AllowedHosts []string `yaml:"allowed_hosts"`
+}
+
+const WebThemeSystem = "system"
+
+func ValidateWebTheme(theme string) error {
+	switch theme {
+	case WebThemeSystem, "light", "dark":
+		return nil
+	default:
+		return errors.New("web.theme must be system, light, or dark")
+	}
+}
+
+// ThemePreference also supplies the default for configs constructed in Go.
+func (w Web) ThemePreference() string {
+	if ValidateWebTheme(w.Theme) != nil {
+		return WebThemeSystem
+	}
+	return w.Theme
 }
 
 type Agent struct {
@@ -750,6 +774,9 @@ func LoadReader(r io.Reader) (*Config, error) {
 	if err := validateGraphAliases(&document); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
+	if err := validateWebThemeYAML(&document); err != nil {
+		return nil, err
+	}
 	var cfg Config
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -761,6 +788,28 @@ func LoadReader(r io.Reader) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// Inspect the original node so explicit null and non-string scalars don't
+// look like omission or get coerced by the decoder's string conversion.
+func validateWebThemeYAML(document *yaml.Node) error {
+	var fields struct {
+		Web struct{ Theme yaml.Node }
+	}
+	if err := document.Decode(&fields); err != nil {
+		return fmt.Errorf("parsing config: %w", err)
+	}
+	theme := &fields.Web.Theme
+	for theme.Kind == yaml.AliasNode {
+		theme = theme.Alias
+	}
+	if theme.IsZero() {
+		return nil
+	}
+	if theme.Kind != yaml.ScalarNode || theme.ShortTag() != "!!str" {
+		return errors.New("web.theme must be a string (system, light, or dark)")
+	}
+	return ValidateWebTheme(theme.Value)
 }
 
 // ServerTokenEnvVar overrides web.token for the daemon. Unlike the CLI's own
@@ -916,6 +965,9 @@ func (c *Config) applyCoreDefaults() {
 	}
 	if c.Web.Port == 0 {
 		c.Web.Port = 8080
+	}
+	if c.Web.Theme == "" {
+		c.Web.Theme = WebThemeSystem
 	}
 }
 
@@ -1081,6 +1133,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := validateBranchNamingMode(c.BranchNaming.Mode); err != nil {
+		return err
+	}
+	if err := ValidateWebTheme(cmp.Or(c.Web.Theme, WebThemeSystem)); err != nil {
 		return err
 	}
 

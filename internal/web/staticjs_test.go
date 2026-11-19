@@ -112,7 +112,7 @@ func serveBrowserAssets(t *testing.T) browserAssets {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{assets: assets}
+	s := &Server{assets: assets, svc: &mockService{}}
 	paths := []string{"/"}
 	for name := range assets {
 		paths = append(paths, "/"+name)

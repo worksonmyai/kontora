@@ -97,9 +97,8 @@ function kontora() {
 //   statsDerive     the stats bucketing, which the node suite drives directly
 //   archiveDerive   the archive's filter and sort, driven the same way
 //
-// Going the other way, theme.js stays a separate pre-paint script, so
-// getStoredTheme, setStoredTheme and applyTheme are free variables here and
-// resolve off the global at call time.
+// theme.js stays separate so it can run before first paint. The bundle calls
+// its shared theme helpers as globals.
 globalThis.kontora = kontora;
 globalThis.termState = termState;
 globalThis.assistantStream = assistantStream;

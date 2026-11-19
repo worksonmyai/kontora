@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
@@ -29,18 +30,23 @@ var errNoConfigPath = errors.New("no config path set")
 // Agents already running keep the prompt, arguments, timeout, and binary they
 // started with. A reload affects the next stage that starts.
 func (d *Daemon) reloadConfig() error {
+	_, err := d.reloadConfigSnapshot()
+	return err
+}
+
+func (d *Daemon) reloadConfigSnapshot() (*config.Config, error) {
 	// Serializes reloads from the different triggers: SIGHUP, the config file
-	// watcher, and the raw-config endpoint.
+	// watcher, and the config mutation endpoints.
 	d.reloadMu.Lock()
 	defer d.reloadMu.Unlock()
 
 	if d.configPath == "" {
-		return errNoConfigPath
+		return nil, errNoConfigPath
 	}
 
 	next, err := config.Load(d.configPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Same order as startup: the file, then the environment, then the
 	// command-line overrides. The environment runs before the restart-only pin
@@ -51,13 +57,15 @@ func (d *Daemon) reloadConfig() error {
 		d.configOverride(next)
 	}
 	if _, err := next.SecondarySources(); err != nil {
-		return err
+		return nil, err
 	}
 
 	cur := d.config()
 	pinRestartOnly(cur, next, d.log)
+	// Clock adjustments must not move revisions backwards within a daemon.
+	next.RuntimeRevision = max(d.configRevision(cur)+1, time.Now().UnixMicro())
 	if err := d.publishAutomationConfig(next); err != nil {
-		return err
+		return nil, err
 	}
 	d.applyNotifications(next)
 	d.mu.Lock()
@@ -90,7 +98,7 @@ func (d *Daemon) reloadConfig() error {
 	if d.broker != nil {
 		d.broker.Broadcast(web.TicketEvent{Type: "config_reloaded"})
 	}
-	return nil
+	return next, nil
 }
 
 // pinRestartOnly copies the settings a live reload cannot apply from the
@@ -142,7 +150,7 @@ func pinRestartOnly(cur, next *config.Config, log *slog.Logger) {
 		next.Plannotator.ReviewsDir = cur.Plannotator.ReviewsDir
 	}
 
-	// One warning per differing web child, so "port changed" doesn't read as
+	// One warning per differing restart-only web field, so "port changed" doesn't read as
 	// "the whole web block changed". The token value is never logged.
 	if !reflect.DeepEqual(next.Web.Enabled, cur.Web.Enabled) {
 		warn("web.enabled", derefBool(cur.Web.Enabled), derefBool(next.Web.Enabled))
@@ -159,7 +167,9 @@ func pinRestartOnly(cur, next *config.Config, log *slog.Logger) {
 	if !slices.Equal(next.Web.AllowedHosts, cur.Web.AllowedHosts) {
 		warn("web.allowed_hosts", cur.Web.AllowedHosts, next.Web.AllowedHosts)
 	}
+	theme := next.Web.Theme
 	next.Web = cur.Web
+	next.Web.Theme = theme
 
 	// The meter provider and its exporter are built once in Run, so every
 	// metrics field is frozen with them. Header values can carry an API token,
@@ -237,8 +247,8 @@ func (d *Daemon) reloadAndLog() {
 }
 
 // startReloadTriggers starts the two reload triggers the daemon owns: the
-// SIGHUP consumer, and one watcher per directory holding the config file. The
-// third trigger is the raw-config endpoint, which calls reloadConfig directly.
+// SIGHUP consumer, and one watcher per directory holding the config file.
+// Config mutation endpoints call reloadConfig directly.
 // Run registers hup before anything that can fail, and passes it in here. The
 // returned function closes the watchers.
 func (d *Daemon) startReloadTriggers(ctx context.Context, wg *sync.WaitGroup, hup <-chan os.Signal) func() {

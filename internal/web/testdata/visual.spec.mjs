@@ -13,7 +13,7 @@ async function prepareCapture(page, base) {
   await page.clock.setFixedTime(fixedTime);
   await page.addInitScript(origin => {
     if (location.origin !== origin) return;
-    // The fixture seeds the theme, sidebar and saved Assistant thread separately.
+    // The fixture supplies the document theme and seeds sidebar and Assistant state separately.
     localStorage.setItem('kontora-collapsed-cols', '["cancelled"]');
     localStorage.setItem('kontora-show-badges', '1');
     localStorage.setItem('kontora-show-agent-meta', '1');
@@ -49,6 +49,7 @@ async function withCapturePage(context, testInfo, name, theme, options, run) {
   const stopSetup = new AbortController();
   const session = fixtureSession(context, { base, assets: new Set(JSON.parse(manifest)), engine }, {
     ...options,
+    themePreference: theme,
     beforeNavigation: async page => {
       await prepareCapture(page, base);
       stopSetup.signal.throwIfAborted();
@@ -60,13 +61,15 @@ async function withCapturePage(context, testInfo, name, theme, options, run) {
     await test.step('Set up scene', () => {
       pending = true;
       setup = (async () => {
-        page = await session.preparePage(theme);
+        page = await session.preparePage();
         stopSetup.signal.throwIfAborted();
         await session.navigate(page);
         stopSetup.signal.throwIfAborted();
         await run(page, session.fixture);
         stopSetup.signal.throwIfAborted();
         await settleCapture(page);
+        await expect(page.locator('html')).toHaveAttribute('data-theme-preference', theme);
+        await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
       })().catch(error => {
         if (!stopSetup.signal.aborted) throw error;
       }).finally(() => { pending = false; });

@@ -61,10 +61,10 @@ async function withPage(t, width, theme, run, options = {}) {
   const context = await browser.newContext({ viewport, colorScheme: theme,
     ...(videoPath ? { recordVideo: { dir: join(options.video, engine), size: viewport } } : {}),
     reducedMotion: options.reducedMotion || 'reduce', hasTouch: options.hasTouch || false, serviceWorkers: 'block', locale: 'en-US', timezoneId: 'UTC' });
-  const session = fixtureSession(context, fixtureEnvironment, options);
+  const session = fixtureSession(context, fixtureEnvironment, { themePreference: theme, ...options });
   let video;
   try {
-    const page = await session.preparePage(theme);
+    const page = await session.preparePage();
     video = videoPath ? page.video() : null;
     try {
       await session.navigate(page);
@@ -129,6 +129,15 @@ async function backToBoard(page) {
 const settingsView = page => page.locator('#settings-view');
 const settingsButton = (page, name) => settingsView(page).getByRole('button', { name, exact: true }).filter({ visible: true });
 const settingsWrites = fixture => fixture.mutations.filter(m => m.method === 'PUT' && m.path === '/api/config/raw');
+const appearanceTheme = page => settingsView(page).getByRole('combobox', { name: 'Theme', exact: true });
+const cycleTheme = page => page.getByRole('button', { name: 'Cycle theme', exact: true }).filter({ visible: true });
+const themeWrite = theme => ({ method: 'PUT', path: '/api/config/theme', body: { theme } });
+async function expectTheme(page, preference, palette = preference) {
+  const root = page.locator('html');
+  await expect(root).toHaveAttribute('data-theme-preference', preference);
+  await expect(root).toHaveAttribute('data-theme', palette);
+  await expect(root).toHaveCSS('color-scheme', palette);
+}
 const settingsSearch = page => page.locator('#settings-search:visible, #settings-search-compact:visible');
 async function settingsSection(page, key) {
   const compact = page.locator('#settings-mobile-section');
@@ -516,24 +525,31 @@ describe('Settings configuration workflows', { concurrency: 2 }, () => {
       }, options);
     });
 
-    test(`Settings Appearance remains local with raw configuration unavailable / ${width}px / ${theme}`, async t => {
+    test(`Settings Appearance saves only theme with raw configuration unavailable / ${width}px / ${theme}`, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
         await routeTo(page, '#/settings/display');
         assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsState), 'unavailable');
-        for (const name of ['Pipeline badges', 'Agent details']) {
-          const toggle = settingsView(page).getByRole('switch', { name, exact: true });
-          const previous = await toggle.getAttribute('aria-checked');
+        const localSwitches = ['Pipeline badges', 'Agent details'].map(name => settingsView(page).getByRole('switch', { name, exact: true }));
+        const localChoices = [];
+        for (const toggle of localSwitches) {
+          const before = await toggle.getAttribute('aria-checked');
           await toggle.click();
-          assert.notEqual(await toggle.getAttribute('aria-checked'), previous);
+          const after = before === 'true' ? 'false' : 'true';
+          await expect(toggle).toHaveAttribute('aria-checked', after);
+          localChoices.push(after);
         }
+        assert.deepEqual(fixture.mutations, [], 'Badge and agent preferences are browser-local');
         const nextTheme = theme === 'dark' ? 'light' : 'dark';
-        await settingsView(page).getByRole('combobox', { name: 'Theme', exact: true }).selectOption(nextTheme);
-        assert.equal(await page.evaluate(() => localStorage.getItem('kontora-theme')), nextTheme);
+        await expect(appearanceTheme(page)).toHaveValue(theme);
+        await appearanceTheme(page).selectOption(nextTheme);
+        await expectTheme(page, nextTheme);
         assert.equal(await page.evaluate(() => Alpine.$data(document.body).settingsDirty()), false);
         await page.reload({ waitUntil: 'domcontentloaded' });
         await ready(page);
-        await expect(settingsView(page).getByRole('combobox', { name: 'Theme', exact: true })).toHaveValue(nextTheme);
-        assert.equal(settingsWrites(fixture).length, 0);
+        await expect(appearanceTheme(page)).toHaveValue(nextTheme);
+        await expectTheme(page, nextTheme);
+        for (const [i, toggle] of localSwitches.entries()) await expect(toggle).toHaveAttribute('aria-checked', localChoices[i]);
+        assert.deepEqual(fixture.mutations, [themeWrite(nextTheme)]);
         await noPageOverflow(page);
       }, { rawConfigUnavailable: true });
     });
@@ -785,6 +801,180 @@ describe('Settings configuration workflows', { concurrency: 2 }, () => {
       assert.equal(settingsWrites(fixture).length, 0);
     }, { rawConfig: settingsRaw });
   });
+});
+
+test('Device theme cycles System → Light → Dark → System from the header', async t => {
+  await withPage(t, 1280, 'dark', async (page, fixture) => {
+    await expectTheme(page, 'system', 'dark');
+    const cycle = cycleTheme(page);
+    for (const [mode, palette] of [['light', 'light'], ['dark', 'dark'], ['system', 'dark']]) {
+      await cycle.click();
+      await expectTheme(page, mode, palette);
+      await expect(cycle).toBeEnabled();
+    }
+    assert.deepEqual(fixture.mutations, ['light', 'dark', 'system'].map(themeWrite));
+    assert.ok(!fixture.requests.includes('GET /api/config/raw'), 'Quick controls do not read raw YAML');
+  }, {
+    themePreference: 'system',
+    // A conflicting old browser-local preference must not override System or be imported.
+    beforeNavigation: page => page.addInitScript(origin => {
+      if (location.origin === origin) localStorage.setItem('kontora-theme', 'light');
+    }, base),
+  });
+});
+
+test('Device theme saved in Appearance applies to a fresh light-device context', async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    await routeTo(page, '#/settings/display');
+    await expectTheme(page, 'system', 'light');
+    const theme = appearanceTheme(page);
+    await expect(theme).toHaveValue('system');
+    await theme.selectOption('dark');
+    await expectTheme(page, 'dark');
+    await expect(theme).toBeEnabled();
+    assert.deepEqual(fixture.mutations, [themeWrite('dark')]);
+
+    const fresh = await browser.newContext({ colorScheme: 'light', serviceWorkers: 'block' });
+    // Hold the resolved-config response to make sure the first palette comes from the
+    // document, not from a later GET /api/config or the first browser's storage.
+    const config = fixture.holdRead('/api/config');
+    try {
+      await fixture.install(fresh);
+      const second = await fresh.newPage();
+      await second.goto(base, { waitUntil: 'domcontentloaded' });
+      await expectTheme(second, 'dark');
+      assert.deepEqual(await second.evaluate(() => [matchMedia('(prefers-color-scheme: light)').matches,
+        localStorage.getItem('kontora-theme')]), [true, null]);
+      config.release();
+      await ready(second);
+      await expectTheme(second, 'dark');
+      assert.deepEqual(fixture.mutations, [themeWrite('dark')]);
+    } finally {
+      config.release();
+      await closeFixtureContext(fresh);
+    }
+  }, { themePreference: 'system', rawConfig: settingsRaw });
+});
+
+test('Device theme save refusal reports the error and retains the applied mode', async t => {
+  await withPage(t, 390, 'light', async (page, fixture) => {
+    await routeTo(page, '#/settings/display');
+    const theme = appearanceTheme(page);
+    const error = 'Fixture refused the theme change before saving';
+    fixture.behavior.themeFailure = { status: 409, error };
+    await theme.selectOption('dark');
+    await expect(page.getByRole('alert').filter({ hasText: error })).toBeVisible();
+    await expect(theme).toHaveValue('system');
+    await expect(theme).toBeEnabled();
+    await expectTheme(page, 'system', 'light');
+    assert.equal(fixture.config.theme, 'system');
+    assert.equal(fixture.rawConfig, settingsRaw);
+    assert.deepEqual(fixture.mutations, [themeWrite('dark')], 'A rejected write is not retried');
+  }, { themePreference: 'system', rawConfig: settingsRaw });
+});
+
+test('Settings Appearance blocks theme saves with a dirty draft and preserves it on config reload', async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    await routeTo(page, '#/settings/general');
+    const worker = page.locator('#gen-max_concurrent_agents');
+    await expect(worker).toHaveValue('3');
+    await worker.fill('8');
+    await settingsSection(page, 'display');
+    const theme = appearanceTheme(page);
+    await theme.selectOption('dark');
+    await expect(page.getByRole('alert').filter({ hasText: 'Save or discard your Settings changes before changing the theme.' })).toBeVisible();
+    await expect(theme).toHaveValue('system');
+    await expectTheme(page, 'system', 'light');
+    await settingsSection(page, 'general');
+    await expect(worker).toHaveValue('8');
+    assert.equal(fixture.rawConfig, settingsRaw);
+    assert.deepEqual(fixture.mutations, []);
+
+    fixture.config.theme = 'dark';
+    await emitAutomationEvent(page, 'config_reloaded');
+    await expectTheme(page, 'dark');
+    await expect(worker).toHaveValue('8');
+    await expect(settingsButton(page, 'save & reload')).toBeEnabled();
+    assert.deepEqual(fixture.mutations, [], 'An external config refresh must not write or submit the draft');
+  }, { themePreference: 'system', rawConfig: settingsRaw });
+});
+
+for (const [result, failure] of [
+  ['success', null],
+  ['saved but not reloaded', { status: 500, error: 'Config saved, but reload failed', code: 'config_saved_reload_failed', written: true }],
+  ['unknown outcome', { status: 500, error: 'Directory sync failed', written: true }],
+]) {
+  test(`Settings Appearance refreshes the raw baseline after a theme save: ${result}`, async t => {
+    await withPage(t, 1280, 'light', async (page, fixture) => {
+      await routeTo(page, '#/settings/display');
+      await page.waitForFunction(() => Alpine.$data(document.body).settingsState === 'ok');
+      const theme = appearanceTheme(page);
+      const worker = page.locator('#gen-max_concurrent_agents');
+      let releaseTheme, releaseRaw;
+      fixture.behavior.themeWait = new Promise(resolve => { releaseTheme = resolve; });
+      fixture.behavior.rawReadWait = new Promise(resolve => { releaseRaw = resolve; });
+      fixture.behavior.themeFailure = failure;
+      try {
+        await theme.selectOption('dark');
+        await expect(theme).toBeDisabled();
+        await settingsSection(page, 'general');
+        await expect(worker).toBeDisabled();
+        releaseTheme();
+        // The fixture sends no config_reloaded event; the write must refresh the baseline itself.
+        await expect(page.getByText('Reading config.yaml after the theme save.', { exact: false })).toBeVisible();
+        await expect(worker).toBeDisabled();
+        releaseRaw();
+        await expect(worker).toBeEnabled();
+        if (failure) {
+          const text = failure.code ? failure.error : 'Check config.yaml before retrying.';
+          await page.getByRole('alert').filter({ hasText: text }).click();
+        }
+        await worker.fill('8');
+        await settingsButton(page, 'save & reload').click();
+        await expect.poll(() => fixture.configWrites.length).toBe(1);
+        assert.match(fixture.rawConfig, /max_concurrent_agents: 8/);
+        assert.match(fixture.rawConfig, /theme: dark/);
+        assert.match(settingsWrites(fixture)[0].body.expected_content, /theme: dark/);
+      } finally {
+        releaseTheme();
+        releaseRaw();
+      }
+    }, { themePreference: 'system', rawConfig: settingsRaw });
+  });
+}
+
+test('Device theme recolors an open terminal in place without reconnecting or saving', async t => {
+  await withPage(t, 390, 'dark', async (page, fixture) => {
+    await expectTheme(page, 'system', 'dark');
+    await openTicket(page, 'kon-live');
+    await phoneOutputView(page, 'Terminal');
+    await expect(page.locator('.mobile-terminal-status')).toHaveText('Connected');
+    await page.waitForFunction(() => window.termState.historyReady && window.termState.ws?.readyState === WebSocket.OPEN);
+    const terminal = await page.evaluateHandle(() => ({ term: window.termState.term, ws: window.termState.ws }));
+    const socketCount = fixture.sockets.length;
+    const palette = () => page.evaluate(({ term, ws }) => {
+      const style = getComputedStyle(document.documentElement);
+      const rgb = name => `rgb(${style.getPropertyValue(name).trim()})`;
+      return {
+        sameConnection: window.termState.term === term && window.termState.ws === ws && ws.readyState === WebSocket.OPEN,
+        colors: [term.options.theme.background, term.options.theme.foreground],
+        tokens: [rgb('--surface-deep'), rgb('--tx')],
+      };
+    }, terminal);
+    const dark = await palette();
+    assert.deepEqual(dark.colors, dark.tokens);
+    await page.emulateMedia({ colorScheme: 'light' });
+    await expectTheme(page, 'system', 'light');
+    const light = await palette();
+    assert.notDeepEqual(light.tokens, dark.tokens);
+    assert.deepEqual(light.colors, light.tokens);
+    assert.equal(light.sameConnection, true);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await expectTheme(page, 'system', 'dark');
+    assert.deepEqual(await palette(), { ...dark, sameConnection: true });
+    assert.equal(fixture.sockets.length, socketCount);
+    assert.deepEqual(fixture.mutations, []);
+  }, { themePreference: 'system' });
 });
 
 describe('Settings final review regressions', { concurrency: 2 }, () => {
@@ -1851,7 +2041,10 @@ describe('mobile desktop parity', () => {
             await fixedColor(card.locator('.title-tag'), 'color', `hsl(${pipePalettes[theme][1]})`);
             await fixedColor(card.getByText('Epic: 0 of 7 done', { exact: true }), 'color', `hsl(${pipePalettes[theme][5]} / 0.9)`);
           }
-          if (theme === 'dark') await page.getByRole('button', { name: 'Toggle theme', exact: true }).filter({ visible: true }).click();
+          if (theme === 'dark') {
+            await cycleTheme(page).click();
+            await expectTheme(page, 'light');
+          }
         }
         if (width < 768) {
           await page.getByRole('navigation', { name: 'Ticket status', exact: true }).getByRole('button', { name: /in progress/i }).click();
@@ -1860,7 +2053,7 @@ describe('mobile desktop parity', () => {
           const paused = page.locator('.mobile-card').filter({ hasText: 'kon-paused' });
           await fixedColor(paused.locator('.mobile-card-state'), 'color', 'hsl(23 80% 40% / 0.8)');
         }
-      }, { records: [...records, ...polishRecords()] });
+      }, { records: [...records, ...polishRecords()], themePreference: 'system' });
     });
   }
 });
@@ -3246,7 +3439,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           assert.ok(pill.y >= mark.y && pill.y + pill.height <= mark.y + mark.height + 1, 'Running count stays within the wordmark block');
           const running = [...fixture.records.values()].filter(ticket => ticket.source === 'primary' && ticket.status === 'in_progress').length;
           assert.equal(await bar.locator('.mobile-running-pill').getAttribute('aria-label'), `${running} running`);
-          for (const name of ['Open navigation', 'Assistant', 'Toggle theme', 'New ticket']) {
+          for (const name of ['Open navigation', 'Assistant', 'Cycle theme', 'New ticket']) {
             const control = bar.getByRole('button', { name, exact: true });
             await inViewport(control);
             const box = await control.boundingBox();
@@ -3868,15 +4061,11 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await ready(page);
         });
         await t.test('header actions, theme and local assets', async () => {
-          const toggle = page.getByRole('button', { name: 'Toggle theme', exact: true }).filter({ visible: true });
-          for (const name of ['Toggle theme', 'Assistant', 'New ticket']) {
+          for (const name of ['Cycle theme', 'Assistant', 'New ticket']) {
             await inViewport(page.getByRole('button', { name, exact: true }).filter({ visible: true }));
           }
           await inViewport(page.getByRole('textbox', { name: 'Filter tickets', exact: true }).filter({ visible: true }));
-          assert.equal(await page.locator('html').getAttribute('data-theme'), theme);
-          await toggle.click();
-          assert.equal(await page.locator('html').getAttribute('data-theme'), theme === 'dark' ? 'light' : 'dark');
-          await toggle.click();
+          await expectTheme(page, theme);
           await noPageOverflow(page);
           for (const path of ['/api/config', '/api/tickets', '/api/ticket-sources', `/api/sources/${source}/tickets`, '/api/events']) {
             assert.ok(fixture.requests.includes(`GET ${path}`), `Expected intercepted ${path}`);
@@ -4266,6 +4455,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
   test('fixture teardown unloads polling pages before disabling interception', async () => {
     const context = await browser.newContext({ serviceWorkers: 'block' });
     const session = fixtureSession(context, fixtureEnvironment, {
+      themePreference: 'dark',
       beforeNavigation: async page => {
         assert.equal(page.url(), 'about:blank');
         await page.addInitScript(() => { window.__beforeNavigation = true; });
@@ -4278,7 +4468,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
     const { fixture } = session;
     const pages = [];
     try {
-      const app = await session.preparePage('dark');
+      const app = await session.preparePage();
       await session.navigate(app);
       pages.push(app);
       for (let i = 0; i < 2; i++) {
@@ -5135,7 +5325,7 @@ async function focusedEditorGeometry(page, height, top = 0, error = false) {
   assert.ok(await editor.evaluate(el => el.scrollTop > 0));
   await noPageOverflow(page);
   if (captureDirectory && page.viewportSize().width === 402 && height === 555) {
-    await mobileCapture(page, 402, await page.evaluate(() => localStorage.getItem('kontora-theme')), error ? 'editor-error-handoff' : 'editor-focused-handoff');
+    await mobileCapture(page, 402, await page.locator('html').getAttribute('data-theme'), error ? 'editor-error-handoff' : 'editor-focused-handoff');
   }
 }
 

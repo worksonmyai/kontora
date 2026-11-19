@@ -77,6 +77,8 @@ type TicketService interface {
 	GetTicket(id string) (TicketInfo, error)
 	CreateTicket(req CreateTicketRequest) (TicketInfo, error)
 	GetConfig() ConfigInfo
+	// ThemePreference is the running preference: system, light, or dark.
+	ThemePreference() string
 	DeleteTicket(id string) error
 	PauseTicket(id string) error
 	RetryTicket(id string) error
@@ -113,6 +115,7 @@ type TicketService interface {
 	GetChain(id string) (ChainInfo, error)
 	GetRawConfig() (string, error)
 	PutRawConfig(content string) error
+	PutThemePreference(theme string) (ThemeSnapshot, error)
 	Subscribe() (ch <-chan TicketEvent, unsubscribe func())
 	HasTerminalSession(id string) bool
 	StartPlannotatorReview(id string) error
@@ -563,6 +566,11 @@ type AgentInfo struct {
 	Effort string `json:"effort"`
 }
 
+type ThemeSnapshot struct {
+	Preference string
+	Revision   int64
+}
+
 type ConfigInfo struct {
 	ConfigPath string `json:"config_path,omitempty"`
 	LogsDir    string `json:"logs_dir,omitempty"`
@@ -570,6 +578,8 @@ type ConfigInfo struct {
 	TicketsDir  string `json:"tickets_dir,omitempty"`
 	TmuxSession string `json:"tmux_session,omitempty"`
 	TmuxSocket  string `json:"tmux_socket,omitempty"`
+	Theme       string `json:"theme"`
+	Revision    int64  `json:"revision"`
 
 	Pipelines     []string       `json:"pipelines"`
 	PipelineInfos []PipelineInfo `json:"pipeline_infos"`

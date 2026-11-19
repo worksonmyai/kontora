@@ -486,10 +486,8 @@ function kontoraContext(overrides = {}) {
     getComputedStyle() {
       return { getPropertyValue: () => "" };
     },
-    getStoredTheme() {
-      return null;
-    },
-    setStoredTheme() {},
+    themeMediaQuery: () => null,
+    resolveTheme: (mode) => mode === 'light' ? 'light' : 'dark',
     applyTheme() {},
     window: {
       innerWidth: 1200,
@@ -517,6 +515,7 @@ function kontoraContext(overrides = {}) {
         return { nextNode: () => null };
       },
       documentElement: {
+        dataset: { theme: 'dark' },
         style: {},
       },
     },
@@ -8923,7 +8922,7 @@ test("an invalid custom status blocks the save with the daemon's wording", async
   assert.deepEqual(vmValue(state.settingsClientErrors()), []);
 });
 
-test("display preferences stay in localStorage and never enter the diff", async () => {
+test("card display preferences stay in localStorage and never enter the diff", async () => {
   const stored = {};
   const state = await settingsState(SETTINGS_FIXTURE, {
     localStorage: { getItem: (k) => stored[k] ?? null, setItem: (k, v) => { stored[k] = v; } },
@@ -8932,11 +8931,9 @@ test("display preferences stay in localStorage and never enter the diff", async 
   state.renderBoard = () => {};
   state.toggleShowBadges();
   state.toggleShowAgentMeta();
-  state.toggleTheme();
 
   assert.equal(stored["kontora-show-badges"], "0");
   assert.equal(stored["kontora-show-agent-meta"], "0");
-  assert.equal(state.lightTheme, true);
   assert.deepEqual([...state.settingsChangedPaths()], []);
   assert.equal(state.settingsDirty(), false);
 });
@@ -9137,7 +9134,7 @@ test("the rail summarizes each section from the loaded config", async () => {
       plannotator: "review + annotate",
       notifications: "no channels",
       statuses: "7 built-in · 0 custom",
-      display: "badges, dark theme",
+      display: "badges, system theme",
     },
   );
 
@@ -10754,7 +10751,7 @@ test("an empty palette query lists the recent tickets then the navigation comman
   assert.deepEqual(groupLabels(state), ["Recent", "Go to"]);
   assert.deepEqual(rowIds(groupIn(state, "Recent").items), ["ticket:kon-2", "ticket:gol-3"]);
   assert.deepEqual(rowTitles(groupIn(state, "Go to").items),
-    ["Go to board", "Stats", "Archive", "New ticket", "Settings", "Toggle sidebar", "Toggle theme"]);
+    ["Go to board", "Stats", "Archive", "New ticket", "Settings", "Toggle sidebar", "Cycle theme"]);
 });
 
 test("the open ticket leads the root list with its actions and its live logs", () => {
@@ -10787,7 +10784,7 @@ test("a query narrows the navigation commands by label", () => {
   state.recomputePalette();
 
   assert.deepEqual(groupLabels(state), ["Go to"]);
-  assert.deepEqual(rowTitles(groupIn(state, "Go to").items), ["Toggle theme"]);
+  assert.deepEqual(rowTitles(groupIn(state, "Go to").items), ["Cycle theme"]);
 });
 
 test("a query that matches nothing leaves no rows to render", () => {

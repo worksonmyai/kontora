@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { inspect } from 'node:util';
 import { expect, test } from 'playwright/test';
-import { fixtureSession, openTicket, populatedStats, ready, routeTo, settingsRaw } from './browser_fixture.mjs';
+import { fixtureSession, openTicket, populatedStats, ready, routeTo, settingsRaw, stamp } from './browser_fixture.mjs';
 import {
-  assistantSurface, automationDetailReady, detailPanel, openAssistantControl,
+  assistantSurface, automationDetailReady, detailPanel, inViewport, openAssistantControl,
   parityAssistantOptions, parityChild, parityEpicRecords, phoneOutputView, polishRecords, terminalGrid,
 } from './browser_scenes.mjs';
 
@@ -150,6 +150,66 @@ async function ticketPanel(page) {
   await expect(detail.getByText('Fixture description.', { exact: true }).filter({ visible: true })).toBeVisible();
 }
 
+async function archiveConfirmation(page) {
+  const card = page.locator('[data-ticket-id="kon-done"]');
+  const menu = card.locator('.card-menu-btn');
+  await menu.focus();
+  await menu.press('Enter');
+  await card.locator('.card-menu [data-act="archive"]').click();
+
+  const dialog = page.getByRole('dialog', { name: 'Archive kon-done', exact: true });
+  const heading = dialog.getByRole('heading', { name: 'Archive kon-done', exact: true });
+  const note = dialog.getByPlaceholder(/^Why \(optional\)/);
+  const cancel = dialog.getByRole('button', { name: 'cancel', exact: true });
+  const archive = dialog.getByRole('button', { name: 'archive', exact: true });
+  await expect(cancel).toBeFocused();
+  // Pointer activation hides Chromium's keyboard focus outline.
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Shift+Tab');
+  await expect(cancel.and(page.locator(':focus-visible'))).toBeFocused();
+  await expect(note).toHaveValue('');
+  for (const control of [heading, note, cancel, archive]) {
+    await expect(control).toBeInViewport({ ratio: 1 });
+  }
+}
+
+function notesRecoveryOptions() {
+  const author = 'Fixture author';
+  return { config: { author }, ticket: { notes: [
+    { id: 'parent-note', at: stamp, author, text: 'Review the release checklist before publishing.', reactions: [] },
+  ] } };
+}
+
+async function notesRecovery(page) {
+  const detail = page.locator('.mobile-detail');
+  const notes = detail.locator('.detail-notes');
+  const draft = 'I checked the release notes. The rollout checklist still needs a second look.';
+  await openTicket(page, 'kon-draft');
+  await detailPanel(page, 'Notes');
+  await notes.getByRole('button', { name: 'Reply', exact: true }).click();
+  await notes.getByRole('textbox', { name: 'Reply', exact: true }).fill(draft);
+  await detail.getByRole('button', { name: 'Back', exact: true }).filter({ visible: true }).click();
+  await openTicket(page, 'kon-draft');
+
+  const recovery = notes.getByRole('region', { name: 'Recoverable note draft', exact: true });
+  const reason = recovery.getByRole('status');
+  const retained = recovery.getByLabel('Retained note text', { exact: true });
+  const restore = recovery.getByRole('button', { name: 'Restore to editor (not sent)', exact: true });
+  const discard = recovery.getByRole('button', { name: 'Discard', exact: true });
+  const composer = notes.getByRole('textbox', { name: 'Add a note', exact: true });
+  await expect(reason).toHaveText('Unsent draft retained from this ticket.');
+  await expect(retained).toHaveText(draft);
+  await expect(restore).toBeEnabled();
+  // The detail view restores its saved scroll offset on the next animation frame after Alpine updates.
+  await page.evaluate(() => new Promise(resolve => {
+    Alpine.nextTick(() => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }));
+  await recovery.scrollIntoViewIfNeeded();
+  for (const control of [recovery, reason, retained, restore, discard, composer]) {
+    await expect(control).toBeInViewport({ ratio: 1 });
+  }
+}
+
 async function epicOverview(page) {
   await routeTo(page, '#/e/kon-order');
   await expect(page.locator('.mobile-epic-resting-header').getByRole('heading', { name: 'Release epic with retained order', exact: true }))
@@ -214,6 +274,27 @@ async function automationDetail(page) {
   await expect(rail.getByText('19 of 20 runs priced', { exact: true })).toBeVisible();
 }
 
+async function automationCompletedLog(page) {
+  await routeTo(page, '#/automations/auto-review');
+  await automationDetailReady(page, 'auto-review');
+  const detail = page.locator('.automations-detail');
+  await detail.getByRole('button', { name: '#29', exact: true }).filter({ visible: true }).click();
+  await expect(detail.getByText('run #29', { exact: true })).toBeInViewport({ ratio: 1 });
+
+  const lines = detail.locator('.automations-log-line');
+  const expected = [
+    ['kontora', 'automation auto-review · run #29 · trigger schedule'],
+    ['agent', 'Inspect repository'],
+    ['agent', 'No regressions <script>not markup</script>'],
+  ];
+  await expect(lines).toHaveCount(expected.length);
+  for (const [index, [source, message]] of expected.entries()) {
+    const row = lines.nth(index);
+    await expect(row.getByText(source, { exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(row.getByText(message, { exact: true })).toBeInViewport({ ratio: 1 });
+  }
+}
+
 async function readOnlyTerminal(page, fixture) {
   await openTicket(page, 'kon-live');
   await phoneOutputView(page, 'Terminal');
@@ -236,19 +317,54 @@ async function readOnlyTerminal(page, fixture) {
   expect(fixture.messages.filter(message => message.type === 'input')).toEqual([]);
 }
 
+async function terminalCompose(page, fixture) {
+  await readOnlyTerminal(page, fixture);
+  const detail = page.locator('.mobile-detail');
+  const composer = detail.getByRole('textbox', { name: 'Message the agent', exact: true });
+  const draft = 'Check the notes.\nKeep the patch small.';
+  await composer.click();
+  await composer.fill(draft);
+  await page.waitForFunction(() => {
+    const { ws } = window.termState;
+    return ws?.readyState === WebSocket.OPEN && new URL(ws.url).searchParams.get('rw') === '1';
+  });
+  await page.waitForFunction(terminalGrid, { minRows: 2 });
+  const { url, rows } = await page.evaluate(() => ({ url: window.termState.ws.url, rows: window.termState.term.rows }));
+  const index = fixture.sockets.findLastIndex(socket => socket.href === url);
+  assert.ok(index >= 0, 'The writable socket must be intercepted');
+  const route = fixture.socketRoutes[index];
+  const marker = 'last-row';
+  fixture.terminalMarkers.set(route, marker);
+  route.send(Buffer.from(`\x1b[2J\x1b[${rows};1H${marker}`));
+  await page.waitForFunction(terminalGrid, { marker, minRows: 2 });
+
+  await expect(composer).toHaveValue(draft);
+  await expect(composer).toBeFocused();
+  const done = detail.locator('.mobile-terminal-bar').getByRole('button', { name: 'Done', exact: true });
+  const send = detail.getByRole('button', { name: 'Send', exact: true });
+  await expect(send).toBeEnabled();
+  for (const control of [composer, done, send]) await inViewport(control);
+  await expect(detail.getByRole('group', { name: 'Terminal keys', exact: true, includeHidden: true })).toBeHidden();
+  expect(fixture.messages.filter(message => message.type === 'input')).toEqual([]);
+}
+
 const scenes = [
   { name: 'board-desktop-dark', width: 1280, theme: 'dark', options: () => ({ records: polishRecords() }), run: populatedBoard },
   { name: 'board-mobile-dark', width: 390, theme: 'dark', options: () => ({ records: polishRecords() }), run: populatedBoard },
   { name: 'board-empty-mobile-light', width: 390, theme: 'light', options: () => ({ empty: true }), run: emptyBoard },
   { name: 'ticket-panel-desktop-light', width: 1280, theme: 'light', run: ticketPanel },
+  { name: 'archive-confirm-short-desktop-light', width: 1280, height: 293, theme: 'light', run: archiveConfirmation },
+  { name: 'notes-recovery-mobile-light', width: 390, theme: 'light', options: notesRecoveryOptions, run: notesRecovery },
   { name: 'epic-overview-mobile-dark', width: 390, theme: 'dark', options: () => ({ records: parityEpicRecords() }), run: epicOverview },
   { name: 'assistant-recorded-desktop-light', width: 1280, theme: 'light', options: parityAssistantOptions, run: recordedAssistant },
   { name: 'assistant-recorded-mobile-dark', width: 390, theme: 'dark', options: parityAssistantOptions, run: recordedAssistant },
   { name: 'stats-desktop-light', width: 1280, theme: 'light', options: () => ({ populatedStats: true }), run: statsView },
   { name: 'settings-general-mobile-light', width: 390, theme: 'light', options: () => ({ rawConfig: settingsRaw }), run: settingsGeneral },
   { name: 'automation-desktop-sidebar-dark', width: 1321, theme: 'dark', options: () => ({ sidebar: true }), run: automationDetail },
+  { name: 'automation-completed-log-mobile-light', width: 390, theme: 'light', run: automationCompletedLog },
   { name: 'terminal-read-only-mobile-dark', width: 390, theme: 'dark', run: readOnlyTerminal },
   { name: 'terminal-read-only-mobile-short-dark', width: 390, height: 360, theme: 'dark', run: readOnlyTerminal },
+  { name: 'terminal-compose-mobile-dark', width: 390, height: 555, theme: 'dark', run: terminalCompose },
 ];
 
 for (const { name, width, height = 900, theme, options, run } of scenes) {

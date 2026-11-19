@@ -1,6 +1,6 @@
 # UI screenshot tests
 
-The visual suite compares 12 Chromium screenshots with reviewed PNGs. It serves
+The visual suite compares 16 Chromium screenshots with reviewed PNGs. It serves
 embedded web assets on loopback and uses synthetic tickets, settings, Assistant
 threads, statistics, and terminal output. It does not start a Kontora daemon or
 call a model. The existing Chromium and WebKit behavior tests run separately.
@@ -34,7 +34,10 @@ It publishes new candidate PNGs only after all captures pass. It does not change
 tracked baselines.
 
 1. Run `make test-visual-update` outside CI. Open each PNG under
-   `test-results/visual-candidates/linux-x64-chromium/`.
+   `test-results/visual-candidates/linux-x64-chromium/`. Check that the candidate
+   filenames match the current scene names in `internal/web/testdata/visual.spec.mjs`.
+   Account for each difference from the tracked baselines as an intended addition,
+   rename, or removal.
 2. For an existing baseline, compare the candidate with the tracked PNG and the
    saved pixel diff. Confirm that each change matches the intended UI change.
    For a new scene, confirm that the controls and data are visible. Check that
@@ -42,15 +45,28 @@ tracked baselines.
 3. If a candidate exposes an existing UI defect, record the defect and do not
    accept that image. Fix the defect separately before accepting a replacement.
 4. Copy only human-approved PNGs into the expected image directory. Include the
-   reviewed PNGs with the change and record who reviewed the images.
-5. Run the check and the ten-repeat check before submitting reviewed PNGs.
+   reviewed PNGs with the change. In the [Baseline review](#baseline-review)
+   section of this file, record the reviewer, the date, and the scenes they approved.
+5. Run `make test-visual` and `time make test-visual-repeat`. Expect ten passing
+   comparisons per scene in the repeat run, with no skips or retries. Record
+   the elapsed time when adding scenes.
 
-The separate `visual` CI job only checks baselines. For initial setup, enable
-that job after the images pass review and all 120 comparisons pass.
+The separate `visual` CI job only checks baselines. Leave existing PNGs
+unchanged when adding scenes unless you are also reviewing an intended UI change.
 
 ## Baseline review
 
-Alexander Akhmetov approved all 12 baseline images on November 18, 2026.
+Alexander Akhmetov approved the original 12 baseline images on November 18, 2026.
+
+On November 19, 2026, Alexander Akhmetov approved four more scenes:
+
+- Short Archive confirmation
+- Mobile Notes recovery
+- Mobile completed Automation log
+- Mobile terminal composer
+
+The ten-repeat check passed all 160 comparisons in 8 minutes 41 seconds on
+an Arm Mac using Docker's amd64 emulation.
 
 ## Read failures
 

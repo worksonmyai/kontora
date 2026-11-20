@@ -109,6 +109,14 @@ On November 19, 2026, Alexander Akhmetov approved four more scenes:
 The ten-repeat check passed all 160 comparisons in 8 minutes 41 seconds on
 an Arm Mac using Docker's amd64 emulation.
 
+On November 20, 2026, Alexander Akhmetov approved updates for the [ticket UI
+changes in #106](https://github.com/worksonmyai/kontora/pull/106):
+
+- Desktop board, mobile board, and empty mobile board
+- Desktop ticket panel and recorded Assistant thread
+- Mobile Notes recovery
+- Read-only mobile terminal at both viewport heights
+
 ## Read failures
 
 - Screenshot mismatches save actual, expected, and diff PNGs in `test-results/visual/`.

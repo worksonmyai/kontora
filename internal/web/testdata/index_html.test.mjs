@@ -14323,7 +14323,11 @@ test("index.html renders the ribbon, transcript and rail the page needs", () => 
 
   const ribbon = html.slice(html.indexOf('<!-- Stage ribbon:'), html.indexOf('<!-- Body: content column'));
   assert.match(ribbon, /x-data="stageRibbonOwner\(\)"/);
-  assert.match(ribbon, /class="stage-ribbon-viewport" role="region" aria-label="Ticket stages"/);
+  const viewport = ribbon.match(/<div class="([^"]+)" role="region" aria-label="Ticket stages"/);
+  assert.ok(viewport, 'Ticket stages region');
+  const viewportClasses = viewport[1].split(/\s+/);
+  assert.ok(viewportClasses.includes('stage-ribbon-viewport'));
+  assert.ok(viewportClasses.includes('no-scrollbar'));
   assert.match(ribbon, /<button type="button" class="stage-ribbon-card/);
   assert.match(ribbon, /:aria-label="\[seg.name,/);
   assert.match(ribbon, /:aria-disabled="!\(seg.state === 'running' \|\| \(seg.state === 'done' && seg.runs\)\)"/);

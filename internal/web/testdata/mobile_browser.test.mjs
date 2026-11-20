@@ -3319,6 +3319,10 @@ describe('desktop stage ribbon browser regressions', () => {
   test('desktop stage ribbon same-stage snapshots ticks and resizes preserve manual browsing', { timeout: 60000 }, async t => {
     await withPage(t, 1024, 'light', async (page, fixture) => {
       await openTicket(page, 'kon-ribbon'); await ribbonRevealed(page, ribbonStages[10]);
+      const viewport = ribbonViewport(page);
+      assert.ok(await viewport.evaluate(el => el.scrollWidth > el.clientWidth), 'The ribbon must overflow');
+      await expect(viewport).toHaveCSS('scrollbar-width', 'none');
+      await expect(viewport).toHaveCSS('overflow-x', 'auto');
       await ribbonBoundary(page, 'start');
       await ribbonViewport(page).evaluate(el => {
         el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));

@@ -238,7 +238,7 @@
       pointer-events: none;
     }
 
-    /* Hide column scrollbars; keep scrolling behavior. */
+    /* Hide scrollbars; keep scrolling behavior. */
     .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
     .no-scrollbar::-webkit-scrollbar { width: 0; height: 0; display: none; }
 
@@ -2066,7 +2066,7 @@
            x-data="stageRibbonOwner()"
            x-show="!isSecondary(selectedTicket) && (stageRibbon().length > 0 || ribbonMeters().length > 0)">
         <div class="stage-ribbon-stages">
-          <div class="stage-ribbon-viewport" role="region" aria-label="Ticket stages"
+          <div class="stage-ribbon-viewport no-scrollbar" role="region" aria-label="Ticket stages"
                :class="['todo', 'open'].includes(selectedTicket?.status) ? 'opacity-60' : ''">
           <template x-for="seg in stageRibbon()" :key="seg.name">
             <button type="button" class="stage-ribbon-card flex flex-col gap-[7px] min-w-[136px] basis-0"

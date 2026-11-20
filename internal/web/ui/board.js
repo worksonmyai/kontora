@@ -256,7 +256,6 @@ export function kontoraBoard() {
       if (this.executionActive(ticket)) cls.push('card-state-running');
       if (ticket.status === 'paused') cls.push('card-state-paused');
 
-      // Active glyphs follow execution; queued and paused glyphs stay in flight.
       var glyph = '';
       if (this.executionActive(ticket)) {
         glyph = '<span class="flex items-center gap-[5px] text-[10px] font-mono card-glyph-running">'
@@ -266,13 +265,13 @@ export function kontoraBoard() {
           + (supervisor ? '<span>paused</span>' : (ticket.stage ? '<span>' + esc(ticket.stage) + '</span>' : '')) + '</span>';
       } else if (inProgressCol && ticket.status === 'todo') {
         glyph = '<span class="flex items-center gap-1 text-[10px] font-mono text-surface-600"><span>◌</span>'
-          + (supervisor ? '<span>queued</span>' : (ticket.stage ? '<span>' + esc(ticket.stage) + '</span>' : '')) + '</span>';
+          + '<span>Todo' + (!supervisor && ticket.stage ? ' · ' + esc(ticket.stage) : '') + '</span></span>';
       }
 
       // Nothing moves until a human answers in the terminal, so the badge
       // carries the wait. The nested data-since is what _updateCardTimers
       // patches on the tick, like the card's own clock.
-      var waiting = ticket.waiting_for_input
+      var waiting = this.needsLiveInput(ticket)
         ? '<span class="waiting-chip" data-tip="' + esc('Waiting for input — ' + this.waitingLabel(ticket)) + '">'
           + '<span class="waiting-dot pulse-dot"></span>needs input '
           + '<span data-since="' + esc(ticket.waiting_since || '') + '">' + esc(this.waitingFor(ticket)) + '</span></span>'
@@ -654,6 +653,7 @@ export function kontoraBoard() {
       this.$nextTick(() => {
         if (this._appDestroyed) return;
         this._mountBoard();
+        if (this.isMobile && this.needsInputOnly) this.mobileNeedsInputChanged();
         this.syncDetailCoverage();
         this.restoreDetailScroll();
         if (hadDetailFocus && !this.interactionOwner?.()) {
@@ -1099,6 +1099,7 @@ export function kontoraBoard() {
       // Agent-backed epics join the board and process tallies once, just like
       // workers; collecting them for the rail must not count them again.
       var epics = [];
+      var needsInputCount = 0;
       var entries = this.allBoardTickets();
       for (var i = 0; i < entries.length; i++) {
         var t = entries[i];
@@ -1118,6 +1119,9 @@ export function kontoraBoard() {
         if (key === undefined) continue;            // no column -> not rendered
         if (this.sourceFilter && (this.isSecondary(t) ? t.source : 'primary') !== this.sourceFilter) continue;
         if (filtering && !this.ticketMatchesQuery(t, query)) continue;
+        var needsInput = this.needsLiveInput(t);
+        if (needsInput) needsInputCount++;
+        if (this.needsInputOnly && !needsInput) continue;
         board[key].push(t);
       }
       var total = 0;
@@ -1127,6 +1131,7 @@ export function kontoraBoard() {
       });
       this._board = board;
       this._boardTotal = total;
+      this.needsInputCount = needsInputCount;
       this._statusCounts = counts;
       this._agentRunning = running;
       this.runningAgents = counts.in_progress;
@@ -1162,6 +1167,12 @@ export function kontoraBoard() {
 
     filteredTicketCount() {
       return this._boardTotal;
+    },
+
+    toggleNeedsInput() {
+      this.needsInputOnly = !this.needsInputOnly;
+      this.recomputeBoard();
+      this.mobileNeedsInputChanged();
     },
 
     clearSearch() {

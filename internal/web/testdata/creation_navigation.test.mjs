@@ -7,6 +7,7 @@ import { kontoraMobile } from '../ui/mobile.js';
 import { kontoraSettings } from '../ui/settings.js';
 import { kontoraFilter } from '../ui/filter.js';
 import { kontoraArchive } from '../ui/archive.js';
+import { localScheduleText } from '../ui/format.js';
 import { deferred } from './settings_fixtures.mjs';
 
 const html = readFileSync(new URL('../static/index.html', import.meta.url), 'utf8');
@@ -176,11 +177,10 @@ for (const mode of ['todo', 'open', 'scheduled', 'epic', 'inherit', 'none', 'exp
     const { state } = harness();
     await state.gotoView('new');
     fill(state);
-    if (mode === 'open') state.createForm.status = 'open';
+    if (mode === 'todo' || mode === 'scheduled') state.createForm.status = 'todo';
     if (mode === 'scheduled' || mode === 'epic') {
       state.setCreateScheduleMode('later');
       state.createForm.scheduled_at = '2099-09-01 09:00';
-      state.onCreateScheduleChange();
     }
     if (mode === 'epic') state.createForm.kind = 'epic';
     if (mode === 'none') state.createForm.pipelineChoice = 'none';
@@ -191,13 +191,20 @@ for (const mode of ['todo', 'open', 'scheduled', 'epic', 'inherit', 'none', 'exp
       state.syncCreatePipeline();
       assert.equal(state.createForm.pipeline, 'child');
     }
-    let body;
+    const writes = [];
+    const preview = state.createPreviewYaml;
     const previousFetch = globalThis.fetch;
-    globalThis.fetch = async (url, options) => { body = JSON.parse(options.body); return { ok: true }; };
+    globalThis.fetch = async (url, options) => { writes.push([url, options.method, JSON.parse(options.body)]); return { ok: true }; };
     try {
       assert.equal(await state.submitCreateTicket(), true);
       assert.equal(state.createForm.title, '', 'successful ticket and epic creation must clear the draft');
-      assert.equal(body.status, ['open', 'scheduled', 'epic'].includes(mode) ? 'open' : 'todo');
+      assert.equal(writes.length, 1);
+      const [url, method, body] = writes[0];
+      assert.equal(url, '/api/tickets');
+      assert.equal(method, 'POST');
+      assert.equal(body.status, mode === 'todo' ? 'todo' : 'open');
+      assert.match(preview, new RegExp('^status: ' + body.status + '$', 'm'));
+      if (mode !== 'scheduled') assert.equal(body.scheduled_at, undefined);
       assert.equal(body.branch, 'work');
       assert.equal(body.base_branch, 'main');
       if (mode === 'epic') {
@@ -212,6 +219,60 @@ for (const mode of ['todo', 'open', 'scheduled', 'epic', 'inherit', 'none', 'exp
     } finally { globalThis.fetch = previousFetch; }
   });
 }
+
+test('New refuses an absolute schedule if it becomes due between preview and submit', async t => {
+  const { state } = harness();
+  await state.gotoView('new');
+  fill(state);
+  const deadline = new Date(2099, 0, 1, 12).getTime();
+  t.mock.timers.enable({ apis: ['Date'], now: deadline - 1 });
+  const fetch = t.mock.method(globalThis, 'fetch', async () => ({ ok: true }));
+  state.setCreateScheduleMode('later');
+  state.createForm.scheduled_at = localScheduleText(new Date(deadline));
+  assert.equal(state.createBlocked(), false);
+  t.mock.timers.tick(1);
+  assert.equal(await state.submitCreateTicket(), false, 'a time equal to now is not future');
+  assert.match(state.createError, /already passed/);
+  t.mock.timers.tick(30_000);
+  assert.equal(await state.submitCreateTicket(), false, 'no browser grace period for creation');
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(state.currentView, 'new');
+});
+
+test('New passes the one resolved schedule to the POST even if the clock advances', async t => {
+  const { state } = harness();
+  await state.gotoView('new');
+  fill(state);
+  const deadline = new Date(2099, 0, 1, 12);
+  t.mock.timers.enable({ apis: ['Date'], now: deadline.getTime() - 1 });
+  state.setCreateScheduleMode('later');
+  state.createForm.scheduled_at = localScheduleText(deadline);
+  state.closeAgentPicker = () => t.mock.timers.tick(60_001);
+  const fetch = t.mock.method(globalThis, 'fetch', async () => ({ ok: true }));
+  assert.equal(await state.submitCreateTicket(), true);
+  assert.equal(fetch.mock.callCount(), 1);
+  const body = JSON.parse(fetch.mock.calls[0].arguments[1].body);
+  assert.equal(body.status, 'open');
+  assert.equal(body.scheduled_at, deadline.toISOString().replace('.000Z', 'Z'));
+});
+
+test('New previews a delay and resolves it from submission, not from typing', async t => {
+  const { state } = harness();
+  await state.gotoView('new');
+  fill(state);
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2099-01-01T12:00:00Z') });
+  state.setCreateScheduleMode('later');
+  state.createForm.scheduled_at = '24h';
+  assert.equal(state.createScheduleEcho().long, '24h after submission');
+  assert.match(state.createPreviewYaml, /^# scheduled_at: 24h after submission$/m);
+  assert.doesNotMatch(state.createPreviewYaml, /^scheduled_at:/m);
+  t.mock.timers.tick(10 * 60 * 1000);
+  const fetch = t.mock.method(globalThis, 'fetch', async () => ({ ok: true }));
+  assert.equal(await state.submitCreateTicket(), true);
+  const body = JSON.parse(fetch.mock.calls[0].arguments[1].body);
+  assert.equal(body.status, 'open');
+  assert.equal(body.scheduled_at, '2099-01-02T12:10:00Z');
+});
 
 test('dirty Settings blocks mobile New before draft cleanup and keeps its exact destination', async () => {
   const { state } = harness();
@@ -310,7 +371,7 @@ test('phone navigation markup uses the shared route, upload input, filters and s
   assert.doesNotMatch(html, /submitCreateTicketMobile|onMobileCreateSchedulePicked/);
   assert.match(html, /class="mobile-new-button mobile-primary"/);
   assert.match(html, /@click="\$refs.uploadInput.click\(\)"[^>]*>Upload \.md/);
-  assert.match(html, /@click="clearSearch\(\)">Clear filter/);
+  assert.match(html, /@click="clearSearch\(\)">Clear search/);
   assert.match(html, /filteredTicketCount\(\) \+ ' matched'/);
   assert.match(html, /mobileNavigationCount\(view.key\)/);
   assert.match(html, /settings-mobile-context[\s\S]{0,600}configCache\?\.config_path/);
@@ -318,7 +379,7 @@ test('phone navigation markup uses the shared route, upload input, filters and s
   assert.match(creation, /fieldset :disabled="createSubmitting"/);
   assert.match(creation, /Leaving this page does not cancel the request/);
   assert.match(creation, /Create and queue/);
-  assert.match(creation, /Open \(do not run\)/);
+  assert.match(creation, /Draft \(Open\)/);
   assert.doesNotMatch(creation, /Cancel and return|>\s*cancel\s*</);
   assert.match(html, /@click.stop="archiveOpenRow\(row\)" class="archive-row-title/);
 });

@@ -65,7 +65,11 @@ Open http://127.0.0.1:8080 for the board. A different configured port changes th
 
 ## Create a draft, then run it
 
-In another terminal, enter your repository's main checkout:
+On the web board, select **New ticket**. Choose a configured project or enter a repository path. **Save draft** keeps the ticket Open without requesting pickup. On the saved draft, select **Request pickup**, review the run settings, then select **start ticket**.
+
+To request pickup at creation, choose **Queue** and click **Create and queue**. This requests pickup even when automatic pickup is off. A scheduled ticket stays Open until its scheduled time, then moves to Todo and follows the automatic pickup setting.
+
+To create a draft from the command line, enter your repository's main checkout in another terminal:
 
 ```sh
 cd ~/projects/myrepo
@@ -111,7 +115,9 @@ On failure, read the error and logs before retrying. With automatic pickup enabl
 
 The starter pipelines stop in `human_review`. The `default` pipeline leaves changes uncommitted, so review its worktree directly.
 
-Run `git worktree list` from the main repository. Find the branch shown by `kontora view TICKET_ID`, then enter that worktree's directory. Inspect the changes:
+For a primary ticket in Human Review, open **Committed changes** and look under **Review the worktree** for the repository and branch. If either is missing, the panel says which one. From the command line, use `kontora view TICKET_ID` to look up the repository and branch.
+
+On the daemon host, run `git worktree list` from the stored repository. Find the ticket's branch and enter that worktree's directory. Inspect the changes:
 
 ```sh
 git status --short
@@ -120,7 +126,7 @@ git diff HEAD
 
 Read any untracked files listed by `git status`; they are not included in `git diff`. Run any remaining checks in this worktree.
 
-The Changes tab and `kontora changes` show committed branch changes only. They can be empty even when the agent changed files. They are useful after a commit, but do not replace review of uncommitted work.
+**Committed changes** and `kontora changes` show only committed branch changes. An empty committed comparison does not mean the worktree is clean.
 
 Kontora does not automatically merge the branch. Commit and integrate the changes using your repository's normal process. Push or open a pull request only when you intend to publish.
 

@@ -3,7 +3,7 @@
 const MOVE_STATUSES = ['open', 'todo', 'paused', 'human_review', 'done', 'cancelled'];
 const labels = { open: 'Open', todo: 'Todo', paused: 'Paused', human_review: 'Human Review', done: 'Done', cancelled: 'Cancelled' };
 const commands = {
-  start: { endpoint: 'run', label: 'Queue ticket' },
+  start: { endpoint: 'run', label: 'Request pickup' },
   retry: { endpoint: 'retry', label: 'Retry stage' },
   pause: { endpoint: 'pause', label: 'Pause' },
   cancel: { endpoint: 'move', status: 'cancelled', label: 'Cancel' },
@@ -225,6 +225,14 @@ export function kontoraLifecycle() {
           let body = command.kind === 'set-stage' ? { stage: command.stage } : command.body;
           if (command.kind === 'archive') body = { note: command.note || '' };
           outcome = await this._lifecyclePost(key, command.endpoint, body, command.kind === 'delete' ? 'DELETE' : 'POST');
+        }
+        if (outcome?.outcome === 'success' && !this._appDestroyed) {
+          if (command.kind === 'start' || (command.kind === 'initialize' && ticket.kind !== 'epic')) {
+            this.showToast(ticket.id + ': Pickup requested');
+          } else if (command.kind === 'retry') {
+            const message = this.workflowWaiting?.(ticket) ? 'Wait re-arm requested' : 'Retry requested';
+            this.showToast(ticket.id + ': ' + message);
+          }
         }
         return { ...result(outcome?.outcome || 'failed', outcome?.error), ...outcome, ticketKey: key, command: command.id };
       } catch (e) {

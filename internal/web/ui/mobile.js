@@ -16,10 +16,11 @@ export function kontoraMobile() {
 
   return {
     _mobileWindowKey: '',
+    _mobileColumnBeforeNeedsInput: null,
     _mobileWindowSize: 100,
 
     mobileWindowKey() {
-      return JSON.stringify([this.mobileColumn().key, this.searchQuery, this.sourceFilter]);
+      return JSON.stringify([this.mobileColumn().key, this.searchQuery, this.sourceFilter, this.needsInputOnly]);
     },
 
     mobileTickets() {
@@ -325,6 +326,26 @@ export function kontoraMobile() {
       return cols[i];
     },
 
+    mobileNeedsInputChanged() {
+      const cols = this.columns;
+      if (this.needsInputOnly) {
+        if (!this.isMobile) return;
+        const key = this.mobileColumn().key;
+        this._mobileColumnBeforeNeedsInput ??= key;
+        if (!this.boardTickets(key).length) {
+          const first = cols.findIndex(col => this.boardTickets(col.key).length);
+          if (first !== -1) this.setActiveColumn(first);
+        }
+      } else if (this._mobileColumnBeforeNeedsInput !== null) {
+        const prior = cols.findIndex(col => col.key === this._mobileColumnBeforeNeedsInput);
+        this.setActiveColumn(prior !== -1 ? prior : cols.findIndex(col => col.key === 'open'));
+        this._mobileColumnBeforeNeedsInput = null;
+      }
+      this._mobileWindowSize = 100;
+      this._mobileWindowKey = '';
+      if (this.$refs?.mobileCardList) this.$refs.mobileCardList.scrollTop = 0;
+    },
+
     setActiveColumn(i) {
       this.activeColumn = Math.max(0, Math.min(i, this.columns.length - 1));
       const sequence = ++columnScrollSequence;
@@ -520,7 +541,7 @@ export function kontoraMobile() {
       const key = this.ticketKey(t);
       const command = t?.status === 'human_review' && !this.executionActive(t)
         ? this.lifecycleCommand(key, 'move:done') : this.lifecycleActions(key)[0];
-      if (!command) return { label: t?.status === 'todo' ? 'Queued' : 'Actions', disabled: t?.status === 'todo', run: () => this.openActionsSheet(t) };
+      if (!command) return { label: t?.status === 'todo' ? 'Todo' : 'Actions', disabled: t?.status === 'todo', run: () => this.openActionsSheet(t) };
       return { label: command.id === 'move:done' ? 'Mark done' : command.label,
         disabled: this.lifecycleBusy(key), run: () => this.dispatchLifecycle(key, command) };
     },

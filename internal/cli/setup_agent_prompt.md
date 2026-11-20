@@ -261,14 +261,26 @@ A disappeared question is not proof that someone answered it.
 Offer these. Create only the ones the user picks. Do not write all of them.
 
 1. One agent run, then `human_review`.
-2. Implement, review, fix, then `human_review`.
+2. Implement and test, then review the uncommitted work in a separate run.
 3. Implement, review, fix, commit, then `human_review`.
 4. Push and open a pull request. Add this only after the user says so
    explicitly, in that session, for that repository.
 5. Plan only, when the user asks for a plan before any code.
 
+Use `kontora setup --recipe implement-review` or `kontora setup --recipe plan-only`
+for the editable starter YAML. Each command prints a fragment and writes nothing.
+Replace `YOUR_AGENT` with a configured agent name in each step. Create `stages:`
+or `pipelines:` if absent. Otherwise, copy only the recipe entries under each key.
+Keep existing entries and rename any colliding recipe entry. Update recipe steps
+that refer to a renamed stage. Select a renamed pipeline by its new name. Keep one
+YAML document. Do not use `kontora config` as the editable source. Validate the merged
+config with `kontora doctor`. Keep `plan-only` a per-ticket choice.
+
 The default boundary is `human_review`. A pipeline that ends in `done` gives the
-user no place to look at the result before the ticket closes.
+user no place to look at the result before the ticket closes. `human_review` is
+not approval and can release dependent tickets. Check the ticket note for the plan
+or review findings. Use the worktree for uncommitted changes: the Changes tab and
+`kontora changes` show only committed changes.
 
 ## Validation rules
 

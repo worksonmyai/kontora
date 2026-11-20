@@ -52,9 +52,8 @@ type SetupAnswers struct {
 	DefaultPipeline     string // "" runs a new ticket as one agent pass
 }
 
-// setupPipelines are the pipelines the wizard writes, in the order the
-// pipelines step lists them, each with the lines shown under it. The empty
-// name is the "neither" choice.
+// An empty name selects standalone execution. The wizard does not offer
+// plan-only as a default.
 var setupPipelines = []struct {
 	name string
 	desc []string
@@ -75,10 +74,16 @@ var setupPipelines = []struct {
 		},
 	},
 	{
+		name: implementReviewRecipe.name,
+		desc: []string{
+			"Implement, then review the uncommitted work in a separate run.",
+			"On success, it stops at human_review without a commit or push.",
+		},
+	},
+	{
 		desc: []string{
 			"One agent pass on the ticket description, with no stage timeout.",
 			"On success, it finishes as done.",
-			"Both pipelines stay in the config for --pipeline on a ticket.",
 		},
 	},
 }
@@ -689,8 +694,9 @@ func (m setupModel) viewSettings(b *strings.Builder) {
 
 func (m setupModel) viewPipelines(b *strings.Builder) {
 	b.WriteString(styleBold.Render("Pipelines:") + "\n")
-	b.WriteString(styleFaint.Render("  Pipelines define multi-stage workflows for tickets. Both starter") + "\n")
-	b.WriteString(styleFaint.Render("  pipelines go into config.yaml. Which one do new tickets run?") + "\n\n")
+	b.WriteString(styleFaint.Render("  Setup writes all starter pipelines. Which one do new tickets run?") + "\n")
+	fmt.Fprintln(b, styleFaint.Render("  Choose "+planOnlyRecipe.name+" per ticket."))
+	b.WriteString("\n")
 
 	for i, p := range setupPipelines {
 		cursor := "  "
@@ -738,7 +744,12 @@ func (m setupModel) viewConfirm(b *strings.Builder) {
 	}
 	fmt.Fprintf(b, "    web: %s (port %s)\n", webStr, m.webPort.Value())
 	b.WriteString("\n  Pipelines:\n")
-	fmt.Fprintf(b, "    %s, %s\n", "default", "implement-review-commit")
+	names := make([]string, 0, 2+len(setupRecipes))
+	names = append(names, "default", "implement-review-commit")
+	for _, recipe := range setupRecipes {
+		names = append(names, recipe.name)
+	}
+	fmt.Fprintf(b, "    %s\n", strings.Join(names, ", "))
 	if p := setupPipelines[m.pipelineCursor].name; p != "" {
 		fmt.Fprintf(b, "    new tickets run: %s\n", p)
 	} else {
@@ -878,6 +889,9 @@ func buildConfigYAML(ans *SetupAnswers) string {
 	b.WriteString("      Do not push or create a pull request.\n")
 	b.WriteString("    timeout: 5m\n")
 	b.WriteString("\n")
+	for _, recipe := range setupRecipes {
+		recipe.writeStages(&b)
+	}
 
 	b.WriteString("pipelines:\n")
 	b.WriteString("  default:\n")
@@ -906,6 +920,10 @@ func buildConfigYAML(ans *SetupAnswers) string {
 	fmt.Fprintf(&b, "      on_success: human_review\n")
 	fmt.Fprintf(&b, "      on_failure: retry\n")
 	fmt.Fprintf(&b, "      max_retries: 1\n")
+	for _, recipe := range setupRecipes {
+		b.WriteByte('\n')
+		recipe.writePipeline(&b, defaultAgent)
+	}
 
 	return b.String()
 }

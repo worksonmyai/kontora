@@ -315,6 +315,125 @@ func TestFullPipeline(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+func TestStarterRecipeHandoff(t *testing.T) {
+	for _, tc := range []struct {
+		recipe string
+		stages []string
+		note   string
+	}{
+		{"implement-review", []string{"starter-implement", "starter-review"}, "Review: staged and unstaged candidate.txt and untracked new.txt. Finding: candidate.txt changed after staging."},
+		{"plan-only", []string{"starter-plan"}, "Plan: add the helper, then test its empty input."},
+	} {
+		t.Run(tc.recipe, func(t *testing.T) {
+			h := newHarness(t)
+			const id = "tst-starter"
+			const filename = id + ".md"
+			var preview strings.Builder
+			require.NoError(t, cli.WriteSetupRecipe(tc.recipe, &preview))
+			yaml := "agents:\n  agent1:\n    binary: true\n" + strings.ReplaceAll(preview.String(), "agent: YOUR_AGENT", "agent: agent1")
+			loaded, err := config.LoadReader(strings.NewReader(yaml))
+			require.NoError(t, err)
+			h.cfg.Stages, h.cfg.Pipelines = loaded.Stages, loaded.Pipelines
+			gitInfo := filepath.Join(h.repoDir, ".git", "info")
+			require.NoError(t, os.MkdirAll(gitInfo, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(gitInfo, "exclude"), []byte("ignored.txt\n"), 0o644))
+
+			type gitState struct{ head, index, staged, unstaged, untracked, status string }
+			snapshot := func(dir string) gitState {
+				git := func(args ...string) string {
+					out, err := runGit(dir, append([]string{"--no-optional-locks", "-c", "color.ui=false"}, args...)...)
+					assert.NoError(t, err)
+					return out
+				}
+				return gitState{
+					head: git("rev-parse", "HEAD"), index: git("ls-files", "--stage"),
+					staged: git("diff", "--cached", "HEAD"), unstaged: git("diff"),
+					untracked: git("ls-files", "--others", "--exclude-standard"), status: git("status", "--porcelain", "--ignored"),
+				}
+			}
+			type invocation struct {
+				stage, dir, log string
+				state           gitState
+			}
+			calls := make(chan invocation, len(tc.stages))
+			d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+				stage := p.Env[config.StageEnvVar]
+				assert.Contains(t, strings.Join(p.Args, " "), "Worktree: "+p.Dir)
+				var state gitState
+				if stage == "starter-implement" {
+					path := filepath.Join(p.Dir, "candidate.txt")
+					if err := os.WriteFile(path, []byte("staged\n"), 0o644); err != nil {
+						return process.Result{}, err
+					}
+					if _, err := runGit(p.Dir, "add", "candidate.txt"); err != nil {
+						return process.Result{}, err
+					}
+					// The unstaged deletion cancels the staged addition in a combined diff.
+					if err := os.Remove(path); err != nil {
+						return process.Result{}, err
+					}
+					for name, text := range map[string]string{"new.txt": "untracked\n", "ignored.txt": "ignored\n"} {
+						if err := os.WriteFile(filepath.Join(p.Dir, name), []byte(text), 0o644); err != nil {
+							return process.Result{}, err
+						}
+					}
+					state = snapshot(p.Dir)
+				} else {
+					state = snapshot(p.Dir)
+					if err := cli.Note(h.tasksDir, id, tc.note, cli.NoteOptions{Author: "agent1"}); err != nil {
+						return process.Result{}, err
+					}
+				}
+				select {
+				case calls <- invocation{stage, p.Dir, p.LogFile, state}:
+				default:
+					return process.Result{}, fmt.Errorf("unexpected stage invocation: %s", stage)
+				}
+				now := time.Now()
+				return process.Result{StartedAt: now, ExitedAt: now}, nil
+			}), WithFinalSummarySpawner(func(context.Context, FinalSummaryParams) (string, error) {
+				return "Starter stages complete", nil
+			}))
+
+			h.writeTicket(filename, h.taskMD(id, "todo", tc.recipe))
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			result := h.waitForStatus(filename, ticket.StatusHumanReview, 10*time.Second)
+			cancel()
+			require.NoError(t, <-errCh)
+			assert.Contains(t, result.Body, tc.note)
+			require.Len(t, result.History, len(tc.stages))
+			require.Len(t, calls, len(tc.stages))
+			first := <-calls
+			assert.Equal(t, tc.stages[0], first.stage)
+			head, err := runGit(h.repoDir, "rev-parse", "HEAD")
+			require.NoError(t, err)
+			assert.Equal(t, head, first.state.head)
+			assert.Equal(t, first.state, snapshot(first.dir))
+			if tc.recipe == "plan-only" {
+				assert.Equal(t, gitState{head: head}, first.state)
+				return
+			}
+			review := <-calls
+			assert.Equal(t, tc.stages[1], review.stage)
+			assert.NotEqual(t, first.log, review.log)
+			assert.Equal(t, first.dir, review.dir)
+			assert.Equal(t, first.state, review.state)
+			assert.Contains(t, review.state.staged, "+staged\n")
+			assert.Contains(t, review.state.unstaged, "-staged\n")
+			assert.Equal(t, "new.txt\n", review.state.untracked)
+			assert.Contains(t, review.state.status, "!! ignored.txt")
+			for name, want := range map[string]string{"new.txt": "untracked\n", "ignored.txt": "ignored\n"} {
+				data, err := os.ReadFile(filepath.Join(review.dir, name))
+				require.NoError(t, err)
+				assert.Equal(t, want, string(data), name)
+			}
+		})
+	}
+}
+
 // TestTicketBaseBranch covers the two ends of base_branch through the daemon:
 // a ticket based on a diverged branch gets a work branch cut from it, and a
 // base naming the ticket's own work branch pauses instead of silently checking

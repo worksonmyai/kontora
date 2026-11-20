@@ -1,12 +1,18 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
+
+	"github.com/worksonmyai/kontora/internal/config"
 )
 
 // runCLI gives the subprocess a pipe for stdin and stdout, so plain `setup`
@@ -137,6 +143,84 @@ pipelines:
 			data, readErr := os.ReadFile(configPath)
 			require.NoError(t, readErr)
 			assert.Equal(t, tc.config, string(data), "existing config must stay byte-for-byte")
+		})
+	}
+}
+
+func TestSetupRecipePreview(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		existing bool
+		pipeline string
+		stages   []string
+		wantErr  string
+	}{
+		{name: "review with existing config", args: []string{"--recipe", "implement-review"}, existing: true, pipeline: "implement-review", stages: []string{"starter-implement", "starter-review"}},
+		{name: "plan without config or store", args: []string{"--recipe=plan-only"}, pipeline: "plan-only", stages: []string{"starter-plan"}},
+		{name: "empty", args: []string{"--recipe="}, wantErr: "--recipe requires a name"},
+		{name: "omitted value", args: []string{"--recipe"}, wantErr: "flag needs an argument"},
+		{name: "unknown", args: []string{"--recipe=unknown"}, wantErr: "unknown setup recipe"},
+		{name: "agent conflict", args: []string{"--recipe=plan-only", "--agent"}, wantErr: "--recipe cannot be combined"},
+		{name: "explicit false still conflicts", args: []string{"--agent=false", "--recipe=plan-only"}, wantErr: "--recipe cannot be combined"},
+		{name: "config conflict", args: []string{"--config=", "--recipe=plan-only"}, wantErr: "--recipe cannot be combined"},
+		{name: "extra argument", args: []string{"--recipe=plan-only", "extra"}, wantErr: "unexpected argument"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config.yaml")
+			storeDir := filepath.Join(dir, "tickets")
+			ticketPath := filepath.Join(storeDir, "tst-1234.md")
+			configData := fmt.Sprintf("tickets_dir: %q\nagents:\n  pi:\n    binary: pi\n", storeDir)
+			const ticketData = "---\nid: tst-1234\nstatus: todo\n---\n# Existing ticket\n"
+			if tc.existing {
+				require.NoError(t, os.Mkdir(storeDir, 0o755))
+				require.NoError(t, os.WriteFile(configPath, []byte(configData), 0o644))
+				require.NoError(t, os.WriteFile(ticketPath, []byte(ticketData), 0o644))
+			}
+
+			stdout, stderr, err := runCLISeparated(t, []string{config.PathEnvVar + "=" + configPath, config.TicketsDirEnvVar + "=" + storeDir}, nil, append([]string{"setup"}, tc.args...)...)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Empty(t, stdout)
+				assert.Contains(t, stderr, tc.wantErr)
+				assert.NotContains(t, stderr, "needs an interactive terminal")
+			} else {
+				require.NoError(t, err, stderr)
+				assert.Empty(t, stderr)
+				var fragment struct {
+					Stages    map[string]config.Stage
+					Pipelines map[string]config.Pipeline
+				}
+				dec := yaml.NewDecoder(strings.NewReader(stdout))
+				dec.KnownFields(true)
+				require.NoError(t, dec.Decode(&fragment))
+				require.ErrorIs(t, dec.Decode(new(any)), io.EOF)
+				require.Len(t, fragment.Pipelines, 1)
+				require.Len(t, fragment.Stages, len(tc.stages))
+				steps := fragment.Pipelines[tc.pipeline]
+				require.Len(t, steps, len(tc.stages))
+				for i, stage := range tc.stages {
+					assert.Equal(t, stage, steps[i].Stage)
+					assert.Equal(t, "YOUR_AGENT", steps[i].Agent)
+					assert.NotEmpty(t, fragment.Stages[stage].Prompt)
+				}
+			}
+
+			if !tc.existing {
+				entries, err := os.ReadDir(dir)
+				require.NoError(t, err)
+				assert.Empty(t, entries)
+				return
+			}
+			for path, want := range map[string]string{configPath: configData, ticketPath: ticketData} {
+				data, err := os.ReadFile(path)
+				require.NoError(t, err)
+				assert.Equal(t, want, string(data), path)
+			}
+			entries, err := os.ReadDir(storeDir)
+			require.NoError(t, err)
+			require.Len(t, entries, 1)
 		})
 	}
 }

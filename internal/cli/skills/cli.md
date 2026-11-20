@@ -929,9 +929,25 @@ Local only, and it does not return.
 
 ## kontora setup
 
-`kontora setup [--agent]` — write the config file. Plain `setup` runs an
-interactive wizard. `setup --agent` prints a brief for a coding agent and
-writes nothing itself. Local only.
+`kontora setup [--agent | --recipe NAME]` — all setup modes are local-only.
+Plain `setup` runs the interactive wizard to write a fresh config.
+`setup --agent` prints the setup brief without writing a config.
+
+Use `kontora setup --recipe implement-review` or `kontora setup --recipe plan-only`
+to print only the named YAML fragment. Preview needs no terminal and does not
+read or change the config, create tickets, or start work. Do not combine it with
+`--agent` or `--config`.
+
+To install a recipe, replace `YOUR_AGENT` with a configured agent name in each step.
+Create `stages:` or `pipelines:` if absent. Otherwise, copy only the recipe entries
+under each key. Keep existing entries and rename any colliding recipe entry.
+Update recipe steps that refer to a renamed stage. Keep one YAML document and run
+`kontora doctor` after the merge.
+
+Select a recipe on a draft with `kontora new --status open --pipeline implement-review "TITLE"`.
+Run the example from the target repository's main checkout. From another directory,
+pass `--path` with the target repository's path. Use `--pipeline plan-only` to request
+a plan without implementation. If you renamed a pipeline, select it by its new name.
 
 ## kontora doctor
 

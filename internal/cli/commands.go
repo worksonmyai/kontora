@@ -172,6 +172,7 @@ var Commands = []Command{
 	}},
 	{Name: "setup", Group: "Getting started", Desc: "Create the configuration file", Config: true, Flags: []Flag{
 		{Name: "agent", Desc: "Print setup instructions for a coding agent"},
+		{Name: "recipe", Desc: SetupRecipeHelp, Value: "name"},
 	}},
 	{Name: "doctor", Group: "Getting started", Desc: "Validate prerequisites and configuration", Config: true},
 	{Name: "config", Group: "Other", Desc: "Show effective configuration", Config: true, Remote: true, Subcommands: []Command{{Name: "edit", Desc: "Edit configuration", Config: true, Remote: true}}},

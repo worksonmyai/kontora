@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/prompt"
 )
 
 func TestBuildConfigYAML(t *testing.T) {
@@ -150,7 +151,14 @@ func TestBuildConfigYAML(t *testing.T) {
 			assert.Contains(t, cfg.Agents, cfg.DefaultAgent)
 			assert.Equal(t, tc.ans.MaxConcurrentAgents, cfg.MaxConcurrentAgents)
 			assert.Equal(t, tc.ans.DefaultPipeline, cfg.DefaultPipeline)
-			assert.Len(t, cfg.Pipelines, 2)
+			assert.Len(t, cfg.Pipelines, 4)
+			assert.Equal(t, config.Pipeline{
+				{Stage: "starter-implement", Agent: cfg.DefaultAgent, OnSuccess: "next", OnFailure: "pause"},
+				{Stage: "starter-review", Agent: cfg.DefaultAgent, OnSuccess: "human_review", OnFailure: "pause"},
+			}, cfg.Pipelines["implement-review"].Legacy)
+			assert.Equal(t, config.Pipeline{
+				{Stage: "starter-plan", Agent: cfg.DefaultAgent, OnSuccess: "human_review", OnFailure: "pause"},
+			}, cfg.Pipelines["plan-only"].Legacy)
 			assert.Equal(t, config.Pipeline{
 				{Stage: "code", Agent: cfg.DefaultAgent, OnSuccess: "human_review", OnFailure: "pause"},
 			}, cfg.Pipelines["default"].Legacy)
@@ -174,6 +182,53 @@ func TestBuildConfigYAML(t *testing.T) {
 			}
 			assert.Contains(t, cfg.Stages["commit"].Prompt, "You have full authorization to commit.")
 			assert.Contains(t, cfg.Stages["commit"].Prompt, "Do not push or create a pull request.")
+		})
+	}
+}
+
+func TestSetupRecipePrompts(t *testing.T) {
+	wizard, err := config.LoadReader(strings.NewReader(buildConfigYAML(&SetupAnswers{
+		Agents: map[string]agentArgs{"pi": {Binary: "pi"}}, MaxConcurrentAgents: 3,
+	})))
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		recipe string
+		stage  string
+		want   []string
+	}{
+		{"implement-review", "starter-implement", []string{"Example requirements", "Do not commit, push, or open a pull request."}},
+		{"implement-review", "starter-review", []string{
+			"kontora view test-1234", "git branch --show-current", "git rev-parse HEAD",
+			"--ignore-submodules=none --cached HEAD --`", "--ignore-submodules=dirty --`", "ls-files --others --exclude-standard",
+			"git config --get-regexp", "do not run the worktree diff", "including nested ones",
+			"or no layer could be inspected", "state that no review was performed", "Label uninspected layers as unverified.",
+			"Do not edit, stage, commit, push, or publish anything.", "The phase-checkpoint instructions do not apply.",
+			"save the full review in one ticket note", "Use the separate summary for the short handoff.",
+			"Follow any required result instructions before ending, even if no review took place.",
+		}},
+		{"plan-only", "starter-plan", []string{
+			"Example requirements", "save the full plan in a ticket note", "Do not edit repository files",
+			"The phase-checkpoint instructions do not apply.", "Use the separate summary for the short handoff.",
+		}},
+	} {
+		t.Run(tc.stage, func(t *testing.T) {
+			var preview bytes.Buffer
+			require.NoError(t, WriteSetupRecipe(tc.recipe, &preview))
+			fragment := strings.ReplaceAll(preview.String(), "agent: YOUR_AGENT", "agent: pi")
+			cfg, err := config.LoadReader(strings.NewReader("agents:\n  pi:\n    binary: pi\n" + fragment))
+			require.NoError(t, err)
+			assert.Equal(t, wizard.Pipelines[tc.recipe], cfg.Pipelines[tc.recipe])
+			stage := wizard.Stages[tc.stage]
+			assert.Equal(t, stage, cfg.Stages[tc.stage])
+			assert.Positive(t, stage.Timeout.Duration)
+			rendered, err := prompt.Render(stage.Prompt, prompt.Data{Ticket: prompt.TicketData{
+				ID: "test-1234", Title: "Example ticket", Description: "Example requirements",
+			}}, t.TempDir())
+			require.NoError(t, err)
+			assert.Contains(t, rendered, "test-1234")
+			for _, want := range tc.want {
+				assert.Contains(t, rendered, want)
+			}
 		})
 	}
 }
@@ -653,11 +708,12 @@ func TestSetupModel_PipelineChoice(t *testing.T) {
 		want string
 	}{
 		{name: "the first choice needs no navigation", want: "default"},
-		{name: "j selects the multi-stage pipeline", keys: []string{"j"}, want: "implement-review-commit"},
-		{name: "the last choice runs no pipeline", keys: []string{"j", "j"}, want: ""},
-		{name: "the cursor stops at the last choice", keys: []string{"j", "j", "j"}, want: ""},
+		{name: "j selects the local commit pipeline", keys: []string{"j"}, want: "implement-review-commit"},
+		{name: "the review choice leaves uncommitted changes", keys: []string{"j", "j"}, want: "implement-review"},
+		{name: "the last choice runs no pipeline", keys: []string{"j", "j", "j"}, want: ""},
+		{name: "the cursor stops at the last choice", keys: []string{"j", "j", "j", "j"}, want: ""},
 		{name: "the cursor stops at the first choice", keys: []string{"k"}, want: "default"},
-		{name: "k walks back up", keys: []string{"j", "j", "k"}, want: "implement-review-commit"},
+		{name: "k walks back up", keys: []string{"j", "j", "j", "k"}, want: "implement-review"},
 	}
 
 	for _, tc := range cases {
@@ -673,6 +729,7 @@ func TestSetupModel_PipelineChoice(t *testing.T) {
 
 			view := m.View()
 			assert.Contains(t, view, "Which one do new tickets run?")
+			assert.Contains(t, view, "Choose plan-only per ticket.")
 			assert.Contains(t, view, "stops at human_review without a commit or push")
 			assert.Contains(t, view, "commits locally, then stops at human_review")
 			assert.Contains(t, view, "It does not push or create a pull request.")
@@ -681,6 +738,7 @@ func TestSetupModel_PipelineChoice(t *testing.T) {
 			// Every choice carries its own lines, so adding one to the table is
 			// all it takes to list it.
 			for _, p := range setupPipelines {
+				assert.NotEqual(t, "plan-only", p.name)
 				if p.name != "" {
 					assert.Contains(t, view, p.name)
 				}
@@ -700,9 +758,11 @@ func TestSetupModel_PipelineChoice(t *testing.T) {
 			assert.Empty(t, cfg.Agents["pi"].Args)
 			assert.Equal(t, 3, cfg.MaxConcurrentAgents)
 			assert.Equal(t, tc.want, cfg.DefaultPipeline)
-			assert.Len(t, cfg.Pipelines, 2)
-			assert.Contains(t, cfg.Pipelines, "default")
-			assert.Contains(t, cfg.Pipelines, "implement-review-commit")
+			assert.Len(t, cfg.Pipelines, 4)
+			for _, name := range []string{"default", "implement-review-commit", "implement-review", "plan-only"} {
+				assert.Contains(t, cfg.Pipelines, name)
+			}
+			assert.Contains(t, m.View(), "\n  Pipelines:\n    default, implement-review-commit, implement-review, plan-only\n")
 		})
 	}
 }

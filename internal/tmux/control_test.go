@@ -280,6 +280,9 @@ func TestControlLifecycleAndSnapshots(t *testing.T) {
 	name := "control ; display-message -p INJECTED-" + randomSuffix()
 	startTestWindow(t, name, t.TempDir(), "sh", "-c", "printf 'snapshot-marker\\n'; exec sleep 600")
 	t.Cleanup(func() { _ = KillWindow(testSession, name) })
+	require.Eventually(t, func() bool {
+		return strings.Contains(controlTmux(t, "capture-pane", "-p", "-t", WindowTarget(testSession, name)), "snapshot-marker")
+	}, 3*time.Second, 10*time.Millisecond, "tmux never displayed the snapshot marker")
 	viewer := "kontora-view-" + randomSuffix()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

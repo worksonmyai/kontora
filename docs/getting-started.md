@@ -31,15 +31,16 @@ kontora setup
 
 Choose your agent and the `default` pipeline. Leave the dashboard on `127.0.0.1` for local use. Consider setting concurrency to `1` while learning the workflow; the wizard starts at `3` workers.
 
-The wizard writes two pipelines:
+The wizard writes four pipelines. It preselects `default` for new tickets.
 
-| Choice | What happens |
+| Default choice | What happens |
 |--------|--------------|
 | `default` | One implementation and test run, up to 30 minutes, then `human_review`. Failure pauses the ticket. |
 | `implement-review-commit` | Implement, review, fix, and commit, then `human_review`. This uses more agent runs and commits before your review. |
+| `implement-review` | Implement and test, then review the uncommitted changes in a separate run in the same checkout. Stops at `human_review` without a commit. |
 | No default pipeline | Ordinary tickets without another pipeline run once and finish as `done` on success. There is no stage timeout. |
 
-Both named pipelines remain available regardless of your selection. Neither asks the agent to push. A timeout limits duration, not spending.
+All four remain available regardless of your selection. Choose `plan-only` per ticket to get a plan in the ticket notes without implementation. None of the four pipelines asks the agent to push. A timeout limits duration, not spending.
 
 The wizard's Claude arguments include `--dangerously-skip-permissions`. Kontora gives each ticket a separate checkout but does not restrict filesystem or network access. Configure agent permissions or an external sandbox before running on sensitive repositories. A `human_review` status does not prevent earlier steps from changing files or making network requests.
 
@@ -52,6 +53,8 @@ kontora doctor
 ```
 
 Resolve failed checks before starting. A busy web port can mean a daemon is already running. `doctor` does not check agent authentication or parse stage prompt templates.
+
+If you already have a config or use the stock Docker profile, [print and merge a starter recipe](configuration.md#adding-a-starter-recipe).
 
 ## Start the daemon
 
@@ -113,18 +116,23 @@ On failure, read the error and logs before retrying. With automatic pickup enabl
 
 ## Review and finish
 
-The starter pipelines stop in `human_review`. The `default` pipeline leaves changes uncommitted, so review its worktree directly.
+On success, the starter pipelines stop in `human_review`. Read the ticket notes for review findings or a plan. `human_review` does not mean approval and can release dependent tickets. Do not use a `plan-only` ticket as a dependency that must wait for implementation or human approval.
 
 For a primary ticket in Human Review, open **Committed changes** and look under **Review the worktree** for the repository and branch. If either is missing, the panel says which one. From the command line, use `kontora view TICKET_ID` to look up the repository and branch.
 
-On the daemon host, run `git worktree list` from the stored repository. Find the ticket's branch and enter that worktree's directory. Inspect the changes:
+On the daemon host, run `git worktree list` from the stored repository. Find the ticket's branch and enter that worktree's directory.
+
+For `plan-only`, read the plan and confirm the worktree is unchanged. If you accept the plan, run `kontora done TICKET_ID` and skip the commit and integration steps below.
+
+The `default` and `implement-review` pipelines leave changes uncommitted. Inspect each layer separately:
 
 ```sh
-git status --short
-git diff HEAD
+git diff --cached HEAD
+git diff
+git ls-files --others --exclude-standard
 ```
 
-Read any untracked files listed by `git status`; they are not included in `git diff`. Run any remaining checks in this worktree.
+Read the listed untracked files directly and run any remaining checks in the worktree. A single `git diff HEAD` can hide a staged change that an unstaged change reverses.
 
 **Committed changes** and `kontora changes` show only committed branch changes. An empty committed comparison does not mean the worktree is clean.
 

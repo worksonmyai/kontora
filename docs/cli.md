@@ -941,9 +941,13 @@ Runs the daemon in the foreground. Only one instance per config directory: a sec
 | `--address HOST` | Web server listen address, overriding `web.host`. |
 | `--port PORT` | Web server port, overriding `web.port`. |
 
-### `kontora setup [--agent]`
+### `kontora setup [--agent | --recipe NAME]`
 
-Writes the config file. Plain `setup` runs an interactive wizard. `setup --agent` prints a brief for a coding agent to follow and writes nothing itself; the brief is embedded in the binary, so it describes the schema the installed version accepts. Local only.
+All setup modes are local-only. Plain `setup` runs the interactive wizard to write a fresh config. `setup --agent` prints a brief for a coding agent without writing a config. The brief describes the schema the installed version accepts.
+
+`setup --recipe implement-review` or `setup --recipe plan-only` prints only the named YAML fragment to stdout. Preview needs no terminal and does not read or edit the config, create tickets, or start work. Do not combine `--recipe` with `--agent` or `--config`.
+
+Replace `YOUR_AGENT` with a configured agent name in each step. Create `stages:` or `pipelines:` if absent. Otherwise, copy only the recipe entries under each key. Keep existing entries and rename any colliding recipe entry. Update recipe steps that refer to a renamed stage. Select a renamed pipeline by its new name. Keep one YAML document and run `kontora doctor`. See [Adding a starter recipe](configuration.md#adding-a-starter-recipe).
 
 ### `kontora doctor`
 

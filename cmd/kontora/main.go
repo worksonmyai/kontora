@@ -260,15 +260,12 @@ func runDaemon(cfg *config.Config, configPath string, override func(*config.Conf
 	return d.Run(ctx)
 }
 
-// cmdSetup creates the config file. Plain `setup` runs the interactive wizard;
-// `setup --agent` prints instructions for a coding agent instead and writes
-// nothing. Both are local-only: the config they talk about is the one on this
-// machine, not the remote daemon's.
 func cmdSetup() {
 	rejectInRemoteMode("setup")
 
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath := fs.String("config", "", "path to config file")
+	recipe := fs.String("recipe", "", cli.SetupRecipeHelp)
 	// Unlike every other command's --agent, this one is a boolean: setup has no
 	// ticket to assign an agent to.
 	agentMode := fs.Bool("agent", false, "print setup instructions for a coding agent instead of running the wizard")
@@ -279,6 +276,30 @@ func cmdSetup() {
 		log.Fatalf("unexpected argument %q: setup takes no positional arguments (--agent is a flag, not an agent name)", fs.Arg(0))
 	}
 
+	var configSet, agentSet, recipeSet bool
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "config":
+			configSet = true
+		case "agent":
+			agentSet = true
+		case "recipe":
+			recipeSet = true
+		}
+	})
+	if recipeSet {
+		if agentSet || configSet {
+			log.Fatal("--recipe cannot be combined with --agent or --config")
+		}
+		if err := cli.WriteSetupRecipe(*recipe, os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	if !configSet {
+		*configPath = defaultConfigPath()
+	}
 	if *agentMode {
 		if err := cli.WriteAgentSetupPrompt(*configPath, os.Stdout); err != nil {
 			log.Fatal(err)

@@ -21,9 +21,9 @@ kontora setup           # interactive wizard
 kontora setup --agent   # print instructions for a coding agent
 ```
 
-`kontora setup` writes a starter config with two pipelines when the resolved
-path holds no file. An existing config is never overwritten: the command prints
-its path and the two ways to change it.
+`kontora setup` writes a starter config with four pipelines when the resolved
+path holds no file. It never overwrites an existing config. See the
+[wizard choices](getting-started.md#set-up-one-agent).
 
 `kontora setup --agent` writes nothing. It prints a plain-text brief for a
 coding agent: the resolved config path, whether the file is missing, valid, or
@@ -34,7 +34,7 @@ environment value can leak into the output; a validation error can still quote
 the names, paths, and patterns it rejected. Use it to create the first config or
 to add agents, stages, pipelines, and projects later.
 
-Both forms are local-only and take no positional arguments. `--agent` here is a
+All setup modes are local-only and take no positional arguments. `--agent` here is a
 boolean, unlike the agent-name `--agent` on `kontora new` and `kontora init`.
 The wizard needs a terminal on stdin and stdout; without one it exits non-zero
 and points at `kontora setup --agent`.
@@ -60,6 +60,56 @@ kontora run TICKET_ID
 
 Without `--status open`, an ordinary `kontora new` creates a `todo` ticket.
 With the default `auto_pick_up: true`, a running daemon can start it immediately.
+
+## Adding a starter recipe
+
+Fresh wizard configs include `implement-review` and `plan-only`. Upgrades do not
+add them to existing configs. The stock Docker profile also leaves them out.
+To add one, run the matching command where Kontora is installed:
+
+```sh
+kontora setup --recipe implement-review
+kontora setup --recipe plan-only
+```
+
+The preview prints only the named YAML fragment. It does not load or change the
+config, create tickets, or start work. It needs no terminal and cannot be combined
+with `--agent` or `--config`.
+
+1. Replace `YOUR_AGENT` with a configured agent name in each step.
+2. Merge the recipe into your editable config. Create `stages:` or `pipelines:`
+   if absent. If a mapping already exists, copy only the entries under that key.
+   Keep existing entries and rename any colliding recipe entry. Update recipe steps
+   that refer to a renamed stage. Keep one YAML document. `kontora config` prints
+   the effective config, not the editable source.
+3. Run `kontora doctor` to validate the config.
+
+For Docker, pass `setup --recipe NAME` to the image's entrypoint. Merge the fragment
+into a host copy of the container's editable config. Mount that copy at the daemon's
+config path (`/home/ubuntu/.config/kontora/config.yaml` in the stock image). Add `/app`
+to the container's `PATH` (for example, `--env PATH=/app:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`)
+so agents can run `kontora`. Run `kontora doctor` inside the container with the config mounted.
+
+To select a recipe without starting work, run
+`kontora new --status open --pipeline implement-review "TITLE"` from the target
+repository's main checkout. From another directory, pass `--path` with the target
+repository's path. Use `--pipeline plan-only` for a plan. If you renamed a pipeline
+when merging the config, select it by its new name.
+
+The wizard binds each recipe step to its chosen default agent. A project or
+ticket agent can override the step agent.
+
+`implement-review` inspects staged changes, unstaged tracked changes, and
+non-ignored untracked files in the ticket worktree. It does not attribute edits
+to the implementation stage or review committed changes. A branch match does not
+prove the original checkout still exists. If the target is wrong, unverified, or
+verified empty, or no layer can be inspected, the reviewer records why no review took place.
+
+`plan-only` asks the agent to save its plan in a ticket note without changing the
+repository. The review and planning prompts do not enforce filesystem permissions.
+On ordinary legacy runs, runner success can move the ticket to `human_review`
+without proof that the note was saved. Check the notes and worktree before you
+accept the result. See [Review and finish](getting-started.md#review-and-finish).
 
 ## Minimal example
 

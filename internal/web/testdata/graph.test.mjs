@@ -92,6 +92,7 @@ test('graph SSE updates runtime without replacing unsaved text or editor state',
   Object.assign(s, { editing: true, selectedEpic: null, tickets: [s.selectedTicket], currentView: 'board', activeTab: 'ticket',
     createForm: {}, editForm: { body: 'unsaved form text' }, _selectedTicketUpdateSeq: 0,
     isSecondary: () => false, _touchTicket() {}, refreshInitContext() {}, sameTicket: (a, b) => a?.id === b?.id,
+    ticketKey: ticket => ticket?.id || '',
     editorCanEdit: () => true, logTabActive: () => false, reconcileOutput() {},
   });
   s.selectedTicket.body = 'original body';

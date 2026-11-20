@@ -137,6 +137,8 @@ export function kontoraApp() {
     // endpoint. Null until fetched; fetched for finished tickets only.
     ticketChanges: null,
     searchQuery: '',
+    needsInputOnly: false,
+    needsInputCount: 0,
     // Command palette (⌘K), desktop only. paletteGroups is the rendered model,
     // rebuilt by recomputePalette() at the mutation points — open, query, scope,
     // SSE flush — the same imperative-cache shape as _board.
@@ -277,9 +279,9 @@ export function kontoraApp() {
     _parsedQuerySrc: null,
 
     _builtinColumns: [
-      { key: 'open', statuses: ['open'], dropStatus: 'open', label: 'Open', color: 'bg-accent', tint: 'var(--st-open)', tip: 'Draft ticket, not running yet. Drag to In Progress or click Initialize to start.', emptyText: 'Create a ticket to get started',
+      { key: 'open', statuses: ['open'], dropStatus: 'open', label: 'Open', color: 'bg-accent', tint: 'var(--st-open)', tip: 'Open tickets do not run. Request pickup for a managed draft, or initialize an imported ticket.', emptyText: 'Create a ticket to get started',
         emptyIcon: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 18v-6"/>' },
-      { key: 'in_progress', statuses: ['todo', 'in_progress', 'paused'], dropStatus: 'todo', label: 'In Progress', color: 'bg-ok', tint: 'var(--st-progress)', tip: 'Queued, running, or paused tickets. The daemon auto-promotes queued tickets when a worker is free.', emptyText: 'No active tickets',
+      { key: 'in_progress', statuses: ['todo', 'in_progress', 'paused'], dropStatus: 'todo', label: 'In Progress', color: 'bg-ok', tint: 'var(--st-progress)', tip: 'Todo, running, or paused tickets. Todo does not confirm queue admission.', emptyText: 'No active tickets',
         emptyIcon: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>' },
       { key: 'human_review', statuses: ['human_review'], dropStatus: 'human_review', label: 'Human Review', color: 'bg-review', tint: 'var(--st-review)', tip: 'Waiting for a human to look at the result.', emptyText: 'No tickets waiting for review',
         emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
@@ -366,6 +368,15 @@ export function kontoraApp() {
     waitingFor(ticket) {
       if (!ticket || !ticket.waiting_for_input) return '';
       return this.formatDuration({ started_at: ticket.waiting_since });
+    },
+
+    needsLiveInput(ticket) {
+      return !this.isSecondary(ticket) && !!ticket?.kontora && !!ticket.waiting_for_input && this.executionActive(ticket)
+        && (ticket.kind !== 'epic' || this.epicIsAgent(ticket));
+    },
+
+    liveQuestion(ticket) {
+      return ticket?.waiting_question?.trim() || 'Agent needs input';
     },
 
     // The badge's hover text: the tool that blocked and the question it asked.

@@ -13,16 +13,30 @@ export const DETAIL_RUN_EVIDENCE = `
 </section>`;
 
 export const DETAIL_CHANGES = `
-<section class="detail-changes detail-shared flex flex-col gap-4" aria-label="Changes">
-  <div class="flex flex-wrap items-center gap-3"><h2 class="side-label">Changes</h2><span x-show="ticketChanges?.base" class="text-xs text-tx-3" x-text="'vs ' + ticketChanges?.base"></span><button type="button" x-show="!isSecondary(selectedTicket)" :disabled="ticketChangesLoading" @click="fetchChanges(selectedTicket.id)" class="ml-auto text-xs text-accent">Refresh changes</button></div>
+<section class="detail-changes detail-shared flex flex-col gap-4" aria-label="Committed changes">
+  <div class="flex flex-wrap items-center gap-3"><h2 class="side-label">Committed changes</h2><span x-show="canCompareChanges() && ticketChanges?.base" class="text-xs text-tx-3" x-text="'vs ' + ticketChanges?.base"></span><button type="button" x-show="canCompareChanges()" :disabled="ticketChangesLoading" @click="fetchChanges(selectedTicket.id)" class="ml-auto text-xs text-accent">Refresh changes</button></div>
   <p x-show="isSecondary(selectedTicket)" class="text-xs text-tx-3">Changes are available for primary tickets only.</p>
-  <p x-show="!isSecondary(selectedTicket) && ticketChangesLoading" role="status" class="text-sm text-tx-3">Loading changes…</p>
-  <div x-show="!isSecondary(selectedTicket) && ticketChangesError" role="alert" class="text-sm text-err"><p class="whitespace-pre-wrap" x-text="ticketChangesError"></p><button type="button" :disabled="ticketChangesLoading" @click="fetchChanges(selectedTicket.id)" class="underline">Retry changes</button></div>
-  <template x-if="!isSecondary(selectedTicket) && !ticketChangesLoading && !ticketChangesError"><div class="flex flex-col gap-4">
+  <p x-show="selectedTicket && !isSecondary(selectedTicket) && !selectedTicket.branch" class="text-sm text-tx-3">This ticket has no branch yet.</p>
+  <p x-show="!isSecondary(selectedTicket) && selectedTicket?.branch && !selectedTicket.path" class="text-sm text-tx-3">Cannot compare commits: no repository path is stored for this ticket.</p>
+  <p x-show="canCompareChanges() && ticketChangesLoading" role="status" class="text-sm text-tx-3">Loading changes…</p>
+  <div x-show="canCompareChanges() && ticketChangesError" role="alert" class="text-sm text-err"><p class="whitespace-pre-wrap" x-text="ticketChangesError"></p><button type="button" :disabled="ticketChangesLoading" @click="fetchChanges(selectedTicket.id)" class="underline">Retry changes</button></div>
+  <template x-if="canCompareChanges() && !ticketChangesLoading && !ticketChangesError"><div class="flex flex-col gap-4">
     <p x-show="!ticketChanges?.commits?.length && !ticketChanges?.files?.length" class="text-sm text-tx-3" x-text="diffEmptyText()"></p>
     <template x-if="ticketChanges?.commits?.length"><div class="flex flex-col gap-2"><h3 class="side-label">Commits</h3><template x-for="c in ticketChanges.commits" :key="c.sha"><div class="detail-commit"><span class="font-mono text-xs text-tx-3" x-text="c.sha"></span><span class="text-sm text-tx-2" x-text="c.subject"></span></div></template></div></template>
     <template x-if="ticketChanges?.files?.length"><div class="flex flex-col gap-2"><div class="flex flex-wrap gap-3 text-xs"><h3 class="side-label" x-text="churn().count + ' changed files'"></h3><span class="font-mono text-ok" x-text="'+' + churn().added"></span><span class="font-mono text-err" x-text="'−' + churn().deleted"></span></div><template x-for="f in ticketChanges.files" :key="f.path"><div class="detail-file font-mono text-xs"><span class="text-tx-2" x-text="f.path"></span><span class="text-ok" x-text="'+' + f.added"></span><span class="text-err" x-text="'−' + f.deleted"></span></div></template></div></template>
   </div></template>
+  <template x-if="showReviewWorktree()"><section class="flex flex-col gap-2 text-sm text-tx-3">
+    <h3 class="side-label">Review the worktree</h3>
+    <dl class="flex flex-col gap-2">
+      <div><dt>Repository</dt><dd class="font-mono select-text break-all" x-text="selectedTicket.path || 'No repository path stored for this ticket.'"></dd></div>
+      <div><dt>Branch</dt><dd class="font-mono select-text break-all" x-text="selectedTicket.branch || 'No branch stored for this ticket.'"></dd></div>
+    </dl>
+    <template x-if="selectedTicket.path && selectedTicket.branch"><div class="flex flex-col gap-2">
+      <p>On the daemon host, run <code>git worktree list</code> from the repository above. Find the worktree for the stored branch.</p>
+      <p>In that worktree, run <code>git status --short</code> and <code>git diff HEAD</code>. Inspect untracked files separately.</p>
+      <p>An empty committed comparison does not mean the worktree is clean. If Git lists no matching worktree, the browser cannot verify uncommitted changes.</p>
+    </div></template>
+  </section></template>
 </section>`;
 
 export const DETAIL_HISTORY = `

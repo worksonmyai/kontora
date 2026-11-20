@@ -53,7 +53,7 @@ export function kontoraPalette() {
 
     // Past tense for the confirmation toast, keyed by validMoves label.
     _paletteVerbs: {
-      'Queue': 'queued', 'Move to open': 'moved to open', 'Pause': 'paused',
+      'Move to open': 'moved to open', 'Pause': 'paused',
       'Send to review': 'sent to review', 'Mark done': 'marked done',
       'Cancel': 'cancelled', 'Resume': 'resumed', 'Approve': 'approved',
       'Send back': 'sent back', 'Reopen': 'reopened', 'Initialize': 'initialized',
@@ -230,7 +230,7 @@ export function kontoraPalette() {
       return chip.abs + (chip.rel ? ' · in ' + chip.rel : '');
     },
 
-    // clear and run-now: the two ways a schedule ends. Only for a ticket that
+    // Clear and request pickup now: the two ways a schedule ends. Only for a ticket that
     // has one — there is nothing to clear otherwise.
     _paletteScheduleAlsoRows(t) {
       var clear = this._paletteCmdRow({
@@ -241,10 +241,10 @@ export function kontoraPalette() {
       clear.glyphClass = 'text-surface-600';
       var run = this._paletteCmdRow({
         id: 'schedrun:' + t.id, kind: 'schedulerun', ticketId: t.id, glyph: '▸',
-        title: 'run now instead',
+        title: 'Request pickup now',
       });
       run.command = this.lifecycleCommand(t, 'start');
-      run.sub = 'clears scheduled_at and queues the ticket';
+      run.sub = 'On success, clears the schedule even if the ticket can’t join the queue.';
       run.glyphClass = 'text-ok';
       run.status = 'open';
       run.statusText = 'open';
@@ -637,8 +637,7 @@ export function kontoraPalette() {
       var label = this._paletteScheduleCurrent(t);
       this.closePalette();
       if (row.kind === 'schedulerun') {
-        const result = await this.dispatchLifecycle(this.ticketKey(t), row.command);
-        if (result.outcome === 'success') this.showToast(t.id + ' queued');
+        await this.dispatchLifecycle(this.ticketKey(t), row.command);
         return;
       }
       if (row.kind === 'scheduleclear') {
@@ -661,7 +660,8 @@ export function kontoraPalette() {
       var t = this.lifecycleResolve(row.ticketId);
       this.closePalette();
       const result = await this.dispatchLifecycle(row.ticketId, row.move);
-      if (result.outcome !== 'success') return;
+      // Lifecycle already acknowledges pickup and distinguishes retry from re-arming a wait.
+      if (result.outcome !== 'success' || ['start', 'retry'].includes(row.move.id)) return;
       var verb = this._paletteVerbs[row.move.label];
       this.showToast(t.id + ' ' + (typeof verb === 'string' ? verb : row.move.label.toLowerCase()));
     },

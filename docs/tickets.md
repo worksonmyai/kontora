@@ -157,9 +157,13 @@ Pipeline precedence at creation or initialization is:
 
 Kontora stores the resolved pipeline in the ticket, not a live link to a default.
 Existing assignments are not migrated after config changes, reparenting or detail-path
-edits. Operators must retarget them explicitly. `none` stores a blank, not durable
-opt-out provenance. A later initialization can fill that blank unless the caller
-opts out again. Agent resolution stays independent of the pipeline opt-out.
+edits. Operators must retarget them explicitly. `none` stores a blank, not a
+separate opt-out flag. When you request pickup for a managed web draft with no
+stored pipeline, the form selects **none (single run, no stages)** so it stays
+standalone. You can select the inherited default instead. Unmanaged tickets with
+no stored pipeline still default to inheritance, and direct initialization
+requests can fill a blank unless they pass `none`. Agent resolution stays
+independent of the pipeline opt-out.
 
 `epic_child` in API responses is an ephemeral membership snapshot for previews.
 It is not frontmatter or authoritative default resolution. Browser inheritance omits
@@ -368,6 +372,12 @@ After you configure defaults, those tickets inherit at their next explicit start
 Upgrade all participating clients and daemons: older writers can delete the new empty-list marker.
 There is no reset-to-default action in the dashboard. Remove the stored `notify` field manually to restore default eligibility.
 
+#### Create from the web board
+
+**Save draft** creates an Open ticket without requesting pickup. Choose a configured project or enter a repository path on the daemon host. On the saved draft, select **Request pickup**, review the run settings, then select **start ticket**. To request pickup at creation even when automatic pickup is off, choose **Queue** and select **Create and queue**. A pickup request does not guarantee a queue slot or a running agent.
+
+Choose **Schedule for later** to schedule a ticket. Switching back to **No schedule** clears the time and restores your Draft or Queue choice.
+
 #### Scheduled pickup
 
 `scheduled_at` holds the instant an `open` ticket becomes `todo`:
@@ -377,9 +387,9 @@ status: open
 scheduled_at: "2099-09-01T07:00:00Z"
 ```
 
-Write it with [`kontora schedule`](cli.md#kontora-schedule-ticket_id), with `kontora new --at`/`--after`, or from the dashboard — the ticket detail panel, the schedule scope in the command palette, the Start-at field on the new-ticket page, or the phone's schedule sheet. All of them normalize the instant to UTC, second precision, so a schedule set from two time zones compares equal, and all of them refuse an instant already in the past: a mistyped year would otherwise start the agent at once.
+Write it with [`kontora schedule`](cli.md#kontora-schedule-ticket_id), with `kontora new --at`/`--after`, or from the dashboard: the ticket detail panel, the schedule scope in the command palette, **Schedule for later** on the new-ticket page, or the phone's schedule sheet. Kontora stores the instant in UTC with second precision.
 
-The time itself is written the same way everywhere: an absolute instant (`2099-09-01T09:00:00+02:00`, or `"2099-09-01 09:00"` in your own zone) or a delay from now (`90m`, `24h`, `3d`, `2w`). A date with no time is refused, because which midnight it means depends on the zone reading it.
+Enter a date and local time (`2099-09-01 09:00`) or a delay (`90m`, `24h`, `3d`, `2w`). The CLI also accepts RFC 3339 instants such as `2099-09-01T09:00:00+02:00`. A date without a time is not enough. The new-ticket page requires a future time when you submit. If you type a delay there, the preview shows the delay rather than a fixed timestamp: the browser measures it from submission.
 
 The timestamp is a one-time trigger, not a status. A scheduled ticket sits in the Open column and stays out of the ready queue until its deadline, and its card shows the time it starts in your own zone.
 

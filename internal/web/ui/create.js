@@ -2,7 +2,7 @@ import { localScheduleText, parseScheduleInput, pickerToScheduleText, scheduleEc
 
 // Shared by the routed New page and the component's initial state.
 export function newCreateForm() {
-  return { title: '', path: '', pipeline: '', pipelineChoice: 'inherit', agent: '', status: 'todo', body: '', branch: '', base_branch: '', scheduled_at: '', scheduleMode: 'now', kind: '', parent: '' };
+  return { title: '', path: '', pipeline: '', pipelineChoice: 'inherit', agent: '', status: 'open', body: '', branch: '', base_branch: '', scheduled_at: '', scheduleMode: 'now', kind: '', parent: '' };
 }
 
 // What a branch field says when no name can be shown: the ticket carries no
@@ -188,15 +188,11 @@ export function kontoraCreate() {
       this.syncCreateAgent();
     },
 
-    // What the Start-at field currently means: the instant, or the reason it
-    // means none. Read by the echo line, the preview, the submit guard and the
-    // request, so all four agree by construction.
-    //
-    // "now" is not the absence of a schedule with leftover text — it is the
-    // choice, so the text is ignored until the user switches back to "later".
-    createSchedule() {
-      if (this.createForm.kind === 'epic' || this.createForm.scheduleMode !== 'later') return { iso: '', at: null, error: '' };
-      return parseScheduleInput(this.createForm.scheduled_at, new Date());
+    createSchedule(now = new Date()) {
+      if (!this.createSchedulePinned()) return { iso: '', error: '' };
+      var text = this.createForm.scheduled_at.trim();
+      if (!text) return { iso: '', error: 'Enter a future date and local time (YYYY-MM-DD HH:MM), or a delay such as 24h.' };
+      return parseScheduleInput(text, now, { futureOnly: true });
     },
 
     createScheduleISO() {
@@ -207,11 +203,11 @@ export function kontoraCreate() {
       return this.createSchedule().error;
     },
 
-    // The echo line: weekday, zone, distance and the exact instant. Null while
-    // the field is empty or unreadable, when the error line takes its place.
     createScheduleEcho() {
-      var iso = this.createScheduleISO();
-      return iso ? scheduleEchoParts(iso, new Date()) : null;
+      var now = new Date();
+      var { iso, delay } = this.createSchedule(now);
+      if (delay) return { long: delay + ' after submission' };
+      return iso ? scheduleEchoParts(iso, now) : null;
     },
 
     // The presets, rebuilt per read so "tonight 18:00" stops being offered once
@@ -232,7 +228,6 @@ export function kontoraCreate() {
     // input, and a value it cannot read back is a field the user cannot edit.
     pickCreatePreset(preset) {
       this.createForm.scheduled_at = localScheduleText(preset.at);
-      this.onCreateScheduleChange();
     },
 
     // now | later. Leaving "later" drops the schedule rather than remembering
@@ -241,20 +236,12 @@ export function kontoraCreate() {
     setCreateScheduleMode(mode) {
       this.createForm.scheduleMode = mode;
       if (mode === 'now') this.createForm.scheduled_at = '';
-      this.onCreateScheduleChange();
     },
 
-    // A schedule is what moves the ticket out of open, so picking one pins the
-    // status select there (the template disables it) rather than letting the
-    // user build the --status todo + --at conflict the CLI rejects. Clearing
-    // the field puts the select back.
-    onCreateScheduleChange() {
-      this.createForm.status = this.createForm.kind === 'epic' || this.createSchedulePinned() ? 'open' : 'todo';
+    createEffectiveStatus() {
+      if (this.createForm.kind === 'epic' || this.createSchedulePinned()) return 'open';
+      return this.createForm.status === 'todo' ? 'todo' : 'open';
     },
-
-    // Whether the Status select is pinned open by the Start-at field. It is the
-    // mode that pins it, not a parsed instant: leaving the select editable
-    // while the user is mid-way through typing a time would flip it twice.
     createSchedulePinned() {
       return this.createForm.kind !== 'epic' && this.createForm.scheduleMode === 'later';
     },
@@ -266,14 +253,12 @@ export function kontoraCreate() {
       var text = pickerToScheduleText(value);
       if (!text) return;
       this.createForm.scheduled_at = text;
-      this.onCreateScheduleChange();
     },
 
     // Submit is blocked while the field cannot be read: sending nothing would
     // create an unscheduled ticket, which is not what the form says it will do.
     createBlocked() {
-      if (this.createForm.kind === 'epic') return false;
-      return !!this.createScheduleError() || (this.createSchedulePinned() && !this.createScheduleISO());
+      return this.createSchedulePinned() && !this.createScheduleISO();
     },
 
     toggleSidebar() {
@@ -326,15 +311,14 @@ export function kontoraCreate() {
     get createPreviewYaml() {
       var f = this.createForm || {};
       var lines = ['---'];
-      var scheduled = this.createScheduleISO();
+      var schedule = this.createSchedule();
       if (f.title)    lines.push('title: ' + JSON.stringify(f.title));
       // Creating an epic selects its agent but does not activate supervision.
       if (f.kind)     lines.push('kind: ' + f.kind);
-      lines.push('status: ' + (f.kind === 'epic' ? 'open' : (scheduled ? 'open' : (f.status || 'todo'))));
-      // Directly under status, because it is the field that moves it, and in
-      // the spelling the daemon stores: UTC, quoted, second precision. The echo
-      // line above the field shows the same instant in the local zone.
-      if (f.kind !== 'epic' && scheduled) lines.push('scheduled_at: ' + JSON.stringify(scheduled));
+      lines.push('status: ' + this.createEffectiveStatus());
+      // Relative input has no fixed instant until submission.
+      if (schedule.delay) lines.push('# scheduled_at: ' + schedule.delay + ' after submission');
+      else if (schedule.iso) lines.push('scheduled_at: ' + JSON.stringify(schedule.iso));
       if (f.kind !== 'epic' && f.pipeline) lines.push('pipeline: ' + f.pipeline);
       if (f.agent)    lines.push('agent: ' + f.agent);
       if (f.path)     lines.push('path: ' + f.path);
@@ -357,13 +341,18 @@ export function kontoraCreate() {
     // hue. createPreviewYaml stays the single source of the text.
     get createPreviewLines() {
       return this.createPreviewYaml.split('\n').map(function (text, i) {
-        return { key: i, text: text, hue: text.startsWith('scheduled_at:') };
+        return { key: i, text: text, hue: text.startsWith('scheduled_at:') || text.startsWith('# scheduled_at:') };
       });
     },
 
     async submitCreateTicket() {
       if (this._createRequest || this.createSubmitting) return false;
-      if (!(this.createForm.title || '').trim() || !(this.createForm.path || '').trim() || this.createBlocked()) return false;
+      if (!(this.createForm.title || '').trim() || !(this.createForm.path || '').trim()) return false;
+      const schedule = this.createSchedule();
+      if (schedule.error) {
+        this.createError = schedule.error;
+        return false;
+      }
       this.closeAgentPicker(false);
       var current = this._createContext();
       var request = this._createRequest = ++this._createRequestSeq;
@@ -372,12 +361,11 @@ export function kontoraCreate() {
       this.createSubmitting = true;
       this.createError = null;
       try {
-        const body = { title: this.createForm.title, path: this.createForm.path };
+        const body = { title: this.createForm.title, path: this.createForm.path, status: this.createEffectiveStatus() };
         if (this.createForm.parent) body.parent = this.createForm.parent;
         // Activation belongs to the start form, not creation.
         if (this.createForm.kind === 'epic') {
           body.kind = 'epic';
-          body.status = 'open';
           if (this.createForm.agent) body.agent = this.createForm.agent;
           if (this.createForm.branch) body.branch = this.createForm.branch;
           if (this.createForm.base_branch) body.base_branch = this.createForm.base_branch;
@@ -388,14 +376,7 @@ export function kontoraCreate() {
         var pipeline = this.pipelineOverride(this.createForm.pipelineChoice);
         if (pipeline !== undefined) body.pipeline = pipeline;
         body.agent = this.createForm.agent || 'none';
-        var scheduled = this.createScheduleISO();
-        if (scheduled) {
-          // A scheduled ticket waits in open; the timestamp is what moves it.
-          body.scheduled_at = scheduled;
-          body.status = 'open';
-        } else if (this.createForm.status) {
-          body.status = this.createForm.status;
-        }
+        if (schedule.iso) body.scheduled_at = schedule.iso;
         if (this.createForm.body) body.body = this.createForm.body;
         if (this.createForm.branch) body.branch = this.createForm.branch;
         if (this.createForm.base_branch) body.base_branch = this.createForm.base_branch;
@@ -569,7 +550,11 @@ export function kontoraCreate() {
       var agent = ticket.agent_override ? ticket.agent : this._initInherited.agent;
       await this.$nextTick();
       if (!currentForm()) return;
-      this.initForm.pipelineChoice = ticket.pipeline ? 'pipeline:' + ticket.pipeline : 'inherit';
+      // Creation stamps inherited names but stores a standalone run with no
+      // pipeline. Preserve that for managed drafts; unmanaged blanks can inherit.
+      this.initForm.pipelineChoice = ticket.pipeline === 'none' ? 'none'
+        : ticket.pipeline ? 'pipeline:' + ticket.pipeline
+        : ticket.kontora && ticket.status === 'open' ? 'none' : 'inherit';
       this.onInitPipelineChange();
       this.initForm.agent = agent;
       if (!this.dialogFocusManaged?.()) document.getElementById(ticket.kind === 'epic' ? 'init-agent' : 'init-pipeline')?.focus();

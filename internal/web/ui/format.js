@@ -72,10 +72,9 @@ const SCHEDULE_LOCAL = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?
 // from now, the two grammars `kontora schedule` takes. Returns the instant it
 // means, or the reason it means none.
 //
-// A past instant is named here rather than sent: the daemon refuses one (with a
-// minute of grace for the round trip), and a refusal the user reads before
-// pressing the button is a correction rather than an error.
-export function parseScheduleInput(text, now) {
+// On New, only a future instant can create a scheduled ticket. The other
+// schedule controls keep their existing tolerance for a time just passed.
+export function parseScheduleInput(text, now, { futureOnly = false } = {}) {
   var s = String(text || '').trim();
   var at = now instanceof Date ? now : new Date();
   if (!s) return { iso: '', at: null, error: '' };
@@ -107,9 +106,14 @@ export function parseScheduleInput(text, now) {
   }
   // Durations can overflow Date's range (or start from an invalid clock).
   if (!Number.isFinite(when.getTime())) return { iso: '', at: null, error: 'not a time or a duration' };
-  // ticket.ScheduleGrace: an instant a moment old was current when it was typed.
-  if (when.getTime() < at.getTime() - 60000) return { iso: '', at: null, error: 'that time has already passed' };
-  return { iso: storedISO(when), at: when, error: '' };
+  if (futureOnly ? when <= at : when.getTime() < at.getTime() - 60000) {
+    return { iso: '', at: null, error: 'that time has already passed' };
+  }
+  // New writes whole seconds. A sub-second delay must not serialize as due now.
+  if (futureOnly && delay && Math.floor(when.getTime() / 1000) === Math.floor(at.getTime() / 1000)) {
+    when = new Date((Math.floor(at.getTime() / 1000) + 1) * 1000);
+  }
+  return { iso: storedISO(when), at: when, error: '', ...(delay ? { delay: s } : {}) };
 }
 
 // A native datetime-local value ("2026-09-01T09:00") as the text the schedule

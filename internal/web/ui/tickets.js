@@ -231,6 +231,7 @@ export function kontoraTickets() {
             if (this._appDestroyed) return;
             this.tickets = this._mergeSnapshot((data.tickets || []).map(t => this.boardEntry(t)), this.tickets, touched);
             this._reconcileSnapshotSelection(this.tickets, false, touched);
+            this.epicAcceptListSnapshot(touched);
             // A refresh releases failed, unconfirmed starts. SSE owns confirmed
             // sessions; the daemon still rejects duplicate starts.
             for (const [id, start] of uncertainStarts) {
@@ -255,8 +256,20 @@ export function kontoraTickets() {
       if (!selected || this.isSecondary(selected) !== secondary || touched.has(this.ticketKey(selected))) return;
       if (secondary && !this.sourceAvailable(selected)) return;
       var current = tickets.find(t => this.sameTicket(t, selected));
-      if (current) this.queueTicketUpdate({ ...selected, ...current });
+      if (current) {
+        const projection = { ...selected, ...current };
+        if (!secondary) {
+          // The list omits empty refs; a missing field clears the stored value.
+          Object.assign(projection, this.liveWaitFields(current), this.changesRefs(current));
+        }
+        this.queueTicketUpdate(projection);
+      }
       else if (!this.archiveDetailOpen() && this._claimKey !== this.ticketKey(selected)) this.closeDetail();
+    },
+
+    liveWaitFields(ticket) {
+      const { waiting_for_input, waiting_since, waiting_tool, waiting_question } = ticket;
+      return { waiting_for_input, waiting_since, waiting_tool, waiting_question };
     },
 
     _releaseInitialSnapshot() {
@@ -353,7 +366,7 @@ export function kontoraTickets() {
       } else if (counts.paused > 0) {
         color = h('--st-paused'); label = counts.paused + ' paused';
       } else if (counts.todo > 0) {
-        color = v('--surface-600'); label = counts.todo + ' queued';
+        color = v('--surface-600'); label = counts.todo + ' Todo';
       } else if (counts.done > 0) {
         color = h('--st-done'); label = 'all done';
       } else {
@@ -449,10 +462,12 @@ export function kontoraTickets() {
       return !!t.final_summary || !!t.summary || (t.history || []).some(function (e) { return !!(e.summary || e.outcome_reason); });
     },
 
-    // The diff tab needs a branch to compare against the base. A ticket that
-    // has not started one has nothing the changes endpoint could answer with.
+    showReviewWorktree() {
+      return this.selectedTicket?.status === 'human_review' && !this.isSecondary(this.selectedTicket);
+    },
+
     showDiffTab() {
-      return !this.isSecondary(this.selectedTicket) && !!this.selectedTicket?.branch;
+      return !this.isSecondary(this.selectedTicket) && (!!this.selectedTicket?.branch || this.showReviewWorktree());
     },
 
     // Board cards render neither the body nor the notes parsed out of it, and
@@ -502,7 +517,9 @@ export function kontoraTickets() {
           if (this.archiveDetailOpen()) {
             // broadcastTicketUpdate strips the body from the event, so the copy
             // the overlay fetched has to survive the swap.
+            const previousOwner = this.changesOwner(this.selectedTicket);
             this.selectedTicket = this._mergeDetailProjection(this.selectedTicket, ticket);
+            this.reconcileChanges(previousOwner);
           } else {
             this.closeDetail();
           }
@@ -530,6 +547,7 @@ export function kontoraTickets() {
         }
         if (this.sameTicket(this.selectedTicket, ticket)) {
           var prevSummary = this.selectedTicket.summary;
+          var previousOwner = this.changesOwner(this.selectedTicket);
           if (this.editing && !this.editorCanEdit(ticket)) {
             this.closeAgentPickerHost('edit');
             this.flushEditSave();
@@ -537,6 +555,7 @@ export function kontoraTickets() {
             this.editingBody = false;
           }
           if (this.editing) {
+            Object.assign(this.selectedTicket, this.liveWaitFields(ticket), this.changesRefs(ticket));
             this.selectedTicket.status = ticket.status;
             this.selectedTicket.execution_active = ticket.execution_active;
             this.selectedTicket.kind = ticket.kind;
@@ -570,9 +589,7 @@ export function kontoraTickets() {
           }
           // A stage that just wrote a new summary usually also committed, so
           // the open summary tab re-reads the commit list.
-          if (this.activeTab === 'summary' && ticket.summary !== prevSummary) {
-            this.fetchChanges(ticket.id);
-          }
+          this.reconcileChanges(previousOwner, this.activeTab === 'summary' && ticket.summary !== prevSummary);
         }
       }
       if (this.createForm.parent === ticket.id) this.syncCreatePipeline();

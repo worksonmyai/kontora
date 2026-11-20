@@ -243,7 +243,7 @@ export function kontoraEpics() {
     epicNote(id) {
       var r = this.epicRollup(id);
       if (r.supervisorWaiting) return 'supervisor needs input';
-      if (r.supervisorStatus) return 'supervisor ' + (r.supervisorStatus === 'todo' ? 'queued' : this.statusLabel(r.supervisorStatus));
+      if (r.supervisorStatus) return 'supervisor ' + this.statusLabel(r.supervisorStatus);
       if (r.holder) return r.holder.id + ' holds it';
       if (r.next) return r.next.id + ' is running';
       if (r.total && r.done + (r.counts.cancelled || 0) === r.total) return 'ready to close';
@@ -272,7 +272,7 @@ export function kontoraEpics() {
       var parts = [];
       var say = function (n, word) { if (n) parts.push(n + ' ' + word); };
       say(rollup.activeCount, 'running');
-      say(counts.todo, 'queued');
+      say(counts.todo, 'Todo');
       say(counts.paused, 'paused');
       say(counts.human_review, 'review');
       say(counts.open, 'open');
@@ -544,8 +544,14 @@ export function kontoraEpics() {
       return saving && typeof saving.then === 'function' ? saving.then(close) : close(saving);
     },
 
-    // Re-read the open epic out of this.tickets after an SSE flush, so the page
-    // moves with the rail rather than holding the object it opened with.
+    epicAcceptListSnapshot(touched) {
+      // An accepted list row supersedes an in-flight detail read. If the
+      // merge preserved a locally updated row, the list has nothing to apply.
+      if (this.selectedEpic && !touched.has(this.ticketKey(this.selectedEpic))) ++this._epicUpdateSeq;
+    },
+
+    // Re-read the open epic out of this.tickets after a board update, so the
+    // page moves with the rail rather than holding the object it opened with.
     epicRefreshSelected() {
       if (!this.selectedEpic) return;
       var id = this.selectedEpic.id;
@@ -563,7 +569,7 @@ export function kontoraEpics() {
       if (!this.epicBriefWritable(fresh)) this._epicRetainBrief();
       var detail = this._epicDetail && this._epicDetail.id === id ? this._epicDetail : null;
       this.selectedEpic = detail
-        ? Object.assign({}, detail, fresh, { body: detail.body, notes: detail.notes,
+        ? Object.assign({}, detail, fresh, this.liveWaitFields(fresh), { body: detail.body, notes: detail.notes,
           history: detail.history, last_error: detail.last_error, last_log: detail.last_log })
         : fresh;
     },

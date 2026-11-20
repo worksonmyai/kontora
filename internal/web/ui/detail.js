@@ -163,11 +163,6 @@ export function kontoraDetail() {
         this.writeHash();
         return;
       }
-      // The rail's churn block is always on, so the branch diff is read for
-      // every ticket that has one rather than only for summarised runs.
-      if (this.selectedTicket?.branch) {
-        this.fetchChanges(this.selectedTicket.id);
-      }
       // The ladder is derived from every ticket file on disk, so it cannot be
       // read off the board and has to be fetched for each ticket opened.
       if (this.selectedTicket?.id) {
@@ -175,6 +170,11 @@ export function kontoraDetail() {
       }
       const restored = await this.restoreDetailView();
       if (!mine()) return;
+      // The changed-files sidebar needs the branch comparison on other tabs too.
+      // Restoring Committed changes already starts that read.
+      if (this.canCompareChanges() && !(restored && this.detailMode() === 'diff')) {
+        this.fetchChanges(this.selectedTicket.id);
+      }
       if (restored) {
         this.writeHash();
         return;
@@ -379,16 +379,43 @@ export function kontoraDetail() {
       this.ticketChangesError = null;
     },
 
+    changesRefs(ticket) {
+      const { path, branch, base_branch } = ticket;
+      return { path, branch, base_branch };
+    },
+
+    canCompareChanges(ticket = this.selectedTicket) {
+      return !this.isSecondary(ticket) && !!ticket?.path && !!ticket.branch;
+    },
+
+    changesOwner(ticket) {
+      if (!ticket || this.isSecondary(ticket)) return null;
+      return JSON.stringify([this.ticketKey(ticket), ticket.path || '', ticket.branch || '', ticket.base_branch || '']);
+    },
+
+    reconcileChanges(previousOwner, refresh) {
+      const owner = this.changesOwner(this.selectedTicket);
+      const changed = owner !== previousOwner || (this.ticketChangesOwner !== null && this.ticketChangesOwner !== owner);
+      if (changed) this.resetChanges();
+      if ((changed || refresh) && !this.detailLoading && !this.archiveDetailLoading && this.canCompareChanges()) {
+        this.fetchChanges(this.selectedTicket.id);
+      }
+    },
+
     // A slow read may not complete a newer read's loading state,
     // even for the same ticket or after close/reopen.
     async fetchChanges(id) {
       var t = this.selectedTicket;
       if (!t || t.id !== id || this.isSecondary(t)) return false;
+      if (t.status === 'human_review' && !this.canCompareChanges(t)) {
+        this.resetChanges();
+        return false;
+      }
       var seq = ++this._ticketChangesSeq;
       var detail = this._ticketDetailSeq;
-      var owner = this.ticketKey(t);
+      var owner = this.changesOwner(t);
       var mine = () => seq === this._ticketChangesSeq && detail === this._ticketDetailSeq &&
-        this.ticketKey(this.selectedTicket) === owner && !this.isSecondary(this.selectedTicket);
+        this.changesOwner(this.selectedTicket) === owner;
       if (this.ticketChangesOwner !== owner) this.ticketChanges = null;
       this.ticketChangesOwner = owner;
       this.ticketChangesLoading = true;
@@ -1495,7 +1522,9 @@ export function kontoraDetail() {
             if (generation === this._editorGeneration) {
               if (this.ticketKey(this.selectedTicket) === id && update === this._selectedTicketUpdateSeq) {
                 this._noteReconcileTicket?.(full);
+                const previousOwner = this.changesOwner(this.selectedTicket);
                 this.selectedTicket = full;
+                this.reconcileChanges(previousOwner);
               }
               if (this.selectedEpic?.id === id && epicUpdate === this._epicUpdateSeq) {
                 this.selectedEpic = full;
@@ -1789,7 +1818,7 @@ export function kontoraDetail() {
     },
 
     statusLabel(status) {
-      return (status || '').replace(/_/g, ' ');
+      return status === 'todo' ? 'Todo' : (status || '').replace(/_/g, ' ');
     },
 
     // Duration between two timestamps, for history rows ("38m", "1h 4m", "45s").

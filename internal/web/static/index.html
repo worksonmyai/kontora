@@ -1037,16 +1037,14 @@
     <div role="dialog" aria-modal="true" aria-labelledby="init-modal-title" data-dialog-panel tabindex="-1" class="bg-surface-900 border border-surface-700 rounded-xl shadow-[0_28px_70px_-20px_rgba(0,0,0,.75)] w-[min(560px,100%_-_34px)] max-h-[calc(100dvh-34px)] flex flex-col overflow-hidden slide-up" @click.stop>
       <div class="shrink-0 p-[16px_20px_15px] bg-surface-rail border-b border-surface-700 flex flex-col gap-[9px]">
         <div class="flex items-center gap-[9px]">
-          <!-- The modal also opens for a ticket already in todo, where a source
-               chip would read "todo → todo · queued". A ticket with no status
-               would draw an empty pill and a dangling arrow. -->
+          <!-- A ticket already in Todo or missing a status needs only the destination chip. -->
           <template x-if="initForm.status && initForm.status !== 'todo'">
             <span class="contents">
               <span class="status-chip status-chip-sm" :data-status="initForm.status" x-text="statusLabel(initForm.status)"></span>
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-surface-600 shrink-0"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
             </span>
           </template>
-          <span class="status-chip status-chip-sm" data-status="in_progress">todo · queued</span>
+          <span class="status-chip status-chip-sm" data-status="todo">Todo</span>
           <span class="ml-auto font-mono text-[11px] text-surface-600" x-text="initForm.ticketId"></span>
           <button @click="closeInitModal()" class="ml-[2px] flex text-surface-600 hover:text-tx-3" aria-label="Close">
             <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -1172,7 +1170,7 @@
           <p x-show="initError" class="text-[11px] text-err" x-text="initError"></p>
         </div>
         <div class="shrink-0 p-[14px_20px] border-t border-surface-700 bg-surface-rail/60 flex items-center gap-[12px]">
-          <p class="m-0 font-mono text-[11px] leading-[1.5] text-surface-600">creates a worktree, then runs <span class="text-tx-3" x-text="initForm.kind === 'epic' ? 'the epic supervisor' : (initStages().length ? initStages().length + (initStages().length === 1 ? ' stage' : ' stages') : 'a single pass')"></span> on <span x-text="initForm.agent || 'the agent each stage picks'"></span></p>
+          <p class="m-0 font-mono text-[11px] leading-[1.5] text-surface-600" x-text="initForm.kind === 'epic' ? 'This requests a start for the epic supervisor.' : 'This requests pickup. Unresolved dependencies can keep the ticket out of the queue.'"></p>
           <div class="ml-auto flex items-center gap-[9px] shrink-0">
             <button type="button" @click="closeInitModal()"
                     class="font-mono text-[13px] h-[31px] px-[14px] rounded-[7px] bg-transparent border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors">
@@ -1376,7 +1374,7 @@
                placeholder="Filter tickets…" aria-label="Filter tickets"
                class="w-full pl-8 pr-11 py-[7px] text-[12px] font-mono rounded-[7px] bg-surface-900 border border-edge-input text-tx placeholder-surface-600 focus:outline-none focus:border-accent transition-colors"
                title="Filter by title, id, repository or pipeline. project:name and agent:name narrow to one of those.">
-        <button x-show="searchQuery" @click="clearSearch()" aria-label="Clear filter" class="absolute right-2 text-surface-600 hover:text-tx-3">
+        <button x-show="searchQuery" @click="clearSearch()" aria-label="Clear search" class="absolute right-2 text-surface-600 hover:text-tx-3">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
           </svg>
@@ -1388,6 +1386,10 @@
       </div>
     </div>
     </template>
+    <button type="button" x-ref="desktopNeedsInputToggle" x-show="currentView === 'board' && !selectedTicket && !selectedEpic" @click="toggleNeedsInput()" :aria-pressed="needsInputOnly"
+            class="whitespace-nowrap shrink-0 h-8 px-2.5 rounded border text-xs font-mono" :class="needsInputOnly ? 'border-accent text-accent' : 'border-edge-input text-tx-3'">
+      Needs input <span x-text="needsInputCount"></span>
+    </button>
 
     <template x-if="boardDetailOpen()">
       <div class="flex items-center gap-3 min-w-0">
@@ -1648,7 +1650,10 @@
         </div>
         <div class="mobile-filter-tools">
           <span role="status" x-text="filteredTicketCount() + ' matched'"></span>
-          <button type="button" x-show="searchQuery" @click="clearSearch()">Clear filter</button>
+          <button type="button" x-ref="mobileNeedsInputToggle" @click="toggleNeedsInput()" :aria-pressed="needsInputOnly" :class="needsInputOnly ? 'text-accent underline' : ''">
+            Needs input <span x-text="needsInputCount"></span>
+          </button>
+          <button type="button" x-show="searchQuery" @click="clearSearch()">Clear search</button>
           <button type="button" @click="$refs.uploadInput.click()">Upload .md</button>
           <details class="mobile-filter-shortcuts">
             <summary>Filter shortcuts</summary>
@@ -1753,7 +1758,7 @@
            status hue plus a note saying what the epic is waiting on. The meter
            is capped the way chainMeter() is; the count carries the true total.
            Clicking a row opens the epic page. -->
-      <div class="p-2.5 pt-2" x-show="epics.length > 0">
+      <div class="p-2.5 pt-2" x-show="!needsInputOnly && epics.length > 0">
         <div class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest px-2 pb-1.5">epics</div>
         <div class="flex flex-col gap-0.5">
           <template x-for="e in epics" :key="e.id">
@@ -1888,7 +1893,7 @@
          the board rather than replacing it: #board-cols stays mounted, so the
          Sortable bindings and the imperative card renderer survive the first
          ticket arriving. -->
-    <div id="board-empty-desktop" x-show="allBoardTickets().length === 0 && !sourcesError && !ticketSources.some(s => s.available === false)" x-cloak
+    <div id="board-empty-desktop" x-show="!needsInputOnly && allBoardTickets().length === 0 && !sourcesError && !ticketSources.some(s => s.available === false)" x-cloak
          class="absolute inset-0 z-20 flex items-center justify-center p-6 bg-surface-frame">
       <div class="w-full max-w-[460px] rounded-xl border border-edge-card bg-surface-900 p-6 flex flex-col gap-4">
         <div>
@@ -1914,6 +1919,11 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <div x-show="needsInputOnly && !needsInputCount" class="px-4 py-2 text-sm text-tx-3">
+      <span role="status">No agents need input among tickets matching your filters.</span>
+      <button type="button" class="text-accent underline" @click="toggleNeedsInput(); $refs.desktopNeedsInputToggle.focus()">Turn off Needs input filter</button>
     </div>
 
     <!-- Kanban board -->
@@ -2022,11 +2032,12 @@
       <div class="shrink-0 px-6 pt-[15px] pb-[11px] flex flex-col gap-2 min-w-0">
         <div class="flex items-center gap-2.5 flex-wrap min-w-0">
           <span class="status-chip shrink-0" :data-status="selectedTicket?.status" x-text="workflowStatusLabel(selectedTicket)"></span>
-          <span x-show="selectedTicket?.waiting_for_input" class="waiting-chip"
+          <span x-show="needsLiveInput(selectedTicket)" class="waiting-chip"
                 :title="'Waiting for input — ' + waitingLabel(selectedTicket)">
             <span class="waiting-dot pulse-dot"></span>needs input
             <span x-text="waitingFor(selectedTicket)"></span>
           </span>
+          <p x-show="needsLiveInput(selectedTicket)" class="min-w-0 text-sm text-tx-2 whitespace-pre-wrap break-words" x-text="liveQuestion(selectedTicket)"></p>
           <span class="pipe-tag shrink-0"
                 :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'"
                 x-text="selectedTicket ? ticketTagLabel(selectedTicket) : ''"></span>
@@ -2143,10 +2154,10 @@
               <button x-show="showSummaryTab()" @click="switchTab('summary')"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'summary' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">summary</button>
-              <button x-show="!isSecondary(selectedTicket)" @click="switchTab('diff')"
+              <button x-show="showDiffTab()" @click="switchTab('diff')"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'diff' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
-                Changes <span class="text-tx-faint" x-text="churn().count || ''"></span></button>
+                Committed changes <span class="text-tx-faint" x-text="churn().count || ''"></span></button>
               <button @click="switchTab('ticket')"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'ticket' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">ticket</button>
@@ -2387,7 +2398,7 @@
                   <template x-if="!isSecondary(selectedTicket) && ticketChanges?.commits?.length">
                     <div class="summary-rail">
                       <div class="rail-card">
-                        <div class="side-label mb-[11px]">commits</div>
+                        <div class="side-label mb-[11px]">Committed changes</div>
                         <div class="flex flex-col gap-2">
                           <template x-for="c in ticketChanges.commits" :key="c.sha">
                             <button type="button" class="flex items-center gap-2 min-w-0 text-left" @click="copyBranch(c.sha)"
@@ -2543,7 +2554,7 @@
                 </template>
                 <button type="button" x-show="churn().more > 0" @click="switchTab('diff')"
                         class="mt-[3px] text-left font-mono text-[10.5px] text-accent hover:underline"
-                        x-text="churn().more + ' more in diff →'"></button>
+                        x-text="churn().more + ' more file' + (churn().more === 1 ? '' : 's') + ' in Committed changes'"></button>
               </div>
             </div>
 
@@ -2791,11 +2802,12 @@
             epic
           </span>
           <span class="status-chip shrink-0" :data-status="selectedEpic?.status" x-text="statusLabel(selectedEpic?.status)"></span>
-          <span x-show="selectedEpic?.waiting_for_input" class="waiting-chip"
+          <span x-show="needsLiveInput(selectedEpic)" class="waiting-chip"
                 :title="'Waiting for input: ' + waitingLabel(selectedEpic)">
             <span class="waiting-dot pulse-dot"></span>needs input
             <span x-text="waitingFor(selectedEpic)"></span>
           </span>
+          <p x-show="needsLiveInput(selectedEpic)" class="min-w-0 text-sm text-tx-2 whitespace-pre-wrap break-words" x-text="liveQuestion(selectedEpic)"></p>
           <span class="pipe-tag shrink-0"
                 :data-pipe-color="selectedEpic ? ticketPipeColor(selectedEpic) : 'none'"
                 x-text="selectedEpic ? ticketTagLabel(selectedEpic) : ''"></span>
@@ -3173,10 +3185,11 @@
 
             <div>
               <label for="new-path" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>Path *</label>
-              <input id="new-path" x-model="createForm.path" @input="onCreatePathChange()" type="text" required
+              <input id="new-path" x-model="createForm.path" @input="onCreatePathChange()" type="text" list="new-project-paths" required
                      class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                      placeholder="~/projects/myrepo">
-              <p class="text-[11px] text-surface-600 mt-0.5">Repository the agent will work in. Supports ~.</p>
+              <datalist id="new-project-paths"><template x-for="project in configCache?.projects || []" :key="project.path"><option :value="project.path" x-text="project.name"></option></template></datalist>
+              <p class="text-[11px] text-surface-600 mt-0.5">Choose a configured project or enter a repository path on the daemon host. <code>~/</code> refers to the daemon user’s home directory.</p>
             </div>
 
             <!-- Creation keeps epics passive until an explicit start. -->
@@ -3213,30 +3226,26 @@
               </div>
               <div x-show="createForm.kind !== 'epic'">
                 <label for="new-status" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="10"/></svg>Status</label>
-                <!-- Pinned open while Start at is on later: a schedule is
-                     what moves the ticket to todo, and the two together are the
-                     conflict the CLI rejects. -->
-                <select id="new-status" x-model="createForm.status" :disabled="createSchedulePinned()"
-                        class="w-full h-[36px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40 disabled:opacity-70">
-                  <option value="todo">Todo (queue automatically)</option>
-                  <option value="open">Open (do not run)</option>
+                <select id="new-status" x-model="createForm.status" x-show="!createSchedulePinned()"
+                        class="w-full h-[36px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                  <option value="open">Draft (Open)</option>
+                  <option value="todo">Queue (Todo)</option>
                 </select>
-                <p x-show="createSchedulePinned()" class="text-[11px] text-surface-600 mt-0.5">&middot; set by start-at</p>
+                <p x-show="createSchedulePinned()" class="text-sm text-tx-2 font-mono">Open until scheduled time</p>
               </div>
             </div>
-            <p class="text-[11px] text-surface-600 -mt-2" x-show="createForm.kind !== 'epic'">Pipeline → stages the ticket runs through. Agent → defaults to pipeline's. Status: <span class="text-tx-3">Todo</span> queues automatically. <span class="text-tx-3">Open</span> saves a draft without starting work.</p>
+            <p class="text-[11px] text-surface-600 -mt-2" x-show="createForm.kind !== 'epic'">Save draft leaves the ticket Open without starting work. Create and queue requests pickup even when automatic pickup is off.</p>
 
-            <!-- Start at: one field taking both grammars the CLI takes, plus
-                 the presets that cover the common cases. -->
+            <!-- One field for both absolute local times and delays. -->
             <div class="flex flex-col gap-2.5" x-show="createForm.kind !== 'epic'">
               <div class="flex items-center gap-2.5">
-                <span class="text-[13px] font-mono text-tx-3 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>Start at</span>
-                <div class="ml-auto flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
+                <span class="text-[13px] font-mono text-tx-3 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>Schedule</span>
+                <div role="group" aria-label="Schedule" class="ml-auto flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
                   <template x-for="m in ['now', 'later']" :key="m">
-                    <button type="button" @click="setCreateScheduleMode(m)"
+                    <button type="button" @click="setCreateScheduleMode(m)" :aria-pressed="createForm.scheduleMode === m"
                             class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px] transition-colors"
                             :class="createForm.scheduleMode === m ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'"
-                            x-text="m"></button>
+                            x-text="m === 'now' ? 'No schedule' : 'Schedule for later'"></button>
                   </template>
                 </div>
               </div>
@@ -3254,7 +3263,7 @@
 
                   <div class="flex items-center gap-2 h-9 px-2.5 bg-surface-800 rounded border"
                        :class="createScheduleISO() ? 'sched-input-set' : (createScheduleError() ? 'border-err/50' : 'border-surface-700/50')">
-                    <input id="new-scheduled-at" aria-label="Start date or duration" x-model="createForm.scheduled_at" @input="onCreateScheduleChange()" type="text"
+                    <input id="new-scheduled-at" aria-label="Scheduled date and time or delay" x-model="createForm.scheduled_at" type="text"
                            class="flex-1 min-w-0 bg-transparent font-mono text-sm text-tx-2 focus:outline-none"
                            placeholder="2099-09-01 09:00">
                     <template x-if="!createForm.scheduled_at">
@@ -3281,10 +3290,10 @@
                     </div>
                   </template>
                   <template x-if="createScheduleError()">
-                    <div class="font-mono text-[11.5px] text-err" x-text="createScheduleError()"></div>
+                    <div class="font-mono text-[11.5px] text-err" role="alert" x-text="createScheduleError()"></div>
                   </template>
 
-                  <p class="text-[11px] leading-relaxed text-surface-600">The ticket is written <span class="font-mono text-tx-3">open</span>. At that instant the daemon sets it to <span class="font-mono text-tx-3">todo</span> — pickup still waits on <span class="font-mono text-tx-3">auto_pick_up</span> and on any unresolved dependency.</p>
+                  <p class="text-[11px] leading-relaxed text-surface-600">At the scheduled time, the daemon moves the ticket to Todo. Pickup respects automatic pickup and unresolved dependencies.</p>
                 </div>
               </template>
             </div>
@@ -3314,7 +3323,7 @@
               </button>
               <button type="submit" :disabled="createSubmitting || !createForm.title.trim() || !createForm.path.trim() || createBlocked()"
                       class="text-[12px] font-mono h-8 px-4 rounded bg-accent text-accent-fg border border-accent hover:bg-accent-bright hover:border-accent-bright transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium">
-                <span x-text="createSubmitting ? 'Creating…' : createSchedulePinned() ? 'Schedule ticket' : createForm.kind !== 'epic' &amp;&amp; createForm.status === 'todo' ? 'Create and queue' : 'Create ticket'"></span>
+                <span x-text="createSubmitting ? 'Creating…' : createSchedulePinned() ? 'Schedule ticket' : createForm.kind === 'epic' ? 'Create epic' : createEffectiveStatus() === 'todo' ? 'Create and queue' : 'Save draft'"></span>
               </button>
             </div>
           </form>
@@ -5447,7 +5456,7 @@
   <template x-if="isMobile">
   <div x-show="!loading && currentView === 'board'" class="mobile-board-layer">
 
-    <div x-show="epics.length" data-mobile-board-background class="flex gap-2 overflow-x-auto p-3">
+    <div x-show="!needsInputOnly && epics.length" data-mobile-board-background class="flex gap-2 overflow-x-auto p-3">
       <template x-for="e in epics" :key="e.id">
         <button type="button" @click="openEpic(e.id)" :title="e.title || e.id"
                 class="shrink-0 flex flex-col items-start gap-1 px-3 py-2 rounded border border-edge-input font-mono text-xs text-accent">
@@ -5460,12 +5469,12 @@
     </div>
 
     <!-- ===== Card list (swipe to change column) ===== -->
-    <div data-mobile-board-background class="flex-1 min-h-0 overflow-y-auto"
+    <div data-mobile-board-background x-ref="mobileCardList" class="flex-1 min-h-0 overflow-y-auto"
          style="padding:14px 12px 48px;display:flex;flex-direction:column;gap:9px;"
          @touchstart.passive="onBoardTouchStart($event)" @touchend="onBoardTouchEnd($event)">
       <!-- Empty-board panel, same gate as the desktop one plus !loading:
            init() holds loading true across two fetches with tickets still empty. -->
-      <template x-if="!loading && allBoardTickets().length === 0 && !sourcesError && !ticketSources.some(s => s.available === false)">
+      <template x-if="!loading && !needsInputOnly && allBoardTickets().length === 0 && !sourcesError && !ticketSources.some(s => s.available === false)">
         <div id="board-empty-mobile" style="border:1px solid rgba(var(--surface-700),.6);border-radius:12px;background:rgba(var(--surface-900),1);padding:18px 16px;margin-top:6px;display:flex;flex-direction:column;gap:12px;">
           <div style="font-size:15px;font-weight:600;color:rgba(var(--tx),1);">The board is empty</div>
           <p class="mobile-prose text-tx-3 m-0">A ticket is one piece of work. Kontora gives it a git worktree and runs the pipeline stages on it.</p>
@@ -5477,8 +5486,12 @@
           <button @click="copyCmd(agentSetupRequest)" class="mobile-control" x-text="copiedCmd === agentSetupRequest ? '\u2713 copied' : 'copy request'"></button>
         </div>
       </template>
-      <template x-if="allBoardTickets().length > 0 && boardTickets(mobileColumn().key).length === 0">
-        <div class="mobile-label text-tx-3" style="text-align:center;border:1px dashed rgba(var(--surface-700),.6);border-radius:10px;padding:34px 16px;margin-top:6px;" x-text="mobileColumn().emptyText"></div>
+      <div x-show="needsInputOnly && !needsInputCount" class="px-4 py-2 text-sm text-tx-3">
+        <p role="status">No agents need input among tickets matching your filters.</p>
+        <button type="button" class="text-accent underline" @click="toggleNeedsInput(); $refs.mobileNeedsInputToggle.focus()">Turn off Needs input filter</button>
+      </div>
+      <template x-if="allBoardTickets().length > 0 && boardTickets(mobileColumn().key).length === 0 && (!needsInputOnly || needsInputCount)">
+        <div class="mobile-label text-tx-3" style="text-align:center;border:1px dashed rgba(var(--surface-700),.6);border-radius:10px;padding:34px 16px;margin-top:6px;" x-text="needsInputOnly ? 'No agents need input in this status.' : mobileColumn().emptyText"></div>
       </template>
       <!-- shrink-0: the touch rule in hack/tailwind.css sets button min-height
            to 44px, which replaces a column flex item's content-height floor. -->
@@ -5500,13 +5513,8 @@
                   <span>paused</span>
                 </span>
               </template>
-              <template x-if="epicIsAgent(ticket) && ticket.status === 'todo'">
-                <span class="mobile-card-state">
-                  <span>queued</span>
-                </span>
-              </template>
-              <template x-if="!epicIsAgent(ticket) && ticket.status === 'todo'">
-                <span class="mobile-card-state">Queued</span>
+              <template x-if="!executionActive(ticket) && ticket.status === 'todo'">
+                <span class="mobile-card-state">Todo</span>
               </template>
               <template x-if="!epicIsAgent(ticket) && ticket.status === 'paused'">
                 <span class="card-glyph-paused mobile-card-state">Paused</span>
@@ -5518,7 +5526,7 @@
                   <span x-show="scheduleChip(ticket).rel" class="sched-chip-rel" x-text="'in ' + scheduleChip(ticket).rel"></span>
                 </span>
               </template>
-              <template x-if="ticket.waiting_for_input">
+              <template x-if="needsLiveInput(ticket)">
                 <span class="waiting-chip">
                   needs input
                   <span x-text="waitingFor(ticket)"></span>
@@ -5590,7 +5598,7 @@
             <span x-text="selectedEpic?.agent"></span>
             <span :class="selectedEpic?.branch ? 'mobile-technical' : ''" x-text="selectedEpic?.branch || 'no branch yet'"></span>
           </div>
-          <span x-show="selectedEpic?.waiting_for_input" class="waiting-chip" :title="'Waiting for input: ' + waitingLabel(selectedEpic)">
+          <span x-show="needsLiveInput(selectedEpic)" class="waiting-chip" :title="'Waiting for input: ' + waitingLabel(selectedEpic)">
             needs input
             <span x-text="waitingFor(selectedEpic)"></span>
           </span>
@@ -5685,6 +5693,8 @@
         </div>
         <template x-if="epicIsAgent(selectedEpic)">
           <div x-show="epicTab === 'session' || epicTab === 'activity'" class="flex-1 min-h-0 flex flex-col">
+            <p x-show="needsLiveInput(selectedEpic)"
+               class="mobile-live-question shrink-0 max-h-24 overflow-y-auto px-4 py-2 text-sm text-tx-2 whitespace-pre-wrap break-words" x-text="liveQuestion(selectedEpic)"></p>
             <div class="mobile-epic-output-toolbar shrink-0 p-3 flex items-center gap-2">
               <label class="flex-1 min-w-0 font-mono text-[11px] text-tx-3 flex items-center gap-2">
                 run
@@ -5894,7 +5904,7 @@
               <span x-text="'starts ' + scheduleLabel(selectedTicket)"></span>
             </button>
           </template>
-          <template x-if="selectedTicket?.waiting_for_input">
+          <template x-if="needsLiveInput(selectedTicket)">
             <span class="waiting-chip" :title="'Waiting for input: ' + waitingLabel(selectedTicket)">
               needs input
               <span x-text="waitingFor(selectedTicket)"></span>
@@ -5926,7 +5936,7 @@
           <button type="button" class="mobile-tab" @click="mobileSwitchPanel('ticket')" :aria-pressed="mobilePanel() === 'ticket'">Ticket</button>
           <button type="button" class="mobile-tab" @click="mobileSwitchPanel('notes')" :aria-pressed="mobilePanel() === 'notes'">Notes</button>
           <button type="button" class="mobile-tab" @click="mobileSwitchPanel('output')" :aria-pressed="mobilePanel() === 'output'">Output</button>
-          <button type="button" class="mobile-tab" @click="mobileSwitchPanel('changes')" :aria-pressed="mobilePanel() === 'changes'">Changes</button>
+          <button type="button" class="mobile-tab" @click="mobileSwitchPanel('changes')" :aria-pressed="mobilePanel() === 'changes'">Committed changes</button>
         </nav>
       </div>
 
@@ -5941,6 +5951,8 @@
 
         <div x-show="mobilePanel() === 'notes'" class="flex-1 min-h-0" x-html="detailNotesMarkup"></div>
         <div x-show="mobilePanel() === 'changes'" class="mobile-ticket-pane overflow-y-auto" x-html="detailChangesMarkup"></div>
+        <p x-show="mobilePanel() === 'output' && needsLiveInput(selectedTicket)"
+           class="mobile-live-question shrink-0 max-h-24 overflow-y-auto px-4 py-2 text-sm text-tx-2 whitespace-pre-wrap break-words" x-text="liveQuestion(selectedTicket)"></p>
         <div x-show="mobilePanel() === 'output' && !mobileTerminalTyping()" class="mobile-output-row">
           <select aria-label="Output view" :value="detailTab" @change="mobileSwitchTab($event.target.value)" :disabled="isSecondary(selectedTicket) || importedRun(activityStage, activityRun)">
             <option value="terminal" :disabled="!executionActive(selectedTicket)">Terminal</option><option value="activity">Activity</option><option value="logs">Stage logs</option>
@@ -6163,7 +6175,7 @@
               <template x-if="!isSecondary(selectedTicket) && ticketChanges?.commits?.length">
                 <div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(var(--surface-700),.3);font-family:'JetBrains Mono',monospace;font-size:11px;">
                   <div style="color:rgba(var(--surface-600),1);margin-bottom:6px;"
-                       x-text="ticketChanges.commits.length + ' commit' + (ticketChanges.commits.length === 1 ? '' : 's') + ', ' + ticketChanges.files.length + ' file' + (ticketChanges.files.length === 1 ? '' : 's') + ' vs ' + ticketChanges.base"></div>
+                       x-text="'Committed changes: ' + ticketChanges.commits.length + ' commit' + (ticketChanges.commits.length === 1 ? '' : 's') + ', ' + ticketChanges.files.length + ' file' + (ticketChanges.files.length === 1 ? '' : 's') + ' vs ' + ticketChanges.base"></div>
                   <template x-for="c in ticketChanges.commits" :key="c.sha">
                     <div style="display:flex;align-items:baseline;gap:8px;min-width:0;line-height:1.7;">
                       <span style="color:rgba(var(--surface-600),1);flex:none;" x-text="c.sha"></span>
@@ -6258,7 +6270,7 @@
 
           <template x-if="sheet.type === 'move' && ticketCanControl(sheet.ticket)">
             <div class="mobile-move-destinations overflow-y-auto">
-              <p class="px-5 pb-3 text-sm text-tx-3">Choose a status destination. Queue ticket and Retry stage are separate commands.</p>
+              <p class="px-5 pb-3 text-sm text-tx-3">Choose a status destination. Request pickup and Retry stage are separate commands.</p>
               <template x-for="destination in mobileMoveDestinations()" :key="destination.id"><button type="button" class="mobile-action-row" :disabled="lifecycleBusy(sheet.ticket)" @click="mobileMoveTo(destination.status)" x-text="destination.label"></button></template>
             </div>
           </template>

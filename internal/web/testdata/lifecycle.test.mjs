@@ -6,6 +6,7 @@ import { kontoraDetail } from '../ui/detail.js';
 import { kontoraTickets } from '../ui/tickets.js';
 import { kontoraEpics } from '../ui/epics.js';
 import { kontoraNotify } from '../ui/notify.js';
+import { kontoraPalette } from '../ui/palette.js';
 
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 async function until(predicate) {
@@ -17,7 +18,7 @@ function app(extra = {}) {
     tickets: [{ id: 'a', status: 'paused', kontora: true, stage: 'code', attempt: 2 }, { id: 'b', status: 'paused', kontora: true }],
     selectedTicket: null, selectedEpic: null, configCache: { custom_statuses: ['waiting_external'] },
     _editorSaves: {}, _editorAckVersions: Object.create(null), plannotatorInFlight: {}, editing: false,
-    recomputeBoard() {}, applyTicketUpdate(t) { this._touchTicket(t); const i = this.tickets.findIndex(x => x.id === t.id); if (i >= 0) this.tickets[i] = t; },
+    recomputeBoard() {}, showToast(message) { this.toast = message; }, applyTicketUpdate(t) { this._touchTicket(t); const i = this.tickets.findIndex(x => x.id === t.id); if (i >= 0) this.tickets[i] = t; },
     needsInitModal: () => false,
     boardEntry: t => t, ...extra,
   });
@@ -361,6 +362,53 @@ test('semantic command transport table preserves distinct endpoints', async () =
       assert.deepEqual(calls, [['/api/tickets/a' + (endpoint ? '/' + endpoint : ''), method, body]]);
     } finally { globalThis.fetch = oldFetch; }
   }
+});
+
+const wait = disarmed => ({ status: 'paused', graph_execution: { wait: { id: 'wait-1', disarmed } } });
+const idleTodo = { status: 'todo', execution_active: false, ready: false };
+for (const [name, command, before, outcome, update, feedback] of [
+  ['pickup', 'start', { status: 'todo' }, 'success', idleTodo, 'Pickup requested'],
+  ['draft pickup', 'initialize', { status: 'open' }, 'success', idleTodo, 'Pickup requested'],
+  ['ordinary retry', 'retry', { status: 'paused' }, 'success', idleTodo, 'Retry requested'],
+  ['armed wait', 'retry', wait(false), 'refused'],
+  ['disarmed wait', 'retry', wait(true), 'success', wait(false), 'Wait re-arm requested'],
+  ...[['start', 'todo'], ['retry', 'paused'], ['initialize', 'open']].flatMap(([command, status]) =>
+    ['failed', 'uncertain'].map(outcome => [command + ' ' + outcome, command, { status }, outcome])),
+]) test(`pickup acknowledgement: ${name}`, async t => {
+  const a = app({ needsInitModal: () => command === 'initialize', resyncTickets: async () => {} });
+  Object.assign(a.tickets[0], before);
+  const fetch = t.mock.method(globalThis, 'fetch', async () => {
+    if (outcome === 'uncertain') throw new Error('response lost');
+    return outcome === 'failed' ? { ok: false, json: async () => ({ error: 'Request refused' }) }
+      : { ok: true, json: async () => ({ ...a.tickets[0], ...update }) };
+  });
+  assert.equal((await a.dispatchLifecycle('a', command)).outcome, outcome);
+  assert.equal(fetch.mock.callCount(), outcome === 'refused' ? 0 : 1);
+  for (const [key, value] of Object.entries(update || before)) assert.deepEqual(a.tickets[0][key], value);
+  assert.equal(a.toast, feedback ? `a: ${feedback}` : undefined);
+});
+
+for (const [command, before, update, feedback] of [
+  ['start', { status: 'todo' }, idleTodo, 'Pickup requested'],
+  ['retry', { status: 'paused' }, idleTodo, 'Retry requested'],
+  ['retry', wait(true), wait(false), 'Wait re-arm requested'],
+]) test(`command palette preserves ${feedback} acknowledgement`, async t => {
+  const messages = [];
+  const a = app({ ...kontoraPalette(), showToast(message) { messages.push(message); } });
+  Object.assign(a.tickets[0], before);
+  t.mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => ({ ...a.tickets[0], ...update }) }));
+  await a._paletteRunAction(a._paletteActionRow(a.tickets[0], a.lifecycleCommand('a', command)));
+  assert.deepEqual(messages, [`a: ${feedback}`]);
+});
+
+test('the scheduled palette shortcut explains that pickup clears the schedule on success', () => {
+  const a = app(kontoraPalette());
+  const ticket = a.tickets[0];
+  Object.assign(ticket, { status: 'open', scheduled_at: '2099-01-01T00:00:00Z' });
+  const row = a._paletteScheduleAlsoRows(ticket).find(row => row.kind === 'schedulerun');
+  assert.equal(row.title, 'Request pickup now');
+  assert.equal(row.sub, 'On success, clears the schedule even if the ticket can’t join the queue.');
+  assert.equal(row.command.id, 'start');
 });
 
 test('delete from a card opens its guarded target before confirmation', async () => {

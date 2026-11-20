@@ -4529,7 +4529,7 @@ test("index.html gates the empty-board panel on the raw ticket list", () => {
   const html = htmlNoComments();
 
   const desktop = elementWithId(html, "board-empty-desktop");
-  assert.match(desktop, /x-show="allBoardTickets\(\)\.length === 0 && !sourcesError && !ticketSources\.some\(s => s\.available === false\)"/);
+  assert.match(desktop, /x-show="!needsInputOnly && allBoardTickets\(\)\.length === 0 && !sourcesError && !ticketSources\.some\(s => s\.available === false\)"/);
   // The panel covers the board instead of replacing it: it is a sibling of
   // #board-cols inside the same board area, so Alpine keeps the column DOM and
   // its Sortable bindings mounted while the panel shows.
@@ -4542,14 +4542,14 @@ test("index.html gates the empty-board panel on the raw ticket list", () => {
   // panel while the first fetch is still in flight.
   const boardView = elementAt(html, html.indexOf(`x-show="!loading && currentView === 'board'"`));
   assert.ok(boardView.includes('id="board-empty-desktop"'), "desktop panel sits under the !loading board view");
-  const mobileGate = '<template x-if="!loading && allBoardTickets().length === 0 && !sourcesError && !ticketSources.some(s => s.available === false)">';
+  const mobileGate = '<template x-if="!loading && !needsInputOnly && allBoardTickets().length === 0 && !sourcesError && !ticketSources.some(s => s.available === false)">';
   const mobileIdx = html.indexOf(mobileGate);
   assert.ok(mobileIdx > 0, "mobile panel needs its own !loading gate");
   assert.match(html.slice(mobileIdx + mobileGate.length, mobileIdx + mobileGate.length + 40), /^\s*<div id="board-empty-mobile"/);
 
   // Mobile's per-column empty state stands down while the panel shows, so the
   // two never stack.
-  assert.match(html, /x-if="allBoardTickets\(\)\.length > 0 && boardTickets\(mobileColumn\(\)\.key\)\.length === 0"/);
+  assert.match(html, /x-if="allBoardTickets\(\)\.length > 0 && boardTickets\(mobileColumn\(\)\.key\)\.length === 0 && \(!needsInputOnly \|\| needsInputCount\)"/);
 });
 
 // The copy path needs a secure context, which plain HTTP over a tailnet is not,
@@ -6616,15 +6616,9 @@ test("index.html applies project defaults and leaves branch naming to the daemon
 test("the init modal's header band names the transition the ticket is about to make", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
-  // A ticket already in todo would read "todo → todo · queued", and a ticket
-  // with no status would draw an empty pill, so the source chip and the arrow
-  // between them drop out together in both cases.
   assert.match(html, /<template x-if="initForm\.status && initForm\.status !== 'todo'">/);
   assert.match(html, /x-text="statusLabel\(initForm\.status\)"/);
-  assert.match(html, /data-status="in_progress">todo · queued</);
-  // The pulsing dot belongs to a run in flight, not to a queued ticket, and
-  // .status-chip-sm is the pair that cancels it.
-  assert.equal((html.match(/class="status-chip status-chip-sm" (:data-status="initForm\.status"|data-status="in_progress")/g) || []).length, 2);
+  assert.match(html, /class="status-chip status-chip-sm" data-status="todo">Todo</);
   assert.match(html, /<h2 id="init-modal-title"/);
   // The modal's tag differs from a card's in size alone, so it adds a class to
   // .title-tag instead of restating the family, weight and colour.
@@ -6635,11 +6629,8 @@ test("the init modal's header band names the transition the ticket is about to m
 test("the init modal states what starting the ticket does", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
-  // Both the strip's trailing note and the footer's run line have to name the
-  // "none" pipeline as a single pass rather than as zero stages.
   assert.ok(html.includes(`x-text="initStages().length ? 'starts at ' + initStages()[0] : 'single run, no stages'"`));
-  assert.ok(html.includes(`initStages().length + (initStages().length === 1 ? ' stage' : ' stages') : 'a single pass'`));
-  assert.ok(html.includes(`x-text="initForm.agent || 'the agent each stage picks'"`));
+  assert.ok(html.includes('This requests pickup. Unresolved dependencies can keep the ticket out of the queue.'));
   // The stages moved out of the select's option labels and into the strip.
   const select = html.slice(html.indexOf('id="init-pipeline"'));
   const options = select.slice(0, select.indexOf("</select>"));
@@ -6728,6 +6719,39 @@ test("the init modal's error line reports the start it is showing and nothing el
     assert.equal(state.initModal, c.wantModal, c.name);
     assert.equal(state.initSubmitting, false, c.name);
   }
+});
+
+test('pickup preserves a managed draft’s persisted standalone pipeline', async () => {
+  const draft = { id: 'kon-solo', status: 'open', path: '/configured', kontora: true };
+  // After a reload the daemon reports a blank pipeline, not the original `none` request.
+  const writes = [];
+  const state = loadKontoraState({ fetch: async (url, options) => {
+    if (options?.method === 'POST') {
+      writes.push([url, JSON.parse(options.body)]);
+      return { ok: true, json: async () => ({ ...draft, status: 'todo', ready: false, execution_active: false }) };
+    }
+    return { ok: true, json: async () => draft };
+  } });
+  state.configCache = { projects: [{ name: 'Project', path: draft.path, pipeline: 'build' }],
+    pipelines: ['build'], pipeline_infos: [{ name: 'build', stages: ['code'] }], agents: [] };
+  state.tickets = [draft];
+  state.$nextTick = async () => {};
+  await state.openInitModal(draft);
+  assert.equal(state.initForm.pipelineChoice, 'none');
+  assert.deepEqual(Array.from(state.initStages()), []);
+  assert.equal(state.initForm.canInheritPipeline, true);
+  // Inheritance remains available as an explicit change, rather than a surprise default.
+  state.initForm.pipelineChoice = 'inherit';
+  state.onInitPipelineChange();
+  assert.equal(state.initForm.pipeline, 'build');
+  state.initForm.pipelineChoice = 'none';
+  state.onInitPipelineChange();
+  assert.equal((await state.submitInitTicket()).outcome, 'success');
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0][0], '/api/tickets/kon-solo/init');
+  assert.equal(writes[0][1].pipeline, 'none');
+  assert.equal(state.initModal, false);
+  assert.equal(state.toast, 'kon-solo: Pickup requested');
 });
 
 test("the pipeline badge names a project only when the pipeline came from it", async () => {
@@ -13294,7 +13318,7 @@ test('phone Output retains activity controls, shared scroller, selectors and fou
 
   const tabs = html.split('<nav class="mobile-detail-tabs flex" aria-label="Ticket panels">')[1].split('</nav>')[0];
   assert.equal((tabs.match(/class="mobile-tab"/g) || []).length, 4);
-  for (const [tab, label] of [['ticket', 'Ticket'], ['notes', 'Notes'], ['output', 'Output'], ['changes', 'Changes']]) {
+  for (const [tab, label] of [['ticket', 'Ticket'], ['notes', 'Notes'], ['output', 'Output'], ['changes', 'Committed changes']]) {
     const button = [...tabs.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)]
       .find(([markup]) => markup.includes(`@click="mobileSwitchPanel('${tab}')"`));
     assert.ok(button, tab + ' remains reachable regardless of run history');
@@ -13553,6 +13577,79 @@ test("a stage finishing under the live session loads its transcript", () => {
 
   assert.equal(state.activeTab, "activity");
   assert.deepEqual(asked, [["review", 1]]);
+});
+
+for (const [label, refs, snapshot] of [
+  ['repository changes', { path: '/other-repo' }, false],
+  ['branch changes', { branch: 'other-feature' }, false],
+  ['base changes', { base_branch: 'release' }, false],
+  ['base is cleared', { base_branch: undefined }, true],
+  ['branch is removed', { branch: undefined }, true],
+  ['repository is removed', { path: '' }, true],
+]) test(`Committed changes invalidates cached and late results when the ${label}`, async () => {
+  const ticket = { id: 'kon-compare', status: 'human_review', path: '/repo', branch: 'feature', base_branch: 'develop' };
+  const updated = { ...ticket, ...refs };
+  for (const key of Object.keys(refs)) if (updated[key] === undefined) delete updated[key];
+  const pending = [];
+  const answer = data => ({ ok: true, json: async () => data });
+  const state = loadKontoraState({ fetch: url => {
+    if (url === '/api/tickets') return Promise.resolve(answer({ tickets: [updated] }));
+    assert.equal(url, '/api/tickets/kon-compare/changes');
+    const read = deferred();
+    pending.push(read);
+    return read.promise;
+  } });
+  Object.assign(state, { selectedTicket: ticket, tickets: [ticket], activeTab: 'ticket', recomputeBoard() {}, updateFavicon() {} });
+  const changes = sha => ({ commits: [{ sha }], files: [{ path: `${sha}.go`, added: 1, deleted: 0 }] });
+  const cached = state.fetchChanges(ticket.id);
+  pending[0].resolve(answer(changes('cached')));
+  assert.equal(await cached, true);
+  assert.equal(state.churn().count, 1);
+
+  const old = state.fetchChanges(ticket.id);
+  // Both same-ID change paths must clear cached data before the next paint,
+  // including list responses where an empty ref has been omitted from JSON.
+  if (snapshot) await state.fetchTasks();
+  else state.applyTicketUpdate(updated);
+  assert.equal(state.selectedTicket.path, updated.path);
+  assert.equal(state.selectedTicket.branch, updated.branch);
+  assert.equal(state.selectedTicket.base_branch, updated.base_branch);
+  assert.equal(state.ticketChanges, null);
+  assert.equal(state.churn().count, 0);
+  const comparable = Boolean(updated.path && updated.branch);
+  assert.equal(state.showDiffTab(), true, 'the review handoff remains available');
+  assert.equal(state.canCompareChanges(), comparable);
+  assert.equal(pending.length, comparable ? 3 : 2);
+  assert.equal(state.ticketChangesLoading, comparable);
+
+  pending[1].resolve(answer(changes('late')));
+  assert.equal(await old, false);
+  assert.equal(state.ticketChanges, null);
+  assert.equal(state.ticketChangesError, null);
+  assert.equal(state.ticketChangesLoading, comparable, 'the old response cannot finish the new read');
+  if (comparable) {
+    pending[2].resolve(answer(changes('current')));
+    await flushMicrotasks();
+    assert.equal(state.ticketChanges.commits[0].sha, 'current');
+    assert.equal(state.ticketChangesLoading, false);
+  } else {
+    assert.equal(await state.fetchChanges(ticket.id), false);
+    assert.equal(pending.length, 2, 'missing comparison inputs do not request changes');
+  }
+});
+
+test("Committed changes explains a missing repository instead of reporting an empty comparison", () => {
+  const markup = kontoraDetailMarkup().detailChangesMarkup;
+  assert.match(markup, /x-show="!isSecondary\(selectedTicket\) && selectedTicket\?\.branch && !selectedTicket\.path"[^>]*>Cannot compare commits: no repository path is stored for this ticket\./);
+  assert.match(markup, /x-if="canCompareChanges\(\) && !ticketChangesLoading && !ticketChangesError"/);
+});
+
+test("changed-file overflow names the omitted files", () => {
+  const button = indexMarkup().match(/<button type="button" x-show="churn\(\)\.more > 0"[^>]*x-text="([^"]+)"/);
+  assert.ok(button);
+  for (const [more, name] of [[1, '1 more file in Committed changes'], [2, '2 more files in Committed changes']]) {
+    assert.equal(vm.runInNewContext(button[1], { churn: () => ({ more }) }), name);
+  }
 });
 
 test("the churn block bounds a large change set", () => {
@@ -13837,7 +13934,7 @@ test("the chain lookups find the holder, the goal and the direct dependents", ()
 test("the resume pill only offers a move the daemon would take", () => {
   const cases = [
     { name: "paused holder resumes", status: "paused", want: { id: "pca-qv0y", endpoint: "retry", label: "retry stage" } },
-    { name: "open holder queues", status: "open", want: { id: "pca-qv0y", endpoint: "run", label: "queue ticket" } },
+    { name: "Open holder offers Request pickup", status: "open", want: { id: "pca-qv0y", endpoint: "run", label: "request pickup" } },
     { name: "a running holder needs no push", status: "in_progress", want: null },
     { name: "a queued holder needs no push", status: "todo", want: null },
     { name: "a holder in review is not the pill's business", status: "human_review", want: null },
@@ -16302,6 +16399,85 @@ test("waitingLabel names the tool, and falls back to it when there is no questio
   assert.equal(state.waitingFor({ id: "x" }), "");
 });
 
+test('Needs input counts search and source matches before applying the toggle', () => {
+  const state = loadKontoraState();
+  state.configCache = { custom_statuses: ['waiting_external'] };
+  state.tickets = [waitingTicket({ status: 'waiting_external', execution_active: true }),
+    waitingTicket({ id: 'epic', kind: 'epic', epic_execution: 'agent' }),
+    waitingTicket({ id: 'passive', kind: 'epic' }),
+    waitingTicket({ id: 'idle', status: 'todo', execution_active: false })];
+  state.secondaryTickets = [waitingTicket({ source: 'team' })];
+  state.recomputeBoard();
+  assert.equal(state.needsInputCount, 2);
+  const global = { ...state._statusCounts };
+  state.searchQuery = 'kon-wait';
+  state.recomputeBoard();
+  assert.equal(state.needsInputCount, 1);
+  state.toggleNeedsInput();
+  assert.equal(state.needsInputCount, 1);
+  assert.equal(state.filteredTicketCount(), 1);
+  state.sourceFilter = 'team';
+  state.recomputeBoard();
+  assert.equal(state.needsInputCount, 0);
+  assert.equal(state.filteredTicketCount(), 0);
+  assert.deepEqual({ ...state._statusCounts }, global);
+});
+
+for (const editing of [true, false]) test(`omitted live wait fields clear on primary snapshot while editing=${editing}`, async () => {
+  const state = loadKontoraState();
+  const cleared = waitingTicket();
+  for (const name of Object.keys(state.liveWaitFields(cleared))) delete cleared[name];
+  state.tickets = [waitingTicket()];
+  state.selectedTicket = { ...waitingTicket(), body: 'Retained body' };
+  state.editing = editing;
+  state.reconcileOutput = () => {};
+  state.activeTab = 'ticket';
+  state._reconcileSnapshotSelection([cleared], false, new Set());
+  state.recomputeBoard();
+  assert.equal(state.needsInputCount, 0);
+  assert.equal(state.selectedTicket.body, 'Retained body');
+  for (const value of Object.values(state.liveWaitFields(state.selectedTicket))) assert.equal(value, undefined);
+});
+
+test('a list refresh clearing a supervisor question supersedes an in-flight epic detail read', async () => {
+  const { state, ctx, epic } = epicSupervisorUI();
+  Object.assign(epic, state.liveWaitFields(waitingTicket()));
+  await state.openEpic(epic.id);
+  assert.equal(state.needsInputCount, 1);
+
+  const cleared = { ...epic };
+  for (const field of Object.keys(state.liveWaitFields(cleared))) delete cleared[field];
+  const staleReply = deferred();
+  const freshReply = deferred();
+  let detailReads = 0;
+  ctx.fetch = async url => {
+    if (url === '/api/tickets') return { ok: true, json: async () => ({ tickets: [state.boardEntry(cleared)] }) };
+    assert.equal(url, `/api/tickets/${epic.id}`);
+    return { ok: true, json: () => (++detailReads === 1 ? staleReply.promise : freshReply.promise) };
+  };
+  const detail = state.epicFetchDetail(epic.id);
+  await flushMicrotasks();
+  assert.equal(detailReads, 1);
+  const questionCleared = () => {
+    assert.equal(state.selectedEpic.id, epic.id);
+    assert.equal(state.selectedEpic.body, epic.body);
+    assert.equal(state.selectedEpic.waiting_question, undefined);
+    assert.equal(state.tickets[0].waiting_for_input, undefined);
+    assert.equal(state.needsInputCount, 0);
+  };
+  await state.fetchTasks();
+  questionCleared();
+
+  staleReply.resolve({ ...epic });
+  await flushMicrotasks();
+  questionCleared();
+  assert.equal(detailReads, 2, 'only a detail read started after the snapshot can replace its row');
+  freshReply.resolve(cleared);
+  await detail;
+  questionCleared();
+  state.destroy();
+});
+
 test("recomputeBoard tallies waiting tickets and the favicon ranks them over running ones", () => {
   const { ctx, state } = loadKontoraContext();
   state.tickets = [
@@ -16337,10 +16513,10 @@ test("index.html badges a waiting ticket in the detail header and both mobile la
   const html = fs.readFileSync(htmlPath, "utf8");
 
   // Desktop detail header: beside the status chip in the identity block.
-  assert.match(html, /x-show="selectedTicket\?\.waiting_for_input" class="waiting-chip"/);
-  // Mobile board card and mobile detail header.
-  assert.match(html, /x-if="ticket\.waiting_for_input"/);
-  assert.match(html, /x-if="selectedTicket\?\.waiting_for_input"/);
+  assert.match(html, /x-show="needsLiveInput\(selectedTicket\)" class="waiting-chip"/);
+  assert.match(html, /x-if="needsLiveInput\(ticket\)"/);
+  assert.match(html, /x-if="needsLiveInput\(selectedTicket\)"/);
+  assert.match(html, /mobilePanel\(\) === 'output' && needsLiveInput\(selectedTicket\)/);
   // Three ticket badges with elapsed time, plus both embedded epic headers.
   assert.equal(html.match(/class="waiting-chip"/g).length, 5);
   assert.equal(html.match(/waitingFor\((selectedTicket|ticket)\)/g).length, 3);
@@ -17710,7 +17886,6 @@ async function createLater(state, text, entry = "desktop") {
   state.createForm.path = "/repo";
   state.setCreateScheduleMode("later");
   state.createForm.scheduled_at = text;
-  state.onCreateScheduleChange();
 }
 
 for (const entry of ["desktop", "mobile"]) {
@@ -17780,17 +17955,25 @@ for (const entry of ["desktop", "mobile"]) {
     }
   });
 
-  test(`start-at on now creates an ordinary ticket, whatever the field holds: ${entry}`, async () => {
+  for (const choice of ['open', 'todo']) test(`leaving Later restores ${choice}: ${entry}`, async () => {
     const { state, posted } = scheduleState();
     await createLater(state, SCHED_LOCAL, entry);
-    state.setCreateScheduleMode("now");
+    state.setCreateScheduleMode('now');
+    state.createForm.status = choice;
+    state.setCreateScheduleMode('later');
+    assert.match(state.createPreviewYaml, /^status: open$/m);
+    state.createForm.scheduled_at = SCHED_LOCAL;
+    assert.match(state.createPreviewYaml, /^scheduled_at:/m);
+    state.setCreateScheduleMode('now');
 
-    assert.equal(state.createForm.scheduled_at, "", "leaving later drops the time rather than hiding it");
-    const result = await state.submitCreateTicket();
-    assert.equal(result, true);
-
+    assert.equal(state.createForm.scheduled_at, '');
+    assert.equal(state.createForm.status, choice);
+    assert.match(state.createPreviewYaml, new RegExp('^status: ' + choice + '$', 'm'));
+    assert.doesNotMatch(state.createPreviewYaml, /^scheduled_at:/m);
+    assert.equal(await state.submitCreateTicket(), true);
+    assert.equal(posted.length, 1);
     assert.equal(posted[0].body.scheduled_at, undefined);
-    assert.equal(posted[0].body.status, "todo");
+    assert.equal(posted[0].body.status, choice);
   });
 }
 
@@ -17806,15 +17989,14 @@ test("Full New shares its schedule markup and submit path at both widths", async
   const input = elementWithId(page, "new-scheduled-at");
   assert.match(input, /x-model="createForm\.scheduled_at"/);
   assert.match(input, /type="text"/);
-  const handler = input.match(/@input="([^"]*)"/)?.[1];
-  assert.ok(handler);
-  const change = new Function("state", "$event", `with (state) { ${handler} }`);
+  assert.match(elementWithId(page, 'new-path'), /list="new-project-paths"/);
+  assert.match(elementWithId(page, 'new-project-paths'), /:value="project.path" x-text="project.name"/);
 
   for (const entry of ["desktop", "mobile"]) {
     for (const value of [SCHED_LOCAL, "24h", "", "2099-09-01"]) {
       const { state, posted } = scheduleState();
       await createLater(state, value, entry);
-      change(state, { target: { value } });
+
       const blocked = !value || value === "2099-09-01";
       assert.equal(state.createForm.scheduleMode, "later", "clearing text does not silently select now");
       assert.equal(state.createBlocked(), blocked);
@@ -18701,7 +18883,7 @@ test("a sibling finishing changes the card signature of every other child", () =
 
 test("the epics rail row opens the page and draws one block per child", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
-  const section = html.match(/<div class="p-2\.5 pt-2" x-show="epics\.length > 0">[\s\S]*?<\/div>\n      <\/div>/);
+  const section = html.match(/<div class="p-2\.5 pt-2" x-show="!needsInputOnly && epics\.length > 0">[\s\S]*?<\/div>\n      <\/div>/);
   assert.ok(section, "the rail must carry an epics section");
   const rail = section[0];
 
@@ -18897,13 +19079,11 @@ test("switching from an epic restores the ticket schedule without activating the
   const { state, posted } = scheduleState();
   await createLater(state, SCHED_LOCAL);
   state.createForm.kind = "epic";
-  state.onCreateScheduleChange();
-  assert.equal(state.createForm.status, "open");
+  assert.equal(state.createEffectiveStatus(), "open");
   assert.equal(state.createScheduleISO(), "");
   assert.equal(state.createBlocked(), false);
   assert.doesNotMatch(state.createPreviewYaml, /scheduled_at:|pipeline:|epic_execution:/);
   state.createForm.kind = "";
-  state.onCreateScheduleChange();
   assert.equal(state.createScheduleISO(), SCHED_ISO);
   assert.equal(state.createSchedulePinned(), true);
   assert.equal(await state.submitCreateTicket(), true);
@@ -19120,7 +19300,7 @@ for (const mobile of [false, true]) {
 
   for (const { status, history, error, message } of [
     { status: 'open', history: [], message: /has not recorded a run/ },
-    { status: 'todo', history: [], message: /queued.*when it starts/ },
+    { status: 'todo', history: [], message: /Todo.*if it starts/ },
     { status: 'paused', history: [], error: 'startup failed', message: /failed before recording a run/ },
     { status: 'human_review', history: [{ stage: 'default', run: 0 }], message: /No live session.*recorded run/ },
   ]) {
@@ -19746,7 +19926,7 @@ for (const mobile of [false, true]) {
       assert.deepEqual(vmValue(state.outputRuns().map(r => r.key)), ['default#0']);
       await state.epicAction('retry');
       assert.equal(state.selectedEpic.status, 'todo');
-      assert.match(state.outputNoRunText(), /queued/i);
+      assert.match(state.outputNoRunText(), /Todo/);
       state.applyTicketUpdate({ ...epic, status: 'in_progress', last_error: '' });
       state.recomputeBoard();
       assert.deepEqual(vmValue(state.outputRuns().map(r => r.key)), ['default#1', 'default#0']);
@@ -20395,7 +20575,7 @@ for (const supervisorsOnly of [true, false]) {
   });
 }
 
-for (const [status, label] of [['in_progress', 'supervising'], ['todo', 'queued'], ['paused', 'paused']]) {
+for (const [status, label] of [['in_progress', 'supervising'], ['todo', 'Todo'], ['paused', 'paused']]) {
   test(`supervisor board uses ${label}, not a pipeline stage`, () => {
     const { state, epic } = epicSupervisorUI({ status });
     const ticket = { ...epic, stage: 'code', stages: ['plan', 'code', 'review'] };
@@ -20414,19 +20594,19 @@ for (const [status, label] of [['in_progress', 'supervising'], ['todo', 'queued'
       assert.ok(statusTemplate, 'mobile supervisor card names ' + label);
       assert.doesNotMatch(statusTemplate[2], /⏸|◌|pulse-dot/);
       const visible = t => vm.runInNewContext(statusTemplate[1], {
-        ticket: t, epicIsAgent: t => state.epicIsAgent(t), mobileColumn: () => ({ key: 'in_progress' }),
+        ticket: t, epicIsAgent: t => state.epicIsAgent(t), executionActive: t => state.executionActive(t),
         showPipelineBadges: false, showAgentMeta: false,
       });
       assert.equal(visible(ticket), true);
       assert.equal(visible({ ...ticket, status: 'in_progress' }), false);
-      assert.equal(visible({ ...ticket, kind: 'ticket' }), false);
+      assert.equal(visible({ ...ticket, kind: 'ticket' }), status === 'todo');
     }
     state.destroy();
   });
 }
 
-for (const [status, label] of [['paused', 'Paused'], ['todo', 'Queued']]) {
-  test(`ordinary mobile cards name ${label} separately from supervisors`, () => {
+for (const [status, label] of [['paused', 'Paused'], ['todo', 'Todo']]) {
+  test(status === 'todo' ? 'Idle workers and supervisors show Todo' : 'Ordinary mobile cards show Paused separately from supervisors', () => {
     const { state, epic } = epicSupervisorUI({ status });
     const cards = fs.readFileSync(htmlPath, 'utf8').split('x-for="ticket in mobileTickets()"')[1]
       .split('<!-- ===== Ticket detail')[0];
@@ -20434,12 +20614,12 @@ for (const [status, label] of [['paused', 'Paused'], ['todo', 'Queued']]) {
       .find(([, , content]) => content.includes('>' + label + '</span>'));
     assert.ok(statusTemplate, 'ordinary card names ' + label);
     const visible = ticket => vm.runInNewContext(statusTemplate[1], {
-      ticket, epicIsAgent: t => state.epicIsAgent(t), mobileColumn: () => ({ key: 'in_progress' }),
+      ticket, epicIsAgent: t => state.epicIsAgent(t), executionActive: t => state.executionActive(t),
       showPipelineBadges: false, showAgentMeta: false,
     });
     const ordinary = { ...epic, kind: 'ticket' };
     assert.equal(visible(ordinary), true, 'state remains visible with metadata preferences off');
-    assert.equal(visible(epic), false, 'supervisors retain their existing wording');
+    assert.equal(visible(epic), status === 'todo', 'Todo wording is shared with supervisors');
     for (const other of ['open', 'in_progress', 'paused', 'todo', 'done', 'cancelled'].filter(s => s !== status)) {
       assert.equal(visible({ ...ordinary, status: other }), false, other);
     }

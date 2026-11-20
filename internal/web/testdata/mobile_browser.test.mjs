@@ -1524,7 +1524,7 @@ describe('mobile polish fixture evidence', () => {
         await model(page, 'createForm.title').fill('Fixture creation error remains readable');
         await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
         fixture.behavior.createFailure = 'Fixture error: repository permission denied; draft retained. Please retry.';
-        await page.getByRole('button', { name: 'Create and queue', exact: true }).filter({ visible: true }).click();
+        await page.getByRole('button', { name: 'Save draft', exact: true }).filter({ visible: true }).click();
         await visible(page.locator('[x-text="createError"]').filter({ visible: true }));
         await mobileCapture(page, width, theme, 'create-error');
         if (width < 768) {
@@ -2067,7 +2067,7 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
         await visible(card('kon-scheduled').locator('.sched-chip'));
         await polishCardGeometry(page);
         await page.getByRole('navigation', { name: 'Ticket status', exact: true }).getByRole('button', { name: /in progress/i }).click();
-        for (const [id, label] of [['kon-queued', 'Queued'], ['kon-paused', 'Paused']]) {
+        for (const [id, label] of [['kon-queued', 'Todo'], ['kon-paused', 'Paused']]) {
           await visible(card(id).getByText(label, { exact: true }));
         }
         const attention = card('kon-attention').locator('.waiting-chip');
@@ -2107,7 +2107,7 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
           assert.equal(await card('kon-live').locator('[x-show="showPipelineBadges"]').isVisible(), enabled);
           assert.equal(await card('kon-live').locator('[x-show="showPipelineBadges"]').textContent(), 'standard');
           assert.equal(await card('kon-live').getByText(liveAgent, { exact: true }).count(), enabled ? 1 : 0);
-          await visible(card('kon-queued').getByText('Queued', { exact: true }));
+          await visible(card('kon-queued').getByText('Todo', { exact: true }));
           await visible(card('kon-paused').getByText('Paused', { exact: true }));
           await polishCardGeometry(page);
         }
@@ -2127,8 +2127,8 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
           return { content: css.content, animation: css.animationName };
         }), { content: 'none', animation: 'none' }, 'Running metadata has no decorative status pulse');
         await polishMotion(page, reducedMotion);
-        assert.deepEqual(await tabs.getByRole('button').filter({ visible: true }).allTextContents(), ['Ticket', 'Notes', 'Output', 'Changes']);
-        for (const label of ['Ticket', 'Notes', 'Output', 'Changes']) {
+        assert.deepEqual(await tabs.getByRole('button').filter({ visible: true }).allTextContents(), ['Ticket', 'Notes', 'Output', 'Committed changes']);
+        for (const label of ['Ticket', 'Notes', 'Output', 'Committed changes']) {
           const tab = tabs.getByRole('button', { name: label, exact: true });
           await tab.scrollIntoViewIfNeeded(); await tab.click();
           await inViewport(tab);
@@ -2196,7 +2196,7 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
           await immediateFocus(dialog.getByRole('button', { name: heading === 'New ticket' ? 'Return to board' : 'Close', exact: true }));
           await polishMotion(page, reducedMotion);
           if (heading === 'New ticket') {
-            const submit = dialog.getByRole('button', { name: 'Create and queue', exact: true });
+            const submit = dialog.getByRole('button', { name: 'Save draft', exact: true });
             assert.equal(await submit.isDisabled(), true);
             assert.ok(await submit.evaluate(el => parseFloat(getComputedStyle(el).opacity) < 1 || getComputedStyle(el).cursor === 'not-allowed'), 'Disabled state differs beyond color');
             await immediateFocus(model(page, 'createForm.title'));
@@ -4074,7 +4074,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await t.test('long identifiers keep ticket actions reachable', async () => {
           await openTicket(page, longID);
           await noPageOverflow(page);
-          const queue = page.getByRole('button', { name: /^queue(?: ticket)?$/i }).filter({ visible: true });
+          const queue = page.getByRole('button', { name: /^Request pickup$/i }).filter({ visible: true });
           const move = width < 768 ? page.getByRole('button', { name: 'Move to', exact: true }).filter({ visible: true })
             : page.getByRole('combobox', { name: 'Move to status', exact: true }).filter({ visible: true });
           await inViewport(queue); await inViewport(move);
@@ -4152,36 +4152,52 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           assert.equal(new URL(page.url()).hash, '#/t/kon-live');
           assert.equal(await page.locator('.xterm:visible').count(), 1);
         });
-        await t.test('creation persists the submitted fields', async () => {
+        await t.test('default creation saves a draft without pickup', async () => {
+          const priorWrites = fixture.mutations.length;
+          const priorEnqueued = fixture.enqueued.length;
           await backToBoard(page);
           await page.getByRole('button', { name: 'New ticket', exact: true }).filter({ visible: true }).click();
           await model(page, 'createForm.title').fill('Created in browser');
-          await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
+          const path = page.locator('#new-path');
+          await expect(path).toHaveValue('');
+          const suggestion = page.locator('#new-project-paths option').first();
+          await expect(suggestion).toHaveText('Fixture repository');
+          await path.fill(await suggestion.getAttribute('value'));
+          await expect(page.getByText('Project Fixture repository.', { exact: true })).toBeVisible();
+          await path.fill('/fixtures/unlisted-repository');
           await model(page, 'createForm.body').fill('Browser acceptance criteria.');
-          const submit = page.getByRole('button', { name: 'Create and queue', exact: true });
+          const submit = page.getByRole('button', { name: 'Save draft', exact: true });
           await submit.scrollIntoViewIfNeeded();
           await inViewport(submit);
           await Promise.all([
             page.waitForResponse(r => r.url() === base + '/api/tickets' && r.request().method() === 'POST'),
             submit.click(),
           ]);
-          const mutation = fixture.mutations.find(m => m.method === 'POST' && m.path === '/api/tickets');
+          assert.equal(fixture.mutations.length, priorWrites + 1);
+          assert.equal(fixture.enqueued.length, priorEnqueued);
+          const mutation = fixture.mutations.at(-1);
+          assert.equal(mutation.method, 'POST');
+          assert.equal(mutation.path, '/api/tickets');
+          assert.equal(mutation.body.status, 'open');
+          assert.equal(mutation.body.scheduled_at, undefined);
           assert.ok(mutation);
           assert.equal(mutation.body.title, 'Created in browser');
           assert.equal(mutation.body.body, 'Browser acceptance criteria.');
-          assert.equal(mutation.body.path, '/fixtures/repository-with-a-long-name');
+          assert.equal(mutation.body.path, '/fixtures/unlisted-repository');
           await page.waitForURL('**/#/');
           await ready(page);
           await page.reload({ waitUntil: 'domcontentloaded' });
           await openTicket(page, mutation.ticket.id);
           await visible(page.getByRole('heading', { name: /Created in browser$/ }));
+          assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedTicket.status), 'open');
         });
         await t.test('scheduled creation validates the input and persists an open ticket', async () => {
           const priorWrites = fixture.mutations.length;
           await routeTo(page, '#/new');
           await model(page, 'createForm.title').fill('Scheduled browser fixture');
           await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
-          await page.getByRole('button', { name: 'later', exact: true }).click();
+          await page.getByRole('button', { name: 'Schedule for later', exact: true }).click();
+          await expect(page.getByText('Enter a future date and local time (YYYY-MM-DD HH:MM), or a delay such as 24h.', { exact: true })).toBeVisible();
           await model(page, 'createForm.scheduled_at').fill('not a time');
           assert.equal(new URL(page.url()).hash, '#/new', 'Scheduling uses the full New route');
           const submit = page.locator('#new-view').getByRole('button', { name: 'Schedule ticket', exact: true });
@@ -4274,7 +4290,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await t.test('init dialog owns focus and Escape closes it', async () => {
           await backToBoard(page);
           await openTicket(page, 'kon-draft');
-          const queue = page.getByRole('button', { name: /^(queue(?: ticket)?|initialize|start)$/i }).filter({ visible: true }).first();
+          const queue = page.getByRole('button', { name: /^(request pickup|initialize|start)$/i }).filter({ visible: true }).first();
           await queue.click();
           const dialog = page.getByRole('dialog', { name: /Primary draft$/ });
           await visible(dialog);
@@ -4563,8 +4579,8 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         assert.ok(await model(page, 'createForm.title').getAttribute('required') !== null);
         await model(page, 'createForm.title').fill('Native scheduled fixture');
         await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
-        await dialog.getByRole('button', { name: 'later', exact: true }).click();
-        const date = page.getByRole('textbox', { name: 'Start date or duration', exact: true });
+        await dialog.getByRole('button', { name: 'Schedule for later', exact: true }).click();
+        const date = page.getByRole('textbox', { name: 'Scheduled date and time or delay', exact: true });
         await date.fill('2099-09-01 09:00');
         await date.blur();
         await model(page, 'createForm.body').fill('Keep this draft while the viewport shrinks.');
@@ -4606,10 +4622,10 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await opener.click();
         await model(page, 'createForm.title').fill('Cleared phone schedule');
         await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
-        await dialog.getByRole('button', { name: 'later', exact: true }).click();
+        await dialog.getByRole('button', { name: 'Schedule for later', exact: true }).click();
         await date.fill('2099-09-01 09:00');
         await date.blur();
-        await dialog.getByRole('button', { name: 'now', exact: true }).click();
+        await dialog.getByRole('button', { name: 'No schedule', exact: true }).click();
         await page.locator('#new-status').selectOption('todo');
         await submit.click();
         await page.waitForURL('**/#/');
@@ -4619,7 +4635,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await opener.click();
         await model(page, 'createForm.title').fill('Epic ignores old schedule');
         await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
-        await dialog.getByRole('button', { name: 'later', exact: true }).click();
+        await dialog.getByRole('button', { name: 'Schedule for later', exact: true }).click();
         await date.fill('2099-09-01 09:00');
         await date.blur();
         await dialog.getByRole('button', { name: 'epic', exact: true }).click();
@@ -5757,10 +5773,32 @@ describe('focused phone description save lifecycle', { concurrency: 2 }, () => {
   });
 });
 
+for (const width of [390, 1280]) test(`standalone draft pickup after reload / ${width}px`, async t => {
+  // Creation sends `none`; the daemon persists and returns a blank pipeline.
+  const draft = ticket('kon-standalone', 'Standalone draft', { pipeline: '', stage: '', stages: [], notify: [], ready: false });
+  await withPage(t, width, 'dark', async (page, fixture) => {
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await ready(page);
+    await openTicket(page, draft.id);
+    fixture.behavior.pickupBlocked = new Set([draft.id]);
+    await page.getByRole('button', { name: /^request pickup$/i }).filter({ visible: true }).first().click();
+    const dialog = page.getByRole('dialog', { name: draft.title });
+    await expect(dialog.locator('#init-pipeline')).toHaveValue('none');
+    await expect(dialog.locator('.status-chip[data-status="todo"]')).toHaveText('Todo');
+    await expect(dialog.getByText('This requests pickup. Unresolved dependencies can keep the ticket out of the queue.')).toBeVisible();
+    await dialog.getByRole('button', { name: 'start ticket', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByText(`${draft.id}: Pickup requested`, { exact: true })).toBeVisible();
+    assert.equal(fixture.mutations.at(-1).body.pipeline, 'none');
+    assert.equal(fixture.mutations.at(-1).ticket.status, 'todo');
+    assert.deepEqual(fixture.enqueued, []);
+  }, { records: [draft], hasTouch: width < 768 });
+});
+
 describe('start-dialog notification availability', { concurrency: 2 }, () => {
   async function openStartDialog(page) {
     await openTicket(page, 'kon-draft');
-    await page.getByRole('button', { name: /^(queue(?: ticket)?|initialize|start)$/i }).filter({ visible: true }).first().click();
+    await page.getByRole('button', { name: /^(request pickup|initialize|start)$/i }).filter({ visible: true }).first().click();
     const dialog = page.getByRole('dialog', { name: /Primary draft$/ });
     await visible(dialog);
     return dialog;
@@ -6284,15 +6322,15 @@ for (const [width, entry] of [[390, 'Changes tab'], [1280, 'sidebar overflow']])
     await withPage(t, width, 'light', async (page, fixture) => {
       if (entry === 'sidebar overflow') {
         await page.getByRole('listitem', { name: `Ticket kon-export: ${title}`, exact: true }).click();
-        const more = page.getByRole('button', { name: '1 more in diff →', exact: true });
+        const more = page.getByRole('button', { name: '1 more file in Committed changes', exact: true });
         await expect(more).toBeVisible();
         await expect(page.getByText('docs/export.md', { exact: true }).filter({ visible: true })).toHaveCount(0);
         await more.click();
       } else {
-        await page.getByText(title, { exact: true }).click();
-        await page.getByRole('button', { name: 'Changes', exact: true }).click();
+        await openTicket(page, 'kon-export');
+        await detailPanel(page, 'Changes');
       }
-      const changes = page.getByRole('region', { name: 'Changes', exact: true });
+      const changes = page.getByRole('region', { name: 'Committed changes', exact: true });
       await expect(changes.getByText(`vs ${baseRef}`, { exact: true })).toBeVisible();
       await expect(changes.getByRole('heading', { name: 'Commits', exact: true })).toBeVisible();
       for (const { sha, subject } of commits) {
@@ -6309,8 +6347,10 @@ for (const [width, entry] of [[390, 'Changes tab'], [1280, 'sidebar overflow']])
         await expect(file.getByText(`+${added}`, { exact: true })).toBeVisible();
         await expect(file.getByText(`−${deleted}`, { exact: true })).toBeVisible();
       }
+      await expect(changes.getByRole('heading', { name: 'Review the worktree' })).toBeVisible();
+      await expect(changes.getByText('git status --short', { exact: true })).toBeVisible();
       assert.deepEqual(fixture.mutations, []);
-    }, { onlyRecords: true, records: [ticket('kon-export', title, { branch })],
+    }, { onlyRecords: true, records: [ticket('kon-export', title, { branch, status: 'human_review' })],
       changes: { 'kon-export': { base: baseRef, branch, commits, files } } });
   });
 }
@@ -6704,19 +6744,181 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
     }, { records: [ticket('kon-empty', 'Empty Changes fixture')] });
   });
 
+  for (const [width, theme] of [[320, 'dark'], [1440, 'light']]) test(`worktree handoff with empty or missing evidence / ${width}px`, async t => {
+    const branch = 'fixture/no-commits';
+    await withPage(t, width, theme, async (page, fixture) => {
+      for (const [id, expected] of [
+        ['kon-empty-review', `No commits on ${branch} compared to main.`],
+        ['kon-no-branch', 'No branch stored for this ticket.'],
+        ['kon-no-path', 'No repository path stored for this ticket.'],
+      ]) {
+        await openTicket(page, id);
+        await detailPanel(page, 'Changes');
+        const panel = page.getByRole('region', { name: 'Committed changes', exact: true });
+        await expect(panel.getByRole('heading', { name: 'Review the worktree' })).toBeVisible();
+        await expect(panel.getByText(expected, { exact: true })).toBeVisible();
+        await expect(panel.getByText('git diff HEAD', { exact: true })).toHaveCount(id === 'kon-empty-review' ? 1 : 0);
+        await noPageOverflow(page);
+      }
+      assert.ok(fixture.requests.includes('GET /api/tickets/kon-empty-review/changes'));
+      assert.ok(!fixture.requests.includes('GET /api/tickets/kon-no-branch/changes'));
+      assert.deepEqual(fixture.mutations, []);
+    }, { records: [
+      ticket('kon-empty-review', 'Review without commits', { status: 'human_review', branch }),
+      ticket('kon-no-branch', 'Review without a branch', { status: 'human_review' }),
+      ticket('kon-no-path', 'Review without a repository', { status: 'human_review', branch, path: '' }),
+    ], changes: { 'kon-empty-review': { base: 'main', branch, commits: [], files: [] } } });
+  });
+
+  for (const [width, theme] of [[320, 'light'], [390, 'dark'], [1440, 'dark']]) test(`Live questions clear on a ticket event and on list refresh / ${width}px`, async t => {
+    const wait = { execution_active: true, waiting_for_input: true, waiting_question: 'Which fixture should I use?' };
+    await withPage(t, width, theme, async (page, fixture) => {
+      const toggle = page.getByRole('button', { name: /^Needs input \d$/, exact: true });
+      const tabs = page.getByRole('navigation', { name: 'Ticket status' });
+      const phone = width < 768;
+      if (phone) await expect(tabs.getByRole('button', { name: /^Open/ })).toHaveAttribute('aria-pressed', 'true');
+      await expect(toggle).toHaveText(/Needs input 2/);
+      const query = page.getByRole('textbox', { name: 'Filter tickets' });
+      await query.fill('Question worker');
+      await expect(toggle).toHaveText(/Needs input 1/);
+      if (phone) await toggle.tap(); else { await toggle.focus(); await page.keyboard.press('Space'); }
+      await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+      if (phone) await expect(tabs.getByRole('button', { name: /waiting.external/i })).toHaveAttribute('aria-pressed', 'true');
+      const card = phone ? page.getByText('Question worker', { exact: true }).filter({ visible: true })
+        : page.locator('[data-ticket-id="kon-question"]');
+      await card.click();
+      await page.waitForURL('**/#/t/kon-question');
+      if (phone) await detailPanel(page, 'Output');
+      await visible(page.getByText(wait.waiting_question, { exact: true }).filter({ visible: true }));
+      const record = fixture.records.get('primary/kon-question');
+      delete record.waiting_for_input;
+      delete record.waiting_question;
+      await parityTicketEvent(page, fixture, 'kon-question');
+      await expect(page.getByText(wait.waiting_question, { exact: true }).filter({ visible: true })).toHaveCount(0);
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedTicket?.id), 'kon-question');
+      Object.assign(record, wait);
+      await parityTicketEvent(page, fixture, 'kon-question');
+      await visible(page.getByText(wait.waiting_question, { exact: true }).filter({ visible: true }));
+      delete record.waiting_for_input;
+      delete record.waiting_question;
+      await page.evaluate(() => Alpine.$data(document.body).fetchTasks());
+      await expect(page.getByText(wait.waiting_question, { exact: true }).filter({ visible: true })).toHaveCount(0);
+      await backToBoard(page);
+      await expect(toggle).toHaveText(/Needs input 0/);
+      if (phone) await expect(tabs.getByRole('button', { name: /waiting.external/i })).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByText('No agents need input among tickets matching your filters.', { exact: true })).toBeVisible();
+      const exit = page.getByRole('button', { name: 'Turn off Needs input filter', exact: true });
+      await exit.focus();
+      await page.keyboard.press('Enter');
+      await expect(exit).toBeHidden();
+      await expect(toggle).toBeFocused();
+      await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+      if (phone) await expect(tabs.getByRole('button', { name: /^Open/ })).toHaveAttribute('aria-pressed', 'true');
+      await expect(query).toHaveValue('Question worker');
+      await query.fill('');
+      await expect(toggle).toHaveText(/Needs input 1/);
+      await noPageOverflow(page);
+      assert.deepEqual(fixture.mutations, []);
+    }, { onlyRecords: true, hasTouch: width < 768, config: { custom_statuses: ['waiting_external'] }, records: [
+      ticket('kon-question', 'Question worker', { status: 'waiting_external', ...wait }),
+      ticket('kon-question', 'Secondary question namesake', { source, status: 'waiting_external', ...wait }),
+      ticket('kon-supervisor', 'Question supervisor', { kind: 'epic', epic_mode: 'agent', epic_execution: 'agent', status: 'in_progress', ...wait, waiting_question: '' }),
+      ticket('kon-passive', 'Passive epic', { kind: 'epic', epic_mode: 'passive', status: 'in_progress', ...wait }),
+    ] });
+  });
+
+  test('Needs input reconciles phone status tabs when toggled on desktop', async t => {
+    await withPage(t, 900, 'dark', async page => {
+      const toggle = page.getByRole('button', { name: 'Needs input 1', exact: true });
+      const tabs = page.getByRole('navigation', { name: 'Ticket status' });
+      await toggle.click();
+      await page.setViewportSize({ width: 390, height: 900 });
+      await expect(tabs.getByRole('button', { name: /^In progress/i })).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByText('Resize question worker', { exact: true })).toBeVisible();
+      await page.setViewportSize({ width: 900, height: 900 });
+      await expect(tabs).toBeHidden();
+      await toggle.click();
+      await page.setViewportSize({ width: 390, height: 900 });
+      await expect(tabs.getByRole('button', { name: /^Open/ })).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByText('Resize draft', { exact: true })).toBeVisible();
+    }, { onlyRecords: true, records: [
+      ticket('kon-draft', 'Resize draft'),
+      ticket('kon-question', 'Resize question worker', { status: 'in_progress', waiting_for_input: true }),
+    ] });
+  });
+
+  test('Live questions wrap in ticket and supervisor headers at the desktop breakpoint', async t => {
+    const wait = { status: 'in_progress', waiting_for_input: true, waiting_question: 'X'.repeat(128) };
+    await withPage(t, 768, 'dark', async page => {
+      for (const id of terminalSubjects) {
+        if (id === supervisorID) await routeTo(page, '#/e/' + id);
+        else await openTicket(page, id);
+        const question = page.getByText(wait.waiting_question, { exact: true });
+        await inViewport(question);
+        const geometry = await question.evaluate(el => {
+          const text = document.createRange();
+          text.selectNodeContents(el);
+          return { textRects: text.getClientRects().length, width: el.clientWidth, scrollWidth: el.scrollWidth };
+        });
+        assert.ok(geometry.textRects > 1 && geometry.scrollWidth <= geometry.width + 1, JSON.stringify(geometry));
+      }
+    }, { records: [
+      ticket('kon-live', 'Question worker', wait),
+      ticket(supervisorID, 'Question supervisor', { ...wait, kind: 'epic', epic_mode: 'agent', epic_execution: 'agent' }),
+    ] });
+  });
+
+  test('Live questions stay visible and update while composing terminal replies on a phone', async t => {
+    const wait = { status: 'in_progress', stage: 'code', started_at: stamp, waiting_for_input: true, waiting_question: 'Which fixture should I use?' };
+    await withPage(t, 390, 'dark', async (page, fixture) => {
+      for (const id of terminalSubjects) {
+        await openTerminalSubject(page, id);
+        const composer = mobileComposer(page);
+        const surface = mobileTerminalSurface(page);
+        await visualViewport(page, 350);
+        await expect(surface.getByText(wait.waiting_question, { exact: true })).toBeVisible();
+        await composer.click();
+        await composer.fill('Reply in progress');
+        await expect(surface).toHaveClass(/mobile-terminal-typing/);
+        await expect(surface.getByText(wait.waiting_question, { exact: true })).toBeVisible();
+
+        const updated = 'Should I use this fixture?\n' + 'fixture-token-'.repeat(50);
+        fixture.records.get('primary/' + id).waiting_question = updated;
+        await parityTicketEvent(page, fixture, id);
+        const question = surface.locator('.mobile-live-question');
+        await expect(question).toHaveText(updated);
+        await expect(question).toBeVisible();
+        assert.ok(await question.evaluate(el => el.scrollHeight > el.clientHeight), 'long questions stay scrollable in typing mode');
+        await mobileTerminalLayout(page, true, 350);
+        await expect(composer).toBeFocused();
+        await expect(composer).toHaveValue('Reply in progress');
+        await terminalGridFits(page);
+        await backToBoard(page);
+        await visualViewport(page, 900);
+      }
+    }, { hasTouch: true, records: [
+      ticket('kon-live', 'Question worker', wait),
+      ticket(supervisorID, 'Question supervisor', { ...wait, kind: 'epic', epic_mode: 'agent', epic_execution: 'agent' }),
+    ] });
+  });
+
   for (const width of [390, 1280]) test(`kon91cx idle Todo Queue releases controls for prototype-named IDs / ${width}px`, async t => {
     const ids = ['kon-draft', 'constructor', 'toString', '__proto__'];
     await withPage(t, width, 'dark', async (page, fixture) => {
       for (const id of ids) {
+        fixture.behavior.pickupBlocked = new Set([id]);
         await openTicket(page, id);
-        const queue = page.getByRole('button', { name: /^queue ticket$/i }).filter({ visible: true });
+        const queue = page.getByRole('button', { name: /^Request pickup$/i }).filter({ visible: true });
         await expect(queue).toBeEnabled();
         for (let attempt = 0; attempt < 2; attempt++) {
-          const queued = fixture.enqueued.length;
+          const requests = fixture.pickupRequests.length;
           await queue.click();
-          await expect.poll(() => fixture.enqueued.length).toBe(queued + 1);
+          await expect.poll(() => fixture.pickupRequests.length).toBe(requests + 1);
+          await expect(page.getByText(`${id}: Pickup requested`, { exact: true })).toBeVisible();
           await expect(queue).toBeEnabled();
-          assert.deepEqual(fixture.enqueued.at(-1), { id, action: 'run' });
+          assert.deepEqual(fixture.pickupRequests.at(-1), { id, action: 'run' });
+          assert.deepEqual(fixture.enqueued, []);
+          assert.equal(fixture.records.get(`primary/${id}`).status, 'todo');
         }
       }
       assert.ok(fixture.mutations.every(m => m.method === 'POST' && m.path.endsWith('/run')));
@@ -6845,8 +7047,11 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
         fixture.behavior.changesFailure = 'Changes fixture unavailable';
         await detailPanel(page, 'Changes');
         await visible(page.getByText(/Loading changes/i).filter({ visible: true }));
+        const handoff = page.getByRole('heading', { name: 'Review the worktree', exact: true }).filter({ visible: true });
+        await expect(handoff).toBeVisible();
         gate.resolve(); fixture.behavior.changesWait = null;
         await visible(page.getByText('Changes fixture unavailable', { exact: true }).filter({ visible: true }));
+        await expect(handoff).toBeVisible();
         const retry = page.getByRole('button', { name: 'Retry changes', exact: true }).filter({ visible: true });
         await expect(retry).toBeVisible();
         fixture.behavior.changesFailure = null;
@@ -6858,7 +7063,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
         await detailPanel(page, 'Notes'); await detailPanel(page, 'Changes');
         await expect.poll(() => fixture.requests.filter(r => r === 'GET /api/tickets/kon-draft/changes').length).toBe(reads + 1);
         assert.deepEqual(fixture.mutations, []);
-      }, { changes: { 'kon-draft': coreChanges } });
+      }, { ticket: { status: 'human_review', branch: coreChanges.branch }, changes: { 'kon-draft': coreChanges } });
     });
   }
 
@@ -6956,7 +7161,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       await backToBoard(page);
       assert.equal(await page.evaluate(() => window.__fixtureRestorationWatches.active), 0, 'Closing releases all owned watchers');
       assert.deepEqual(fixture.mutations, []);
-    }, { records: [ticket('kon-evidence', 'Delayed restorable evidence', { status: 'done', stage: 'code', history: coreHistory() })],
+    }, { records: [ticket('kon-evidence', 'Delayed restorable evidence', { status: 'done', stage: 'code', branch: coreChanges.branch, history: coreHistory() })],
       artifacts: { 'kon-evidence/code/1': Array.from({ length: 80 }, (_, i) => ({ kind: 'text', text: `Delayed activity row ${i}` })) },
       changes: { 'kon-evidence': { ...coreChanges, files: Array.from({ length: 80 }, (_, i) => ({ path: `delayed-file-${i}.go`, added: 1, deleted: 0 })) } } });
   });
@@ -6964,7 +7169,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
   for (const theme of themes) test(`kon91cx responsive panel and run equivalence / ${theme}`,  { timeout: 60000 }, async t => {
     await withPage(t, 390, theme, async (page, fixture) => {
       await openTicket(page, 'kon-evidence');
-      await expect(page.locator('.mobile-detail-tabs').getByRole('button')).toHaveText(['Ticket', 'Notes', 'Output', 'Changes']);
+      await expect(page.locator('.mobile-detail-tabs').getByRole('button')).toHaveText(['Ticket', 'Notes', 'Output', 'Committed changes']);
       for (const panel of ['Notes', 'Changes', 'Output']) {
         await detailPanel(page, panel);
         if (panel === 'Output') await page.getByRole('combobox', { name: 'Run', exact: true }).filter({ visible: true }).selectOption('code#1');
@@ -6990,7 +7195,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
         }
       }
       assert.deepEqual(fixture.mutations, []);
-    }, { records: [ticket('kon-evidence', 'Responsive evidence', { status: 'done', stage: 'code', history: coreHistory() })],
+    }, { records: [ticket('kon-evidence', 'Responsive evidence', { status: 'done', stage: 'code', branch: coreChanges.branch, history: coreHistory() })],
       changes: { 'kon-evidence': coreChanges }, artifacts: { 'kon-evidence/code/1': [{ kind: 'text', text: 'Artifact occurrence 1' }] } });
   });
 
@@ -7072,7 +7277,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
         await page.setViewportSize({ width, height: 900 });
       }
       assert.deepEqual(fixture.mutations, []);
-    }, { records: [ticket('kon-evidence', 'Historical evidence', { status: 'done', stage: 'code', history: coreHistory() })],
+    }, { records: [ticket('kon-evidence', 'Historical evidence', { status: 'done', stage: 'code', branch: coreChanges.branch, history: coreHistory() })],
       changes: { 'kon-evidence': coreChanges }, artifacts: { 'kon-evidence/code/1': [{ kind: 'text', text: 'Artifact occurrence 1' }] } });
   });
 
@@ -7265,7 +7470,7 @@ for (const width of [390, 1280]) test(`audit32-schedule impossible calendar subm
     await routeTo(page, '#/new');
     await model(page, 'createForm.title').fill('Impossible local date');
     await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
-    await page.getByRole('button', { name: 'later', exact: true }).filter({ visible: true }).click();
+    await page.getByRole('button', { name: 'Schedule for later', exact: true }).filter({ visible: true }).click();
     const input = model(page, 'createForm.scheduled_at');
     await input.fill('2099-02-31 09:00'); await input.blur();
     const submit = page.getByRole('button', { name: 'Schedule ticket', exact: true }).filter({ visible: true });
@@ -8592,7 +8797,7 @@ describe('mobile management and Assistant real-control parity', { concurrency: 2
       await newButton().click();
       await page.waitForURL('**/#/new');
       await visible(page.locator('#new-title'));
-      await expect(page.getByRole('button', { name: 'Create and queue', exact: true })).toBeDisabled();
+      await expect(page.getByRole('button', { name: 'Save draft', exact: true })).toBeDisabled();
       await page.locator('#new-title').fill('Pending full New owns this draft');
       await page.locator('#new-body').fill('No replacement or cancellation while POST is pending.');
       await page.locator('#new-path').fill('/fixtures/repository-with-a-long-name');
@@ -8600,12 +8805,18 @@ describe('mobile management and Assistant real-control parity', { concurrency: 2
       await page.locator('#new-status').selectOption('open');
       await page.locator('#new-branch').fill('fixture/manual-branch');
       await page.locator('#new-base-branch').fill('release');
-      await expect(page.getByRole('button', { name: 'Create ticket', exact: true }).filter({ visible: true })).toBeEnabled();
-      await page.getByRole('button', { name: 'later', exact: true }).filter({ visible: true }).click();
-      await page.getByRole('textbox', { name: 'Start date or duration', exact: true }).fill('2099-09-01 09:00');
-      await expect(page.locator('#new-status')).toBeDisabled();
-      await page.getByRole('button', { name: 'now', exact: true }).filter({ visible: true }).click();
-      await page.locator('#new-status').selectOption('open');
+      await expect(page.getByRole('button', { name: 'Save draft', exact: true }).filter({ visible: true })).toBeEnabled();
+      for (const choice of ['todo', 'open']) {
+        await page.locator('#new-status').selectOption(choice);
+        await page.getByRole('button', { name: 'Schedule for later', exact: true }).click();
+        const date = page.getByRole('textbox', { name: 'Scheduled date and time or delay', exact: true });
+        await expect(date).toHaveValue('');
+        await date.fill('2099-09-01 09:00');
+        await expect(page.locator('#new-status')).toBeHidden();
+        await expect(page.getByText('Open until scheduled time', { exact: true })).toBeVisible();
+        await page.getByRole('button', { name: 'No schedule', exact: true }).click();
+        await expect(page.locator('#new-status')).toHaveValue(choice);
+      }
       await page.setViewportSize({ width, height: 540 });
       await page.locator('#new-title').scrollIntoViewIfNeeded();
       await noPageOverflow(page);
@@ -8619,7 +8830,7 @@ describe('mobile management and Assistant real-control parity', { concurrency: 2
       try {
         await Promise.all([
           page.waitForRequest(r => r.url() === base + '/api/tickets' && r.method() === 'POST'),
-          page.getByRole('button', { name: 'Create ticket', exact: true }).filter({ visible: true }).click(),
+          page.getByRole('button', { name: 'Save draft', exact: true }).filter({ visible: true }).click(),
         ]);
         await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).createSubmitting)).toBe(true);
         // Returning to the board cannot cancel a server POST.
@@ -8686,7 +8897,7 @@ describe('mobile management and Assistant real-control parity', { concurrency: 2
       await expect(shortcuts.getByRole('button', { name: 'fixture-agent', exact: true })).toHaveAttribute('aria-pressed', 'true');
       await filter.fill('no-fixture-ticket-can-match-this');
       await expect(page.getByRole('status').filter({ hasText: /^0 matched$/ })).toBeVisible();
-      await page.getByRole('button', { name: 'Clear filter', exact: true }).filter({ visible: true }).click();
+      await page.getByRole('button', { name: 'Clear search', exact: true }).filter({ visible: true }).click();
       await expect(filter).toHaveValue('');
       await expect(page.getByRole('status').filter({ hasText: /^[1-9]\d* matched$/ })).toBeVisible();
       await shortcuts.locator('summary').click();

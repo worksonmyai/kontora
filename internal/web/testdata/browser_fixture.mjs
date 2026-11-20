@@ -214,7 +214,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
     projects: [{ name: 'Fixture repository', path: '/fixtures/repository-with-a-long-name', agent: 'fixture-agent', pipeline: 'standard' }],
     custom_statuses: [], stages: ['plan', 'code'], channels: [], default_channels: [], ...options.config };
   const requests = [], mutations = [], sockets = [], socketRoutes = [], messages = [], violations = [], expectedHTTPFailures = [];
-  const descriptionWrites = [], pendingResizes = [], enqueued = [], artifactReads = [];
+  const descriptionWrites = [], pendingResizes = [], pickupRequests = [], enqueued = [], artifactReads = [];
   const uploads = [], stylesheetRequests = [], authNavigations = [];
   const rawOutputs = new Map(Object.entries(options.rawOutputs || {
     'kon-done/code/0': 'Recorded occurrence zero: failed code visit.\n',
@@ -870,7 +870,8 @@ export function fixtures({ base, assets, engine }, options = {}) {
           if (action === 'run') Object.assign(record, { status: 'todo', last_error: '' });
           else Object.assign(record, body, { status: body.status || 'todo', attempt: 0, last_error: '' });
           delete record.scheduled_at;
-          enqueued.push({ id, action });
+          pickupRequests.push({ id, action });
+          if (record.status === 'todo' && !behavior.pickupBlocked?.has(id)) enqueued.push({ id, action });
         }
         record.execution_active = false; // Mutations park/queue; only a later daemon claim makes execution active.
         mutations.push({ method, path, body, before, ticket: structuredClone(record) });
@@ -1049,7 +1050,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
     });
   }
   return { install, api, config, configWrites, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig, descriptionWrites, pendingResizes, terminalMarkers,
-    holdSnapshot, holdDetail, holdRead, pendingSnapshot, releaseReads, enqueued, artifactReads,
+    holdSnapshot, holdDetail, holdRead, pendingSnapshot, releaseReads, pickupRequests, enqueued, artifactReads,
     uploads, stylesheetRequests, authNavigations, rawOutputs,
     get rawConfig() { return rawConfig; }, set rawConfig(content) { rawConfig = content; } };
 }

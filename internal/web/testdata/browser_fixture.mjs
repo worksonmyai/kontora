@@ -791,7 +791,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
       assert.equal(folder, 'primary', 'Secondary tickets cannot use control/output endpoints');
       if (method === 'GET') {
         switch (action) {
-          case 'cost': if (options.costs?.[id]) return json(route, options.costs[id]);
+          case 'cost': if (options.costs?.[id]) return readResponse(route, path, options.costs[id]);
             if (id === 'kon-live') return json(route, { id, cost_usd: '0.42', tracked_runs: 3, priced_runs: 2,
             stages: [{ name: 'plan', cost_usd: '0.30', tracked_runs: 1, priced_runs: 1 },
               { name: 'code', cost_usd: '0.12', tracked_runs: 2, priced_runs: 1 }], runs: [] });

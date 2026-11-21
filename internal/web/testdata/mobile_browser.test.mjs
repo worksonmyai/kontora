@@ -3128,6 +3128,7 @@ function desktopRibbonFixtures(extra = {}) {
         { name: ribbonCostOnly, cost_usd: '0.34', tracked_runs: 1, priced_runs: 1 }], runs: [] } } };
 }
 const desktopRibbon = page => page.locator('.stage-ribbon:visible');
+const ribbonTooltip = page => page.locator('.stage-ribbon-tooltip');
 const ribbonViewport = page => desktopRibbon(page).getByRole('region', { name: 'Ticket stages', exact: true });
 const ribbonCard = (page, stage) => ribbonViewport(page).locator(`.stage-ribbon-card[data-stage=${JSON.stringify(stage)}]`);
 async function ribbonFrames(page) {
@@ -3167,23 +3168,76 @@ async function ribbonGeometry(page) {
     const clip = viewport.getBoundingClientRect(), meters = totals.getBoundingClientRect();
     const cards = [...viewport.querySelectorAll('.stage-ribbon-card')].map(el => el.getBoundingClientRect());
     return { wraps: getComputedStyle(root).flexWrap,
-      clippedTotals: viewport.contains(totals), clippedReadout: viewport.contains(root.querySelector('.stage-ribbon-readout')),
+      clippedTotals: viewport.contains(totals), clippedTooltip: viewport.contains(root.querySelector('.stage-ribbon-tooltip')),
       overlap: clip.left < meters.right - 1 && clip.right > meters.left + 1 && clip.top < meters.bottom - 1 && clip.bottom > meters.top + 1,
       widths: cards.map(card => card.width), overlappingCards: cards.some((card, i) => i && card.left < cards[i - 1].right - 1) };
   });
   assert.equal(geometry.wraps, 'wrap', 'Totals must be able to wrap instead of squeezing the scroll region');
-  assert.equal(geometry.clippedTotals, false); assert.equal(geometry.clippedReadout, false);
+  assert.equal(geometry.clippedTotals, false); assert.equal(geometry.clippedTooltip, false);
   assert.equal(geometry.overlap, false); assert.equal(geometry.overlappingCards, false);
   assert.ok(geometry.widths.every(width => width >= 135), `Zero/short runs retain usable widths: ${JSON.stringify(geometry.widths)}`);
   await noPageOverflow(page);
 }
 
+async function ribbonLayout(page) {
+  return desktopRibbon(page).evaluate(root => {
+    const rect = el => el.getBoundingClientRect().toJSON();
+    return [root, root.querySelector('.stage-ribbon-totals'), root.parentElement.querySelector('[data-ticket-tabs]')].map(rect);
+  });
+}
+
+function compactRibbonFixtures() {
+  const stages = ['plan', 'rework', 'ship', 'finish'];
+  const options = desktopRibbonFixtures({ stages, stage: 'ship', history: stages.slice(0, 2).map(stage => ({
+    stage, run: 0, started_at: stamp, completed_at: stamp, exit_code: 0,
+  })) });
+  options.costs['kon-ribbon'].stages = [{ name: 'plan', cost_usd: '12.34', tracked_runs: 1, priced_runs: 1 }];
+  return options;
+}
+
 describe('desktop stage ribbon browser regressions', () => {
+  test('desktop stage ribbon aligns bars before and after pricing', async t => {
+    await withPage(t, 1440, 'dark', async (page, fixture) => {
+      const held = fixture.holdRead('/api/tickets/kon-ribbon/cost');
+      await openTicket(page, 'kon-ribbon'); await held.started;
+      await expect(ribbonViewport(page).locator('.stage-ribbon-card')).toHaveCount(4);
+      const bars = ribbonViewport(page).locator('[data-stage-bar]');
+      await expect(bars).toHaveCount(4);
+      const baselines = () => bars.evaluateAll(els => els.map(el => el.getBoundingClientRect().bottom));
+      const aligned = async () => {
+        const ys = await baselines();
+        assert.ok(Math.max(...ys) - Math.min(...ys) <= 1, `Stage bar baselines: ${ys}`);
+      };
+      await aligned();
+      held.release();
+      await expect(ribbonCard(page, 'plan')).toContainText('$12.34');
+      await expect(ribbonCard(page, 'rework')).not.toContainText('$');
+      await ribbonScreenshot(page, 'mixed-prices-after');
+      await aligned();
+    }, compactRibbonFixtures());
+  });
+
+  test('desktop stage ribbon fitting labels do not move the layout on hover', async t => {
+    await withPage(t, 1440, 'dark', async page => {
+      await openTicket(page, 'kon-ribbon');
+      await expect(ribbonCard(page, 'plan')).toContainText('$12.34');
+      await expect(desktopRibbon(page).getByRole('button', { name: 'Later stages' })).toBeHidden();
+      const before = await ribbonLayout(page);
+      await page.clock.install();
+      for (const stage of ['plan', 'rework', 'ship', 'finish']) {
+        await ribbonCard(page, stage).hover();
+        await page.clock.runFor(850);
+        assert.deepEqual(await ribbonLayout(page), before);
+        await expect(ribbonTooltip(page)).toBeHidden();
+        if (stage === 'plan') await ribbonScreenshot(page, 'fitting-hover-after');
+      }
+    }, compactRibbonFixtures());
+  });
   for (const width of [768, 1024, 1280]) for (const theme of themes) for (const sidebar of [false, true]) {
     test(`desktop stage ribbon geometry and browsing / ${width}px / ${theme} / sidebar ${sidebar}`, { timeout: 60000 }, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
         // Keep elapsed-label width stable for the narrow wrapping assertion.
-        await page.clock.setFixedTime(new Date('2026-11-16T23:59:00Z'));
+        await page.clock.install({ time: new Date('2026-11-16T23:59:00Z') });
         await page.evaluate(() => { Alpine.$data(document.body).now = Date.now(); });
         await openTicket(page, 'kon-ribbon');
         await ribbonRevealed(page, ribbonStages[10]);
@@ -3206,11 +3260,25 @@ describe('desktop stage ribbon browser regressions', () => {
         const before = await totals.boundingBox();
         await ribbonBoundary(page, 'start');
         await expect(desktopRibbon(page).getByRole('button', { name: 'Later stages', exact: true })).toBeEnabled();
+        const layout = await ribbonLayout(page);
         await ribbonCard(page, ribbonStages[0]).hover();
-        const readout = desktopRibbon(page).locator('.stage-ribbon-readout');
-        await expect(readout).toHaveText(ribbonStages[0]); await inViewport(readout);
+        await page.clock.runFor(850);
+        const tooltip = ribbonTooltip(page);
+        await expect(tooltip).toBeVisible();
+        await expect(tooltip).toHaveText(ribbonStages[0]); await inViewport(tooltip);
+        const placement = await tooltip.evaluate(el => {
+          const box = el.getBoundingClientRect();
+          const pane = el.closest('[data-ticket-detail]').getBoundingClientRect();
+          const stages = el.parentElement.getBoundingClientRect();
+          const tabs = el.closest('[data-ticket-detail]').querySelector('[data-ticket-tabs]').getBoundingClientRect();
+          return { insidePane: box.left >= pane.left && box.right <= pane.right && box.top >= pane.top && box.bottom <= pane.bottom,
+            clearOfStages: box.bottom <= stages.top || box.top >= stages.bottom,
+            clearOfTabs: box.bottom <= tabs.top || box.top >= tabs.bottom };
+        });
+        assert.deepEqual(placement, { insidePane: true, clearOfStages: true, clearOfTabs: true });
+        assert.deepEqual(await ribbonLayout(page), layout);
         if ((width === 768 && sidebar) || (width === 1280 && !sidebar)) {
-          await ribbonScreenshot(page, `${theme}-${width}-sidebar-${sidebar}-readout`);
+          await ribbonScreenshot(page, `${theme}-${width}-sidebar-${sidebar}-tooltip`);
         }
         if (width === 768 && sidebar) {
           const clip = await ribbonViewport(page).boundingBox(), meters = await totals.boundingBox();
@@ -3220,11 +3288,8 @@ describe('desktop stage ribbon browser regressions', () => {
           overflow: el.scrollWidth > el.clientWidth, ellipsis: getComputedStyle(el).textOverflow,
         }));
         assert.deepEqual(ellipsis, { overflow: true, ellipsis: 'ellipsis' });
-        await ribbonCard(page, ribbonStages[1]).focus();
-        await expect(readout).toHaveText(ribbonStages[1]);
         await page.mouse.move(0, 0);
-        await ribbonCard(page, ribbonStages[0]).focus();
-        await expect(readout).toHaveText(ribbonStages[0]);
+        await expect(tooltip).toBeHidden();
         await ribbonBoundary(page, 'end');
         await expect(desktopRibbon(page).getByRole('button', { name: 'Earlier stages', exact: true })).toBeEnabled();
         const after = await totals.boundingBox();
@@ -3240,6 +3305,152 @@ describe('desktop stage ribbon browser regressions', () => {
       }, { ...desktopRibbonFixtures(), sidebar });
     });
   }
+
+  for (const placement of ['above', 'below']) test(`desktop stage ribbon pointer crosses to the tooltip ${placement}`, async t => {
+    const below = placement === 'below';
+    const long = below ? 'unbroken-name-'.repeat(25) : ribbonStages[0];
+    const options = desktopRibbonFixtures(below ? {} : { graph_definition: {
+      entry: long, nodes: ribbonStages.map(id => ({ id, type: 'agent' })),
+    } });
+    if (below) {
+      options.records[0].stages = [long, ...ribbonStages.slice(1)];
+      options.records[0].history[0].stage = long;
+    }
+    await withPage(t, below ? 960 : 1280, 'dark', async page => {
+      await openTicket(page, 'kon-ribbon');
+      if (!below) await page.locator('[data-ticket-detail] summary').getByText('Workflow graph · execution').click();
+      await ribbonRevealed(page, ribbonStages[10]);
+      await ribbonBoundary(page, 'start');
+      await page.clock.install();
+      const first = ribbonCard(page, long);
+      const second = ribbonCard(page, ribbonStages[1]);
+      const clip = await ribbonViewport(page).boundingBox();
+      if (!below) await first.evaluate(el => { el.parentElement.scrollLeft = el.offsetWidth - 8; });
+      const card = await first.boundingBox();
+      const start = { x: (Math.max(clip.x, card.x) + card.x + card.width) / 2, y: card.y + card.height / 2 };
+      await page.mouse.move(start.x, start.y);
+      await page.clock.runFor(850);
+      const tooltip = ribbonTooltip(page);
+      await expect(tooltip).toHaveText(long);
+      const box = await tooltip.boundingBox();
+      assert.ok(box && (below ? box.y > card.y + card.height : box.y + box.height < card.y),
+        `Expected tooltip ${placement} the stage: ${JSON.stringify({ box, card })}`);
+      const end = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      if (!below) {
+        const neighbor = await second.boundingBox();
+        const y = start.y + (end.y - start.y) / 5;
+        const x = start.x + (end.x - start.x) / 5;
+        assert.ok(x > neighbor.x && y > neighbor.y, 'The diagonal path crosses the neighboring stage');
+      }
+      const layout = await ribbonLayout(page);
+      for (let i = 1; i <= 10; i++) {
+        await page.mouse.move(start.x + (end.x - start.x) * i / 10, start.y + (end.y - start.y) * i / 10);
+        await page.clock.runFor(100);
+        await expect(tooltip).toBeVisible();
+        await expect(tooltip).toHaveText(long);
+      }
+      assert.deepEqual(await ribbonLayout(page), layout);
+      await page.mouse.move(0, 0);
+      await expect(tooltip).toBeHidden();
+    }, { ...options, sidebar: below, assistantOpen: below });
+  });
+
+  test('desktop stage ribbon tooltip leaves tabs and newly visible arrows clickable', async t => {
+    const long = 'unbroken-name-'.repeat(25);
+    const options = compactRibbonFixtures();
+    const record = options.records[0];
+    record.stages = [long];
+    record.stage = long;
+    record.history = [{ ...record.history[0], stage: long }];
+    options.costs['kon-ribbon'].stages[0].name = long;
+    await withPage(t, 960, 'dark', async page => {
+      await openTicket(page, 'kon-ribbon');
+      const card = ribbonCard(page, long);
+      await expect(card).toContainText('$12.34');
+      const later = desktopRibbon(page).getByRole('button', { name: 'Later stages' });
+      const activity = page.locator('[data-ticket-tabs]').getByRole('button', { name: 'activity', exact: true });
+      const clip = await ribbonViewport(page).boundingBox();
+      await expect(later).toBeHidden();
+      await page.keyboard.press('Shift');
+      await card.focus();
+      const tooltip = ribbonTooltip(page);
+      await expect(tooltip).toBeVisible();
+      const tab = await activity.boundingBox();
+      const tip = await tooltip.boundingBox();
+      assert.ok(tip.y >= tab.y + tab.height, 'Below-ribbon tooltip must clear the tabs');
+      await page.mouse.click(tab.x + tab.width / 2, tab.y + tab.height / 2);
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).activeTab)).toBe('activity');
+      await page.keyboard.press('Shift');
+      await card.focus();
+      await expect(tooltip).toBeVisible();
+      await page.evaluate(stages => { Alpine.$data(document.body).selectedTicket.stages.push(...stages); }, ribbonStages.slice(1));
+      await expect(later).toBeEnabled();
+      await ribbonFrames(page);
+      assert.deepEqual(await ribbonViewport(page).boundingBox(), clip);
+      const arrow = await later.boundingBox();
+      const moved = await tooltip.boundingBox();
+      const tabs = await page.locator('[data-ticket-tabs]').boundingBox();
+      assert.ok(moved.y >= arrow.y + arrow.height, 'Tooltip clears the new arrow row');
+      assert.ok(moved.y + moved.height <= tabs.y || moved.y >= tabs.y + tabs.height, 'Tooltip clears the shifted tab row');
+      const position = await ribbonViewport(page).evaluate(el => el.scrollLeft);
+      await page.mouse.click(arrow.x + arrow.width / 2, arrow.y + arrow.height / 2);
+      await expect.poll(() => ribbonViewport(page).evaluate(el => el.scrollLeft)).toBeGreaterThan(position);
+    }, { ...options, sidebar: true, assistantOpen: true });
+  });
+
+  test('desktop stage ribbon tooltip follows a collapsing graph and yields Escape when offscreen', async t => {
+    const nodes = [...ribbonStages.map(id => ({ id, type: 'agent' })),
+      ...Array.from({ length: 14 }, (_, i) => ({ id: `next-${i}`, type: 'check' }))];
+    await withPage(t, 1024, 'dark', async page => {
+      await openTicket(page, 'kon-ribbon');
+      const graph = page.locator('[data-ticket-detail] summary').getByText('Workflow graph · execution', { exact: true });
+      const first = ribbonCard(page, ribbonStages[0]);
+      const tooltip = ribbonTooltip(page);
+      const clip = () => ribbonViewport(page).boundingBox();
+      const setGraph = open => graph.evaluate((el, open) => { el.parentElement.open = open; }, open);
+      await setGraph(true);
+      await first.focus();
+      await expect(tooltip).toBeVisible();
+      const expanded = await clip();
+      await setGraph(false);
+      await expect.poll(async () => {
+        const card = await clip(), tip = await tooltip.boundingBox();
+        const pane = await page.locator('[data-ticket-detail]').boundingBox();
+        return !!tip && tip.y >= pane.y && (tip.y + tip.height <= card.y || tip.y >= card.y + card.height) && tip.y < expanded.y;
+      }).toBe(true);
+      assert.equal((await clip()).height, expanded.height);
+      await setGraph(true);
+      await expect.poll(async () => (await clip()).y).toBe(expanded.y);
+      await page.setViewportSize({ width: 1024, height: Math.floor(expanded.y) - 12 });
+      await expect(tooltip).toBeHidden();
+      await page.keyboard.press('Escape');
+      await expect(first).toHaveCount(0);
+    }, desktopRibbonFixtures({ graph_definition: { entry: ribbonStages[0], nodes } }));
+  });
+
+  test('desktop stage ribbon restores focused disclosure after hover and clears it on a touch click', async t => {
+    await withPage(t, 1024, 'dark', async page => {
+      await openTicket(page, 'kon-ribbon');
+      await ribbonRevealed(page, ribbonStages[10]);
+      await ribbonBoundary(page, 'start');
+      await page.clock.install();
+      const first = ribbonCard(page, ribbonStages[0]);
+      const neighbor = ribbonCard(page, ribbonStages[1]);
+      const tooltip = ribbonTooltip(page);
+      await page.keyboard.press('Shift');
+      await first.focus();
+      await expect(tooltip).toHaveText(ribbonStages[0]);
+      await neighbor.hover();
+      await page.clock.runFor(850);
+      await expect(tooltip).toHaveText(ribbonStages[1]);
+      await page.mouse.move(0, 0);
+      await expect(first).toBeFocused();
+      await expect(tooltip).toHaveText(ribbonStages[0]);
+      await first.tap();
+      await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).activeTab)).toBe('activity');
+      await expect(tooltip).toBeHidden();
+    }, { ...desktopRibbonFixtures(), hasTouch: true });
+  });
 
   for (const theme of themes) test(`desktop stage ribbon keyboard actions / ${theme}`, async t => {
     await withPage(t, 1024, theme, async (page, fixture) => {
@@ -3259,10 +3470,33 @@ describe('desktop stage ribbon browser regressions', () => {
       for (const [name, previous] of [[ribbonStages[11], ribbonStages[10]], [ribbonCostOnly, ribbonRetired]]) {
         const card = ribbonCard(page, name);
         await expect(card).toHaveAttribute('aria-disabled', 'true');
-        await ribbonCard(page, previous).focus(); await page.keyboard.press('Tab');
+        await ribbonCard(page, previous).focus();
+        const layout = await ribbonLayout(page);
+        if (name === ribbonCostOnly) {
+          await card.evaluate(el => {
+            const viewport = el.closest('.stage-ribbon-viewport');
+            viewport.scrollLeft += el.getBoundingClientRect().left - viewport.getBoundingClientRect().right - 5;
+          });
+          await expect(card).not.toBeInViewport();
+        }
+        const beforeTab = await ribbonViewport(page).evaluate(el => el.scrollLeft);
+        await ribbonFrames(page);
+        await ribbonViewport(page).evaluate(el => {
+          // Capture native Tab scrolling before the ribbon's focus handler can queue its own frame.
+          window.__nativeRibbonScroll = new Promise(resolve => {
+            el.addEventListener('keydown', () => requestAnimationFrame(() => resolve(el.scrollLeft)), { capture: true, once: true });
+          });
+        });
+        await page.keyboard.press('Tab');
+        const afterTab = await page.evaluate(() => window.__nativeRibbonScroll);
         await expect(card).toBeFocused();
         await ribbonRevealed(page, name);
-        await expect(desktopRibbon(page).locator('.stage-ribbon-readout')).toHaveText(name);
+        if (name === ribbonCostOnly) assert.ok(afterTab > beforeTab, 'Tab scrolled to the offscreen stage');
+        await expect(ribbonTooltip(page)).toBeVisible();
+        await expect(ribbonTooltip(page)).toHaveText(name);
+        await expect(card).toHaveAccessibleName(new RegExp(`^${name},`));
+        assert.deepEqual(await ribbonLayout(page), layout);
+        assert.equal(await ribbonViewport(page).evaluate(el => el.scrollLeft), afterTab);
         const outline = await card.evaluate(el => ({ width: getComputedStyle(el).outlineWidth, style: getComputedStyle(el).outlineStyle }));
         assert.deepEqual(outline, { width: '2px', style: 'solid' });
         if (name === ribbonCostOnly) await ribbonScreenshot(page, `${theme}-keyboard-focus`);
@@ -3274,6 +3508,78 @@ describe('desktop stage ribbon browser regressions', () => {
       }
       assert.deepEqual(fixture.mutations, []); assert.deepEqual(fixture.enqueued, []);
     }, { ...desktopRibbonFixtures(), sidebar: true });
+  });
+
+  test('desktop stage ribbon discloses a short label clipped by the viewport', async t => {
+    await withPage(t, 768, 'light', async page => {
+      await openTicket(page, 'kon-ribbon');
+      await expect(ribbonCard(page, 'plan')).toContainText('$12.34');
+      await ribbonBoundary(page, 'start');
+      const card = ribbonCard(page, 'plan');
+      const name = card.locator('.stage-ribbon-name');
+      await name.evaluate(el => {
+        const viewport = el.closest('.stage-ribbon-viewport');
+        viewport.scrollLeft += el.getBoundingClientRect().left - viewport.getBoundingClientRect().left + 8;
+      });
+      assert.ok(await name.evaluate(el => el.scrollWidth <= el.clientWidth &&
+        el.getBoundingClientRect().left < el.closest('.stage-ribbon-viewport').getBoundingClientRect().left));
+      const box = await card.boundingBox();
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height - 3);
+      await expect(ribbonTooltip(page)).toBeVisible();
+      await expect(ribbonTooltip(page)).toHaveText('plan');
+    }, { ...compactRibbonFixtures(), sidebar: true });
+  });
+
+  test('desktop stage ribbon tooltip dismisses on Escape, when its stage scrolls out of view, or when the ticket changes', async t => {
+    const options = desktopRibbonFixtures();
+    options.records.push(ticket('kon-other', 'Other ticket', { stages: ['plan'], stage: 'plan' }));
+    await withPage(t, 1024, 'dark', async page => {
+      const tooltip = ribbonTooltip(page);
+      const first = ribbonCard(page, ribbonStages[0]);
+      const openAtStart = async () => {
+        await openTicket(page, 'kon-ribbon');
+        await ribbonRevealed(page, ribbonStages[10]);
+        await ribbonBoundary(page, 'start');
+      };
+      await openAtStart();
+      await first.hover();
+      await expect(tooltip).toBeHidden();
+      await expect(tooltip).toBeVisible();
+      await page.keyboard.down('Escape');
+      await expect(tooltip).toBeHidden();
+      await page.keyboard.down('Escape');
+      await expect(first).toBeVisible();
+      for (const width of [767, 1024]) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.waitForFunction(mobile => Alpine.$data(document.body).isMobile === mobile, width === 767);
+        await page.keyboard.down('Escape');
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedTicket?.id), 'kon-ribbon');
+      }
+      await page.keyboard.up('Escape');
+      await ribbonFrames(page);
+      await expect(tooltip).toBeHidden();
+      await page.keyboard.press('Escape');
+      await expect(first).toHaveCount(0);
+
+      await openAtStart();
+      await first.hover();
+      await expect(tooltip).toBeVisible();
+      await tooltip.hover();
+      await ribbonViewport(page).evaluate(el => { el.scrollLeft = el.scrollWidth; });
+      await expect(tooltip).toBeHidden();
+      await ribbonBoundary(page, 'start');
+
+      for (const visible of [false, true]) {
+        await first.hover();
+        if (visible) await expect(tooltip).toBeVisible();
+        else await expect(tooltip).toBeHidden();
+        await openTicket(page, 'kon-other');
+        await page.waitForTimeout(900);
+        await expect(tooltip).toBeHidden();
+        await expect(tooltip).toBeEmpty();
+        if (!visible) await openAtStart();
+      }
+    }, { ...options, sidebar: true });
   });
 
   for (const manualBrowse of [false, true]) test(`desktop stage ribbon initial reveal waits for hydrated detail / manual browsing ${manualBrowse}`, async t => {

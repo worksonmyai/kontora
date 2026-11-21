@@ -14331,11 +14331,14 @@ test("index.html renders the ribbon, transcript and rail the page needs", () => 
   assert.match(ribbon, /<button type="button" class="stage-ribbon-card/);
   assert.match(ribbon, /:aria-label="\[seg.name,/);
   assert.match(ribbon, /:aria-disabled="!\(seg.state === 'running' \|\| \(seg.state === 'done' && seg.runs\)\)"/);
-  assert.match(ribbon, /@click="clickRibbon\(seg\)"/);
-  assert.match(ribbon, /@focus="ribbonFocused = seg.name; ribbonHovered = ''" @blur="ribbonFocused = ''"/);
-  assert.match(ribbon, /@mouseenter="ribbonHovered = seg.name" @mouseleave="ribbonHovered = ''"/);
+  assert.match(ribbon, /@click="ribbonTrigger\(\$event\); clickRibbon\(seg\)"/);
   assert.match(ribbon, /class="stage-ribbon-name" x-text="seg.name"/);
-  assert.match(ribbon, /stage-ribbon-readout[\s\S]*?x-text="ribbonHovered \|\| ribbonFocused"/);
+  for (const operator of ['===', '!==']) {
+    assert.match(ribbon, new RegExp(`<template x-if="seg.state ${operator} 'running'">\\s*<div data-stage-bar class="mt-auto shrink-0 `));
+  }
+  assert.match(ribbon, /class="stage-ribbon-navigation" x-show="ribbonOverflow"/);
+  assert.match(ribbon, /class="stage-ribbon-tooltip [^"]*" hidden aria-hidden="true"/);
+  assert.doesNotMatch(ribbon, /stage-ribbon-readout|aria-describedby/);
   for (const [label, direction, boundary] of [['Earlier', '-1', 'Earlier'], ['Later', '1', 'Later']]) {
     assert.match(ribbon, new RegExp(`aria-label="${label} stages"\\s+:disabled="!ribbon${boundary}" @click="ribbonScroll\\(${direction}\\)"`));
   }
@@ -14946,7 +14949,7 @@ test("one rule closes the tab row across the pane and the rail", () => {
 
   // The rule sits on the row, not inside either cell, so it runs edge to edge
   // instead of breaking into a px-6 segment and a px-4 one.
-  assert.match(html, /<div class="shrink-0 flex items-stretch border-b border-surface-700\/70">/);
+  assert.match(html, /<div data-ticket-tabs class="shrink-0 flex items-stretch border-b border-surface-700\/70">/);
   assert.match(html, /<div class="flex-1 min-w-0 px-6 pt-\[11px\]">\s*<div class="flex items-center gap-5">/);
   // The rail's header cell is a bare spacer: painting it would start the frame
   // colour a tab row above the pane's.
@@ -16812,6 +16815,8 @@ test("Escape returns ticket details to the board before closing the assistant", 
     { name: "assistant open", assistantOpen: true },
     { name: "detail menu open", assistantOpen: true, detailMenuOpen: true },
     { name: "delete dialog open", assistantOpen: true, deleteModal: true },
+    { name: "detail menu before ribbon tooltip", assistantOpen: true, detailMenuOpen: true, tooltip: true },
+    { name: "delete dialog before ribbon tooltip", assistantOpen: true, deleteModal: true, tooltip: true },
   ];
 
   for (const tc of cases) {
@@ -16821,15 +16826,24 @@ test("Escape returns ticket details to the board before closing the assistant", 
     state.detailMenuOpen = !!tc.detailMenuOpen;
     state.deleteModal = !!tc.deleteModal;
     state.closeDeleteModal = () => { state.deleteModal = false; };
-    const pressEscape = new Function("state", `with (state) { ${chain} }`);
+    let tooltip = !!tc.tooltip;
+    state.dismissStageTooltip = () => { const dismissed = tooltip; tooltip = false; return dismissed; };
+    const runEscape = new Function("state", "$event", `with (state) { ${chain} }`);
+    const pressEscape = () => runEscape(state, { repeat: false, preventDefault() {} });
 
-    pressEscape(state);
+    pressEscape();
 
     if (tc.detailMenuOpen || tc.deleteModal) {
       assert.equal(state.selectedTicket?.id, "kon-1", tc.name);
       assert.equal(state.detailMenuOpen, false, tc.name);
       assert.equal(state.deleteModal, false, tc.name);
-      pressEscape(state);
+      assert.equal(tooltip, !!tc.tooltip, tc.name);
+      pressEscape();
+    }
+    if (tc.tooltip) {
+      assert.equal(state.selectedTicket?.id, "kon-1", tc.name);
+      assert.equal(tooltip, false, tc.name);
+      pressEscape();
     }
     assert.equal(state.selectedTicket, null, tc.name);
     assert.equal(state.currentView, "board", tc.name);

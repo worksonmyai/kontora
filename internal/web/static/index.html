@@ -904,7 +904,9 @@
 </head>
 
 <body class="app-shell bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal || _initOpening) closeInitModal(); else if (settingsGuard) { if (!settingsSaving) settingsGuardKeepEditing(); } else if (automationsDeleteOpen) automationsCloseDelete(); else if (automationsMenu) automationsMenu = false; else if (currentView === 'automations' && (automationsDetail || automationsEditing)) { if (terminalRW && terminalWanted()) toggleTerminalRW(); else automationsBack(); } else if (sheet) closeSheet(); else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail(); else if (selectedEpic) closeEpic(); else if (assistantEscape()) {}"
+      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal || _initOpening) closeInitModal(); else if (settingsGuard) { if (!settingsSaving) settingsGuardKeepEditing(); } else if (automationsDeleteOpen) automationsCloseDelete(); else if (automationsMenu) automationsMenu = false; else if (currentView === 'automations' && (automationsDetail || automationsEditing)) { if (terminalRW && terminalWanted()) toggleTerminalRW(); else automationsBack(); } else if (sheet) closeSheet(); else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) { if (dismissStageTooltip($event.repeat)) $event.preventDefault(); else closeDetail(); } else if (selectedEpic) closeEpic(); else if (assistantEscape()) {}"
+      @keyup.escape.window.capture="_stageTooltipEscapeHeld = false"
+      @blur.window="_stageTooltipEscapeHeld = false"
       @dragenter="onUploadDragEnter($event)"
       @dragover="onUploadDragOver($event)"
       @drop="onUploadDrop($event)">
@@ -2074,13 +2076,13 @@
                  :aria-label="[seg.name, seg.state, seg.runs > 1 ? seg.runs + ' runs' : '', seg.meta, costTooltip(seg.cost)].filter(Boolean).join(', ')"
                  :aria-disabled="!(seg.state === 'running' || (seg.state === 'done' && seg.runs))"
                  :aria-current="seg.state === 'running' ? 'step' : null"
-                 @mouseenter="ribbonHovered = seg.name" @mouseleave="ribbonHovered = ''"
-                 @focus="ribbonFocused = seg.name; ribbonHovered = ''" @blur="ribbonFocused = ''"
+                 @pointerenter="ribbonTrigger($event)" @pointerleave="ribbonTrigger($event)"
+                 @focus="ribbonTrigger($event)" @blur="ribbonTrigger($event)"
                  :style="'flex-grow:' + seg.seconds"
                  :class="[seg.state === 'queued' ? 'opacity-50' : '',
                           seg.state === 'done' && seg.runs ? 'cursor-pointer' : '',
                           activityStage && activeTab === 'activity' && activityStage !== seg.name ? 'opacity-40' : '']"
-                 @click="clickRibbon(seg)">
+                 @click="ribbonTrigger($event); clickRibbon(seg)">
               <div class="flex flex-col gap-[2px] min-w-0">
                 <span class="stage-ribbon-label font-mono text-[11.5px] whitespace-nowrap"
                       :class="seg.state === 'running' ? 'text-st-progress font-bold' : (seg.state === 'done' ? 'text-tx-2' : 'text-tx-3')">
@@ -2092,31 +2094,29 @@
                       class="font-mono text-[10.5px] text-tx-3 whitespace-nowrap" x-text="costLabel(seg.cost)"></span>
               </div>
               <template x-if="seg.state === 'running'">
-                <div class="h-[5px] rounded-[3px] bg-st-progress/[0.22] overflow-hidden relative">
+                <div data-stage-bar class="mt-auto shrink-0 h-[5px] rounded-[3px] bg-st-progress/[0.22] overflow-hidden relative">
                   <div class="absolute inset-y-0 left-0 w-[58%] bg-st-progress/50"></div>
                   <div class="absolute inset-y-0 w-[20%] bg-st-progress sweep"></div>
                 </div>
               </template>
               <template x-if="seg.state !== 'running'">
-                <div class="h-[5px] rounded-[3px]" :class="seg.state === 'done' ? 'bg-st-done/50' : 'bg-surface-700'"></div>
+                <div data-stage-bar class="mt-auto shrink-0 h-[5px] rounded-[3px]" :class="seg.state === 'done' ? 'bg-st-done/50' : 'bg-surface-700'"></div>
               </template>
             </button>
           </template>
           </div>
-          <div class="stage-ribbon-navigation" x-show="ribbonOverflow || ribbonHovered || ribbonFocused">
-            <span class="stage-ribbon-readout font-mono text-[11.5px] text-tx-2"
-                  x-text="ribbonHovered || ribbonFocused"></span>
-            <div class="stage-ribbon-controls" x-show="ribbonOverflow">
-              <button type="button" class="stage-ribbon-nav" aria-label="Earlier stages"
-                      :disabled="!ribbonEarlier" @click="ribbonScroll(-1)">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
-              </button>
-              <button type="button" class="stage-ribbon-nav" aria-label="Later stages"
-                      :disabled="!ribbonLater" @click="ribbonScroll(1)">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
-              </button>
-            </div>
+          <div class="stage-ribbon-navigation" x-show="ribbonOverflow">
+            <button type="button" class="stage-ribbon-nav" aria-label="Earlier stages"
+                    :disabled="!ribbonEarlier" @click="ribbonScroll(-1)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <button type="button" class="stage-ribbon-nav" aria-label="Later stages"
+                    :disabled="!ribbonLater" @click="ribbonScroll(1)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+            </button>
           </div>
+          <div class="stage-ribbon-tooltip font-mono text-[11.5px]" hidden aria-hidden="true"
+               @pointerenter="ribbonTrigger($event)" @pointerleave="ribbonTrigger($event)"></div>
         </div>
         <div class="stage-ribbon-totals pl-5 border-l border-surface-700/70"
              x-show="ribbonMeters().length">
@@ -2139,7 +2139,7 @@
            rule on both sides, so the rail begins level with the pane. -->
       <div class="flex-1 min-h-0 flex flex-col">
 
-        <div class="shrink-0 flex items-stretch border-b border-surface-700/70">
+        <div data-ticket-tabs class="shrink-0 flex items-stretch border-b border-surface-700/70">
           <!-- Tab bar -->
           <div class="flex-1 min-w-0 px-6 pt-[11px]">
             <div class="flex items-center gap-5">

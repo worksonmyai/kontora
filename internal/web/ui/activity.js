@@ -430,11 +430,24 @@ export function kontoraActivity() {
 
     // ---- stage ribbon ------------------------------------------------------
 
+    _stageTooltipEscapeHeld: false,
+
+    dismissStageTooltip(repeat) {
+      if (repeat && this._stageTooltipEscapeHeld) return true;
+      const ribbon = !this.isMobile && document.querySelector('[data-ticket-detail] .stage-ribbon');
+      this._stageTooltipEscapeHeld = !!ribbon && !ribbon.dispatchEvent(new CustomEvent('dismiss-stage-tooltip', { cancelable: true }));
+      return this._stageTooltipEscapeHeld;
+    },
+
     stageRibbonOwner() {
       var owner = resourceOwner(function (alive) {
         var self = this, root = this.$el;
         var viewport = root.querySelector('.stage-ribbon-viewport');
+        const tooltip = root.querySelector('.stage-ribbon-tooltip');
+        const stages = viewport.parentElement, pane = root.parentElement;
+        const tabs = pane.querySelector('[data-ticket-tabs]');
         var frame = null, seen = null, pending = null, openKey = null, cancelledHydration = null;
+        let focused = null, hover = null, dwell = null, shownCard = null;
         function openingKey() {
           return JSON.stringify([self.ticketKey(self.selectedTicket), self._ticketDetailSeq]);
         }
@@ -456,9 +469,150 @@ export function kontoraActivity() {
           self.ribbonEarlier = viewport.scrollLeft > 1;
           self.ribbonLater = max - viewport.scrollLeft > 1;
         }
+        function clearHover() {
+          clearTimeout(dwell);
+          hover = dwell = null;
+        }
+        function hideTooltip() {
+          shownCard = null;
+          tooltip.hidden = true;
+          tooltip.textContent = '';
+        }
+        function clearTooltip() {
+          clearHover();
+          focused = null;
+          hideTooltip();
+        }
+        function updateTooltip() {
+          if (!hover?.ready && !focused) return hideTooltip();
+          const clip = viewport.getBoundingClientRect();
+          const paneBounds = pane.getBoundingClientRect();
+          const minX = Math.max(0, paneBounds.left), maxX = Math.min(window.innerWidth, paneBounds.right);
+          const minY = Math.max(0, paneBounds.top), maxY = Math.min(window.innerHeight, paneBounds.bottom);
+          const clipLeft = Math.max(minX, clip.left + viewport.clientLeft);
+          const clipRight = Math.min(maxX, clip.left + viewport.clientLeft + viewport.clientWidth);
+          const clipTop = Math.max(minY, clip.top), clipBottom = Math.min(maxY, clip.bottom);
+          if (hover?.ready) {
+            const bounds = anchor(hover.card);
+            if (bounds && placeTooltip(hover.card, bounds)) return;
+            if (!bounds || hover.crossing) clearHover();
+          }
+          const bounds = anchor(focused);
+          if (!bounds) focused = null;
+          if (!bounds || !placeTooltip(focused, bounds)) hideTooltip();
+
+          function anchor(card) {
+            if (!card || !viewport.contains(card)) return null;
+            const bounds = card.getBoundingClientRect();
+            const left = Math.max(bounds.left, clipLeft), right = Math.min(bounds.right, clipRight);
+            if (right <= left || Math.min(bounds.bottom, clipBottom) <= Math.max(bounds.top, clipTop)) return null;
+            return { left, right };
+          }
+          function placeTooltip(card, { left, right }) {
+            const label = card.querySelector('.stage-ribbon-name');
+            if (!label) return false;
+            const name = label.getBoundingClientRect();
+            if (name.left >= clipLeft && name.right <= clipRight && label.scrollWidth <= label.clientWidth) return false;
+
+            const origin = root.getBoundingClientRect();
+            const text = label.textContent;
+            if (tooltip.textContent !== text) tooltip.textContent = text;
+            tooltip.style.maxWidth = Math.min(320, maxX - minX - 12) + 'px';
+            tooltip.hidden = false;
+            const { width, height } = tooltip.getBoundingClientRect();
+            // The stages container includes the overflow arrows when they are visible.
+            const below = stages.getBoundingClientRect().bottom + 4;
+            const tabBounds = tabs.getBoundingClientRect();
+            const candidates = [clip.top - 4 - height, below, Math.max(below, tabBounds.bottom + 4)];
+            const top = candidates.find(y => y >= minY + 4 && y + height <= maxY - 4 &&
+              (y + height <= tabBounds.top || y >= tabBounds.bottom));
+            if (top === undefined || width > maxX - minX - 12) return false;
+            tooltip.style.left = Math.max(minX + 6, Math.min(maxX - 6 - width, (left + right - width) / 2)) - origin.left + 'px';
+            tooltip.style.top = top - origin.top + 'px';
+            shownCard = card;
+            return true;
+          }
+        }
+        function startHover(card, event) {
+          clearHover();
+          if (card) {
+            const next = hover = { card, x: event.clientX, y: event.clientY, ready: false, crossing: false };
+            dwell = setTimeout(() => {
+              if (!alive() || openingKey() !== openKey || hover !== next) return;
+              dwell = null;
+              next.ready = true;
+              schedule();
+            }, 800);
+          }
+          schedule();
+        }
+        function crossingToTooltip(x, y) {
+          const box = tooltip.getBoundingClientRect();
+          const edge = box.top > hover.y ? box.top : box.bottom;
+          const fraction = (y - hover.y) / (edge - hover.y);
+          if (x >= box.left && x <= box.right && y >= box.top && y <= box.bottom) return true;
+          if (!(fraction >= 0 && fraction <= 1)) return false;
+          const left = hover.x + (box.left - hover.x) * fraction;
+          const right = hover.x + (box.right - hover.x) * fraction;
+          return x >= left - 4 && x <= right + 4;
+        }
+        function trackPointer(event) {
+          if (!alive() || !hover || openingKey() !== openKey || event.pointerType === 'touch') return;
+          if (hover.card.contains(event.target)) {
+            hover.x = event.clientX;
+            hover.y = event.clientY;
+            hover.crossing = false;
+          } else if (hover.crossing && !crossingToTooltip(event.clientX, event.clientY)) {
+            const card = event.target.closest?.('.stage-ribbon-card');
+            startHover(card && viewport.contains(card) ? card : null, event);
+          }
+        }
+        function pointerOut(event) {
+          if (alive() && hover && !event.relatedTarget && event.pointerType !== 'touch') startHover(null);
+        }
+        self.ribbonTrigger = function (event) {
+          if (!alive() || openingKey() !== openKey) return;
+          const card = event.currentTarget;
+          if (event.type === 'click') return clearTooltip();
+          if (event.type === 'focus') {
+            if (!card.matches(':focus-visible')) return;
+            clearHover();
+            focused = card;
+            schedule();
+            return;
+          }
+          if (event.type === 'blur') {
+            if (focused === card) {
+              focused = null;
+              schedule();
+            }
+            return;
+          }
+          if (event.pointerType === 'touch') return;
+          if (event.type === 'pointerleave') {
+            if (card === tooltip || hover?.card === card) {
+              if (!hover) return;
+              // Use the path to the tooltip, so a slow crossing has no deadline.
+              if (card !== tooltip && hover.ready && shownCard === card) hover.crossing = true;
+              else startHover(null);
+            }
+            return;
+          }
+          if (card === tooltip || hover?.card === card) {
+            if (hover) hover.crossing = false;
+          } else if (!hover?.crossing) startHover(card, event);
+        };
+        function dismissTooltip(event) {
+          if (!visible() || openingKey() !== openKey || !shownCard || tooltip.hidden) return;
+          updateTooltip();
+          if (tooltip.hidden) return;
+          clearTooltip();
+          event.preventDefault();
+        }
         function update() {
           frame = null;
-          if (!visible()) return;
+          if (!alive()) return;
+          if (!visible() || openingKey() !== openKey) return clearTooltip();
           if (pending && pending.signature === signature() && !self.detailLoading) {
             var target = [...viewport.querySelectorAll('[data-stage]')]
               .find(el => el.dataset.stage === pending.stage);
@@ -475,6 +629,7 @@ export function kontoraActivity() {
             }
           }
           measure();
+          updateTooltip();
         }
         function schedule() {
           if (!alive() || frame !== null) return;
@@ -486,8 +641,7 @@ export function kontoraActivity() {
           var key = openingKey();
           if (key !== openKey) {
             openKey = key;
-            self.ribbonHovered = '';
-            self.ribbonFocused = '';
+            clearTooltip();
           }
           if (next !== seen) {
             seen = next;
@@ -514,10 +668,22 @@ export function kontoraActivity() {
         inputEvents.forEach(type => root.addEventListener(type, cancelReveal, { passive: true }));
         viewport.addEventListener('scroll', schedule, { passive: true });
         window.addEventListener('resize', schedule);
+        window.addEventListener('pointermove', trackPointer, { passive: true });
+        window.addEventListener('pointerout', pointerOut, { passive: true });
+        root.addEventListener('dismiss-stage-tooltip', dismissTooltip);
+        document.fonts?.ready.then(schedule);
+        document.fonts?.addEventListener('loadingdone', schedule);
         var mo = new MutationObserver(schedule);
         mo.observe(viewport, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['style', 'data-stage'] });
         var ro = new ResizeObserver(schedule);
         ro.observe(viewport);
+        ro.observe(stages);
+        ro.observe(root);
+        ro.observe(pane);
+        ro.observe(tabs);
+        // The identity block and workflow graph can move the ribbon without resizing it.
+        if (pane.firstElementChild) ro.observe(pane.firstElementChild);
+        if (root.previousElementSibling) ro.observe(root.previousElementSibling);
         sync();
         return function () {
           stop();
@@ -526,15 +692,21 @@ export function kontoraActivity() {
           inputEvents.forEach(type => root.removeEventListener(type, cancelReveal));
           viewport.removeEventListener('scroll', schedule);
           window.removeEventListener('resize', schedule);
+          window.removeEventListener('pointermove', trackPointer);
+          window.removeEventListener('pointerout', pointerOut);
+          root.removeEventListener('dismiss-stage-tooltip', dismissTooltip);
+          document.fonts?.removeEventListener('loadingdone', schedule);
           if (frame !== null) cancelAnimationFrame(frame);
           frame = null;
           pending = null;
+          clearTooltip();
           self.ribbonScroll = function () {};
+          self.ribbonTrigger = function () {};
         };
       });
       return Object.assign(owner, {
         ribbonOverflow: false, ribbonEarlier: false, ribbonLater: false,
-        ribbonHovered: '', ribbonFocused: '', ribbonScroll() {},
+        ribbonTrigger() {}, ribbonScroll() {},
       });
     },
 

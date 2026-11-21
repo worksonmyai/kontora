@@ -3134,6 +3134,13 @@ const ribbonCard = (page, stage) => ribbonViewport(page).locator(`.stage-ribbon-
 async function ribbonFrames(page) {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
+async function ribbonTabBackTo(page, card) {
+  await card.focus();
+  await page.keyboard.press('Tab');
+  await expect(card).not.toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(card).toBeFocused();
+}
 async function ribbonRevealed(page, stage) {
   await expect.poll(() => ribbonCard(page, stage).evaluate(el => {
     const card = el.getBoundingClientRect(), clip = el.closest('.stage-ribbon-viewport').getBoundingClientRect();
@@ -3371,27 +3378,26 @@ describe('desktop stage ribbon browser regressions', () => {
       const activity = page.locator('[data-ticket-tabs]').getByRole('button', { name: 'activity', exact: true });
       const clip = await ribbonViewport(page).boundingBox();
       await expect(later).toBeHidden();
-      await page.keyboard.press('Shift');
-      await card.focus();
+      await ribbonTabBackTo(page, card);
       const tooltip = ribbonTooltip(page);
-      await expect(tooltip).toBeVisible();
+      await expect(tooltip).toHaveText(long);
       const tab = await activity.boundingBox();
       const tip = await tooltip.boundingBox();
       assert.ok(tip.y >= tab.y + tab.height, 'Below-ribbon tooltip must clear the tabs');
       await page.mouse.click(tab.x + tab.width / 2, tab.y + tab.height / 2);
       await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).activeTab)).toBe('activity');
-      await page.keyboard.press('Shift');
-      await card.focus();
-      await expect(tooltip).toBeVisible();
+      await ribbonTabBackTo(page, card);
+      await expect(tooltip).toHaveText(long);
       await page.evaluate(stages => { Alpine.$data(document.body).selectedTicket.stages.push(...stages); }, ribbonStages.slice(1));
       await expect(later).toBeEnabled();
-      await ribbonFrames(page);
+      await expect.poll(async () => {
+        const arrow = await later.boundingBox(), moved = await tooltip.boundingBox();
+        const tabs = await page.locator('[data-ticket-tabs]').boundingBox();
+        return !!moved && moved.y >= arrow.y + arrow.height &&
+          (moved.y + moved.height <= tabs.y || moved.y >= tabs.y + tabs.height);
+      }, { message: 'Tooltip clears both the new arrow row and the shifted tab row' }).toBe(true);
       assert.deepEqual(await ribbonViewport(page).boundingBox(), clip);
       const arrow = await later.boundingBox();
-      const moved = await tooltip.boundingBox();
-      const tabs = await page.locator('[data-ticket-tabs]').boundingBox();
-      assert.ok(moved.y >= arrow.y + arrow.height, 'Tooltip clears the new arrow row');
-      assert.ok(moved.y + moved.height <= tabs.y || moved.y >= tabs.y + tabs.height, 'Tooltip clears the shifted tab row');
       const position = await ribbonViewport(page).evaluate(el => el.scrollLeft);
       await page.mouse.click(arrow.x + arrow.width / 2, arrow.y + arrow.height / 2);
       await expect.poll(() => ribbonViewport(page).evaluate(el => el.scrollLeft)).toBeGreaterThan(position);
@@ -3433,13 +3439,14 @@ describe('desktop stage ribbon browser regressions', () => {
       await openTicket(page, 'kon-ribbon');
       await ribbonRevealed(page, ribbonStages[10]);
       await ribbonBoundary(page, 'start');
-      await page.clock.install();
+      await ribbonRevealed(page, ribbonStages[0]);
+      await page.mouse.move(0, 0);
       const first = ribbonCard(page, ribbonStages[0]);
       const neighbor = ribbonCard(page, ribbonStages[1]);
       const tooltip = ribbonTooltip(page);
-      await page.keyboard.press('Shift');
-      await first.focus();
+      await ribbonTabBackTo(page, first);
       await expect(tooltip).toHaveText(ribbonStages[0]);
+      await page.clock.install();
       await neighbor.hover();
       await page.clock.runFor(850);
       await expect(tooltip).toHaveText(ribbonStages[1]);

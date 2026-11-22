@@ -460,6 +460,7 @@ async function settle(h) {
 
 function ribbon(h, stages = ['plan', 'build', 'ship']) {
   const root = new h.Element('div', { 'x-data': 'stageRibbonOwner()' });
+  const stagesBox = new h.Element('div', { class: 'stage-ribbon-stages' });
   const viewport = new h.Element('div', { class: 'stage-ribbon-viewport' });
   Object.assign(viewport, { clientWidth: 300, clientLeft: 2, scrollWidth: 900, scrollTop: 17 });
   const reads = [];
@@ -477,10 +478,13 @@ function ribbon(h, stages = ['plan', 'build', 'ship']) {
     viewport.appendChild(card);
     return card;
   });
-  root.appendChild(viewport); h.root.appendChild(root);
+  const tooltip = new h.Element('div', { class: 'stage-ribbon-tooltip', hidden: '' });
+  stagesBox.appendChild(viewport); stagesBox.appendChild(tooltip); root.appendChild(stagesBox);
+  if (!h.root.querySelector('[data-ticket-tabs]')) h.root.appendChild(new h.Element('div', { 'data-ticket-tabs': '' }));
+  h.root.appendChild(root);
   const firstObserver = h.observers.length;
   h.ctx.Alpine.initTree(root);
-  return { root, viewport, cards, reads, data: h.ctx.Alpine.$data(root), observers: h.observers.slice(firstObserver) };
+  return { root, viewport, tooltip, cards, reads, data: h.ctx.Alpine.$data(root), observers: h.observers.slice(firstObserver) };
 }
 
 function poisonRibbon(r) {
@@ -522,7 +526,7 @@ test('shipped Alpine ribbon replacement releases frames, nextTicks, observers, l
     assert.equal(old.root.count(), 0);
     assert.equal(old.viewport.count(), 0);
     assert.ok(old.observers.every((o) => !o.connected));
-    assert.equal(h.window.count(), baseline + 1);
+    assert.equal(h.window.count(), baseline + 3);
     h.runFrames();
     assert.equal(replacement.viewport.scrollCalls.length, 1);
     replacement.observers.forEach((o) => o.cb());
@@ -551,6 +555,37 @@ test('shipped Alpine ribbon replacement releases frames, nextTicks, observers, l
     assert.equal(h.frames.size, 0);
     state.detailLoading = false;
   }
+  assert.deepEqual(h.errors, []);
+});
+
+test('ribbon teardown cancels pointer dwell, removes the font listener, and ignores stale callbacks', async () => {
+  const h = harness(), state = h.ctx.Alpine.$data(h.root);
+  state.selectedTicket = { id: 'ticket', stage: 'plan' };
+  const timers = new Set();
+  h.ctx.setTimeout = cb => { timers.add(cb); return cb; };
+  h.ctx.clearTimeout = cb => timers.delete(cb);
+  let fontsReady;
+  h.document.fonts = Object.assign(new h.Element(), { ready: new Promise(resolve => { fontsReady = resolve; }) });
+  const old = ribbon(h);
+  await settle(h); h.runFrames();
+  old.data.ribbonTrigger({ type: 'pointerenter', pointerType: 'mouse', currentTarget: old.cards[0] });
+  assert.equal(timers.size, 1);
+  const [staleDwell] = timers;
+  const [staleFont] = h.document.fonts.listeners.get('loadingdone');
+  h.destroy(old.root);
+  poisonRibbon(old);
+  assert.equal(timers.size, 0);
+  assert.equal(h.document.fonts.count(), 0);
+  state.selectedTicket = { id: 'next', stage: 'plan' };
+  const replacement = ribbon(h);
+  fontsReady();
+  await settle(h); h.runFrames();
+  staleDwell(); staleFont();
+  await settle(h);
+  assert.equal(h.frames.size, 0);
+  assert.equal(old.tooltip.hidden, true);
+  assert.ok(!replacement.tooltip.textContent);
+  h.destroy(replacement.root);
   assert.deepEqual(h.errors, []);
 });
 
@@ -609,7 +644,6 @@ test('same-stage payload replacements preserve manual position; ticket, detail s
   const r = ribbon(h);
   await settle(h); h.runFrames();
   r.viewport.scrollLeft = 0;
-  r.data.ribbonHovered = 'plan'; r.data.ribbonFocused = 'build';
   state.selectedTicket = { id: 'ticket', stage: 'ship', history: [{ stage: 'build' }], status: 'running' };
   state.detailLoading = true;
   await settle(h); h.runFrames();
@@ -618,20 +652,17 @@ test('same-stage payload replacements preserve manual position; ticket, detail s
   r.observers.forEach((o) => o.cb()); h.runFrames();
   assert.equal(r.viewport.scrollCalls.length, 1);
   assert.equal(r.viewport.scrollLeft, 0);
-  assert.equal(r.data.ribbonHovered, 'plan'); assert.equal(r.data.ribbonFocused, 'build');
-  for (const { transition, readout } of [
-    { transition: () => { state._ticketDetailSeq++; }, readout: '' },
-    { transition: () => { state.selectedTicket = { id: 'other', stage: 'ship' }; }, readout: '' },
-    { transition: () => { state.selectedTicket.source = 'secondary'; }, readout: '' },
-    { transition: () => { state.selectedTicket.stage = 'build'; }, readout: 'plan' },
+  for (const transition of [
+    () => { state._ticketDetailSeq++; },
+    () => { state.selectedTicket = { id: 'other', stage: 'ship' }; },
+    () => { state.selectedTicket.source = 'secondary'; },
+    () => { state.selectedTicket.stage = 'build'; },
   ]) {
     const count = r.viewport.scrollCalls.length;
     r.viewport.scrollLeft = 0;
-    r.data.ribbonHovered = 'plan'; r.data.ribbonFocused = 'plan';
     transition();
     await settle(h); h.runFrames();
     assert.equal(r.viewport.scrollCalls.length, count + 1);
-    assert.equal(r.data.ribbonHovered, readout); assert.equal(r.data.ribbonFocused, readout);
   }
   assert.doesNotThrow(() => r.data.destroy()); h.destroy(r.root);
   assert.deepEqual(h.errors, []);

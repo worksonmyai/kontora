@@ -22,13 +22,14 @@ import (
 // table; the rest are read from the host's mime database, which does not carry
 // woff2 everywhere. A missing font type makes the browser refuse the font.
 var assetContentTypes = map[string]string{
-	".html":  "text/html; charset=utf-8",
-	".js":    "text/javascript; charset=utf-8",
-	".mjs":   "text/javascript; charset=utf-8",
-	".css":   "text/css; charset=utf-8",
-	".map":   "application/json",
-	".woff2": "font/woff2",
-	".png":   "image/png",
+	".html":        "text/html; charset=utf-8",
+	".js":          "text/javascript; charset=utf-8",
+	".mjs":         "text/javascript; charset=utf-8",
+	".css":         "text/css; charset=utf-8",
+	".map":         "application/json",
+	".webmanifest": "application/manifest+json",
+	".woff2":       "font/woff2",
+	".png":         "image/png",
 }
 
 const (

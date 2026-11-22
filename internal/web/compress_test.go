@@ -116,7 +116,7 @@ func TestStaticAssets_Compression(t *testing.T) {
 func TestStaticAssets_Revalidation(t *testing.T) {
 	srv := newTestServer(t)
 
-	for _, path := range []string{"/", "/app.js", "/vendor/fonts/dm-sans-latin.woff2"} {
+	for _, path := range []string{"/", "/app.js", "/manifest.webmanifest", "/vendor/fonts/dm-sans-latin.woff2"} {
 		t.Run(path, func(t *testing.T) {
 			first := rawGet(t, srv, path, gzipHeader())
 			require.Equal(t, http.StatusOK, first.status)
@@ -169,6 +169,7 @@ func TestStaticAssets_CacheControl(t *testing.T) {
 		{"/vendor/xterm@5.5.0/xterm.css", cacheImmutable},
 		{"/", cacheRevalidate},
 		{"/app.js", cacheRevalidate},
+		{"/manifest.webmanifest", cacheRevalidate},
 		{"/vendor/fonts/fonts.css", cacheRevalidate},
 		{"/vendor/fonts/dm-sans-latin.woff2", cacheRevalidate},
 	}

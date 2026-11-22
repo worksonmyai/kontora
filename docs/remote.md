@@ -56,6 +56,25 @@ Open `http://HOST:PORT/?token=SECRET` once, replacing all three placeholders. Ko
 
 When a token is configured, `/api/*` and `/ws/*` require authentication. The static page and `GET /health` stay public. Without a token, the API is open to clients that can reach it and pass the Host/origin checks.
 
+## Install on a phone
+
+Serve Kontora at `/` on an HTTPS origin that your phone can reach over a trusted private network, such as `https://kontora.example.com/`. Use a certificate your phone trusts. Keep the daemon listener private and configure the shared token as described above.
+
+If a reverse proxy terminates HTTPS:
+
+- Preserve the original `Host` and browser `Origin` headers. If the daemon does not already accept the HTTPS hostname, add it to `web.allowed_hosts` and restart the daemon.
+- Overwrite `X-Forwarded-Proto` with `https` so Kontora sets a secure sign-in cookie.
+- Forward WebSocket upgrades for the terminal. Disable proxy buffering for event streams. Set the upstream read timeout for `/api/events` and `/ws/terminal/` to cover expected idle periods. If the proxy has a separate WebSocket idle timeout, set that for the terminal too.
+- Omit query strings from proxy logs or redact `token`. The sign-in prompt sends the token in the query string, even if Kontora rejects it.
+
+1. Open the board at the clean HTTPS URL. Never install from a URL containing `?token=`.
+2. Install the app:
+   - On iPhone, open Safari's Share menu and select **Add to Home Screen**. Keep **Open as Web App** enabled if Safari shows it, then tap **Add**.
+   - On Android, open Chrome's **More** menu, tap **Install and create shortcut**, then tap **Install**. If Chrome shows **Install app** directly, choose it. Do not choose **Create shortcut**. A shortcut opens the board in Chrome instead of a standalone window.
+3. Open Kontora from the home screen. If prompted, enter the shared token. If the token is valid, Kontora sets a cookie and redirects to a URL without the token. If Kontora rejects the token, it stays in the URL. Reopen the clean URL before sharing the board link.
+
+The installed app uses the same mobile board and terminal. It needs a connection to the daemon and does not work offline. If the terminal disconnects, tap **retry connection** once your phone can reach Kontora again.
+
 ## Troubleshooting
 
 | Symptom | Check |

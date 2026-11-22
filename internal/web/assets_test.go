@@ -1,7 +1,10 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -56,6 +59,64 @@ func TestServer_VendoredAssets(t *testing.T) {
 			defer resp.Body.Close()
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
 			assert.Contains(t, resp.Header.Get("Content-Type"), tc.wantType)
+		})
+	}
+}
+
+func TestServer_InstallMetadata(t *testing.T) {
+	srv := startAuthTestServer(t, &mockService{}, "secret")
+	const manifestPath = "/manifest.webmanifest"
+	const touchIconPath = "/apple-touch-icon.png"
+	for _, path := range []string{"/", "/index.html"} {
+		t.Run(path, func(t *testing.T) {
+			page := rawGet(t, srv, path, nil)
+			require.Equal(t, http.StatusOK, page.status)
+			assert.Contains(t, string(page.body), `<link rel="manifest" href="`+manifestPath+`">`)
+			assert.Contains(t, string(page.body), `<link rel="apple-touch-icon" href="`+touchIconPath+`">`)
+		})
+	}
+
+	resp := rawGet(t, srv, manifestPath, nil)
+	require.Equal(t, http.StatusOK, resp.status)
+	assert.Equal(t, "application/manifest+json", resp.get("Content-Type"))
+	type icon struct {
+		Src   string `json:"src"`
+		Sizes string `json:"sizes"`
+		Type  string `json:"type"`
+	}
+	var manifest struct {
+		ID              string `json:"id"`
+		Name            string `json:"name"`
+		ShortName       string `json:"short_name"`
+		StartURL        string `json:"start_url"`
+		Scope           string `json:"scope"`
+		Display         string `json:"display"`
+		BackgroundColor string `json:"background_color"`
+		ThemeColor      string `json:"theme_color"`
+		Icons           []icon `json:"icons"`
+	}
+	require.NoError(t, json.Unmarshal(resp.body, &manifest))
+	assert.Equal(t, "/", manifest.ID)
+	assert.Equal(t, "Kontora", manifest.Name)
+	assert.Equal(t, "Kontora", manifest.ShortName)
+	assert.Equal(t, "/", manifest.StartURL)
+	assert.Equal(t, "/", manifest.Scope)
+	assert.Equal(t, "standalone", manifest.Display)
+	assert.Equal(t, "#10121a", manifest.BackgroundColor)
+	assert.Equal(t, "#10121a", manifest.ThemeColor)
+	require.ElementsMatch(t, []icon{
+		{Src: "/pwa-icon-192.png", Sizes: "192x192", Type: "image/png"},
+		{Src: "/pwa-icon-512.png", Sizes: "512x512", Type: "image/png"},
+	}, manifest.Icons)
+
+	for _, icon := range append(manifest.Icons, icon{Src: touchIconPath, Sizes: "180x180", Type: "image/png"}) {
+		t.Run(icon.Src, func(t *testing.T) {
+			resp := rawGet(t, srv, icon.Src, nil)
+			require.Equal(t, http.StatusOK, resp.status)
+			assert.Equal(t, icon.Type, resp.get("Content-Type"))
+			img, err := png.Decode(bytes.NewReader(resp.body))
+			require.NoError(t, err)
+			assert.Equal(t, icon.Sizes, fmt.Sprintf("%dx%d", img.Bounds().Dx(), img.Bounds().Dy()))
 		})
 	}
 }

@@ -114,16 +114,20 @@ func TestAuth_StatsRejectedBeforeRangeValidation(t *testing.T) {
 func TestAuth_HealthAndStaticPublic(t *testing.T) {
 	srv := startAuthTestServer(t, &mockService{}, "secret")
 
-	health := doAuthRequest(t, srv, "/health", nil)
-	assert.Equal(t, http.StatusOK, health.statusCode)
-
-	root := doAuthRequest(t, srv, "/", nil)
-	assert.Equal(t, http.StatusOK, root.statusCode)
-
-	// Protected /ws/* still requires the token (a plain GET without it is
-	// rejected before reaching the websocket handler).
-	ws := doAuthRequest(t, srv, "/ws/terminal/tst-001", nil)
-	assert.Equal(t, http.StatusUnauthorized, ws.statusCode)
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{"/health", http.StatusOK},
+		{"/", http.StatusOK},
+		{"/api/tickets", http.StatusUnauthorized},
+		{"/ws/terminal/tst-001", http.StatusUnauthorized},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			res := doAuthRequest(t, srv, tc.path, nil)
+			assert.Equal(t, tc.want, res.statusCode)
+		})
+	}
 }
 
 func TestAuth_QueryTokenOnStaticSetsCookieAndRedirects(t *testing.T) {

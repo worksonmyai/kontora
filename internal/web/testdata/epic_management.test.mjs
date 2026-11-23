@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
+import { kontoraDetail } from '../ui/detail.js';
 import { kontoraEpics } from '../ui/epics.js';
 import { kontoraPalette } from '../ui/palette.js';
 import { kontoraSources } from '../ui/sources.js';
@@ -135,6 +136,46 @@ for (const refreshTiming of ['before the write', 'during the write']) {
     });
   });
 }
+
+test('Refresh ticket retries a brief snapshot overtaken by a save acknowledgement', async () => {
+  const a = Object.assign(app(), kontoraDetail(), {
+    editForm: { body: '' }, _editorAckVersions: Object.create(null), _editorGeneration: 1,
+    _selectedTicketUpdateSeq: 0, boardEntryChanged: () => false, reconcileOutput() {},
+  });
+  const id = a.selectedEpic.id;
+  let stored = { ...a.selectedEpic, description: '\nOriginal brief' };
+  a._epicDetail = stored;
+  a._epicLoadBrief(stored);
+  a.editForm.body = 'Saved brief';
+  const commit = deferred(), decode = deferred();
+  let reads = 0;
+  await withFetch(async (url, options) => {
+    assert.equal(url, '/api/tickets/' + id);
+    if (options.method === 'PUT') {
+      await commit.promise;
+      stored = { ...stored, ...JSON.parse(options.body) };
+      return { ok: true, json: async () => stored };
+    }
+    const snapshot = stored;
+    const first = ++reads === 1;
+    return { ok: true, json: async () => {
+      if (first) await decode.promise;
+      return snapshot;
+    } };
+  }, async () => {
+    const saving = a.epicFlushBrief();
+    const refreshing = a.reloadTicketDetail();
+    await until(() => reads === 1);
+    commit.resolve();
+    assert.equal(await saving, true);
+    decode.resolve();
+    assert.deepEqual(await refreshing, { ok: true });
+    assert.equal(a.editForm.body, 'Saved brief');
+    assert.equal(a._epicDetail.description, '\nSaved brief');
+    assert.equal(a._editorSaves[id].ack.description, '\nSaved brief');
+    assert.equal(reads, 2);
+  });
+});
 
 test('delayed writes retain epic owners and do not replace the new epic order', async () => {
   const a = app(), wait = deferred(), calls = [];

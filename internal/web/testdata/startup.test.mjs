@@ -35,7 +35,7 @@ function themeSaved(config) {
   }) };
 }
 
-function harness({ status = 200, preference = 'system', dark = true, saveTheme, readConfig } = {}) {
+function harness({ status = 200, preference = 'system', dark = true, saveTheme, readConfig, read } = {}) {
   const root = { dataset: { themePreference: preference }, style: {} };
   const mediaListeners = new Set();
   const media = {
@@ -52,6 +52,7 @@ function harness({ status = 200, preference = 'system', dark = true, saveTheme, 
   const streams = [];
   const timers = [];
   const listeners = new Map();
+  let now = Date.now();
   const location = { protocol: 'http:', host: 'localhost', search: '', hash: '#/' };
   const history = {
     state: { unrelated: 'preserved' },
@@ -64,7 +65,8 @@ function harness({ status = 200, preference = 'system', dark = true, saveTheme, 
     '/api/sources/team/tickets': [{ id: 'sec-1', title: 'Secondary', status: 'open' }],
   };
   const ctx = {
-    console, structuredClone, TextEncoder,
+    console, structuredClone, TextEncoder, AbortController,
+    Date: class extends Date { static now() { return now; } },
     setTimeout(fn, ms) { timers.push({ fn, ms }); return timers.length; },
     clearTimeout(id) { if (timers[id - 1]) timers[id - 1].cleared = true; },
     setInterval() {}, clearInterval() {},
@@ -79,7 +81,10 @@ function harness({ status = 200, preference = 'system', dark = true, saveTheme, 
       },
       removeEventListener(type, listener) { listeners.get(type)?.delete(listener); },
     },
-    document: { documentElement: root, getElementById() { return null; } },
+    document: { documentElement: root, getElementById() { return null; },
+      addEventListener(type, listener) { ctx.window.addEventListener(type, listener); },
+      removeEventListener(type, listener) { ctx.window.removeEventListener(type, listener); },
+    },
     navigator: {}, location, history,
     URLSearchParams,
     async fetch(url, options) {
@@ -94,13 +99,15 @@ function harness({ status = 200, preference = 'system', dark = true, saveTheme, 
         return themeSaved(bodies['/api/config']);
       }
       if (url === '/api/config' && readConfig) return readConfig(bodies[url]);
+      const override = read?.(url, options);
+      if (override) return override;
       return { ok: true, status: 200, json: async () => structuredClone(bodies[url]) };
     },
     EventSource: class {
       constructor(url) { this.url = url; this.closed = false; this.listeners = {}; this.onerror = null; streams.push(this); }
       addEventListener(type, handler) { (this.listeners[type] ||= []).push(handler); }
       close() { this.closed = true; }
-      emit(type) { for (const h of this.listeners[type] || []) h({ data: '{}' }); }
+      emit(type, data = {}) { for (const h of this.listeners[type] || []) h({ data: JSON.stringify(data) }); }
       fail() { this.onerror?.({}); }
     },
   };
@@ -118,8 +125,144 @@ function harness({ status = 200, preference = 'system', dark = true, saveTheme, 
   const fireWait = () => { const t = waitTimer(); t.fired = true; t.fn(); };
   const count = url => requests.filter(r => r === url).length;
   return { state, requests, streams, timers, listeners, location, history, fireWait, count,
-    root, media, mediaListeners, writes, config: bodies['/api/config'] };
+    root, media, mediaListeners, writes, config: bodies['/api/config'], bodies,
+    setVisibility(hidden, advance = 0) {
+      now += advance;
+      ctx.document.hidden = hidden;
+      for (const listener of listeners.get('visibilitychange') || []) listener();
+    },
+  };
 }
+
+test('a stalled first decode times out, then Retry reads fresh rows', async () => {
+  let decode, signal;
+  const h = harness({ read(url, options) {
+    if (url !== '/api/tickets' || signal) return;
+    signal = options.signal;
+    return { ok: true, json: () => new Promise(resolve => { decode = resolve; }) };
+  } });
+  const init = h.state.init();
+  h.streams[0].emit('open');
+  await settle();
+  assert.equal(typeof decode, 'function');
+  h.timers.find(t => t.ms === 10000 && !t.cleared).fn();
+  await init;
+  assert.equal(signal.aborted, true);
+  assert.equal(h.state.ticketsLastLoaded, null);
+  assert.equal(h.state.ticketBoardEmpty(), false);
+  assert.match(h.state.ticketsLoadError, /timed out/);
+  await h.state.refreshTickets();
+  decode({ tickets: [{ id: 'late' }] });
+  await settle();
+  assert.equal(h.state.ticketsLoadError, null);
+  assert.deepEqual(h.state.tickets.map(t => t.id).join(), 'kon-1');
+});
+
+test('online, a restored page and reconnect coalesce one trailing pass', async () => {
+  let resolve;
+  const h = harness({ read(url) {
+    if (url !== '/api/tickets' || h.count(url) !== 2) return;
+    return new Promise(r => { resolve = r; });
+  } });
+  const init = h.state.init();
+  h.streams[0].emit('open');
+  await init;
+  for (const listener of h.listeners.get('online')) listener();
+  for (const listener of h.listeners.get('pageshow')) listener({ persisted: true });
+  h.state.refreshTickets();
+  assert.equal(h.count('/api/tickets'), 2);
+  h.streams[0].emit('open');
+  h.streams[0].emit('open');
+  resolve({ ok: true, json: async () => h.bodies['/api/tickets'] });
+  await h.state.refreshTickets();
+  assert.equal(h.count('/api/tickets'), 3);
+});
+
+for (const recovery of ['online during a stalled folder read', 'foreground during a stalled detail read']) {
+  test(`a new primary read follows ${recovery}`, async () => {
+    const online = recovery.startsWith('online');
+    const stalledURL = online ? '/api/sources/team/tickets' : '/api/tickets/kon-1';
+    let release;
+    const h = harness({ read(url) {
+      if (url === '/api/tickets' && h.count(url) === 2 && online) return { ok: false, status: 503 };
+      if (url === stalledURL && h.count(url) === (online ? 2 : 1)) {
+        return { ok: true, json: () => new Promise(resolve => { release = resolve; }) };
+      }
+    } });
+    const init = h.state.init();
+    h.streams[0].emit('open');
+    await init;
+    const primary = h.bodies['/api/tickets'].tickets[0];
+    if (!online) h.state.selectedTicket = { ...primary };
+    const active = h.state.refreshTickets();
+    await settle();
+    assert.equal(typeof release, 'function');
+    assert.equal(h.count('/api/tickets'), 2);
+    primary.title = 'Changed while the refresh was pending';
+    if (online) {
+      for (const listener of h.listeners.get('online')) listener();
+    } else {
+      h.setVisibility(true);
+      h.setVisibility(false, 15000);
+    }
+    release(h.bodies[stalledURL] || { ...primary, title: 'Old detail' });
+    if (!online) h.bodies[stalledURL] = { ...primary };
+    await active;
+    assert.equal(h.count('/api/tickets'), 3);
+    assert.equal(h.state.tickets[0].title, primary.title);
+    assert.equal(h.state.ticketsLoadError, null);
+  });
+}
+
+test('a foreground gap refreshes tickets even when no stream error arrives', async () => {
+  const h = harness();
+  const init = h.state.init();
+  h.streams[0].emit('open');
+  await init;
+  h.setVisibility(true);
+  h.setVisibility(false, 1000);
+  assert.equal(h.count('/api/tickets'), 1);
+  h.setVisibility(true);
+  h.bodies['/api/tickets'].tickets[0].title = 'Changed in the background';
+  h.setVisibility(false, 16000);
+  await settle();
+  assert.equal(h.count('/api/tickets'), 2);
+  assert.equal(h.state.tickets[0].title, 'Changed in the background');
+  assert.equal(h.streams[0].closed, false);
+});
+
+test('a current folder 401 stops the stream and asks the user to sign in', async () => {
+  let expired = false;
+  const h = harness({ read(url) {
+    if (expired && url === '/api/sources/team/tickets') return { ok: false, status: 401 };
+  } });
+  const init = h.state.init();
+  h.streams[0].emit('open');
+  await init;
+  expired = true;
+  await h.state.refreshTickets();
+  assert.equal(h.state.needsAuth, true);
+  assert.equal(h.streams[0].closed, true);
+  assert.equal(h.state.ticketsRefreshing, false);
+});
+
+test('a removed folder cannot survive its concurrent ticket update', async () => {
+  let resolve;
+  const h = harness({ read(url) {
+    if (url === '/api/ticket-sources' && h.count(url) === 2) return { ok: true, json: () => new Promise(r => { resolve = r; }) };
+  } });
+  const init = h.state.init();
+  h.streams[0].emit('open');
+  await init;
+  const refresh = h.state.refreshTickets();
+  await settle();
+  const event = { id: 'sec-1', source: 'team', status: 'done' };
+  h.streams[0].emit('secondary_ticket_updated', event);
+  resolve([{ id: 'primary' }]);
+  await refresh;
+  h.streams[0].emit('secondary_ticket_updated', event);
+  assert.equal(h.state.secondaryTickets.length, 0);
+});
 
 test('startup snapshots wait for the stream and the first open does not take them again', async () => {
   const h = harness();

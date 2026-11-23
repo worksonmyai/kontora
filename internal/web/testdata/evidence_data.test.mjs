@@ -286,7 +286,9 @@ for (const [name, before, after, expected] of [
 test('accepted tail is awaited by detail hydration, not by leaving', async t => {
   const state = fixture({ source: 'team', can_edit: true });
   const gate = deferred(), calls = [];
+  const { ticketRead, readTicketJSON } = kontoraTickets();
   Object.assign(state, {
+    ticketRead, readTicketJSON,
     _navigationSeq: 0, currentView: 'board', _editorGeneration: 0,
     _releaseEditorBody() {}, _retireEditorState() {}, closeAgentPicker() {}, flushEditSave() {},
     syncDetailCoverage() {}, _pushRecentTicket() {}, fetchTicketCost() {},
@@ -296,7 +298,7 @@ test('accepted tail is awaited by detail hydration, not by leaving', async t => 
   const original = structuredClone(state.selectedTicket);
   t.mock.method(globalThis, 'fetch', async (url, opts) => {
     calls.push(opts?.method || 'GET');
-    if (opts) await gate.promise;
+    if (opts?.method === 'POST') await gate.promise;
     return response(original);
   });
   state.noteDraft = 'accepted'; const adding = state.submitNote();

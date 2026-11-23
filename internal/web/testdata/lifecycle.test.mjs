@@ -191,7 +191,7 @@ for (const boundary of ['initially read-only', 'permission revoked', 'detail per
     t.after(() => clearTimeout(a._epicBriefDebounce));
     let writes = 0;
     t.mock.method(globalThis, 'fetch', async (_url, options) => {
-      if (!options) return { ok: true, json: async () => ({ ...a.tickets[0], description: 'old' }) };
+      if (!options?.method) return { ok: true, json: async () => ({ ...a.tickets[0], description: 'old' }) };
       writes++;
       return { ok: false, json: async () => ({ error: 'forbidden' }) };
     });

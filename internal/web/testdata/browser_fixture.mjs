@@ -290,7 +290,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
       }
       if (result.failure === 'http') {
         expectedHTTPFailures.push(failureURL);
-        return await json(route, { error: 'Fixture detail read failed' }, 503);
+        return await json(route, { error: result.error ?? 'Fixture detail read failed' }, 503);
       }
       const headers = { ...result.headers, ...(held.decodeID === null ? {} : { 'X-Fixture-Decode': held.decodeID }) };
       if (result.failure === 'json') return await route.fulfill({ contentType: 'application/json', body: '{invalid json', headers });

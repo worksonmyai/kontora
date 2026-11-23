@@ -4,11 +4,11 @@ export function kontoraSources() {
   const slots = new Map();
   const sourceSlots = new Map();
   const snapshots = new Set();
-  let sourceFlight = null;
-  let sourceAgain = false;
+  let sourceSnapshotActive = false;
 
   return {
     ticketSources: [],
+    ticketSourcesLoaded: false,
     secondaryTickets: [],
     sourceFilter: '',
     sourcesError: null,
@@ -53,8 +53,17 @@ export function kontoraSources() {
       return this.ticketSources.find(s => s.id === ticket.source)?.path || ticket.source;
     },
 
+    sourceInCatalog(ticket) {
+      return !this.ticketSourcesLoaded || this.ticketSources.some(source => source.id === ticket.source);
+    },
+
+    acceptSecondaryEvent(ticket) {
+      return sourceSnapshotActive || this.sourceInCatalog(ticket);
+    },
+
     sourceAvailable(ticket) {
-      return !this.isSecondary(ticket) || this.ticketSources.find(s => s.id === ticket.source)?.available !== false;
+      return !this.isSecondary(ticket) || (!this.sourcesError && this.sourceInCatalog(ticket) &&
+        this.ticketSources.find(s => s.id === ticket.source)?.available !== false);
     },
 
     ticketCanEdit(ticket) {
@@ -132,46 +141,53 @@ export function kontoraSources() {
         .concat(current.filter(t => touched.has(this.ticketKey(t))));
     },
 
-    fetchTicketSources() {
-      if (sourceFlight) { sourceAgain = true; return sourceFlight; }
-      sourceFlight = (async () => {
-        do {
-          sourceAgain = false;
-          await this._fetchTicketSources();
-        } while (sourceAgain && !this._appDestroyed);
-      })().finally(() => { sourceFlight = null; });
-      return sourceFlight;
-    },
-
-    async _fetchTicketSources() {
-      var touched = this._beginSnapshot();
+    async fetchTicketSources() {
+      sourceSnapshotActive = true;
+      const touched = this._beginSnapshot();
+      const unavailable = source => {
+        if (!this._appDestroyed && !this.needsAuth) {
+          const known = this.ticketSources.some(item => item.id === source.id);
+          this.ticketSources = known ? this.ticketSources.map(item => item.id === source.id ? source : item)
+            : [...this.ticketSources, source];
+          this.scheduleBoardFlush();
+        }
+        return { source, rows: null };
+      };
       try {
-        var res = await fetch('/api/ticket-sources');
-        if (!res.ok) throw new Error('Failed to load ticket sources');
-        this.ticketSources = await res.json();
-        this.sourcesError = null;
-        var lists = await Promise.all(this.ticketSources.filter(s => s.id !== 'primary').map(async source => {
-          if (!source.available) return this.secondaryTickets.filter(t => t.source === source.id);
+        const catalog = await this.ticketRead(signal => this.readTicketJSON('/api/ticket-sources', signal, 'Failed to load ticket folders'));
+        if (this._appDestroyed || this.needsAuth) return;
+        const folders = await Promise.all(catalog.filter(source => source.id !== 'primary').map(async source => {
+          if (!source.available) return unavailable(source);
           try {
-            var response = await fetch('/api/sources/' + encodeURIComponent(source.id) + '/tickets');
-            if (!response.ok) throw new Error('Failed to load source tickets');
-            return (await response.json()).map(t => this.boardEntry({ ...t, source: source.id }));
+            const rows = await this.ticketRead(signal => this.readTicketJSON('/api/sources/' + encodeURIComponent(source.id) + '/tickets',
+              signal, 'Failed to load folder tickets'));
+            return { source, rows: rows.map(t => this.boardEntry({ ...t, source: source.id })) };
           } catch (e) {
-            source.available = false;
-            source.error = e.message;
-            return this.secondaryTickets.filter(t => t.source === source.id);
+            return unavailable({ ...source, available: false, error: e.message });
           }
         }));
-        if (this._appDestroyed) return;
-        this.secondaryTickets = this._mergeSnapshot(lists.flat(), this.secondaryTickets, touched);
+        if (this._appDestroyed || this.needsAuth) return;
+        this.ticketSources = catalog.filter(source => source.id === 'primary').concat(folders.map(folder => folder.source));
+        this.ticketSourcesLoaded = true;
+        this.sourcesError = null;
+        const selected = this.selectedTicket;
+        const retained = this.secondaryTickets.filter(t => this.sourceInCatalog(t));
+        const failed = new Set(folders.filter(folder => folder.rows === null).map(folder => folder.source.id));
+        this.secondaryTickets = this._mergeSnapshot(folders.flatMap(folder => folder.rows || [])
+          .concat(retained.filter(t => failed.has(t.source))), retained, touched);
+        if (this.sourceFilter && this.sourceFilter !== 'primary' && !this.ticketSources.some(source => source.id === this.sourceFilter)) this.sourceFilter = '';
         this._indexSecondary();
-        this._reconcileSnapshotSelection(this.secondaryTickets, true, touched);
+        if (this.isSecondary(selected) && !this.sourceInCatalog(selected)) this.closeDetail();
+        else this._reconcileSnapshotSelection(this.secondaryTickets, true, touched);
+        return { ok: failed.size === 0, unavailable: [...failed] };
       } catch (e) {
-        this.sourcesError = e.message;
+        if (!this._appDestroyed && !this.needsAuth) this.sourcesError = e.message;
+        return { ok: false, error: e.message };
       } finally {
+        sourceSnapshotActive = false;
         this._endSnapshot(touched);
+        if (!this._appDestroyed && !this.needsAuth) this.scheduleBoardFlush();
       }
-      this.scheduleBoardFlush();
     },
 
     applySecondaryUpdate(ticket) {

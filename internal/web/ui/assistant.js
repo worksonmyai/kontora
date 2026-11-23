@@ -1422,10 +1422,7 @@ export function kontoraAssistant() {
       }
       const query = (this.searchQuery || '').trim();
       if (query) chips.push({ key: 'filter', label: query, kind: 'filter' });
-      if (this.isMobile && this.columns && this.columns.length) {
-        const col = this.columns[Math.max(0, Math.min(this.activeColumn, this.columns.length - 1))];
-        if (col) chips.push({ key: 'column', label: col.label, kind: 'column' });
-      }
+      if (this.isMobile && this.mobileFilterLabel) chips.push({ key: 'column', label: this.mobileFilterLabel(), kind: 'column' });
       this.assistantContext = chips;
       return chips;
     },

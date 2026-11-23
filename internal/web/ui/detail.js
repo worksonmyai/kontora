@@ -25,6 +25,8 @@ function historyPosition() {
 export function kontoraDetail() {
   const moves = new Map();
   const retirements = new Map();
+  const detailBackEntries = new Set();
+  let hydration = null;
   let rawLogPopup = null;
   const closeRawLogPopup = () => {
     rawLogPopup?.close();
@@ -96,47 +98,42 @@ export function kontoraDetail() {
       this.childrenExpanded = false;
       this.noteResetDrafts();
       var detailSeq = ++this._ticketDetailSeq;
-      var updateSeq = this._selectedTicketUpdateSeq;
       var key = this.ticketKey(ticket);
-      var mine = () => this.sameTicket(this.selectedTicket, ticket) && detailSeq === this._ticketDetailSeq;
+      var mine = () => !this._appDestroyed && this.sameTicket(this.selectedTicket, ticket) && detailSeq === this._ticketDetailSeq;
       this.selectedTicket = ticket;
+      this.ticketDetailRefreshError = null;
+      if (this.isMobile) this.mobileAcceptDetail(ticket);
       this.syncDetailCoverage();
       this._retireEditorState(releasedEditor);
       this._pushRecentTicket(key);
       this.fetchTicketCost(ticket.id);
       this.detailLoading = true;
+      const opening = { controller: new AbortController(), detailSeq, replaced: false };
+      hydration = opening;
       try {
-        if (this._editorSaves[key]) await this._waitEditorSaves(key);
-        if (this._noteHasTail?.(key)) await this._noteWaitForTail(key);
-        // Capture after the accepted tail: it may have adopted a newer snapshot
-        // during close/reopen. Leaving never waits for conversation writes.
-        updateSeq = this._selectedTicketUpdateSeq;
-        while (mine()) {
-          var res = await fetch(this.ticketURL(ticket));
-          if (!mine()) return;
-          if (!res.ok) {
-            this.error = 'Failed to load ticket details';
-            break;
-          }
-          var full = await res.json();
-          if (!mine()) return;
-          // Ticket SSE omits the body. Repeat a read that an SSE update
-          // overtook instead of replacing newer ticket fields with the old response.
-          if (updateSeq !== this._selectedTicketUpdateSeq) {
-            updateSeq = this._selectedTicketUpdateSeq;
-            continue;
-          }
-          if (full.id === ticket.id) {
-            if (full.source && full.source !== (ticket.source || 'primary')) break;
-            full = { ...full, source: ticket.source || full.source };
-            this._noteReconcileTicket?.(full);
-            this.selectedTicket = full;
-            this._touchTicket(full);
-            var entries = this.isSecondary(ticket) ? this.secondaryTickets : this.tickets;
-            var idx = this.isSecondary(full) ? this.secondarySlot(full) : entries.findIndex(t => this.sameTicket(t, full));
+        await this.ticketRead(async signal => {
+          if (this._editorSaves[key]) await this._waitEditorSaves(key);
+          if (this._noteHasTail?.(key)) await this._noteWaitForTail(key);
+          // Capture after the accepted tail: it may have adopted a newer snapshot
+          // during close/reopen. Leaving never waits for conversation writes.
+          while (mine() && !signal.aborted) {
+            const updateSeq = this._selectedTicketUpdateSeq;
+            const full = await this.readTicketJSON(this.ticketURL(ticket), signal, 'Failed to load ticket details',
+              () => mine() && updateSeq === this._selectedTicketUpdateSeq);
+            if (!mine()) return;
+            // Ticket SSE omits the body. Repeat a read that an SSE update
+            // overtook instead of replacing newer ticket fields with the old response.
+            if (updateSeq !== this._selectedTicketUpdateSeq) continue;
+            if (full.id !== ticket.id || (full.source && full.source !== (ticket.source || 'primary'))) return;
+            const updated = { ...full, source: ticket.source || full.source };
+            this._noteReconcileTicket?.(updated);
+            this.selectedTicket = updated;
+            this._touchTicket(updated);
+            const entries = this.isSecondary(ticket) ? this.secondaryTickets : this.tickets;
+            const idx = this.isSecondary(updated) ? this.secondarySlot(updated) : entries.findIndex(t => this.sameTicket(t, updated));
             if (idx >= 0) {
-              var before = entries[idx];
-              var entry = this.boardEntry(full);
+              const before = entries[idx];
+              const entry = this.boardEntry(updated);
               entries[idx] = entry;
               // The replacement can change agent, status, or any rendered field,
               // so refresh the cached board and the agent tally from it. Usually
@@ -145,11 +142,13 @@ export function kontoraDetail() {
               // board would draw something different.
               if (this.boardEntryChanged(before, entry)) this.recomputeBoard();
             }
+            return;
           }
-          break;
-        }
+        }, opening.controller);
       } catch (e) {
-        if (mine()) this.error = 'Failed to load ticket details';
+        if (mine() && !this.needsAuth && !opening.replaced) this.error = 'Failed to load ticket details';
+      } finally {
+        if (hydration === opening) hydration = null;
       }
       if (!mine()) return;
       this.detailLoading = false;
@@ -198,6 +197,12 @@ export function kontoraDetail() {
         if (['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []).includes(this.selectedTicket?.status)) this.startEditing();
       }
       this.writeHash();
+    },
+
+    supersedeTicketHydration() {
+      if (hydration?.detailSeq !== this._ticketDetailSeq) return;
+      hydration.replaced = true;
+      hydration.controller.abort();
     },
 
     // Whether the detail panel should open on the summary (ticket tab): the
@@ -742,6 +747,9 @@ export function kontoraDetail() {
       const physical = historyMetadata(history.state) || adapter.current;
       const entry = { id: physical.id, index: physical.index + (replace ? 0 : 1),
         entry: replace ? physical.entry : historyIdentity(), hash: next };
+      if (replace) detailBackEntries.delete(physical.entry);
+      else if ((this.selectedTicket || this.selectedEpic) && this.currentView === 'board' &&
+          physical.entry === adapter.current.entry && location.hash === adapter.current.hash) detailBackEntries.add(entry.entry);
       history[replace ? 'replaceState' : 'pushState'](historyState(entry), '', next);
       adapter.length = history.length;
       if (!replace) adapter.tip = entry.index;
@@ -749,6 +757,27 @@ export function kontoraDetail() {
       adapter.observed = entry;
       adapter.seen = historySignature(entry);
       this._settingsHistoryRemember();
+    },
+
+    acceptMobileDetailRoute() {
+      const adapter = this._settingsHistory;
+      if (adapter && adapter.routing === this._navigationSeq && adapter.observed.hash === this.routeHash()) {
+        adapter.current = adapter.observed;
+      } else if (this._applyingRoute !== this._navigationSeq) this.writeHash();
+    },
+
+    mobileDetailBack() {
+      if (this.sheet) this.closeSheet(false);
+      const adapter = this._settingsHistory;
+      if (adapter?.detailBackPending || adapter?.motion) return;
+      const physical = historyMetadata(history.state);
+      if (adapter && physical?.entry === adapter.current.entry && location.hash === adapter.current.hash &&
+          detailBackEntries.has(physical.entry) && typeof history.go === 'function') {
+        adapter.detailBackPending = true;
+        history.go(-1);
+        return;
+      }
+      return this.navigateDestination({ view: 'board', replace: true });
     },
 
     // Own BOTH route listeners. App-created entries use the History API (which
@@ -832,6 +861,7 @@ export function kontoraDetail() {
     async _settingsHistoryChanged(force = false, eventType) {
       const adapter = this._settingsHistory;
       if (!adapter) return;
+      adapter.detailBackPending = false;
       let metadata = historyMetadata(history.state);
       const known = metadata?.id === adapter.current.id;
       // Hash assignments can emit popstate before hashchange, so waiting for
@@ -972,11 +1002,11 @@ export function kontoraDetail() {
         // one the hash does not name.
         if (r.epicId) {
           if (this.selectedTicket) this.closeDetail(false);
-          if (!this.selectedEpic || this.selectedEpic.id !== r.epicId) await this.openEpic(r.epicId, navigation);
-          if (!mine()) return;
+          if ((!this.selectedEpic || this.selectedEpic.id !== r.epicId) && await this.openEpic(r.epicId, navigation) === false) return false;
+          if (!mine()) return false;
         } else if (this.selectedEpic) {
-          if (await this.closeEpic(false) === false) return;
-          if (!mine()) return;
+          if (await this.closeEpic(false) === false) return false;
+          if (!mine()) return false;
         }
         if (r.view === 'archive') {
           if (r.ticketId) await this.archiveOpenRow({ id: r.ticketId }, navigation);
@@ -1220,6 +1250,21 @@ export function kontoraDetail() {
       return result;
     },
 
+    _isPreMoveSnapshot(ticket) {
+      if (this.isSecondary(ticket)) return false;
+      const chain = moves.get(ticket.id);
+      // A newer write may return the ticket to its pre-Move status.
+      return chain && !chain.touched.has(ticket.id) && chain.previous.status === ticket.status &&
+        ticket.updated_at && chain.previous.updated_at === ticket.updated_at && chain.current.status !== ticket.status;
+    },
+
+    _protectPendingMoves(incoming, touched) {
+      if (!moves.size) return;
+      for (const row of incoming) {
+        if (this._isPreMoveSnapshot(row)) touched.add(row.id);
+      }
+    },
+
     async _moveTaskTransport(ticketId, newStatus) {
       this.error = null;
       const ticket = this.allBoardTickets().find(t => this.ticketKey(t) === ticketId);
@@ -1242,7 +1287,7 @@ export function kontoraDetail() {
           const latest = chain.requests.filter(request => !request.failed).pop();
           const value = latest ? latest.result : chain.previous;
           if (value !== chain.value) {
-            this.applyTicketUpdate(value);
+            this.applyTicketUpdate(value, { optimisticMove: !latest?.acknowledged });
             chain.current = this.tickets.find(t => t.id === ticketId);
             chain.value = value;
             // Ignore our own writes, but retain invalidation from any intervening authoritative update.
@@ -1269,6 +1314,7 @@ export function kontoraDetail() {
           const updated = await res.json();
           if (updated?.id !== ticketId || this.isSecondary(updated)) throw new Error('Invalid move acknowledgement');
           move.result = updated;
+          move.acknowledged = true;
         }
         reconcile();
       } catch (e) {

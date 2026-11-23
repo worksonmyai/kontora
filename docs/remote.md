@@ -73,7 +73,13 @@ If a reverse proxy terminates HTTPS:
    - On Android, open Chrome's **More** menu, tap **Install and create shortcut**, then tap **Install**. If Chrome shows **Install app** directly, choose it. Do not choose **Create shortcut**. A shortcut opens the board in Chrome instead of a standalone window.
 3. Open Kontora from the home screen. If prompted, enter the shared token. If the token is valid, Kontora sets a cookie and redirects to a URL without the token. If Kontora rejects the token, it stays in the URL. Reopen the clean URL before sharing the board link.
 
-The installed app uses the same mobile board and terminal. It needs a connection to the daemon and does not work offline. If the terminal disconnects, tap **retry connection** once your phone can reach Kontora again.
+The installed app needs a connection to the daemon. It does not work offline.
+
+Tap **Refresh** in Tickets to load the latest tickets. Kontora tries to refresh when the network returns or after at least 15 seconds in the background. Kontora keeps your filters unless the selected status or folder no longer exists.
+
+If the read fails, Kontora keeps the last loaded tickets and shows **Retry**. Cached tickets from an unavailable folder stay read-only.
+
+Ticket refresh does not reconnect the terminal. If the terminal disconnects, tap **retry connection** once your phone can reach Kontora again.
 
 ## Troubleshooting
 

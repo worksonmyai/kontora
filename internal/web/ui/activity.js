@@ -289,7 +289,7 @@ export function kontoraActivity() {
       }
     },
 
-    reconcileOutput(previous) {
+    reconcileOutput(previous, { openTerminal = true } = {}) {
       var t = this.outputSubject();
       if (!t && previous) {
         this.closeTerminal();
@@ -323,7 +323,7 @@ export function kontoraActivity() {
             this._loadActivity(this.activityStage, this.activityRun, { merge: !!this.activity });
           }
         }
-      } else if (this.outputTab() === 'session' && !this.terminalOpen) {
+      } else if (openTerminal && this.outputTab() === 'session' && !this.terminalOpen) {
         this.openTerminal();
       } else if (this.outputTab() === 'activity' && !this._activityExplicit) {
         // History arrives before final status. Stay on the displayed execution

@@ -449,8 +449,8 @@ export function kontoraEpics() {
       // opening either closes the other.
       if (this.selectedTicket) this.closeDetail(false);
       if (this.selectedEpic) {
-        if (await this.closeEpic(false) === false) return;
-        if (navigation !== this._navigationSeq) return;
+        if (await this.closeEpic(false) === false) return false;
+        if (navigation !== this._navigationSeq) return false;
       }
       this.closeTerminal();
       this.terminalRW = false;
@@ -468,7 +468,9 @@ export function kontoraEpics() {
       this.epicRemoveTarget = null;
       this.epicEditingBrief = false;
       ++this._editorGeneration;
-      this.writeHash();
+      this.ticketDetailRefreshError = null;
+      if (this.isMobile) this.mobileAcceptDetail(epic);
+      else this.writeHash();
       await this._waitEditorSaves(id);
       if (navigation !== this._navigationSeq || this.selectedEpic?.id !== id) return;
       await this.epicFetchDetail(id);
@@ -478,40 +480,41 @@ export function kontoraEpics() {
     // the daemon parsed out of it. Kept in _epicDetail rather than written
     // onto selectedEpic, because every board recompute replaces that object
     // with the list entry, which has neither.
-    async epicFetchDetail(id) {
+    async epicFetchDetail(id, { refreshing = false } = {}) {
       var seq = ++this._epicDetailSeq;
-      var update = this._epicUpdateSeq;
-      var mine = () => seq === this._epicDetailSeq && this.selectedEpic?.id === id;
+      var mine = () => !this._appDestroyed && seq === this._epicDetailSeq && this.selectedEpic?.id === id;
       try {
-        while (mine()) {
-          var res = await fetch('/api/tickets/' + encodeURIComponent(id));
-          if (!mine()) return;
-          if (!res.ok) throw new Error('detail request failed');
-          var full = await res.json();
-          if (!mine()) return;
-          if (update !== this._epicUpdateSeq) {
-            update = this._epicUpdateSeq;
-            continue;
+        await this.ticketRead(async signal => {
+          while (mine() && !signal.aborted) {
+            const update = this._epicUpdateSeq;
+            const ackVersion = this._editorAckVersion(id);
+            const superseded = () => update !== this._epicUpdateSeq || ackVersion !== this._editorAckVersion(id);
+            const full = await this.readTicketJSON(this.ticketURL({ id }), signal, 'Failed to load epic details',
+              () => mine() && !superseded());
+            if (!mine()) return;
+            if (superseded()) continue;
+            if (full.id !== id) throw new Error('Invalid epic detail');
+            if (this._isPreMoveSnapshot(full)) return;
+            var previous = this.selectedEpic;
+            var keepDraft = this._epicDetail?.id === id && (this.epicEditingBrief || this._epicBriefSave ||
+              this._epicBriefLead + this.editForm.body !== this._editorSaves[id]?.ack.description);
+            this._epicDetail = full;
+            this.selectedEpic = full;
+            if (!keepDraft) this._epicLoadBrief(full);
+            if (!this.epicBriefWritable(full)) this._epicRetainBrief();
+            var index = this.tickets.findIndex(t => t.id === id);
+            if (index >= 0) {
+              var before = this.tickets[index];
+              this.tickets[index] = this.boardEntry(full);
+              if (this.boardEntryChanged(before, this.tickets[index])) this.recomputeBoard();
+            }
+            this.reconcileOutput(previous, { openTerminal: !refreshing });
+            return;
           }
-          if (full.id !== id) return;
-          var previous = this.selectedEpic;
-          var keepDraft = this._epicDetail?.id === id && (this.epicEditingBrief || this._epicBriefSave ||
-            this._epicBriefLead + this.editForm.body !== this._editorSaves[id]?.ack.description);
-          this._epicDetail = full;
-          this.selectedEpic = full;
-          if (!keepDraft) this._epicLoadBrief(full);
-          if (!this.epicBriefWritable(full)) this._epicRetainBrief();
-          var index = this.tickets.findIndex(t => t.id === id);
-          if (index >= 0) {
-            var before = this.tickets[index];
-            this.tickets[index] = this.boardEntry(full);
-            if (this.boardEntryChanged(before, this.tickets[index])) this.recomputeBoard();
-          }
-          this.reconcileOutput(previous);
-          return;
-        }
+        });
       } catch (e) {
-        if (mine()) this.error = 'Failed to load epic details';
+        if (refreshing) throw e;
+        if (mine() && !this.needsAuth) this.error = 'Failed to load epic details';
       }
     },
 
@@ -530,6 +533,7 @@ export function kontoraEpics() {
         this.terminalRW = false;
         this._resetActivity();
         this.selectedEpic = null;
+        if (this.isMobile) this.syncDetailCoverage();
         this._releaseEditorBody();
         this._retireEditorState(id);
         ++this._editorGeneration;

@@ -1,8 +1,4 @@
-// The phone-width layer, gated on isMobile: a status tab strip and card list
-// for the board, a full-screen tabbed detail, and
-// bottom sheets for actions and navigation. It reuses the desktop
-// board's ticket data and operations — only the layout and a few view-state
-// fields (activeColumn, detailTab, sheet) are its own.
+// The phone ticket list, detail panels, and navigation and action sheets.
 import { activeDialog, blockingInteraction, canReturnInteractionFocus, dialogFocusable, focusAvailable, stepDialogTab, syncInteractionCoverage } from './dialogs.js';
 import { isoWithOffset, localScheduleText, parseScheduleInput, pickerToScheduleText, schedulePresets } from './format.js';
 
@@ -11,27 +7,117 @@ export function kontoraMobile() {
   let lifecycle = null;
   let sheetFocus = null;
   let descriptionSequence = 0;
-  let columnScrollSequence = 0;
+  let listProjection;
+  let listPosition;
+  const listPageSize = 100;
   let terminalFocusSequence = 0;
 
   return {
     _mobileWindowKey: '',
-    _mobileColumnBeforeNeedsInput: null,
-    _mobileWindowSize: 100,
+    mobileStatusFilter: ':attention',
+    _mobileWindowSize: listPageSize,
+
+    mobileSearching() {
+      return !!this.searchQuery.trim();
+    },
+
+    mobileFilterLabel() {
+      if (this.mobileSearching()) return 'All statuses';
+      if (this.mobileStatusFilter === ':attention') return 'Attention first';
+      return this.columns.find(col => col.key === this.mobileStatusFilter)?.label || 'All statuses';
+    },
+
+    mobileTicketCountKnown() {
+      return !this.loading && (this.ticketsLastLoaded !== null || (this.ticketSourcesLoaded &&
+        (this.secondaryTickets.length > 0 || this.ticketSources.some(source => source.id !== 'primary' && source.available))));
+    },
+
+    mobileIncompleteCount() {
+      if (!this.ticketsLoadError && !this.ticketSourcesFailed()) return '';
+      const count = this.mobileTicketList().rows.length;
+      return count + (count === 1 ? ' match' : ' matches') + ' in loaded tickets';
+    },
 
     mobileWindowKey() {
-      return JSON.stringify([this.mobileColumn().key, this.searchQuery, this.sourceFilter, this.needsInputOnly]);
+      return JSON.stringify([this.mobileStatusFilter, this.searchQuery, this.sourceFilter, this.needsInputOnly]);
+    },
+
+    mobileTicketList() {
+      const filter = this.mobileSearching() ? ':all' : this.mobileStatusFilter;
+      const board = this._board;
+      if (listProjection && listProjection.board === board && listProjection.filter === filter) return listProjection;
+      const attention = [], remaining = [];
+      const cols = this.columns.filter(col => col.key === filter);
+      for (const col of cols.length ? cols : this.columns) {
+        for (const ticket of this.boardTickets(col.key)) {
+          if (filter === ':attention' && (this.needsLiveInput(ticket) || ticket.status === 'human_review')) attention.push(ticket);
+          else remaining.push(ticket);
+        }
+      }
+      listProjection = { board, filter, rows: attention.concat(remaining), attention: attention.length };
+      return listProjection;
     },
 
     mobileTickets() {
-      var size = this._mobileWindowKey === this.mobileWindowKey() ? this._mobileWindowSize : 100;
-      return this.boardTickets(this.mobileColumn().key).slice(0, size);
+      const size = this._mobileWindowKey === this.mobileWindowKey() ? this._mobileWindowSize : listPageSize;
+      return this.mobileTicketList().rows.slice(0, size);
     },
 
     mobileLoadMore() {
-      var key = this.mobileWindowKey();
-      this._mobileWindowSize = (this._mobileWindowKey === key ? this._mobileWindowSize : 100) + 100;
+      const key = this.mobileWindowKey();
+      this._mobileWindowSize = (this._mobileWindowKey === key ? this._mobileWindowSize : listPageSize) + listPageSize;
       this._mobileWindowKey = key;
+    },
+
+    mobileListFilterChanged() {
+      this._mobileWindowKey = '';
+      if (this.$refs?.mobileCardList) this.$refs.mobileCardList.scrollTop = 0;
+    },
+
+    mobileAcceptDetail(ticket) {
+      if (!this.isMobile) return;
+      const list = this.$refs?.mobileCardList;
+      if (list) listPosition = { filter: this.mobileWindowKey(), top: list.scrollTop, key: this.ticketKey(ticket), epic: !!this.selectedEpic };
+      this.acceptMobileDetailRoute();
+    },
+
+    restoreMobileList() {
+      const position = listPosition;
+      if (!position || !this.isMobile || this.currentView !== 'board') return false;
+      this.$nextTick(() => {
+        if (this._appDestroyed || listPosition !== position || !this.isMobile || this.currentView !== 'board' ||
+            this.selectedTicket || this.selectedEpic || blockingInteraction(this)) return;
+        listPosition = null;
+        const list = this.$refs?.mobileCardList;
+        if (!list) return;
+        if (position.filter === this.mobileWindowKey()) list.scrollTop = position.top;
+        const visibleOpener = container => {
+          const button = container && [...container.querySelectorAll('[data-mobile-ticket-key]')]
+            .find(el => el.dataset.mobileTicketKey === position.key);
+          if (!focusAvailable(button)) return null;
+          const bounds = container.getBoundingClientRect();
+          const rect = button.getBoundingClientRect();
+          return rect.bottom > bounds.top && rect.top < bounds.bottom &&
+            rect.right > bounds.left && rect.left < bounds.right ? button : null;
+        };
+        const target = (position.epic && visibleOpener(this.$refs.mobileEpicRail)) || visibleOpener(list) || this.$refs.mobileRefresh;
+        if (focusAvailable(target)) target.focus({ preventScroll: true });
+        else document.querySelector('[data-mobile-focus-fallback]')?.focus({ preventScroll: true });
+      });
+      return true;
+    },
+
+    mobileTicketStatus(ticket) {
+      if (ticket.status === 'todo') return 'Queued';
+      if (ticket.status === 'human_review') return 'Human review';
+      if (ticket.status === 'paused') return 'Paused';
+      return this.columns.find(col => col.key === ticket.status)?.label || this.statusLabel(ticket.status);
+    },
+
+    async mobileNavigate(view) {
+      this.closeSheet();
+      if (this.currentView === view && view !== 'board') return true;
+      return this.navigateDestination({ view });
     },
 
     initMobile() {
@@ -68,6 +154,10 @@ export function kontoraMobile() {
           if (lifecycle === owner && !this._appDestroyed) this._syncMobileSheet();
         });
         if (typeof unwatch === 'function') owner.watches.push(unwatch);
+        for (const key of ['searchQuery', 'mobileStatusFilter', 'needsInputOnly', 'sourceFilter']) {
+          const stop = this.$watch(key, () => this.mobileListFilterChanged());
+          if (typeof stop === 'function') owner.watches.push(stop);
+        }
         for (const key of ['currentView', 'selectedTicket', 'selectedEpic']) {
           const stop = this.$watch(key, () => {
             if (lifecycle !== owner || this._appDestroyed) return;
@@ -88,7 +178,6 @@ export function kontoraMobile() {
     destroyMobile() {
       const owner = lifecycle;
       lifecycle = null;
-      ++columnScrollSequence;
       ++descriptionSequence;
       this.mobileResetTerminalInput();
       this.closeAgentPicker(false);
@@ -162,7 +251,6 @@ export function kontoraMobile() {
 
     mobileBreakpointChanged() {
       this.mobileResetTerminalInput();
-      ++columnScrollSequence;
       ++descriptionSequence;
       this.flushEditSave();
       this.editingBody = false;
@@ -174,7 +262,6 @@ export function kontoraMobile() {
       if (view === this.currentView) return;
       this.rememberDetailView();
       this.mobileResetTerminalInput();
-      ++columnScrollSequence;
       ++descriptionSequence;
       if (this.isMobile) {
         this.flushEditSave();
@@ -317,76 +404,6 @@ export function kontoraMobile() {
       if (!dialog || !this.sheet || !this.isMobile || activeDialog(this) || dialog.contains(event.target)) return;
       if (this.agentPickerOwnsTarget(event.target)) return;
       (this._mobileSheetFocusable()[0] || dialog).focus({ preventScroll: true });
-    },
-
-    // The status column currently shown on the board, clamped to a valid index.
-    mobileColumn() {
-      var cols = this.columns;
-      var i = Math.max(0, Math.min(this.activeColumn, cols.length - 1));
-      return cols[i];
-    },
-
-    mobileNeedsInputChanged() {
-      const cols = this.columns;
-      if (this.needsInputOnly) {
-        if (!this.isMobile) return;
-        const key = this.mobileColumn().key;
-        this._mobileColumnBeforeNeedsInput ??= key;
-        if (!this.boardTickets(key).length) {
-          const first = cols.findIndex(col => this.boardTickets(col.key).length);
-          if (first !== -1) this.setActiveColumn(first);
-        }
-      } else if (this._mobileColumnBeforeNeedsInput !== null) {
-        const prior = cols.findIndex(col => col.key === this._mobileColumnBeforeNeedsInput);
-        this.setActiveColumn(prior !== -1 ? prior : cols.findIndex(col => col.key === 'open'));
-        this._mobileColumnBeforeNeedsInput = null;
-      }
-      this._mobileWindowSize = 100;
-      this._mobileWindowKey = '';
-      if (this.$refs?.mobileCardList) this.$refs.mobileCardList.scrollTop = 0;
-    },
-
-    setActiveColumn(i) {
-      this.activeColumn = Math.max(0, Math.min(i, this.columns.length - 1));
-      const sequence = ++columnScrollSequence;
-      const owner = lifecycle;
-      const strip = this.$refs?.mobileStatusTabs;
-      if (!owner || !strip || !this.isMobile || this._appDestroyed) return;
-      this.$nextTick(() => {
-        if (sequence !== columnScrollSequence || lifecycle !== owner || this._appDestroyed || !this.isMobile ||
-            this.currentView !== 'board' || this.selectedTicket || this.selectedEpic || this.sheet ||
-            this.$refs?.mobileStatusTabs !== strip || !strip.isConnected || !strip.getClientRects().length) return;
-        this.activeColumn = Math.max(0, Math.min(this.activeColumn, this.columns.length - 1));
-        const button = strip.querySelectorAll('button')[this.activeColumn];
-        if (!button) return;
-        const bounds = strip.getBoundingClientRect();
-        const selected = button.getBoundingClientRect();
-        const style = getComputedStyle(strip);
-        const left = bounds.left + strip.clientLeft + (parseFloat(style.paddingLeft) || 0);
-        const right = bounds.left + strip.clientLeft + strip.clientWidth - (parseFloat(style.paddingRight) || 0);
-        // Oversized labels stay start-aligned so repeated boundary swipes cannot alternate edges.
-        const delta = selected.right - selected.left > right - left || selected.left < left
-          ? selected.left - left : Math.max(0, selected.right - right);
-        // scrollIntoView can also scroll the page and its vertical ancestors.
-        if (delta) strip.scrollBy({ left: delta, behavior: 'instant' });
-      });
-    },
-
-    // Horizontal swipe on the card list moves between status columns. Mirrors
-    // the prototype's threshold: dominant horizontal travel of at least 55px.
-    onBoardTouchStart(e) {
-      var t = e.changedTouches[0];
-      this._swipeX = t.clientX;
-      this._swipeY = t.clientY;
-    },
-    onBoardTouchEnd(e) {
-      if (this.selectedTicket || this.selectedEpic || this.sheet) return;
-      var t = e.changedTouches[0];
-      var dx = t.clientX - (this._swipeX || 0);
-      var dy = t.clientY - (this._swipeY || 0);
-      if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.4) {
-        this.setActiveColumn(this.activeColumn + (dx < 0 ? 1 : -1));
-      }
     },
 
     // A ticket "has a run" once it leaves the draft/queued states; that's when
@@ -804,8 +821,10 @@ export function kontoraMobile() {
         if (!command) return;
         add(command.label, ['cancel', 'delete'].includes(command.kind) ? 'danger' : 'default', () => this.dispatchLifecycle(key, command));
       };
-      if (t.kind === 'epic') add('Epic overview', 'default', () => this.openEpic(t.id));
-      if (this.ticketCanControl(t)) {
+      if (this.sameTicket(t, this.selectedTicket || this.selectedEpic)) add('Refresh ticket', 'default', () => this.reloadTicketDetail());
+      if (t.kind === 'epic' && !this.sameTicket(t, this.selectedEpic) && !this.isSecondary(t)) add('Epic overview', 'default', () => this.openEpic(t.id));
+      const current = this.lifecycleResolve(key) || t;
+      if (this.ticketCanControl(current)) {
         this.lifecycleActions(key).forEach(addCommand);
         if (this.lifecycleDestinations(key).length) add('Move to', 'default', () => this.openMoveSheet(t));
         for (const id of ['cancel', 'skip', 'review', 'annotate', 'archive', 'delete']) {

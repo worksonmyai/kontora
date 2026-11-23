@@ -369,10 +369,10 @@ test('phone navigation markup uses the shared route, upload input, filters and s
   assert.doesNotMatch(html, /@click="openNewSheet\(\)"/);
   assert.doesNotMatch(html, /sheet.type\s*===\s*'new'/);
   assert.doesNotMatch(html, /submitCreateTicketMobile|onMobileCreateSchedulePicked/);
-  assert.match(html, /class="mobile-new-button mobile-primary"/);
+  assert.match(html, /@click="mobileNavigate\('new'\)" class="mobile-primary" aria-label="New ticket"/);
   assert.match(html, /@click="\$refs.uploadInput.click\(\)"[^>]*>Upload \.md/);
   assert.match(html, /@click="clearSearch\(\)">Clear search/);
-  assert.match(html, /filteredTicketCount\(\) \+ ' matched'/);
+  assert.match(html, /mobileTicketList\(\).rows.length \+ \(mobileSearching\(\) \? ' found across all statuses'/);
   assert.match(html, /mobileNavigationCount\(view.key\)/);
   assert.match(html, /settings-mobile-context[\s\S]{0,600}configCache\?\.config_path/);
   const creation = html.slice(html.indexOf('id="new-view"'), html.indexOf('id="automations-view"'));

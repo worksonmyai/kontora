@@ -147,9 +147,13 @@ export function kontoraDetailView() {
             if (this.ticketKey(this.selectedTicket || this.selectedEpic) === key) this.focusMobileDetail();
           });
         }
-      } else if (!covered && returnFocus) {
+      } else if (!covered) {
         const target = returnFocus;
         returnFocus = null;
+        if (this.restoreMobileList?.() || !target) {
+          syncInteractionCoverage(this);
+          return;
+        }
         this.$nextTick(() => {
           if (!mobileDetailCovered(this) && canReturnInteractionFocus(this, target)) target.focus({ preventScroll: true });
         });

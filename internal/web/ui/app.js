@@ -48,10 +48,7 @@ export function kontoraApp() {
     tokenInput: '',
     authError: null,
     isMobile: window.innerWidth < 768,
-    // Mobile-only UI state (phone-width layer). activeColumn is which status
-    // tab the board shows; detailTab is the open ticket's content tab; sheet is
-    // the bottom sheet (actions / new ticket). Desktop ignores all three.
-    activeColumn: 0,
+
     detailTab: 'ticket',
     sheet: null,
     createSubmitting: false,
@@ -343,6 +340,7 @@ export function kontoraApp() {
       this._destroyTerminal();
       this._resetActivity();
       this.companionDestroy();
+      this.destroyTicketRefresh();
       clearTimeout(this._sseReconnect);
       clearInterval(this._nowTimer);
       if (this._eventSource) this._eventSource.close();

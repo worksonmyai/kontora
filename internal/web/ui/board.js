@@ -653,7 +653,6 @@ export function kontoraBoard() {
       this.$nextTick(() => {
         if (this._appDestroyed) return;
         this._mountBoard();
-        if (this.isMobile && this.needsInputOnly) this.mobileNeedsInputChanged();
         this.syncDetailCoverage();
         this.restoreDetailScroll();
         if (hadDetailFocus && !this.interactionOwner?.()) {
@@ -1172,7 +1171,6 @@ export function kontoraBoard() {
     toggleNeedsInput() {
       this.needsInputOnly = !this.needsInputOnly;
       this.recomputeBoard();
-      this.mobileNeedsInputChanged();
     },
 
     clearSearch() {

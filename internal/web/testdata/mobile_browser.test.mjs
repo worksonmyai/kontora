@@ -7038,7 +7038,8 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
         await expect(dialog).toBeVisible();
         assert.deepEqual(fixture.enqueued, []);
         await dialog.getByRole('button', { name: 'start ticket', exact: true }).click();
-        await expect.poll(() => fixture.enqueued).toEqual([{ id: 'kon-draft', action: 'init' }]);
+        await expect(page.getByText('kon-draft: Pickup requested', { exact: true })).toBeVisible();
+        assert.deepEqual(fixture.enqueued, [{ id: 'kon-draft', action: 'init' }]);
         assert.equal(fixture.mutations.at(-1).path, '/api/tickets/kon-draft/init');
         assert.equal(record.scheduled_at, undefined);
         assert.equal(record.status, 'todo');
@@ -7565,6 +7566,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
           await page.getByRole('button', { name: /^Move to Open$/i }).filter({ visible: true }).click();
         } else await page.getByRole('combobox', { name: 'Move to status', exact: true }).selectOption('open');
         await expect.poll(() => fixture.records.get('primary/kon-draft').status).toBe('open');
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).lifecycleBusy('kon-draft'))).toBe(false);
         assert.deepEqual(fixture.mutations.map(({ method, path, body }) => ({ method, path, body })),
           [{ method: 'POST', path: '/api/tickets/kon-draft/move', body: { status: 'open' } }]);
         const parked = fixture.records.get('primary/kon-draft');
@@ -9432,7 +9434,7 @@ describe('mobile management and Assistant real-control parity', { concurrency: 2
         await page.getByRole('button', { name: 'Return to board', exact: true }).click();
         await newButton().click();
         await page.waitForURL('**/#/new');
-        await newButton().click();
+        await expect(page.getByRole('button', { name: 'Creating…', exact: true })).toBeDisabled();
         await expect(page.locator('#new-title')).toHaveValue('Pending full New owns this draft');
         await expect(page.locator('#new-body')).toHaveValue('No replacement or cancellation while POST is pending.');
         await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).createSubmitting)).toBe(true);

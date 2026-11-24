@@ -4393,21 +4393,29 @@ describe('phone ticket navigation and recovery', () => {
     });
   });
 
-  test('phone Attention first groups urgent rows and Load more resets on filter changes', async t => {
+  test('phone Attention first puts urgent and running tickets before other tickets', async t => {
     const customStatus = 'awaiting_data';
     const records = [
       ticket('kon-review', 'Waiting for human review', { status: 'human_review' }),
       ticket('kon-waiting', 'Waiting for agent input', { status: 'in_progress', waiting_for_input: true }),
+      ticket('kon-running', 'Running without input', { status: 'in_progress' }),
+      ticket('kon-draft', 'Ordinary backlog ticket'),
       ...Array.from({ length: 103 }, (_, i) => ticket(`kon-window-${i}`, `Window fixture ${i}`, { status: customStatus })),
     ];
     await withPage(t, 390, 'dark', async (page, fixture) => {
       const list = phoneList(page), rows = phoneRows(page);
       const more = list.getByRole('button', { name: 'Load more', exact: true });
       await expect(phoneFilterSummary(page)).toContainText('Attention first');
-      await expect(list.getByRole('heading', { name: 'Needs attention (2)', exact: true })).toBeVisible();
-      await expect(list.getByRole('heading', { name: 'Other tickets', exact: true })).toBeVisible();
-      const urgent = await phoneRowTitles(page).allTextContents();
-      assert.deepEqual(urgent.slice(0, 2).sort(), ['Waiting for agent input', 'Waiting for human review']);
+      const headings = list.getByRole('heading');
+      await expect(headings).toHaveText(['Needs attention (2)', 'In progress (1)', 'Other tickets']);
+      const titles = await phoneRowTitles(page).allTextContents();
+      assert.deepEqual(titles.slice(0, 2).sort(), ['Waiting for agent input', 'Waiting for human review']);
+      assert.deepEqual(titles.slice(2, 4), ['Running without input', 'Ordinary backlog ticket']);
+
+      await phoneSearch(page).fill('Running without input');
+      await expect(headings).toHaveText(['In progress (1)']);
+      await expect(phoneRowTitles(page)).toHaveText(['Running without input']);
+      await phoneSearch(page).clear();
       await selectPhoneStatus(page, customStatus);
       await expect(rows).toHaveCount(100);
       await more.click();
@@ -4416,7 +4424,7 @@ describe('phone ticket navigation and recovery', () => {
       await expect.poll(() => list.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
       await selectPhoneStatus(page, ':all');
       await expect(rows).toHaveCount(100);
-      await expect(list.getByRole('heading', { name: /^Needs attention/ })).toBeHidden();
+      await expect(headings).toHaveCount(0);
       await expect.poll(() => list.evaluate(el => el.scrollTop)).toBe(0);
       await expect(more).toBeVisible();
       assert.deepEqual(fixture.mutations, []);

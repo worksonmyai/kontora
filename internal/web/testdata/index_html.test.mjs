@@ -9905,25 +9905,29 @@ test('phone status picker offers attention, all statuses, and the current schema
   assert.match(picker, /<template x-for="col in columns" :key="col.key">\s*<option :value="col.key" :selected="mobileStatusFilter === col.key" x-text="col.label">/);
 });
 
-test('phone list groups attention first and combines search with the selected status', () => {
+test('phone list groups attention and active runs before other tickets and respects filters', () => {
   const state = loadKontoraState();
   const waiting = { id: 'waiting', title: 'Needs an answer', status: 'in_progress', kontora: true, waiting_for_input: true };
+  state.configCache = { custom_statuses: ['awaiting_data'] };
   state.tickets = [
     { id: 'same', title: 'Shared name', status: 'open' },
     waiting,
     { ...waiting, id: 'paused', status: 'paused' },
+    { id: 'idle', title: 'Run stopped', status: 'in_progress', execution_active: false },
+    { id: 'active', title: 'Running with a custom status', status: 'awaiting_data', execution_active: true },
     { id: 'review', title: 'Shared name in review', status: 'human_review' },
   ];
   state.secondaryTickets = [{ id: 'same', source: 'team', title: 'Shared name', status: 'done' }];
   const keys = () => Array.from(state.mobileTickets(), t => state.ticketKey(t));
+  const headings = () => vmValue(state.mobileTicketList().headings);
   state.recomputeBoard();
   assert.equal(state.mobileFilterLabel(), 'Attention first');
-  assert.equal(state.mobileTicketList().attention, 2);
-  assert.deepEqual(keys(), ['waiting', 'review', 'same', 'paused', 'team/same']);
+  assert.deepEqual(headings(), { 0: 'Needs attention (2)', 2: 'In progress (1)', 3: 'Other tickets' });
+  assert.deepEqual(keys(), ['waiting', 'review', 'active', 'same', 'idle', 'paused', 'team/same']);
 
   state.mobileStatusFilter = ':all';
-  assert.equal(state.mobileTicketList().attention, 0);
-  assert.deepEqual(keys(), ['same', 'waiting', 'paused', 'review', 'team/same']);
+  assert.deepEqual(headings(), {});
+  assert.deepEqual(keys(), ['same', 'waiting', 'idle', 'paused', 'review', 'active', 'team/same']);
   state.mobileStatusFilter = 'done';
   assert.equal(state.mobileFilterLabel(), 'Done');
   assert.deepEqual(keys(), ['team/same']);
@@ -9934,7 +9938,7 @@ test('phone list groups attention first and combines search with the selected st
   assert.deepEqual(keys(), ['team/same']);
   assert.equal(state.mobileStatusFilter, 'done', 'search does not rewrite the selection');
   state.mobileStatusFilter = ':attention';
-  assert.equal(state.mobileTicketList().attention, 1);
+  assert.deepEqual(headings(), { 0: 'Needs attention (1)', 1: 'Other tickets' });
   assert.deepEqual(keys(), ['review', 'same', 'team/same'], 'namesakes remain distinct across folders');
   state.mobileStatusFilter = 'done';
   state.sourceFilter = 'team';

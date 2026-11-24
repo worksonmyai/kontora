@@ -136,7 +136,7 @@ async function populatedBoard(page) {
     await expect(page.locator('.mobile-filter-summary')).toContainText('Attention first');
     await expect(board.getByRole('heading', { name: /^Needs attention/ })).toBeInViewport();
     await expect(board.getByText('Agent needs an answer before continuing', { exact: true })).toBeInViewport();
-    await expect(board.getByRole('heading', { name: 'Other tickets' })).toBeInViewport();
+    await expect(board.getByRole('heading', { name: /^In progress \(/ })).toBeInViewport();
   } else {
     await expect(page.getByRole('listitem', { name: /^Ticket kon-scheduled:/ })).toBeInViewport();
     await expect(page.getByRole('listitem', { name: /^Ticket kon-done:/ })).toBeInViewport();

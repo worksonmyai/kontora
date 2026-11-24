@@ -5485,8 +5485,9 @@
          class="mobile-list-empty">No tickets match the current filters and search.</p>
       <template x-for="(ticket, index) in mobileTickets()" :key="ticketKey(ticket)">
         <div class="mobile-list-item">
-        <h2 x-show="mobileTicketList().attention && (index === 0 || index === mobileTicketList().attention)" class="mobile-list-heading"
-            x-text="index === 0 ? 'Needs attention (' + mobileTicketList().attention + ')' : 'Other tickets'"></h2>
+        <template x-if="mobileTicketList().headings[index]">
+          <h2 class="mobile-list-heading" x-text="mobileTicketList().headings[index]"></h2>
+        </template>
         <button type="button" @click="openMobileTicket(ticket)" :data-mobile-ticket-key="ticketKey(ticket)" class="mobile-card shrink-0"
                 :data-pipe-color="ticketPipeColor(ticket)"
                 :style="(ticket.status==='cancelled' ? 'opacity:.62;' : (ticket.status === 'open' && ticket.scheduled_at ? 'opacity:.72;' : '')) + (!ticket.kontora ? 'border-style:dashed;' : '')">

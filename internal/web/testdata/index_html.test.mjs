@@ -4268,7 +4268,7 @@ test("mobile cards keep their content and state hooks without decorative indicat
   assert.match(card, /class="[^"]*\bshrink-0\b/);
   assert.match(card, /:data-pipe-color="ticketPipeColor\(ticket\)"/);
   assert.match(card, /:data-mobile-ticket-key="ticketKey\(ticket\)"/);
-  for (const name of ['mobile-card-row', 'mobile-card-meta', 'mobile-card-id']) {
+  for (const name of ['mobile-card-row', 'mobile-card-context', 'mobile-card-id']) {
     assert.match(cards, new RegExp(`class="[^"]*\\b${name}\\b`));
   }
   const title = cards.match(/<p\b[^>]*class="mobile-card-title"[^>]*>([\s\S]*?)<\/p>/)?.[1];
@@ -4279,8 +4279,7 @@ test("mobile cards keep their content and state hooks without decorative indicat
   assert.match(title, /<span\b[^>]*x-text="parseTitleTag\(ticket\)\.rest"/);
   assert.doesNotMatch(title, /x-html=|x-text="ticket\.title"/);
   assert.match(cards, /x-show="showPipelineBadges"/);
-  assert.match(cards, /x-if="showAgentMeta && ticket\.agent"/);
-  for (const expression of ['ticket.id', 'ticket.agent', 'sourceLabel(ticket)']) {
+  for (const expression of ['ticket.id', 'ticketProjectName(ticket)', 'sourceLabel(ticket)']) {
     assert.ok(cards.includes(`x-text="${expression}"`), expression);
   }
   assert.match(cards, /x-if="!ticket\.kontora"/);
@@ -4291,7 +4290,7 @@ test("mobile cards keep their content and state hooks without decorative indicat
   assert.match(cards, /scheduleChip\(ticket\)\.rel/);
   assert.match(cards, /epicIsAgent\(ticket\) \? 'supervising' : ticket\.stage/);
   assert.match(cards, /epicCardInfo\(ticket\)\.done/);
-  assert.match(cards, /formatDuration\(ticket\)/);
+  assert.ok(cards.indexOf('mobile-card-title') < cards.indexOf('mobile-card-row'));
   assert.doesNotMatch(cards, /border-left:|pulse-dot|waiting-dot/);
 });
 
@@ -4328,7 +4327,7 @@ test("mobile sheets retain their dialog heading and actions without repeated tit
   assert.match(sheets, /@click="a\.run\(\)"/);
   const actions = html.slice(html.indexOf('<!-- action bar -->'), html.indexOf('<!-- schedule sheet:'));
   assert.match(actions, /@click="mobilePrimaryAction\(selectedTicket\)\.run\(\)"/);
-  assert.match(actions, /@click="openMoveSheet\(selectedTicket\)"/);
+  assert.doesNotMatch(actions.split('<!-- ===== Bottom sheet')[0], /@click="openMoveSheet\(selectedTicket\)"/);
   assert.doesNotMatch(actions, /width:[67]px;height:[67]px;border-radius:9999px|mobileActionDotColor/);
   assert.doesNotMatch(uiSource + html, /mobileActionDotColor/);
 });
@@ -4385,7 +4384,7 @@ test("mobile typography, focus and motion contracts stay phone-scoped", () => {
   assert.match(css, /--mobile-text-body:\s*16px/);
   assert.match(css, /--mobile-text-label:\s*14px/);
   assert.match(css, /--mobile-text-meta:\s*13px/);
-  assert.match(css, /\.mobile-detail\.mobile-terminal-reading \.mobile-terminal-dock \{ padding-bottom:max\(8px,env\(safe-area-inset-bottom\)\)/);
+  assert.match(css, /\.mobile-detail, \.mobile-epic \{ padding-bottom:env\(safe-area-inset-bottom\)/);
   const mobile = [...css.matchAll(/@media \(max-width:767px\) \{((?:[^{}]|\{[^{}]*\})*)\}/g)]
     .map(([, rules]) => rules).join('\n');
   assert.ok(mobile);
@@ -4395,7 +4394,7 @@ test("mobile typography, focus and motion contracts stay phone-scoped", () => {
   assert.match(mobile, /\.mobile-tab \{[^}]*flex:none;[^}]*white-space:nowrap;[^}]*var\(--font-body\)/);
   assert.match(mobile, /\.mobile-tab\[aria-pressed="true"\] \{[^}]*border-bottom-color:/);
   assert.match(mobile, /\.mobile-stage-control \{[^}]*font:[^}]*padding:[^}]*border-radius:/);
-  assert.match(mobile, /\.mobile-card-row, \.mobile-card-meta \{[^}]*flex-wrap:wrap;[^}]*min-width:0/);
+  assert.match(mobile, /\.mobile-card-row \{[^}]*flex-wrap:wrap;[^}]*min-width:0/);
   assert.match(mobile, /\.mobile-card :is\(span,p\) \{[^}]*overflow-wrap:anywhere/);
   const focus = mobile.match(/([^{}]*\.mobile-chrome[^{}]*:focus-visible[^{}]*)\{([^}]*)\}/);
   assert.ok(focus);
@@ -4545,7 +4544,7 @@ test("index.html gates both empty-board panels on ticketBoardEmpty", () => {
   const mobileView = elementAt(html, html.indexOf('class="mobile-board-layer"'));
   assert.match(mobileView, /^<div x-show="!loading && currentView === 'board'"/);
   assert.match(mobileView, /<template x-if="!needsInputOnly && ticketBoardEmpty\(\)">\s*<div id="board-empty-mobile"/);
-  assert.match(mobileView, /x-show="!ticketBoardEmpty\(\) && !ticketsLoadError && !ticketSourcesFailed\(\) && !mobileTicketList\(\)\.rows\.length && \(!needsInputOnly \|\| needsInputCount\)"/);
+  assert.match(mobileView, /x-show="!ticketBoardEmpty\(\) && !ticketsLoadError && !ticketSourcesFailed\(\) && !mobileTicketList\(\)\.rows\.length && !mobileTicketList\(\)\.epics\.length && \(!needsInputOnly \|\| needsInputCount\)"/);
 });
 
 test("ticketBoardEmpty requires a successful load and no raw tickets, regardless of search", () => {
@@ -9900,13 +9899,13 @@ test('phone status picker offers attention, all statuses, and the current schema
   const html = htmlNoComments();
   const picker = html.match(/<select\b[^>]*\bx-model="mobileStatusFilter"[^>]*>[\s\S]*?<\/select>/)?.[0];
   assert.ok(picker, 'phone board has a status picker');
-  assert.match(picker, /^<select\b[^>]*:disabled="mobileSearching\(\)"/, 'search temporarily disables the status picker');
+  assert.doesNotMatch(picker, /:disabled=/, 'status remains editable during search');
   assert.match(picker, /<option value=":attention">Attention first<\/option>/);
   assert.match(picker, /<option value=":all">All statuses<\/option>/);
-  assert.match(picker, /<template x-for="col in columns" :key="col.key">\s*<option :value="col.key" x-text="col.label">/);
+  assert.match(picker, /<template x-for="col in columns" :key="col.key">\s*<option :value="col.key" :selected="mobileStatusFilter === col.key" x-text="col.label">/);
 });
 
-test('phone list groups live input and review first, then searches across statuses without losing source identity', () => {
+test('phone list groups attention first and combines search with the selected status', () => {
   const state = loadKontoraState();
   const waiting = { id: 'waiting', title: 'Needs an answer', status: 'in_progress', kontora: true, waiting_for_input: true };
   state.tickets = [
@@ -9931,12 +9930,12 @@ test('phone list groups live input and review first, then searches across status
 
   state.searchQuery = 'Shared name';
   state.recomputeBoard();
-  assert.equal(state.mobileFilterLabel(), 'All statuses');
-  assert.deepEqual(keys(), ['same', 'review', 'team/same'], 'namesakes remain distinct across folders');
+  assert.equal(state.mobileFilterLabel(), 'Done');
+  assert.deepEqual(keys(), ['team/same']);
   assert.equal(state.mobileStatusFilter, 'done', 'search does not rewrite the selection');
   state.mobileStatusFilter = ':attention';
-  assert.equal(state.mobileTicketList().attention, 0, 'search results are not split into attention groups');
-  assert.deepEqual(keys(), ['same', 'review', 'team/same']);
+  assert.equal(state.mobileTicketList().attention, 1);
+  assert.deepEqual(keys(), ['review', 'same', 'team/same'], 'namesakes remain distinct across folders');
   state.mobileStatusFilter = 'done';
   state.sourceFilter = 'team';
   state.recomputeBoard();
@@ -9945,7 +9944,6 @@ test('phone list groups live input and review first, then searches across status
   state.sourceFilter = '';
   state.searchQuery = '   ';
   state.recomputeBoard();
-  assert.equal(state.mobileSearching(), false);
   assert.equal(state.mobileFilterLabel(), 'Done');
   assert.deepEqual(keys(), ['team/same']);
 });
@@ -9985,7 +9983,7 @@ for (const visualViewport of [false, true]) {
     assert.deepEqual(dom.document.listeners.map(l => l.name), ['keydown', 'focusin', 'focusout']);
     assert.ok(dom.document.listeners.every(l => l.options === true));
     assert.equal(dom.viewport?.listeners.length || 0, visualViewport ? 2 : 0);
-    const watchKeys = ['currentView', 'mobileStatusFilter', 'needsInputOnly', 'searchQuery', 'selectedEpic', 'selectedTicket', 'sheet', 'sourceFilter'];
+    const watchKeys = ['currentView', 'mobileAgentFilter', 'mobileProjectFilter', 'mobileStatusFilter', 'needsInputOnly', 'searchQuery', 'selectedEpic', 'selectedTicket', 'sheet', 'sourceFilter'];
     assert.deepEqual([...watches.keys()].sort(), watchKeys);
     assert.equal(state.isMobile, true);
     dom.window.innerHeight = 400;
@@ -13303,8 +13301,9 @@ test('phone Output retains activity controls, shared scroller, selectors and fou
     assert.doesNotMatch(button[0], /x-show/);
   }
   const toolbar = html.split('class="mobile-output-toolbar detail-shared"')[1].split('<!-- terminal')[0];
-  assert.match(toolbar, /@change="selectOutputRun\(\$event.target.value\)"/);
-  const modes = html.split('class="mobile-output-row"').find(part => part.includes('aria-label="Output view"')).split('</select>')[0];
+  const controls = html.split('class="mobile-output-row"').find(part => part.includes('aria-label="Output view"'));
+  assert.match(controls, /@change="selectOutputRun\(\$event.target.value\)"/);
+  const modes = controls.split('</select>')[0];
   assert.match(modes, /@change="mobileSwitchTab\(\$event.target.value\)"/);
   assert.doesNotMatch(toolbar, /aria-label="Output view"/);
   for (const view of ['terminal', 'activity', 'logs']) assert.ok(modes.includes(`value="${view}"`), view + ' remains reachable within Output');
@@ -17575,8 +17574,8 @@ test("both assistant row windows can load earlier rows without replacing the sha
   const html = fs.readFileSync(htmlPath, "utf8");
   for (const [id, fragment] of [['assistant-thread', 'assistantTranscriptMarkup'], ['assistant-sheet-thread', 'assistantSheetTranscriptMarkup']]) {
     const host = html.slice(html.indexOf(`id="${id}"`), html.indexOf(`x-html="${fragment}"`));
-    assert.match(host, /x-show="assistantView === 'thread' && assistantThreadVisible\(\)"/);
-    assert.match(host, /<button type="button" x-show="assistantHiddenRows\(\)" @click="assistantLoadEarlier\(\)"/);
+    assert.match(host, /x-show="assistantView === 'thread'(?: && assistantThreadVisible\(\))?"/);
+    assert.match(host, /<button type="button" x-show="(?:assistantThreadVisible\(\) && )?assistantHiddenRows\(\)" @click="assistantLoadEarlier\(\)"/);
     assert.match(host, /Load earlier messages and events<\/button>/);
     assert.match(host, /class="assistant-fragment"/);
   }
@@ -17585,7 +17584,7 @@ test("both assistant row windows can load earlier rows without replacing the sha
 
 test("both transcripts latch the scroll on their own scroll event", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
-  assert.equal([...html.matchAll(/@scroll\.passive="assistantThreadScrolled\(\)"/g)].length, 2);
+  assert.equal([...html.matchAll(/@scroll\.passive="(?:if \(assistantThreadVisible\(\)\) )?assistantThreadScrolled\(\)"/g)].length, 2);
 });
 
 test("the text being typed is in both the docked pane and the sheet", () => {
@@ -22097,8 +22096,14 @@ test("companion inbox distinguishes disabled storage, completion, and the change
 test("desktop and mobile reuse the companion inbox, state text, evidence, and missing-agent hint", () => {
   const html = indexMarkup();
   const { state } = companionState();
-  for (const key of ["companionHeaderMarkup", "companionInboxMarkup", "companionEvidenceMarkup"]) {
+  for (const key of ["companionInboxMarkup", "companionEvidenceMarkup"]) {
     assert.equal(html.split(`x-html="${key}"`).length - 1, 2, key);
+  }
+  assert.equal(html.split('x-html="companionHeaderMarkup"').length - 1, 1);
+  assert.match(html, /x-html="companionSheetTabsMarkup"/);
+  assert.match(html, /x-html="companionStatusMarkup \+ companionChatHintMarkup"/);
+  for (const fragment of [state.companionStatusMarkup, state.companionChatHintMarkup]) {
+    assert.ok(fragment && state.companionHeaderMarkup.includes(fragment));
   }
   assert.match(state.companionHeaderMarkup, /role="status" x-text="companionState\(\)"/);
   assert.match(state.companionHeaderMarkup, /companionCounts\(\)/);
@@ -22111,7 +22116,8 @@ test("desktop and mobile reuse the companion inbox, state text, evidence, and mi
   assert.match(state.companionHeaderMarkup, /x-show="companionThread\(\) && assistantStreaming" @click="stopAssistantTurn\(\)"/);
   assert.match(state.companionHeaderMarkup, /x-show="companionEnabled\(\) && companionThread\(\) && !companionSnapshot\?\.ai_available"/);
   assert.equal(html.split(`x-show="companionEnabled() && assistantView === 'inbox'" x-cloak`).length - 1, 2);
-  assert.equal(html.split(`x-show="assistantView === 'thread' && assistantThreadVisible()"`).length - 1, 2);
+  assert.match(html, /id="assistant-sheet-thread"[^>]*x-show="assistantView === 'thread'"/);
+  assert.match(fs.readFileSync(htmlPath, 'utf8'), /x-show="assistantThreadVisible\(\)" x-html="assistantSheetTranscriptMarkup"/);
   assert.equal(html.split(`x-for="t in assistantVisibleThreads()"`).length - 1, 2);
   assert.match(html, /class="companion-rail-cat" x-show="companionEnabled\(\)" x-cloak/);
   assert.match(state.companionEvidenceMarkup, /x-show="companionEnabled\(\) && companionThread\(\)" x-cloak/);
@@ -22884,8 +22890,6 @@ test('custom activity is independent of status, grouping, filters and edit permi
   assert.equal(state.canSetStage(parked), true);
   assert.ok(state.ticketMoves(active).some(m => m.endpoint === 'pause'));
   assert.ok(!state.ticketMoves(parked).some(m => m.endpoint === 'pause'));
-  assert.equal(state.mobileSecondaryAction(active).label, 'Move to');
-  assert.equal(state.mobileSecondaryAction(parked).label, 'Move to');
   assert.ok(state.mobileSheetActions(active).some(m => m.label === 'Pause'));
   assert.equal(state.childRowFromEvent(active).execution_active, true);
   assert.equal(state.childRowFromEvent(parked).execution_active, false);

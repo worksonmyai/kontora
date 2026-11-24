@@ -1,5 +1,5 @@
 // Attention is daemon-owned. Opening the inbox and refreshing it never starts a model turn.
-const COMPANION_HEADER = `
+const COMPANION_STATUS = `
 <div class="companion-header" x-show="companionEnabled()" x-cloak>
   <span class="companion-cat" :data-state="companionState()" aria-hidden="true"></span>
   <div class="companion-status">
@@ -7,13 +7,17 @@ const COMPANION_HEADER = `
     <span role="status" x-text="companionState()"></span>
   </div>
   <span class="companion-count" x-text="companionCounts()"></span>
-</div>
+</div>`;
+
+const companionTabs = stopWhen => `
 <nav class="companion-tabs" aria-label="Assistant views">
   <button type="button" x-show="companionEnabled()" x-cloak @click="companionOpenInbox()" :aria-pressed="assistantView === 'inbox'">Inbox</button>
   <button type="button" @click="assistantShowChat()" :aria-pressed="assistantView === 'thread'" x-text="companionEnabled() && companionThread() ? companionName() + ' chat' : 'Chat'"></button>
   <button type="button" @click="assistantShowHistory()" :aria-pressed="assistantView === 'history'">History</button>
-  <button type="button" x-show="companionThread() && assistantStreaming" @click="stopAssistantTurn()">Stop</button>
-</nav>
+  <button type="button" x-show="${stopWhen}" @click="stopAssistantTurn()">Stop</button>
+</nav>`;
+
+const COMPANION_CHAT_HINT = `
 <p class="companion-chat-hint companion-note" x-show="companionEnabled() && companionThread() && !companionSnapshot?.ai_available" x-cloak x-text="companionSnapshot?.hint || 'Configure an assistant agent to ask for an explanation.'"></p>`;
 
 const COMPANION_INBOX = `
@@ -73,7 +77,10 @@ const COMPANION_EVIDENCE = `
 
 export function kontoraCompanion() {
   return {
-    companionHeaderMarkup: COMPANION_HEADER,
+    companionHeaderMarkup: COMPANION_STATUS + companionTabs('companionThread() && assistantStreaming') + COMPANION_CHAT_HINT,
+    companionSheetTabsMarkup: companionTabs("assistantStreaming && (assistantView !== 'thread' || !assistantThreadVisible() || (!assistantEnabled() && !companionThread()))"),
+    companionStatusMarkup: COMPANION_STATUS,
+    companionChatHintMarkup: COMPANION_CHAT_HINT,
     companionInboxMarkup: COMPANION_INBOX,
     companionEvidenceMarkup: COMPANION_EVIDENCE,
     companionSnapshot: null,
@@ -192,6 +199,7 @@ export function kontoraCompanion() {
     companionOpenInbox() {
       this.assistantViewIntent = 'inbox';
       if (!this.companionEnabled()) return;
+      this._assistantNoteScroll();
       if (this._assistantSelecting || this.assistantView !== 'inbox') {
         this._assistantSelectionSeq++;
         this._assistantRetireActivity();

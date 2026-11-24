@@ -170,16 +170,16 @@ test('Assistant shells mount constant fragments and keep exclusive scroll hosts'
   const hosts = [...html.matchAll(/x-html="(assistant\w+Markup)"/g)].map(match => match[1]);
   assert.deepEqual(hosts, [
     'assistantContextMarkup', 'assistantHistoryMarkup', 'assistantTranscriptMarkup', 'assistantConfigureMarkup', 'assistantComposerMarkup',
-    'assistantContextMarkup', 'assistantHistoryMarkup', 'assistantSheetTranscriptMarkup', 'assistantSheetConfigureMarkup', 'assistantSheetComposerMarkup',
+    'assistantContextMarkup', 'assistantSheetTranscriptMarkup', 'assistantSheetConfigureMarkup', 'assistantHistoryMarkup', 'assistantSheetApprovalMarkup', 'assistantSheetComposerMarkup',
   ]);
   for (const name of hosts) assert.equal(typeof fragments[name], 'string', name);
   for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(fragments))) assert.equal(descriptor.get, undefined);
   assert.match(html, /x-if="!isMobile && assistantOpen && !assistantRail"/);
   assert.match(html, /x-if="isMobile && sheet.type==='assistant'"/);
   for (const [id, name] of [['assistant-thread', 'assistantTranscriptMarkup'], ['assistant-sheet-thread', 'assistantSheetTranscriptMarkup']]) {
-    const host = html.match(new RegExp(`<div id="${id}"[^>]*>[\\s\\S]*?</div>`))?.[0];
+    const host = html.match(new RegExp(`<div id="${id}"[^>]*>[\\s\\S]*?x-html="${name}"`))?.[0];
     assert.ok(host, id);
-    assert.match(host, /@scroll\.passive="assistantThreadScrolled\(\)"/);
+    assert.match(host, /@scroll\.passive="(?:if \(assistantThreadVisible\(\)\) )?assistantThreadScrolled\(\)"/);
     assert.match(host, new RegExp(`x-html="${name}"`));
   }
   assert.doesNotMatch(html, /x-for="row in assistantThreadRows\(\)"/);
@@ -204,8 +204,13 @@ for (const prefix of ['', 'Sheet']) {
     assert.doesNotMatch(transcript.slice(partial, working), /setProse|x-html|x-for/);
     assert.match(transcript, new RegExp(`id="assistant-${prefix ? 'sheet-' : ''}partial"`));
     assert.match(transcript, new RegExp(`id="assistant-${prefix ? 'sheet-' : ''}partial-tool"`));
-    assert.match(transcript, /@click="resolveAssistantGate\(true\)"/);
-    assert.match(transcript, /@click="resolveAssistantGate\(false\)"/);
+    const approval = prefix ? fragments.assistantSheetApprovalMarkup : transcript;
+    if (prefix) {
+      assert.doesNotMatch(transcript, /resolveAssistantGate/);
+      assert.match(approval, /aria-controls="assistant-sheet-proposal"/);
+    }
+    assert.match(approval, /@click="resolveAssistantGate\(true\)"/);
+    assert.match(approval, /@click="resolveAssistantGate\(false\)"/);
   });
 
   test(`shared ${prefix || 'desktop'} composer exposes suggestions, autonomy hints and configured agent`, () => {
@@ -231,6 +236,28 @@ test('shared history has counts and a visible delete control; context keeps all 
   assert.match(fragments.assistantHistoryMarkup, /:aria-label="'Delete ' \+ t.title"/);
   assert.match(fragments.assistantContextMarkup, /x-for="chip in assistantContext"/);
   assert.match(fragments.assistantContextMarkup, /!companionThread\(\)/);
+});
+
+test('activity updates in History preserve the Chat follow state and loaded window', () => {
+  const state = assistant();
+  const thread = { scrollHeight: 1000, clientHeight: 100, scrollTop: 60 };
+  state._assistantScrollEl = () => thread;
+  state.$nextTick = run => run();
+  state.assistantThreadScrolled();
+  assert.equal(state._assistantStick, false);
+  state._assistantActivityLoaded = true;
+  state.assistantView = 'history';
+  // display:none yields zero metrics. A delayed scroll event and activity read
+  // must not mistake those dimensions for the user going back to the end.
+  Object.assign(thread, { scrollHeight: 0, clientHeight: 0, scrollTop: 0 });
+  state.assistantThreadScrolled();
+  state._mergeAssistantActivity({ tape: { events: [{ kind: 'text', text: 'Arrived in History' }] } });
+  assert.equal(state._assistantStick, false);
+  assert.equal(state.assistantWindow, 201);
+  state.assistantView = 'thread';
+  Object.assign(thread, { scrollHeight: 1040, clientHeight: 100, scrollTop: 60 });
+  state._assistantScrollToEnd();
+  assert.equal(thread.scrollTop, 60);
 });
 
 test('recorded tool expansion survives late results and streamed text updates', () => {

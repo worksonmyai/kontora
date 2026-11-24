@@ -133,7 +133,7 @@ async function populatedBoard(page) {
   const phone = page.viewportSize().width < 768;
   if (phone) {
     const board = page.locator('.mobile-board-layer');
-    await expect(page.locator('.mobile-chrome').getByLabel('Status', { exact: true })).toHaveValue(':attention');
+    await expect(page.locator('.mobile-filter-summary')).toContainText('Attention first');
     await expect(board.getByRole('heading', { name: /^Needs attention/ })).toBeInViewport();
     await expect(board.getByText('Agent needs an answer before continuing', { exact: true })).toBeInViewport();
     await expect(board.getByRole('heading', { name: 'Other tickets' })).toBeInViewport();
@@ -240,11 +240,24 @@ async function recordedAssistant(page) {
     results.push(output);
   }
   const proposal = surface.locator('[id$="-proposal"]');
-  const approve = proposal.getByRole('button', { name: 'Approve', exact: true });
-  await approve.scrollIntoViewIfNeeded();
+  const approve = surface.getByRole('button', { name: 'Approve', exact: true });
+  await (page.viewportSize().width < 768 ? proposal : approve).scrollIntoViewIfNeeded();
   await expect(approve).toBeInViewport();
   await expect(proposal.getByText('move_ticket', { exact: true })).toBeInViewport();
   for (const output of results) await expect(output).toBeInViewport();
+}
+
+async function assistantApprovalWithDraft(page) {
+  await openTicket(page, 'kon-draft');
+  await openAssistantControl(page);
+  const dialog = page.getByRole('dialog', { name: 'Assistant', exact: true });
+  const composer = dialog.getByRole('combobox', { name: 'Message the assistant', exact: true });
+  await composer.fill('Check the ticket before moving it.');
+  await expect(composer).toBeFocused();
+  const approval = dialog.getByRole('group', { name: 'Pending approval' });
+  for (const control of [composer, approval.getByRole('button', { name: 'Approve' }), approval.getByRole('button', { name: 'Skip' })]) {
+    await expect(control).toBeInViewport({ ratio: 1 });
+  }
 }
 
 async function statsView(page) {
@@ -266,6 +279,26 @@ async function settingsGeneral(page) {
   const general = page.locator('#settings-section-general');
   await expect(general.getByRole('heading', { name: 'Execution', exact: true })).toBeVisible();
   await expect(general.locator('#gen-max_concurrent_agents')).toHaveValue('3');
+}
+
+async function phoneActivity(page) {
+  await openTicket(page, 'kon-live');
+  await phoneOutputView(page, 'Activity');
+  const transcript = page.locator('.mobile-detail [data-detail-scroll="activity"]');
+  await expect(transcript.getByText('Fixture activity revision 0', { exact: true })).toBeVisible();
+  assert.ok((await transcript.boundingBox()).height >= page.viewportSize().height / 2);
+}
+
+async function phoneArchive(page) {
+  await routeTo(page, '#/archive');
+  const list = page.getByRole('region', { name: 'Archived tickets' });
+  await expect(list.getByTitle('Archived fixture', { exact: true })).toBeInViewport();
+}
+
+async function phoneAutomations(page) {
+  await routeTo(page, '#/automations');
+  const list = page.getByRole('region', { name: 'Automation list' });
+  await expect(list.getByRole('button', { name: /^\[Fixture repository\] Repository review$/ })).toBeInViewport();
 }
 
 async function automationDetail(page) {
@@ -363,8 +396,13 @@ const scenes = [
   { name: 'epic-overview-mobile-dark', width: 390, theme: 'dark', options: () => ({ records: parityEpicRecords() }), run: epicOverview },
   { name: 'assistant-recorded-desktop-light', width: 1280, theme: 'light', options: parityAssistantOptions, run: recordedAssistant },
   { name: 'assistant-recorded-mobile-dark', width: 390, theme: 'dark', options: parityAssistantOptions, run: recordedAssistant },
+  { name: 'assistant-approval-mobile-short-dark', width: 390, height: 360, theme: 'dark', options: parityAssistantOptions, run: assistantApprovalWithDraft },
+  { name: 'activity-mobile-dark', width: 390, height: 844, theme: 'dark', run: phoneActivity },
+  { name: 'archive-list-mobile-light', width: 390, height: 844, theme: 'light', run: phoneArchive },
+  { name: 'stats-mobile-light', width: 390, height: 844, theme: 'light', options: () => ({ populatedStats: true }), run: statsView },
   { name: 'stats-desktop-light', width: 1280, theme: 'light', options: () => ({ populatedStats: true }), run: statsView },
   { name: 'settings-general-mobile-light', width: 390, theme: 'light', options: () => ({ rawConfig: settingsRaw }), run: settingsGeneral },
+  { name: 'automation-list-mobile-dark', width: 390, height: 844, theme: 'dark', run: phoneAutomations },
   { name: 'automation-desktop-sidebar-dark', width: 1321, theme: 'dark', options: () => ({ sidebar: true }), run: automationDetail },
   { name: 'automation-completed-log-mobile-light', width: 390, theme: 'light', run: automationCompletedLog },
   { name: 'terminal-read-only-mobile-dark', width: 390, theme: 'dark', run: readOnlyTerminal },

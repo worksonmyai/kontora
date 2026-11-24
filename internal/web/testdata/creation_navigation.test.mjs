@@ -313,17 +313,28 @@ test('phone shortcuts retain the existing exact-match grammar and source identit
   assert.equal(state.mobileNavigationCount('settings'), 'Unsaved changes');
 });
 
-test('upload reuses the existing input handler and confirmation contract without changing source scope', async () => {
-  const { state } = harness();
+test('New confirms the imported tickets without changing the draft or source scope', async () => {
+  const { state } = harness({ reactive: true });
+  await state.openCreateModal();
+  fill(state);
+  const draft = state.createForm;
+  const original = { ...draft };
   let sent;
   const previousFetch = globalThis.fetch;
-  globalThis.fetch = async (url, options) => { sent = { url, options }; return { ok: true, json: async () => ({}) }; };
+  globalThis.fetch = async (url, options) => {
+    sent = { url, options };
+    return { ok: true, json: async () => ({ tickets: [{ id: 'kon-imported' }], errors: null }) };
+  };
   try {
     await state.handleUpload([new File(['# Ticket'], 'ticket.MD'), new File(['skip'], 'readme.txt')]);
     assert.equal(sent.url, '/api/tickets/upload');
     assert.equal(sent.options.method, 'POST');
     assert.equal(sent.options.headers['X-Kontora-Confirm'], 'upload-tickets');
     assert.deepEqual(sent.options.body.getAll('files').map(file => file.name), ['ticket.MD']);
+    assert.equal(state.createUploadReceipt, 'Imported ticket: kon-imported.');
+    assert.equal(state.currentView, 'new');
+    assert.equal(state.createForm, draft);
+    assert.deepEqual({ ...state.createForm }, original);
     assert.equal(state.sourceFilter, 'secondary');
   } finally { globalThis.fetch = previousFetch; }
 });
@@ -352,6 +363,27 @@ for (const [status, body, message] of [
   } finally { globalThis.fetch = previousFetch; }
 });
 
+test('an upload that finishes after leaving New confirms the import outside the draft', async () => {
+  const { state } = harness();
+  await state.openCreateModal();
+  fill(state);
+  const response = deferred();
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = () => response.promise;
+  const receipts = [];
+  state.showToast = message => receipts.push(message);
+  try {
+    const pending = state.handleUpload([new File(['# Ticket'], 'ticket.md')]);
+    state.closeCreateModal();
+    response.resolve({ ok: true, json: async () => ({ tickets: [{ id: 'kon-a' }, { id: 'kon-b' }] }) });
+    await pending;
+    assert.deepEqual(receipts, ['Imported tickets: kon-a, kon-b.']);
+    assert.equal(state.currentView, 'board');
+    assert.equal(state.createForm.title, 'Keep this draft');
+    assert.equal(state.createUploadReceipt, '');
+  } finally { globalThis.fetch = previousFetch; }
+});
+
 test('archive row actions keep the clicked owner, not the current selection', () => {
   const state = kontoraArchive();
   const calls = [];
@@ -370,9 +402,10 @@ test('phone navigation markup uses the shared route, upload input, filters and s
   assert.doesNotMatch(html, /sheet.type\s*===\s*'new'/);
   assert.doesNotMatch(html, /submitCreateTicketMobile|onMobileCreateSchedulePicked/);
   assert.match(html, /@click="mobileNavigate\('new'\)" class="mobile-primary" aria-label="New ticket"/);
-  assert.match(html, /@click="\$refs.uploadInput.click\(\)"[^>]*>Upload \.md/);
-  assert.match(html, /@click="clearSearch\(\)">Clear search/);
-  assert.match(html, /mobileTicketList\(\).rows.length \+ \(mobileSearching\(\) \? ' found across all statuses'/);
+  assert.match(html, /@click="\$refs.uploadInput.click\(\)"[^>]*>Import tickets from \.md/);
+  assert.match(html, /Valid files are imported immediately as Open tickets\. This form stays unchanged\./);
+  assert.match(html, /x-model="searchQuery"[^>]*aria-label="Search tickets"/);
+  assert.match(html, /x-text="mobileFilterSummary\(\)"/);
   assert.match(html, /mobileNavigationCount\(view.key\)/);
   assert.match(html, /settings-mobile-context[\s\S]{0,600}configCache\?\.config_path/);
   const creation = html.slice(html.indexOf('id="new-view"'), html.indexOf('id="automations-view"'));

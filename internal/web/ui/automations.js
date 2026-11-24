@@ -1,3 +1,4 @@
+import { canReturnInteractionFocus } from './dialogs.js';
 import { termState } from './terminal.js';
 
 const automationsFields = ['name', 'prompt', 'path', 'agent', 'model', 'schedule', 'timezone', 'workspace', 'overlap', 'timeout', 'enabled'];
@@ -17,6 +18,7 @@ export function kontoraAutomations() {
     automationsToggling: {},
     automationsSelected: null,
     automationsDetail: false,
+    automationsListOpener: null,
     automationsEditing: false,
     automationsDraft: automationsBlank(),
     automationsBaseline: '',
@@ -196,9 +198,29 @@ export function kontoraAutomations() {
       return row;
     },
 
-    async automationsSelect(row, writeRoute = true) {
+    automationsFocusDetail() {
+      const seq = this.automationsEditorSeq;
+      this.$nextTick(() => {
+        if (seq !== this.automationsEditorSeq || !this.automationsDetail || this.automationsEditing) return;
+        const detail = globalThis.document?.querySelector('#automations-view .automations-detail');
+        const back = detail?.querySelector('[data-automation-back]');
+        const tab = detail?.querySelector('[role="tab"][aria-selected="true"]');
+        const target = canReturnInteractionFocus(this, back) ? back : tab;
+        if (canReturnInteractionFocus(this, target)) target.focus({ preventScroll: true });
+      });
+    },
+    automationsFocusEditor() {
+      const seq = this.automationsEditorSeq;
+      this.$nextTick(() => {
+        // The opener may have unmounted, so look up the new input in the view.
+        const name = globalThis.document?.querySelector('#automations-view #automation-name');
+        if (seq === this.automationsEditorSeq && canReturnInteractionFocus(this, name)) name.focus();
+      });
+    },
+    async automationsSelect(row, writeRoute = true, opener = null) {
       if (this.automationsSelected === row.id && this.automationsDetail && !this.automationsEditing) return true;
       if (!this.automationsConfirmReplace()) return false;
+      if (opener || this.automationsSelected !== row.id) this.automationsListOpener = opener;
       if (writeRoute) ++this._navigationSeq;
       const seq = ++this.automationsEditorSeq;
       this.closeAgentPicker(false);
@@ -218,7 +240,10 @@ export function kontoraAutomations() {
       this.automationsLogRun = null;
       ++this.automationsLogSeq;
       this.automationsTab = row.running ? 'session' : 'runs';
-      if (writeRoute) this.writeHash();
+      if (writeRoute) {
+        this.writeHash();
+        this.automationsFocusDetail();
+      }
       try {
         const full = await this.automationsRequest('/' + encodeURIComponent(row.id));
         if (seq !== this.automationsEditorSeq || this.automationsSelected !== row.id) return false;
@@ -247,6 +272,7 @@ export function kontoraAutomations() {
       this.closeAgentPicker(false);
       this.automationsCancelPreview();
       this.automationsSelected = null;
+      this.automationsListOpener = null;
       this.automationsDetail = false;
       this.automationsEditing = true;
       this.automationsCreate = null;
@@ -260,7 +286,7 @@ export function kontoraAutomations() {
       this.automationsNotice = '';
       this.automationsDraftChanged();
       if (writeRoute) this.writeHash();
-      this.$nextTick(() => this.$refs.automationName?.focus());
+      this.automationsFocusEditor();
       return true;
     },
     automationsEdit(row = this.automationsRow(), writeRoute = true) {
@@ -276,7 +302,10 @@ export function kontoraAutomations() {
       this.automationsCreate = null;
       this.automationsNotice = '';
       this.automationsAdopt(row);
-      if (writeRoute) this.writeHash();
+      if (writeRoute) {
+        this.writeHash();
+        this.automationsFocusEditor();
+      }
       return true;
     },
     automationsLeave() {
@@ -289,6 +318,7 @@ export function kontoraAutomations() {
       this.automationsEditing = false;
       this.automationsDetail = false;
       this.automationsSelected = null;
+      this.automationsListOpener = null;
       this.automationsCreate = null;
       this.automationsDeleteOpen = false;
       this.automationsMenu = false;
@@ -301,8 +331,24 @@ export function kontoraAutomations() {
       if (this.automationsEditing && row && !list) {
         this.automationsEditing = false;
         this.automationsDetail = false;
-        await this.automationsSelect(row, false);
-      } else this.automationsLeave();
+        const selected = this.automationsSelect(row, false);
+        if (writeRoute) this.automationsFocusDetail();
+        await selected;
+      } else {
+        const opener = this.automationsListOpener;
+        this.automationsLeave();
+        if (writeRoute) {
+          const seq = this.automationsEditorSeq;
+          this.$nextTick(() => {
+            if (seq !== this.automationsEditorSeq) return;
+            const list = globalThis.document?.querySelector('#automations-view .automations-list');
+            const filter = list?.querySelector('input[type="search"]');
+            const name = [...(list?.querySelectorAll('[data-automation-open]') || [])]
+              .find(button => button.dataset.automationOpen === row?.id);
+            [opener, name, filter].find(el => canReturnInteractionFocus(this, el))?.focus();
+          });
+        }
+      }
       if (writeRoute) this.writeHash();
       return true;
     },
@@ -462,6 +508,50 @@ export function kontoraAutomations() {
         await this.automationsRefresh();
       } catch (error) { this.automationsError = error.message; }
       finally { this.automationsPending = false; }
+    },
+    automationsMenuItems() {
+      return [...(this.$refs.automationActions?.querySelectorAll('[role="menuitem"]:not(:disabled)') || [])];
+    },
+    automationsOpenMenu(last = false) {
+      this.automationsMenu = true;
+      const menu = this.$refs.automationActions;
+      this.$nextTick(() => {
+        if (!this.automationsMenu || menu !== this.$refs.automationActions) return;
+        const target = this.automationsMenuItems().at(last ? -1 : 0);
+        if (canReturnInteractionFocus(this, target)) target.focus();
+      });
+    },
+    automationsCloseMenu() {
+      this.automationsMenu = false;
+      const trigger = this.$refs.automationActions?.querySelector('[data-automations-menu-trigger]');
+      if (canReturnInteractionFocus(this, trigger)) trigger.focus();
+    },
+    automationsMenuKey(event) {
+      if (!this.automationsMenu) {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          this.automationsOpenMenu(event.key === 'ArrowUp');
+        }
+        return;
+      }
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        // Tab continues natively from the trigger, outside the menu items.
+        if (event.key === 'Escape') {
+          event.stopPropagation();
+          event.preventDefault();
+        }
+        this.automationsCloseMenu();
+        return;
+      }
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const items = this.automationsMenuItems();
+      if (!items.length) return;
+      const index = items.indexOf(event.target);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+        : event.key === 'ArrowDown' ? (index + 1) % items.length
+        : index <= 0 ? items.length - 1 : index - 1;
+      items[next].focus();
     },
     automationsOpenDelete(trigger = globalThis.document?.activeElement) {
       if (!this.automationsRow() || this.automationsPending) return;

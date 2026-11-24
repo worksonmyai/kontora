@@ -15,16 +15,27 @@ export function kontoraMobile() {
   return {
     _mobileWindowKey: '',
     mobileStatusFilter: ':attention',
+    mobileProjectFilter: '',
+    mobileAgentFilter: '',
     _mobileWindowSize: listPageSize,
 
-    mobileSearching() {
-      return !!this.searchQuery.trim();
-    },
-
     mobileFilterLabel() {
-      if (this.mobileSearching()) return 'All statuses';
       if (this.mobileStatusFilter === ':attention') return 'Attention first';
       return this.columns.find(col => col.key === this.mobileStatusFilter)?.label || 'All statuses';
+    },
+
+    mobileFilterSummary() {
+      return [this.mobileFilterLabel(), this.mobileProjectFilter && 'Project: ' + this.mobileProjectFilter,
+        this.mobileAgentFilter && 'Agent: ' + this.mobileAgentFilter, this.needsInputOnly && 'Needs input']
+        .filter(Boolean).join(' · ');
+    },
+
+    mobileFacetOptions(key) {
+      const tickets = this.allBoardTickets();
+      const configured = key === 'project' ? (this.configCache?.projects || []).map(project => project.name) : this.configCache?.agents || [];
+      const names = tickets.map(ticket => key === 'project' ? this.ticketProjectName(ticket) : ticket.agent);
+      const selected = key === 'project' ? this.mobileProjectFilter : this.mobileAgentFilter;
+      return [...new Set([...configured, ...names, selected].filter(Boolean))].sort((a, b) => a.localeCompare(b));
     },
 
     mobileTicketCountKnown() {
@@ -39,22 +50,31 @@ export function kontoraMobile() {
     },
 
     mobileWindowKey() {
-      return JSON.stringify([this.mobileStatusFilter, this.searchQuery, this.sourceFilter, this.needsInputOnly]);
+      return JSON.stringify([this.mobileStatusFilter, this.mobileProjectFilter, this.mobileAgentFilter,
+        this.searchQuery, this.sourceFilter, this.needsInputOnly]);
     },
 
     mobileTicketList() {
-      const filter = this.mobileSearching() ? ':all' : this.mobileStatusFilter;
+      const filter = this.mobileStatusFilter;
       const board = this._board;
-      if (listProjection && listProjection.board === board && listProjection.filter === filter) return listProjection;
+      const facets = this.mobileWindowKey();
+      if (listProjection?.board === board && listProjection.facets === facets) return listProjection;
+      const exact = value => value ? [{ value: value.toLowerCase(), exact: true }] : [];
+      const query = { project: exact(this.mobileProjectFilter), agent: exact(this.mobileAgentFilter), epic: [], text: '' };
       const attention = [], remaining = [];
       const cols = this.columns.filter(col => col.key === filter);
       for (const col of cols.length ? cols : this.columns) {
         for (const ticket of this.boardTickets(col.key)) {
+          if (!this.ticketMatchesQuery(ticket, query)) continue;
           if (filter === ':attention' && (this.needsLiveInput(ticket) || ticket.status === 'human_review')) attention.push(ticket);
           else remaining.push(ticket);
         }
       }
-      listProjection = { board, filter, rows: attention.concat(remaining), attention: attention.length };
+      const search = this.parseFilterQuery(this.searchQuery);
+      const epics = this.needsInputOnly || (this.sourceFilter && this.sourceFilter !== 'primary') ? [] : this.epics.filter(epic =>
+        (!cols.length || cols.some(col => col.statuses.includes(epic.status))) &&
+        this.ticketMatchesQuery(epic, search) && this.ticketMatchesQuery(epic, query));
+      listProjection = { board, facets, rows: attention.concat(remaining), attention: attention.length, epics };
       return listProjection;
     },
 
@@ -74,10 +94,10 @@ export function kontoraMobile() {
       if (this.$refs?.mobileCardList) this.$refs.mobileCardList.scrollTop = 0;
     },
 
-    mobileAcceptDetail(ticket) {
+    mobileAcceptDetail(ticket, kind = 'ticket') {
       if (!this.isMobile) return;
       const list = this.$refs?.mobileCardList;
-      if (list) listPosition = { filter: this.mobileWindowKey(), top: list.scrollTop, key: this.ticketKey(ticket), epic: !!this.selectedEpic };
+      if (list) listPosition = { filter: this.mobileWindowKey(), top: list.scrollTop, key: this.ticketKey(ticket), kind };
       this.acceptMobileDetailRoute();
     },
 
@@ -91,16 +111,14 @@ export function kontoraMobile() {
         const list = this.$refs?.mobileCardList;
         if (!list) return;
         if (position.filter === this.mobileWindowKey()) list.scrollTop = position.top;
-        const visibleOpener = container => {
-          const button = container && [...container.querySelectorAll('[data-mobile-ticket-key]')]
-            .find(el => el.dataset.mobileTicketKey === position.key);
-          if (!focusAvailable(button)) return null;
-          const bounds = container.getBoundingClientRect();
-          const rect = button.getBoundingClientRect();
-          return rect.bottom > bounds.top && rect.top < bounds.bottom &&
-            rect.right > bounds.left && rect.left < bounds.right ? button : null;
-        };
-        const target = (position.epic && visibleOpener(this.$refs.mobileEpicRail)) || visibleOpener(list) || this.$refs.mobileRefresh;
+        const bounds = list.getBoundingClientRect();
+        const selector = position.kind === 'epic' ? '[data-mobile-epic-opener]' : '.mobile-card[data-mobile-ticket-key]';
+        const opener = [...list.querySelectorAll(selector)].find(el => {
+          if (el.dataset.mobileTicketKey !== position.key || !focusAvailable(el)) return false;
+          const rect = el.getBoundingClientRect();
+          return rect.bottom > bounds.top && rect.top < bounds.bottom && rect.right > bounds.left && rect.left < bounds.right;
+        });
+        const target = opener || this.$refs.mobileRefresh;
         if (focusAvailable(target)) target.focus({ preventScroll: true });
         else document.querySelector('[data-mobile-focus-fallback]')?.focus({ preventScroll: true });
       });
@@ -147,6 +165,7 @@ export function kontoraMobile() {
       listen(document, 'focusin', e => {
         this._mobileSheetFocusin(e);
         this._mobileTerminalFocusin(e);
+        update();
       }, true);
       listen(document, 'focusout', e => this._mobileTerminalFocusout(e), true);
       if (this.$watch) {
@@ -154,7 +173,7 @@ export function kontoraMobile() {
           if (lifecycle === owner && !this._appDestroyed) this._syncMobileSheet();
         });
         if (typeof unwatch === 'function') owner.watches.push(unwatch);
-        for (const key of ['searchQuery', 'mobileStatusFilter', 'needsInputOnly', 'sourceFilter']) {
+        for (const key of ['searchQuery', 'mobileStatusFilter', 'mobileProjectFilter', 'mobileAgentFilter', 'needsInputOnly', 'sourceFilter']) {
           const stop = this.$watch(key, () => this.mobileListFilterChanged());
           if (typeof stop === 'function') owner.watches.push(stop);
         }
@@ -237,7 +256,9 @@ export function kontoraMobile() {
       const geometry = this.mobileViewportGeometry();
       this.mobileViewportHeight = geometry.height;
       this.$nextTick(() => {
-        if (lifecycle === owner && !this._appDestroyed) this._mobileResizeComposers();
+        if (lifecycle !== owner || this._appDestroyed) return;
+        this._mobileResizeComposers();
+        if (this.isMobile || window.matchMedia?.('(pointer: coarse)').matches) this._revealCompactField(geometry);
       });
       const style = document.documentElement.style;
       Object.entries(geometry).forEach(([key, value]) => {
@@ -247,6 +268,21 @@ export function kontoraMobile() {
         }
         style.setProperty(name, value + 'px');
       });
+    },
+
+    _revealCompactField({ top, height, bottom }) {
+      if (bottom < 1 && top < 1) return;
+      const field = document.activeElement;
+      if (!field?.matches('input:not(.sr-only), textarea:not(.xterm-helper-textarea), select, [contenteditable="true"]')) return;
+      const scroller = field.closest('[data-compact-scroll], [data-dialog-panel]');
+      if (!scroller) return;
+      const bounds = scroller.getBoundingClientRect();
+      const start = Math.max(top, bounds.top) + 8;
+      const end = Math.min(top + height, bounds.bottom) - 8;
+      if (end <= start) return;
+      const rect = field.getBoundingClientRect();
+      if (rect.top < start || rect.height > end - start) scroller.scrollTop += rect.top - start;
+      else if (rect.bottom > end) scroller.scrollTop += rect.bottom - end;
     },
 
     mobileBreakpointChanged() {
@@ -551,21 +587,13 @@ export function kontoraMobile() {
       return 'color:' + foreground + ';--mobile-stage-color:' + color + ';--mobile-stage-fill:' + fill + ';';
     },
 
-    // Status-aware action-bar buttons. The primary performs the main transition
-    // directly, the secondary the alternate one; unknown statuses fall back to
-    // the actions sheet.
     mobilePrimaryAction(t) {
       const key = this.ticketKey(t);
       const command = t?.status === 'human_review' && !this.executionActive(t)
         ? this.lifecycleCommand(key, 'move:done') : this.lifecycleActions(key)[0];
-      if (!command) return { label: t?.status === 'todo' ? 'Todo' : 'Actions', disabled: t?.status === 'todo', run: () => this.openActionsSheet(t) };
+      if (!command) return { hidden: true };
       return { label: command.id === 'move:done' ? 'Mark done' : command.label,
         disabled: this.lifecycleBusy(key), run: () => this.dispatchLifecycle(key, command) };
-    },
-
-    mobileSecondaryAction(t) {
-      return { label: 'Move to', disabled: this.lifecycleBusy(t) || !this.lifecycleDestinations(t).length,
-        run: () => this.openMoveSheet(t) };
     },
 
     openMoveSheet(t) {

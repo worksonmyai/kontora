@@ -469,7 +469,7 @@ export function kontoraEpics() {
       this.epicEditingBrief = false;
       ++this._editorGeneration;
       this.ticketDetailRefreshError = null;
-      if (this.isMobile) this.mobileAcceptDetail(epic);
+      if (this.isMobile) this.mobileAcceptDetail(epic, 'epic');
       else this.writeHash();
       await this._waitEditorSaves(id);
       if (navigation !== this._navigationSeq || this.selectedEpic?.id !== id) return;

@@ -281,15 +281,17 @@ export function kontoraAssistant() {
 
     _assistantScrollEl() {
       const sheet = this.sheet && this.sheet.type === 'assistant';
-      return document.getElementById(sheet ? 'assistant-sheet-thread' : 'assistant-thread');
+      return globalThis.document?.getElementById(sheet ? 'assistant-sheet-thread' : 'assistant-thread');
     },
 
     // Read before the tape is spliced: a reader who has scrolled up to a tool
     // row keeps their place, and everyone else is carried along.
     _assistantNoteScroll() {
       const el = this._assistantScrollEl();
-      this._assistantStick = !el || (el.scrollHeight - el.scrollTop - el.clientHeight) < 60;
-      return this._assistantStick;
+      // Hidden or unmounted transcripts have no meaningful scroll metrics.
+      if (this.assistantView === 'thread' && el?.clientHeight > 0) {
+        this._assistantStick = (el.scrollHeight - el.scrollTop - el.clientHeight) < 60;
+      }
     },
 
     // The latch, on the scroll event rather than on every frame. A per-frame
@@ -299,14 +301,37 @@ export function kontoraAssistant() {
       this._assistantNoteScroll();
     },
 
+    assistantSheetScrollOwner() {
+      const app = this;
+      return resourceOwner(function (alive) {
+        const thread = this.$el;
+        const observer = new ResizeObserver(() => {
+          // Keep the latest turn in view when the keyboard shrinks the transcript.
+          if (alive() && app.assistantView === 'thread' && thread.clientHeight > 0 && app._assistantStick) {
+            thread.scrollTop = thread.scrollHeight;
+          }
+        });
+        observer.observe(thread);
+        const transcript = thread.querySelector('[data-assistant-transcript]');
+        if (transcript) observer.observe(transcript);
+        return () => observer.disconnect();
+      });
+    },
+
+    assistantRevealApproval() {
+      const proposal = document.getElementById('assistant-sheet-proposal');
+      proposal?.scrollIntoView({ block: 'start' });
+      proposal?.focus({ preventScroll: true });
+    },
+
     _assistantScrollToEnd(force) {
       if (!force && !this._assistantStick) return;
       const self = this;
       const context = this._assistantContextToken();
       this.$nextTick(function () {
-        if (!self._assistantContextCurrent(context)) return;
+        if (!self._assistantContextCurrent(context) || self.assistantView !== 'thread' || (!force && !self._assistantStick)) return;
         const el = self._assistantScrollEl();
-        if (el) el.scrollTop = el.scrollHeight;
+        if (el?.clientHeight > 0) el.scrollTop = el.scrollHeight;
       });
     },
 
@@ -461,11 +486,12 @@ export function kontoraAssistant() {
       }
     },
 
-    // The phone has no room for a docked pane, so the same chat opens in the
-    // bottom sheet the rest of the mobile layer uses.
-    openAssistantSheet() {
+    openAssistantSheet(opener) {
+      // Touch browsers can dispatch a click without focusing the opener.
+      opener?.focus({ preventScroll: true });
       this.assistantCompositionReset();
       this.assistantOpen = true;
+      this._assistantStick = true;
       this._assistantDefaultInbox();
       this.sheet = { type: 'assistant' };
       this.assistantRecomputeContext();
@@ -599,6 +625,7 @@ export function kontoraAssistant() {
     },
 
     assistantShowHistory() {
+      this._assistantNoteScroll();
       this.assistantViewIntent = 'history';
       this._assistantSelectionSeq++;
       this._assistantRetireActivity();
@@ -734,6 +761,7 @@ export function kontoraAssistant() {
       this.assistantGate = null;
       this.assistantExpanded = Object.create(null);
       this.assistantWindow = ASSISTANT_WINDOW;
+      this._assistantStick = true;
       this._assistantCursor = 0;
       this._assistantETag = '';
       this._assistantActivityLoaded = false;
@@ -753,6 +781,7 @@ export function kontoraAssistant() {
         this._assistantSetStreaming(false);
         this._assistantClearPartial();
         this.assistantWindow = ASSISTANT_WINDOW;
+        this._assistantStick = true;
         this._assistantActivityLoaded = false;
         this.assistantExpanded = Object.create(null);
         this.assistantGate = null;
@@ -941,6 +970,7 @@ export function kontoraAssistant() {
       // Cleared first: the card must not stay on screen while the request is in
       // flight, or a second click sends a second answer for the same call.
       this.assistantGate = null;
+      this.assistantError = null;
       const context = this._assistantContextToken();
       const resolution = { gate, context };
       lane.resolved.set(gate.id, resolution);
@@ -1462,6 +1492,7 @@ export function kontoraAssistant() {
       const menu = this.assistantMenu;
       if (!menu || !menu.rows.length) return;
       menu.index = (menu.index + delta + menu.rows.length) % menu.rows.length;
+      globalThis.document?.getElementById(this.assistantComposerID('suggestion-' + menu.index))?.scrollIntoView({ block: 'nearest' });
     },
 
     // Replace what the menu was opened on with the chosen row's text.

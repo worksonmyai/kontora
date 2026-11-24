@@ -37,8 +37,17 @@ export function dialogFocusable(panel) {
 
 export function stepDialogTab(event, panel, from) {
   const items = dialogFocusable(panel);
-  const index = items.indexOf(from || document.activeElement);
-  const next = index < 0 ? (event.shiftKey ? items.length - 1 : 0) : index + (event.shiftKey ? -1 : 1);
+  const active = document.activeElement;
+  const index = items.indexOf(from || active);
+  let next = index < 0 ? (event.shiftKey ? items.length - 1 : 0) : index + (event.shiftKey ? -1 : 1);
+  // A programmatically focused heading or proposal has a place in the DOM,
+  // even when it isn't a Tab stop. Continue from there instead of wrapping.
+  if (!from && index < 0 && active !== panel && active?.compareDocumentPosition && panel.contains(active)) {
+    const direction = event.shiftKey ? active.DOCUMENT_POSITION_PRECEDING : active.DOCUMENT_POSITION_FOLLOWING;
+    const inDirection = item => active.compareDocumentPosition(item) & direction;
+    const nearby = event.shiftKey ? items.findLastIndex(inDirection) : items.findIndex(inDirection);
+    if (nearby >= 0) next = nearby;
+  }
   if (from || index < 0 || next < 0 || next >= items.length) {
     event.preventDefault();
     (items.length ? items[(next + items.length) % items.length] : panel).focus();

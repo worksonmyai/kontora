@@ -58,6 +58,20 @@ for (const [mode, mobile, expected] of [
   assert.equal(state.activityRun, 1);
 });
 
+test('named detail scrollers restore by role when another region appears', () => {
+  const { state, scroller } = app();
+  scroller.dataset = { detailScroll: 'activity' };
+  const added = { dataset: { detailScroll: 'question' }, scrollTop: 30 };
+  state.detailTab = 'activity';
+  state.detailViewScrollers = () => [scroller];
+  state.rememberDetailView();
+  state.detailViewScrollers = () => [added, scroller];
+  scroller.scrollTop = 0;
+  state.restoreDetailScroll();
+  assert.equal(added.scrollTop, 0);
+  assert.equal(scroller.scrollTop, 85);
+});
+
 for (const source of ['secondary', 'other']) test(`local restoration does not substitute ${source} namesakes`, async () => {
   const { state } = app();
   state.rememberDetailView();

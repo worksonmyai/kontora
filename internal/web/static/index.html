@@ -1321,20 +1321,22 @@
   <!-- Login modal: shown when the daemon's web token gate rejects this browser
        (no valid kontora_token cookie). Not dismissable; the board stays gated. -->
   <div data-dialog-layer="auth" x-show="needsAuth" x-transition.opacity class="fixed inset-0 z-[120] flex items-center justify-center bg-black/70">
-    <div role="dialog" aria-modal="true" aria-labelledby="auth-modal-title" data-dialog-panel tabindex="-1" class="bg-surface-900 border border-surface-700/50 rounded-xl p-5 w-full max-w-md mx-4 slide-up">
+    <div role="dialog" aria-modal="true" aria-labelledby="auth-modal-title" data-dialog-panel tabindex="-1" class="auth-dialog bg-surface-900 border border-surface-700/50 rounded-xl p-5 w-full max-w-md mx-4 slide-up">
       <div class="flex items-center gap-2 mb-4">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-accent opacity-70"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         <span id="auth-modal-title" class="text-sm font-semibold text-tx-2">Enter access token</span>
       </div>
-      <p class="text-[13px] text-surface-600 mb-3 leading-relaxed">This kontora is token-protected. Paste the web token to sign in. It is stored as a secure cookie, so you only do this once per browser.</p>
       <form @submit.prevent="submitToken()">
-        <input x-model="tokenInput" type="password" autocomplete="current-password" required
+        <div class="auth-dialog-body" data-compact-scroll>
+          <p class="text-[13px] text-surface-600 mb-3 leading-relaxed">Paste the web token to sign in. This browser stores it in a secure cookie.</p>
+          <input x-model="tokenInput" type="password" autocomplete="current-password" required
                x-ref="tokenField" data-dialog-initial
                @input="authError = null"
                class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                placeholder="web token">
-        <p x-show="authError" x-cloak class="text-[13px] text-err mt-2" x-text="authError"></p>
-        <div class="flex justify-end mt-5">
+          <p x-show="authError" x-cloak class="text-[13px] text-err mt-2" x-text="authError"></p>
+        </div>
+        <div class="auth-dialog-actions flex justify-end mt-5">
           <button type="submit" :disabled="!tokenInput.trim()"
                   class="text-[13px] font-mono px-4 py-1.5 rounded bg-accent/20 border border-accent/30 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             sign in
@@ -1369,7 +1371,7 @@
          input only narrows the board. A ticket page has nothing to filter, so
          the slot carries its breadcrumb instead. -->
     <template x-if="!boardDetailOpen() && !epicPageOpen() && !(currentView === 'automations' && (automationsDetail || automationsEditing))">
-    <div class="flex-1 min-w-[120px] max-w-[300px] relative">
+    <div class="desktop-board-search flex-1 min-w-[120px] max-w-[300px] relative">
       <div class="relative flex items-center">
         <svg class="absolute left-2.5 w-3.5 h-3.5 text-surface-600 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
@@ -1476,7 +1478,7 @@
         <svg x-show="lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
       <template x-if="!boardDetailOpen() && !epicPageOpen() && !(currentView === 'automations' && (automationsDetail || automationsEditing))">
-        <div class="flex items-center gap-2">
+        <div class="desktop-ticket-tools flex items-center gap-2" :data-board="String(currentView === 'board')">
           <button @click="gotoView('new')"
                   class="text-[13px] font-sans font-semibold h-[31px] px-[14px] rounded-[7px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors flex items-center gap-1.5">
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
@@ -1633,45 +1635,21 @@
           </span>
         </div>
         <button type="button" x-show="currentView === 'board'" x-ref="mobileRefresh" @click="refreshTickets()" :disabled="loading || ticketsRefreshing" aria-label="Refresh tickets" class="mobile-control">Refresh</button>
-        <button type="button" x-show="currentView !== 'new'" @click="mobileNavigate('new')" class="mobile-primary" aria-label="New ticket">New</button>
+        <button type="button" x-show="currentView === 'board'" @click="mobileNavigate('new')" class="mobile-primary" aria-label="New ticket">New</button>
       </div>
-      <div x-show="currentView === 'board'" class="mobile-board-search" style="padding:0 16px 10px;">
-        <div style="position:relative;display:flex;align-items:center;">
-          <svg style="position:absolute;left:11px;width:14px;height:14px;color:rgba(var(--surface-600),1);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+      <div x-show="currentView === 'board'" class="mobile-board-filters">
+        <div class="mobile-search-row">
           <input type="search" x-model="searchQuery" placeholder="Search tickets" aria-label="Search tickets" class="mobile-ticket-search"/>
-        </div>
-        <div class="mobile-filter-tools">
-          <span role="status" x-show="mobileTicketCountKnown()"
-                x-text="mobileIncompleteCount() || mobileTicketList().rows.length + (mobileSearching() ? ' found across all statuses' : ' tickets')"></span>
-          <button type="button" x-ref="mobileNeedsInputToggle" @click="toggleNeedsInput()" :aria-pressed="needsInputOnly" :class="needsInputOnly ? 'text-accent underline' : ''">
+          <button type="button" x-ref="mobileFilters" @click="sheet = { type: 'filters' }" class="mobile-control" aria-haspopup="dialog">Filters</button>
+          <button type="button" x-ref="mobileNeedsInputToggle" @click="toggleNeedsInput()" :aria-pressed="needsInputOnly" class="mobile-control mobile-input-filter">
             Needs input <span x-text="needsInputCount"></span>
           </button>
-          <button type="button" x-show="searchQuery" @click="clearSearch()">Clear search</button>
-          <button type="button" @click="$refs.uploadInput.click()">Upload .md</button>
-          <details class="mobile-filter-shortcuts">
-            <summary>Filter shortcuts</summary>
-            <div>
-              <span>Projects</span>
-              <template x-for="project in (configCache?.projects || [])" :key="project.name">
-                <button type="button" @click="toggleFilterToken('project', project.name)" :aria-pressed="filterTokenActive('project', project.name)" x-text="project.name"></button>
-              </template>
-              <span>Agents</span>
-              <template x-for="agent in (configCache?.agents || [])" :key="agent">
-                <button type="button" @click="toggleFilterToken('agent', agent)" :aria-pressed="filterTokenActive('agent', agent)" x-text="agent"></button>
-              </template>
-            </div>
-          </details>
         </div>
-      </div>
-      <div x-show="currentView === 'board'" class="mobile-status-picker">
-        <label for="mobile-ticket-status">Status</label>
-        <select id="mobile-ticket-status" x-model="mobileStatusFilter" :disabled="mobileSearching()">
-          <option value=":attention">Attention first</option>
-          <option value=":all">All statuses</option>
-          <template x-for="col in columns" :key="col.key">
-            <option :value="col.key" x-text="col.label"></option>
-          </template>
-        </select>
+        <div class="mobile-filter-tools">
+          <span x-text="mobileFilterSummary()" class="mobile-filter-summary"></span>
+          <span role="status" x-show="mobileTicketCountKnown()"
+                x-text="mobileIncompleteCount() || mobileTicketList().rows.length + ' tickets'"></span>
+        </div>
       </div>
     </div>
 
@@ -3141,18 +3119,24 @@
     <!-- New ticket page -->
     <div id="new-view" x-show="!loading && currentView === 'new'" x-cloak class="flex flex-1 min-w-0 min-h-0">
       <!-- Form pane -->
-      <div class="flex-1 min-w-0 overflow-y-auto">
+      <div data-compact-scroll class="routed-form-scroll flex-1 min-h-0 min-w-0 overflow-y-auto">
         <div class="new-form-content max-w-2xl mx-auto px-8 py-6">
-          <div class="flex items-center justify-between mb-5">
+          <div class="new-form-header flex flex-wrap items-center justify-between gap-2 mb-5">
             <div class="flex items-baseline gap-3 min-w-0">
               <h1 class="text-base font-semibold text-tx-2 m-0">New ticket</h1>
               <span class="font-mono text-[10px] text-surface-600 uppercase tracking-widest hidden sm:inline truncate">creates a markdown file in your tickets directory</span>
             </div>
-            <button type="button" @click="closeCreateModal()"
-                    class="font-mono text-[11px] text-surface-600 hover:text-tx-3 transition-colors px-2 py-0.5 rounded border border-surface-700/50"
-                    aria-label="Return to board">Back</button>
+            <div class="flex flex-wrap items-center gap-2">
+              <button type="button" @click="$refs.uploadInput.click()" aria-describedby="new-import-help"
+                      class="new-form-upload font-mono text-[11px] text-tx-3 px-2 rounded border border-edge-input">Import tickets from .md</button>
+              <button type="button" @click="closeCreateModal()"
+                      class="font-mono text-[11px] text-tx-3 hover:text-tx-2 transition-colors px-2 py-0.5 rounded border border-edge-input"
+                      aria-label="Return to board">Back</button>
+            </div>
           </div>
 
+          <p id="new-import-help" class="new-form-upload mb-3 text-sm text-tx-3">Valid files are imported immediately as Open tickets. This form stays unchanged.</p>
+          <p role="status" class="text-sm text-tx-2 break-words" :class="createUploadReceipt ? 'mb-3' : 'm-0'" x-text="createUploadReceipt"></p>
           <form @submit.prevent="submitCreateTicket()" :aria-busy="createSubmitting" class="space-y-4">
             <p x-show="createError" x-cloak role="alert" class="font-mono text-sm text-err whitespace-pre-wrap break-words" x-text="createError"></p>
             <p x-show="createSubmitting" role="status" class="text-sm text-tx-3">Creating ticket. Leaving this page does not cancel the request.</p>
@@ -3165,34 +3149,94 @@
             </div>
 
             <div>
-              <label for="new-body" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>Body</label>
-              <textarea id="new-body" x-model="createForm.body" rows="6"
-                        class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40 resize-y"
-                        placeholder="Ticket description (markdown). Acceptance criteria, links, context."></textarea>
-            </div>
-
-            <div>
               <label for="new-path" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>Path *</label>
               <input id="new-path" x-model="createForm.path" @input="onCreatePathChange()" type="text" list="new-project-paths" required
                      class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                      placeholder="~/projects/myrepo">
               <datalist id="new-project-paths"><template x-for="project in configCache?.projects || []" :key="project.path"><option :value="project.path" x-text="project.name"></option></template></datalist>
               <p class="text-[11px] text-surface-600 mt-0.5">Choose a configured project or enter a repository path on the daemon host. <code>~/</code> refers to the daemon user’s home directory.</p>
+              <p x-show="createProject()" class="text-[11px] text-surface-600">Project <span class="text-tx-3" x-text="createProject()?.name"></span>.</p>
+            </div>
+
+            <div>
+              <label for="new-body" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>Body</label>
+              <textarea id="new-body" x-model="createForm.body" rows="6"
+                        class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40 resize-y"
+                        placeholder="Ticket description (markdown). Acceptance criteria, links, context."></textarea>
             </div>
 
             <!-- Creation keeps epics passive until an explicit start. -->
-            <div class="flex items-center gap-2.5">
+            <div class="new-form-choice flex flex-wrap items-center gap-2.5">
               <span class="text-[13px] font-mono text-tx-3 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18M6 12h15M9 18h12"/></svg>Kind</span>
-              <div class="ml-auto flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
+              <div class="ml-auto flex flex-wrap gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
                 <template x-for="k in [{ value: '', label: 'ticket' }, { value: 'epic', label: 'epic' }]" :key="k.label">
                   <button type="button" @click="createForm.kind = k.value; syncCreatePipeline()"
                           class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px] transition-colors"
                           :class="createForm.kind === k.value ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'"
-                          x-text="k.label"></button>
+                          :aria-pressed="createForm.kind === k.value" x-text="k.label"></button>
                 </template>
               </div>
             </div>
             <p x-show="createForm.kind === 'epic'" class="text-[11px] text-surface-600 -mt-2">An epic is created <span class="text-tx-3">open</span> without starting its agent. Start it later to supervise sub-tickets in this repository. No pipeline or schedule.</p>
+
+            <!-- One field for both absolute local times and delays. -->
+            <div class="flex flex-col gap-2.5" x-show="createForm.kind !== 'epic'">
+              <div class="new-form-choice flex flex-wrap items-center gap-2.5">
+                <span class="text-[13px] font-mono text-tx-3 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>Schedule</span>
+                <div role="group" aria-label="Schedule" class="ml-auto flex flex-wrap gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
+                  <template x-for="m in ['now', 'later']" :key="m">
+                    <button type="button" @click="setCreateScheduleMode(m)" :aria-pressed="createForm.scheduleMode === m"
+                            class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px] transition-colors"
+                            :class="createForm.scheduleMode === m ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'"
+                            x-text="m === 'now' ? 'No schedule' : 'Schedule for later'"></button>
+                  </template>
+                </div>
+              </div>
+
+              <template x-if="createForm.scheduleMode === 'later'">
+                <div class="flex flex-col gap-2.5">
+                  <div class="flex gap-1.5 flex-wrap">
+                    <template x-for="p in createSchedulePresets()" :key="p.key">
+                      <button type="button" @click="pickCreatePreset(p)"
+                              class="font-mono text-[11px] px-2.5 py-1 rounded-full border transition-colors"
+                              :class="createPresetSelected(p) ? 'sched-preset-on' : 'bg-surface-900 border-edge-input text-tx-3 hover:text-tx-2'"
+                              x-text="p.label"></button>
+                    </template>
+                  </div>
+
+                  <div class="new-form-date flex items-center gap-2 h-9 px-2.5 bg-surface-800 rounded border"
+                       :class="createScheduleISO() ? 'sched-input-set' : (createScheduleError() ? 'border-err/50' : 'border-surface-700/50')">
+                    <input id="new-scheduled-at" aria-label="Scheduled date and time or delay" x-model="createForm.scheduled_at" type="text" aria-describedby="new-schedule-format"
+                           class="flex-1 min-w-0 bg-transparent font-mono text-sm text-tx-2 focus:outline-none"
+                           placeholder="2099-09-01 09:00">
+                    <!-- The native picker writes into a hidden field; the text
+                         field keeps the spelling a person types. -->
+                    <button type="button" class="ml-auto shrink-0 text-tx-3 hover:text-tx-2 flex" aria-label="Pick a date"
+                            @click="$refs.createSchedulePicker.showPicker ? $refs.createSchedulePicker.showPicker() : $refs.createSchedulePicker.click()">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg>
+                    </button>
+                    <input x-ref="createSchedulePicker" type="datetime-local" :min="scheduleMin()" tabindex="-1" aria-hidden="true"
+                           class="sr-only" @change="onCreateSchedulePicked($event.target.value)">
+                  </div>
+
+                  <p id="new-schedule-format" class="text-[11px] text-surface-600">Enter a date and time or a delay, such as 24h, 3d, or 2w.</p>
+
+                  <template x-if="createScheduleEcho()">
+                    <div class="flex items-baseline gap-2 font-mono text-[11.5px]">
+                      <span class="text-st-open">&rarr;</span>
+                      <span class="text-tx-2" x-text="createScheduleEcho().long"></span>
+                      <span class="text-surface-600" x-text="[createScheduleEcho().zone, createScheduleEcho().distance, createScheduleEcho().rfc].filter(Boolean).join(' · ')"></span>
+                    </div>
+                  </template>
+                  <template x-if="createScheduleError()">
+                    <div class="font-mono text-[11.5px] text-err" role="alert" x-text="createScheduleError()"></div>
+                  </template>
+
+                  <p class="text-[11px] leading-relaxed text-surface-600">At the scheduled time, the daemon moves the ticket to Todo. Pickup respects automatic pickup and unresolved dependencies.</p>
+                </div>
+              </template>
+            </div>
+
 
             <!-- Explicit height, matching the padded inputs above: a native
                  select drops the vertical padding in WebKit. -->
@@ -3223,69 +3267,6 @@
               </div>
             </div>
             <p class="text-[11px] text-surface-600 -mt-2" x-show="createForm.kind !== 'epic'">Save draft leaves the ticket Open without starting work. Create and queue requests pickup even when automatic pickup is off.</p>
-
-            <!-- One field for both absolute local times and delays. -->
-            <div class="flex flex-col gap-2.5" x-show="createForm.kind !== 'epic'">
-              <div class="flex items-center gap-2.5">
-                <span class="text-[13px] font-mono text-tx-3 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>Schedule</span>
-                <div role="group" aria-label="Schedule" class="ml-auto flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
-                  <template x-for="m in ['now', 'later']" :key="m">
-                    <button type="button" @click="setCreateScheduleMode(m)" :aria-pressed="createForm.scheduleMode === m"
-                            class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px] transition-colors"
-                            :class="createForm.scheduleMode === m ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'"
-                            x-text="m === 'now' ? 'No schedule' : 'Schedule for later'"></button>
-                  </template>
-                </div>
-              </div>
-
-              <template x-if="createForm.scheduleMode === 'later'">
-                <div class="flex flex-col gap-2.5">
-                  <div class="flex gap-1.5 flex-wrap">
-                    <template x-for="p in createSchedulePresets()" :key="p.key">
-                      <button type="button" @click="pickCreatePreset(p)"
-                              class="font-mono text-[11px] px-2.5 py-1 rounded-full border transition-colors"
-                              :class="createPresetSelected(p) ? 'sched-preset-on' : 'bg-surface-900 border-edge-input text-tx-3 hover:text-tx-2'"
-                              x-text="p.label"></button>
-                    </template>
-                  </div>
-
-                  <div class="flex items-center gap-2 h-9 px-2.5 bg-surface-800 rounded border"
-                       :class="createScheduleISO() ? 'sched-input-set' : (createScheduleError() ? 'border-err/50' : 'border-surface-700/50')">
-                    <input id="new-scheduled-at" aria-label="Scheduled date and time or delay" x-model="createForm.scheduled_at" type="text"
-                           class="flex-1 min-w-0 bg-transparent font-mono text-sm text-tx-2 focus:outline-none"
-                           placeholder="2099-09-01 09:00">
-                    <template x-if="!createForm.scheduled_at">
-                      <span class="flex items-center gap-2 shrink-0">
-                        <span class="w-px h-4 bg-surface-700"></span>
-                        <span class="text-[12px] text-surface-600">or a duration: 24h, 3d, 2w</span>
-                      </span>
-                    </template>
-                    <!-- The native picker writes into a hidden field; the text
-                         field keeps the spelling a person types. -->
-                    <button type="button" class="ml-auto shrink-0 text-tx-3 hover:text-tx-2 flex" aria-label="Pick a date"
-                            @click="$refs.createSchedulePicker.showPicker ? $refs.createSchedulePicker.showPicker() : $refs.createSchedulePicker.click()">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg>
-                    </button>
-                    <input x-ref="createSchedulePicker" type="datetime-local" :min="scheduleMin()" tabindex="-1" aria-hidden="true"
-                           class="sr-only" @change="onCreateSchedulePicked($event.target.value)">
-                  </div>
-
-                  <template x-if="createScheduleEcho()">
-                    <div class="flex items-baseline gap-2 font-mono text-[11.5px]">
-                      <span class="text-st-open">&rarr;</span>
-                      <span class="text-tx-2" x-text="createScheduleEcho().long"></span>
-                      <span class="text-surface-600" x-text="[createScheduleEcho().zone, createScheduleEcho().distance, createScheduleEcho().rfc].filter(Boolean).join(' · ')"></span>
-                    </div>
-                  </template>
-                  <template x-if="createScheduleError()">
-                    <div class="font-mono text-[11.5px] text-err" role="alert" x-text="createScheduleError()"></div>
-                  </template>
-
-                  <p class="text-[11px] leading-relaxed text-surface-600">At the scheduled time, the daemon moves the ticket to Todo. Pickup respects automatic pickup and unresolved dependencies.</p>
-                </div>
-              </template>
-            </div>
-            <p x-show="createProject()" class="text-[11px] text-surface-600 -mt-2">Project <span class="text-tx-3" x-text="createProject()?.name"></span>.</p>
 
             <div>
               <label for="new-branch" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>Branch</label>
@@ -3338,17 +3319,17 @@
 
     <template x-if="!loading && currentView === 'automations'">
       <section id="automations-view" class="automations-view relative flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame" aria-label="Automations">
-        <div x-show="automationsError" role="alert" class="automations-alert flex items-center gap-3 px-4 py-2 font-mono text-[12px] text-err border-b border-err/25 bg-surface-900">
+        <div x-show="automationsError && (!automationsDetail || automationsEditing || !automationsRow())" role="alert" class="automations-alert flex items-center gap-3 px-4 py-2 font-mono text-[12px] text-err border-b border-err/25 bg-surface-900">
           <span class="flex-1" x-text="automationsError"></span>
           <button type="button" @click="automationsRefresh()" :disabled="automationsLoading" class="text-accent">retry</button>
           <button type="button" @click="automationsError = ''" aria-label="Dismiss error">×</button>
         </div>
         <template x-if="!automationsEditing">
-          <div class="flex flex-col flex-1 min-h-0">
-            <div class="shrink-0 flex flex-wrap items-center gap-2.5 px-4 pt-3 pb-2.5 border-b border-surface-700/60">
+          <div :inert="automationsDetail && !!automationsRow()" class="automations-list flex flex-col flex-1 min-h-0">
+            <div class="automations-list-header shrink-0 flex flex-wrap items-center gap-2.5 px-4 pt-3 pb-2.5 border-b border-surface-700/60">
               <h1 class="stats-title text-[11px]">automations</h1>
               <span class="w-px h-4 bg-surface-700"></span>
-              <div class="relative flex-1 max-w-[430px] min-w-[180px]">
+              <div class="automations-list-search relative flex-1 max-w-[430px] min-w-[180px]">
                 <svg aria-hidden="true" class="absolute left-2.5 top-2 w-3.5 h-3.5 text-surface-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="10" cy="10" r="7"/><path d="m15 15 6 6"/></svg>
                 <input type="search" aria-label="Filter automations" placeholder="Filter automations, or project:kontora agent:claude" x-model="automationsQuery" @input.debounce.200ms="writeHash()" class="w-full h-[30px] pl-8 pr-2 text-[12px] font-mono rounded-[7px] bg-surface-900 border border-edge-input text-tx focus:border-accent">
               </div>
@@ -3360,21 +3341,21 @@
               <span class="ml-auto font-mono text-[11px] text-tx-4" x-text="automationsLoading ? 'loading…' : automationsRows().length + ' of ' + automations.length + ' · ' + automationsRunningCount() + ' running'"></span>
               <button type="button" x-ref="automationNew" @click="automationsNew()" :disabled="!automationsAvailable || automationsPending" class="h-[30px] px-3 rounded-[7px] bg-accent text-accent-fg hover:bg-accent-bright font-mono text-[12px] font-medium flex items-center gap-1.5"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg>new automation</button>
             </div>
-            <div class="flex-1 min-h-0 overflow-auto" role="region" aria-label="Automations table, scroll horizontally for all columns" tabindex="0">
-              <table x-show="automationsRows().length" class="automations-table w-full min-w-[1080px] text-left table-fixed">
+            <div class="automations-list-scroll flex-1 min-h-0 overflow-auto" role="region" aria-label="Automation list" tabindex="0">
+              <table role="table" x-show="automationsRows().length" class="automations-table w-full min-w-[1080px] text-left table-fixed">
                 <colgroup><col style="width:62px"><col style="width:96px"><col><col style="width:200px"><col style="width:78px"><col style="width:190px"><col style="width:150px"><col style="width:148px"></colgroup>
                 <thead class="sticky top-0 z-10 bg-surface-frame border-b border-surface-700/60 font-mono text-[10px] font-bold uppercase tracking-[.1em] text-tx-4"><tr class="h-[28px]"><th class="pl-4">on</th><th>id</th><th>name</th><th>schedule</th><th>agent</th><th>last run</th><th class="text-right">next run</th><th class="pr-4"><span class="sr-only">Actions</span></th></tr></thead>
-                <tbody>
+                <tbody role="rowgroup">
                   <template x-for="row in automationsRows()" :key="row.id">
-                    <tr @click="automationsSelect(row)" class="h-[36px] border-b border-surface-700/30 cursor-pointer hover:bg-surface-900">
-                      <td class="pl-4"><button type="button" role="switch" :aria-checked="row.enabled" :aria-label="'Schedule for ' + row.name" @click.stop="automationsToggle(row)" :disabled="automationsPending || !!automationsToggling[row.id] || !automationsAvailable" class="relative block w-7 h-4 rounded-full transition-colors" :class="row.enabled ? 'bg-accent' : 'bg-surface-700'"><span class="absolute top-0.5 w-3 h-3 rounded-full bg-accent-fg transition-all" :class="row.enabled ? 'left-[14px]' : 'left-0.5'"></span></button></td>
-                      <td class="font-mono text-[11.5px] text-tx-3 truncate pr-2" x-text="row.id"></td>
-                      <td class="pr-3"><button type="button" @click.stop="automationsSelect(row)" class="flex items-center gap-1.5 w-full min-w-0 text-left text-[12.5px]" :class="row.enabled ? 'text-tx' : 'text-tx-3'"><span x-show="row.running" class="w-1.5 h-1.5 shrink-0 rounded-full bg-st-progress pulse-dot"></span><span x-show="automationsProject(row)" class="title-tag shrink-0" :data-pipe-color="automationsProjectColor(row)" x-text="'[' + automationsProject(row) + ']'"></span><span class="truncate" x-text="row.name"></span></button></td>
-                      <td class="pr-3 font-mono"><div class="flex items-baseline gap-2 overflow-hidden"><span class="text-[11.5px] text-tx-2 truncate" x-text="row.schedule_human || row.schedule"></span><span class="text-[10.5px] text-tx-faint truncate" x-text="row.schedule"></span></div></td>
-                      <td class="font-mono text-[11px] text-tx-3 truncate pr-2" x-text="row.agent || 'default'"></td>
-                      <td class="font-mono text-[11px]"><span :class="automationsOutcomeClass(row.running ? row.current_run : row.last_run)" x-text="automationsOutcome(row.running ? row.current_run : row.last_run)"></span> <span class="text-tx-4" x-text="row.running ? automationsWall(row.current_run) : row.last_run ? '#' + row.last_run.n + ' · ' + automationsRelative(automationsRunTimestamp(row.last_run, true)) : ''"></span></td>
-                      <td class="text-right font-mono text-[11px] truncate" :class="row.enabled ? 'text-tx-3' : 'text-st-paused'" :title="automationsDateLabel(row.next, row.timezone)" x-text="automationsNextLabel(row)"></td>
-                      <td class="pr-4"><div class="flex justify-end text-tx-4"><button type="button" @click.stop="automationsRun(row)" :disabled="automationsPending || !automationsAvailable || (row.running && !automationsRunReceipts[row.id])" class="w-6 h-6 rounded-[5px] hover:text-ok hover:bg-st-done/10" :aria-label="'Run ' + row.name"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="mx-auto" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg></button><button type="button" @click.stop="automationsEdit(row)" class="w-6 h-6 rounded-[5px] hover:text-accent hover:bg-accent/10" :aria-label="'Edit ' + row.name"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="mx-auto" aria-hidden="true"><path d="M11 4H4v16h16v-7M18 2l4 4-12 12-5 1 1-5Z"/></svg></button><button type="button" @click.stop="automationsSelect(row)" class="w-6 h-6 rounded-[5px] hover:text-tx hover:bg-surface-850" :aria-label="'Open ' + row.name">›</button></div></td>
+                    <tr role="row" @click="automationsSelect(row)" class="h-[36px] border-b border-surface-700/30 cursor-pointer hover:bg-surface-900">
+                      <td role="cell" class="pl-4"><button type="button" role="switch" :aria-checked="row.enabled" :aria-label="'Schedule for ' + row.name" @click.stop="automationsToggle(row)" :disabled="automationsPending || !!automationsToggling[row.id] || !automationsAvailable" class="automations-switch relative block w-7 h-4 rounded-full"><span class="automations-switch-track" aria-hidden="true"><span class="automations-switch-thumb"></span></span></button></td>
+                      <td role="cell" class="font-mono text-[11.5px] text-tx-3 truncate pr-2" x-text="row.id"></td>
+                      <td role="cell" class="pr-3"><button type="button" :data-automation-open="row.id" @click.stop="automationsSelect(row, true, $event.currentTarget)" class="flex items-center gap-1.5 w-full min-w-0 text-left text-[12.5px]" :class="row.enabled ? 'text-tx' : 'text-tx-3'"><span x-show="row.running" class="w-1.5 h-1.5 shrink-0 rounded-full bg-st-progress pulse-dot"></span><span x-show="automationsProject(row)" class="title-tag shrink-0" :data-pipe-color="automationsProjectColor(row)" x-text="'[' + automationsProject(row) + ']'"></span><span class="truncate" x-text="row.name"></span></button></td>
+                      <td role="cell" class="pr-3 font-mono"><span class="automations-cell-label">Schedule</span><div class="flex items-baseline gap-2 overflow-hidden"><span class="text-[11.5px] text-tx-2 truncate" x-text="row.schedule_human || row.schedule"></span><span class="text-[10.5px] text-tx-faint truncate" x-text="row.schedule"></span></div></td>
+                      <td role="cell" class="font-mono text-[11px] text-tx-3 truncate pr-2" x-text="row.agent || 'default'"></td>
+                      <td role="cell" class="font-mono text-[11px]"><span class="automations-cell-label" x-text="row.running ? 'Current run' : 'Last run'"></span><span :class="automationsOutcomeClass(row.running ? row.current_run : row.last_run)" x-text="automationsOutcome(row.running ? row.current_run : row.last_run)"></span> <span class="text-tx-4" x-text="row.running ? automationsWall(row.current_run) : row.last_run ? '#' + row.last_run.n + ' · ' + automationsRelative(automationsRunTimestamp(row.last_run, true)) : ''"></span></td>
+                      <td role="cell" class="text-right font-mono text-[11px] truncate" :class="row.enabled ? 'text-tx-3' : 'text-st-paused'" :title="automationsDateLabel(row.next, row.timezone)"><span class="automations-cell-label">Next run</span><span x-text="automationsNextLabel(row)"></span></td>
+                      <td role="cell" class="pr-4"><div class="flex justify-end text-tx-4"><button type="button" @click.stop="automationsRun(row)" :disabled="automationsPending || !automationsAvailable || (row.running && !automationsRunReceipts[row.id])" class="w-6 h-6 rounded-[5px] hover:text-ok hover:bg-st-done/10" :aria-label="'Run ' + row.name"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="mx-auto" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg></button><button type="button" @click.stop="automationsEdit(row)" class="w-6 h-6 rounded-[5px] hover:text-accent hover:bg-accent/10" :aria-label="'Edit ' + row.name"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="mx-auto" aria-hidden="true"><path d="M11 4H4v16h16v-7M18 2l4 4-12 12-5 1 1-5Z"/></svg></button><button type="button" @click.stop="automationsSelect(row, true, $event.currentTarget)" class="w-6 h-6 rounded-[5px] hover:text-tx hover:bg-surface-850" :aria-label="'Open ' + row.name">›</button></div></td>
                     </tr>
                   </template>
                 </tbody>
@@ -3390,52 +3371,66 @@
         </template>
         <template x-if="automationsDetail && !automationsEditing && automationsRow()">
           <article class="automations-detail absolute inset-0 z-30 flex flex-col min-h-0 bg-surface-950">
-            <div class="automations-mobile-actions flex flex-wrap items-center gap-2 px-4 py-2 border-b border-surface-700">
-              <button type="button" @click="automationsBack()" class="text-accent font-mono text-xs">← automations</button>
-              <button type="button" @click="automationsRun()" :disabled="automationsPending" class="automations-action">run now</button><button type="button" @click="automationsStop()" x-show="automationsCanStop()" :disabled="automationsPending" class="automations-action text-err">stop</button><button type="button" @click="automationsToggle(automationsRow())" :disabled="automationsPending" class="automations-action" x-text="automationsRow().enabled ? 'pause' : 'resume'"></button><button type="button" @click="automationsEdit()" class="automations-action">edit</button><button type="button" @click="automationsNew(automationsRow())" :disabled="automationsPending" class="automations-action">Duplicate</button><button type="button" data-automations-delete-trigger @click="automationsOpenDelete($event.currentTarget)" class="automations-action text-err">delete</button>
-            </div>
-            <div x-show="automationsError" role="alert" class="px-6 py-2 font-mono text-xs text-err"><span x-text="automationsError"></span> <button type="button" @click="automationsRefresh()" class="text-accent">retry</button></div>
-            <div class="shrink-0 px-6 pt-[15px] pb-[11px] flex flex-col gap-2">
-              <div class="flex flex-wrap items-center gap-2.5"><span class="status-chip" :data-status="automationsRow().running ? 'in_progress' : automationsRow().enabled ? 'open' : 'paused'" x-text="automationsRow().running ? 'running' : automationsRow().enabled ? 'scheduled' : 'paused'"></span><span class="pipe-tag" data-pipe-color="cyan" x-text="automationsRow().schedule_human || automationsRow().schedule"></span><span class="font-mono text-[11px] text-surface-600 break-all" x-text="[automationsRow().agent || 'default', automationsRow().model || 'agent default', automationsRow().path].join(' · ')"></span></div>
-              <h1 class="text-[19px] font-semibold leading-[1.35] text-tx-hi"><span x-show="automationsProject(automationsRow())" class="title-tag" :data-pipe-color="automationsProjectColor(automationsRow())" x-text="'[' + automationsProject(automationsRow()) + ']'"></span> <span x-text="automationsRow().name"></span></h1>
-            </div>
-            <div class="automations-run-strip shrink-0 px-6 pb-[13px] border-b border-surface-700/60 flex items-end gap-5">
-              <div class="flex-1 min-w-0 flex flex-col gap-[7px]"><div class="flex items-center gap-2 font-mono whitespace-nowrap"><span class="text-[11.5px] text-tx-2">last 24 runs</span><span class="text-[10.5px] text-surface-600 truncate" x-text="'· ' + automationsStripSummary()"></span><span class="ml-auto text-[10.5px] text-surface-600">now →</span></div><div class="flex gap-[3px] h-[5px]"><template x-for="run in automationsStrip()" :key="run.n"><span class="automations-run-mark relative flex-1 rounded-[3px] overflow-hidden min-w-[3px]" :style="automationsStripStyle(run)" role="img" :aria-label="'Run ' + run.n + ': ' + automationsOutcome(run) + ', ' + automationsDateLabel(automationsRunTimestamp(run))"><span x-show="automationsRunActive(run)" class="absolute inset-y-0 left-0 w-[40%] bg-st-progress sweep"></span></span></template><span x-show="!automationsHistory.length" class="flex-1 rounded bg-surface-700"></span></div></div>
-              <div class="automations-meters flex gap-[18px] pl-5 border-l border-surface-700/70">
-                <template x-for="meter in [{ label: 'next run', value: automationsRow().enabled && automationsRow().next ? automationsDateLabel(automationsRow().next).slice(-5) : '—' }, { label: 'runs', value: automationsRow().runs_total ?? automationsHistoryTotal }, { label: 'success', value: automationsRow().success_rate == null ? '—' : Math.round(automationsRow().success_rate) + '%' }, { label: 'avg wall', value: automationsDuration(automationsRow().avg_wall) }]" :key="meter.label"><div class="flex flex-col gap-1"><span class="font-mono text-[10px] uppercase tracking-[.12em] text-tx-faint whitespace-nowrap" x-text="meter.label"></span><span class="font-mono text-[14px] text-tx-hi num whitespace-nowrap" x-text="meter.value"></span></div></template>
+            <div class="automations-mobile-actions items-center gap-2 px-4 border-b border-surface-700">
+              <button type="button" data-automation-back @click="automationsBack()" class="text-accent font-mono text-xs">Back to automations</button>
+              <div class="flex-1"></div>
+              <button type="button" x-show="!automationsCanStop() || automationsRunReceipts[automationsSelected]" @click="automationsRun()" :disabled="automationsPending || !automationsAvailable || (automationsRow().running && !automationsRunReceipts[automationsSelected])" class="automations-action" x-text="automationsRunReceipts[automationsSelected] ? 'retry run now' : 'run now'"></button>
+              <button type="button" x-show="automationsCanStop()" @click="automationsStop()" :disabled="automationsPending || !automationsAvailable" class="automations-action text-err">stop</button>
+              <div x-ref="automationActions" class="automations-action-menu relative" @click.outside="automationsMenu = false"
+                   @focusout="if ($event.relatedTarget && !$el.contains($event.relatedTarget)) automationsMenu = false" @keydown="automationsMenuKey($event)">
+                <button type="button" data-automations-menu-trigger @click="automationsMenu ? automationsCloseMenu() : automationsOpenMenu()" :aria-expanded="automationsMenu" aria-label="More automation actions" aria-haspopup="menu" class="automations-action">⋯</button>
+                <template x-if="automationsMenu">
+                  <div role="menu" aria-label="Automation actions" class="automations-compact-menu absolute right-0 z-50 flex flex-col rounded-[9px] border border-edge-input bg-surface-900 p-1">
+                    <button type="button" role="menuitem" tabindex="-1" @click="automationsCloseMenu(); automationsToggle(automationsRow())" :disabled="automationsPending || !automationsAvailable || !!automationsToggling[automationsSelected]" x-text="automationsRow().enabled ? 'pause' : 'resume'"></button>
+                    <button type="button" role="menuitem" tabindex="-1" @click="automationsEdit()" :disabled="automationsPending">edit</button>
+                    <button type="button" role="menuitem" tabindex="-1" @click="automationsNew(automationsRow())" :disabled="automationsPending">Duplicate</button>
+                    <button type="button" role="menuitem" tabindex="-1" data-automations-delete-trigger @click="automationsOpenDelete($event.currentTarget)" :disabled="automationsPending" class="text-err">delete automation</button>
+                  </div>
+                </template>
               </div>
             </div>
+            <div x-show="automationsError" role="alert" class="px-6 py-2 font-mono text-xs text-err"><span x-text="automationsError"></span> <button type="button" @click="automationsRefresh()" class="text-accent">retry</button></div>
+            <div class="automations-detail-title shrink-0 px-6 pt-[15px] pb-[11px] flex flex-col gap-2">
+              <div class="flex flex-wrap items-center gap-2.5"><span class="status-chip" :data-status="automationsRow().running ? 'in_progress' : automationsRow().enabled ? 'open' : 'paused'" x-text="automationsRow().running ? 'running' : automationsRow().enabled ? 'scheduled' : 'paused'"></span><span class="automations-title-context pipe-tag" data-pipe-color="cyan" x-text="automationsRow().schedule_human || automationsRow().schedule"></span><span class="automations-title-context font-mono text-[11px] text-surface-600 break-all" x-text="[automationsRow().agent || 'default', automationsRow().model || 'agent default', automationsRow().path].join(' · ')"></span></div>
+              <h1 class="text-[19px] font-semibold leading-[1.35] text-tx-hi"><span x-show="automationsProject(automationsRow())" class="title-tag" :data-pipe-color="automationsProjectColor(automationsRow())" x-text="'[' + automationsProject(automationsRow()) + ']'"></span> <span x-text="automationsRow().name"></span></h1>
+            </div>
             <div class="automations-detail-body flex flex-1 min-h-0 min-w-0">
+              <div class="automations-run-strip shrink-0 px-6 pb-[13px] border-b border-surface-700/60 flex items-end gap-5">
+                <div class="flex-1 min-w-0 flex flex-col gap-[7px]"><div class="flex items-center gap-2 font-mono whitespace-nowrap"><span class="text-[11.5px] text-tx-2">last 24 runs</span><span class="text-[10.5px] text-surface-600 truncate" x-text="'· ' + automationsStripSummary()"></span><span class="ml-auto text-[10.5px] text-surface-600">now →</span></div><div class="flex gap-[3px] h-[5px]"><template x-for="run in automationsStrip()" :key="run.n"><span class="automations-run-mark relative flex-1 rounded-[3px] overflow-hidden min-w-[3px]" :style="automationsStripStyle(run)" role="img" :aria-label="'Run ' + run.n + ': ' + automationsOutcome(run) + ', ' + automationsDateLabel(automationsRunTimestamp(run))"><span x-show="automationsRunActive(run)" class="absolute inset-y-0 left-0 w-[40%] bg-st-progress sweep"></span></span></template><span x-show="!automationsHistory.length" class="flex-1 rounded bg-surface-700"></span></div></div>
+                <div class="automations-meters flex gap-[18px] pl-5 border-l border-surface-700/70">
+                  <template x-for="meter in [{ label: 'next run', value: automationsRow().enabled && automationsRow().next ? automationsDateLabel(automationsRow().next).slice(-5) : '—' }, { label: 'runs', value: automationsRow().runs_total ?? automationsHistoryTotal }, { label: 'success', value: automationsRow().success_rate == null ? '—' : Math.round(automationsRow().success_rate) + '%' }, { label: 'avg wall', value: automationsDuration(automationsRow().avg_wall) }]" :key="meter.label"><div class="flex flex-col gap-1"><span class="font-mono text-[10px] uppercase tracking-[.12em] text-tx-faint whitespace-nowrap" x-text="meter.label"></span><span class="font-mono text-[14px] text-tx-hi num whitespace-nowrap" x-text="meter.value"></span></div></template>
+                </div>
+              </div>
               <div class="automations-detail-main flex flex-col flex-1 min-w-0 min-h-0">
-                <div class="shrink-0 flex items-center gap-5 px-6 pt-3 border-b border-surface-700/70" role="tablist" aria-label="Automation detail">
+                <div class="automations-detail-tabs shrink-0 flex items-center gap-5 px-6 pt-3 border-b border-surface-700/70" role="tablist" aria-label="Automation detail">
                   <button x-show="automationsRow().running" type="button" role="tab" :aria-selected="automationsTab === 'session'" @click="automationsSwitchTab('session')" class="flex items-center gap-1.5 font-mono text-[12px] pb-[9px] border-b-2" :class="automationsTab === 'session' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'"><span class="w-[5px] h-[5px] bg-st-progress rounded-full pulse-dot"></span>session</button>
                   <button type="button" role="tab" :aria-selected="automationsTab === 'runs'" @click="automationsSwitchTab('runs')" class="font-mono text-[12px] pb-[9px] border-b-2 whitespace-nowrap" :class="automationsTab === 'runs' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">runs <span class="text-tx-faint" x-text="automationsRow().runs_total ?? automationsHistoryTotal"></span></button>
                   <button type="button" role="tab" :aria-selected="automationsTab === 'prompt'" @click="automationsSwitchTab('prompt')" class="font-mono text-[12px] pb-[9px] border-b-2" :class="automationsTab === 'prompt' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">prompt</button>
-                  <div class="ml-auto flex items-center gap-3 pb-[9px] font-mono text-[11px] whitespace-nowrap"><button type="button" x-show="automationsTab === 'session'" @click="automationsFollow()" class="text-tx-3">⇣ follow</button><a x-show="automationsTab === 'runs' && automationsLogRun" :href="automationsRawURL()" target="_blank" rel="noopener" class="text-tx-3">⧉ raw</a><button type="button" x-show="automationsRow().running && automationsTab !== 'session'" @click="automationsSwitchTab('session')" class="text-accent">← live</button></div>
+                  <div class="automations-output-actions ml-auto flex items-center gap-3 pb-[9px] font-mono text-[11px] whitespace-nowrap"><button type="button" x-show="automationsTab === 'session'" @click="automationsFollow()" class="text-tx-3">⇣ follow</button><a x-show="automationsTab === 'runs' && automationsLogRun" :href="automationsRawURL()" target="_blank" rel="noopener" class="text-tx-3">⧉ raw</a><button type="button" x-show="automationsRow().running && automationsTab !== 'session'" @click="automationsSwitchTab('session')" class="text-accent">← live</button></div>
                 </div>
                 <div x-show="automationsTab === 'session'" role="tabpanel" class="flex flex-col flex-1 min-h-0">
-                  <div class="flex flex-wrap items-center gap-3 px-6 py-3 font-mono text-[11px] text-surface-600"><span class="flex-1" x-text="'tmux · ' + (automationsRow().current_run?.session || 'kontora-auto-' + automationsSelected + '-' + automationsRow().current_run?.n) + ' · ' + automationsRow().agent + ' · running ' + automationsWall(automationsRow().current_run)"></span><button type="button" @click="toggleTerminalRW()" class="px-2 py-1 rounded border" :class="terminalRW ? 'text-err bg-err/10 border-err/40' : 'text-surface-600 border-edge-input'" x-text="terminalRW ? 'read-write' : 'read-only'"></button><button type="button" @click="copyCmd('kontora attach ' + automationsSelected)" class="copyable" x-text="'kontora attach ' + automationsSelected"></button></div>
+                  <div class="automations-session-controls flex flex-wrap items-center gap-3 px-6 py-3 font-mono text-[11px] text-surface-600"><span class="automations-session-context flex-1" x-text="'tmux · ' + (automationsRow().current_run?.session || 'kontora-auto-' + automationsSelected + '-' + automationsRow().current_run?.n) + ' · ' + automationsRow().agent + ' · running ' + automationsWall(automationsRow().current_run)"></span><button type="button" @click="toggleTerminalRW()" class="px-2 py-1 rounded border" :class="terminalRW ? 'text-err bg-err/10 border-err/40' : 'text-surface-600 border-edge-input'" x-text="terminalRW ? 'read-write' : 'read-only'"></button><button type="button" @click="copyCmd('kontora attach ' + automationsSelected)" class="copyable" x-text="'kontora attach ' + automationsSelected"></button></div>
                   <p x-show="terminalError" role="alert" class="px-6 text-xs text-err"><span x-text="terminalError"></span> <button type="button" @click="automationsReconnect()" class="font-mono text-[11px] text-accent">retry</button></p>
                   <div id="automation-terminal-session" class="flex-1 min-h-[200px] mx-6 mb-5 bg-surface-deep border border-surface-700 rounded-[10px] px-[18px] py-[14px] overflow-hidden" :class="terminalRW ? 'ring-1 ring-err/40' : ''"></div>
                 </div>
                 <div x-show="automationsTab === 'runs'" role="tabpanel" class="flex flex-col flex-1 min-h-0">
-                  <div x-show="!automationsLogRun" class="flex-1 min-h-0 overflow-auto px-6 py-2">
+                  <div x-show="!automationsLogRun" class="automations-history flex-1 min-h-0 overflow-auto px-6 py-2">
                     <p x-show="automationsHistoryError" role="alert" class="font-mono text-xs text-err"><span x-text="automationsHistoryError"></span> <button type="button" @click="automationsLoadHistory(false)" class="text-accent">retry</button></p>
-                    <table class="w-full min-w-[760px] table-fixed font-mono text-[11px] text-left"><colgroup><col style="width:56px"><col style="width:96px"><col style="width:84px"><col style="width:150px"><col style="width:80px"><col style="width:56px"><col style="width:72px"><col><col style="width:24px"></colgroup><thead class="text-tx-4 uppercase text-[10px] border-b border-surface-700/60"><tr class="h-7"><th>run</th><th>outcome</th><th>trigger</th><th>started</th><th class="text-right">wall</th><th class="text-right">exit</th><th class="text-right pr-3 whitespace-nowrap text-[9px]">cost, est.</th><th>result</th><th></th></tr></thead><tbody><template x-for="run in automationsHistory" :key="run.n"><tr @click="automationsOpenRun(run)" class="h-[32px] border-b border-surface-700/30 cursor-pointer hover:bg-surface-900"><td><button type="button" @click.stop="automationsOpenRun(run)" class="text-tx-3" x-text="'#' + run.n"></button></td><td :class="automationsOutcomeClass(run)" x-text="automationsOutcome(run)"></td><td class="text-tx-4" x-text="run.trigger"></td><td class="text-tx-3 truncate" x-text="automationsDateLabel(automationsRunTimestamp(run))"></td><td class="text-right text-tx-3" x-text="automationsWall(run)"></td><td class="text-right text-tx-4" x-text="run.exit_code ?? '—'"></td><td class="text-right pr-3 text-tx-3" x-text="automationsCost(run.cost)"></td><td class="truncate font-sans text-[12.5px] text-tx-2" :title="run.result" x-text="run.result || '—'"></td><td class="text-right text-tx-4">›</td></tr></template></tbody></table>
+                    <table role="table" class="automations-history-table w-full min-w-[760px] table-fixed font-mono text-[11px] text-left"><colgroup><col style="width:56px"><col style="width:96px"><col style="width:84px"><col style="width:150px"><col style="width:80px"><col style="width:56px"><col style="width:72px"><col><col style="width:24px"></colgroup><thead class="text-tx-4 uppercase text-[10px] border-b border-surface-700/60"><tr class="h-7"><th>run</th><th>outcome</th><th>trigger</th><th>started</th><th class="text-right">wall</th><th class="text-right">exit</th><th class="text-right pr-3 whitespace-nowrap text-[9px]">cost, est.</th><th>result</th><th></th></tr></thead><tbody role="rowgroup"><template x-for="run in automationsHistory" :key="run.n"><tr role="row" @click="automationsOpenRun(run)" class="h-[32px] border-b border-surface-700/30 cursor-pointer hover:bg-surface-900"><td role="cell"><button type="button" @click.stop="automationsOpenRun(run)" class="text-tx-3" x-text="'#' + run.n"></button></td><td role="cell" :class="automationsOutcomeClass(run)" x-text="automationsOutcome(run)"></td><td role="cell" class="text-tx-4" x-text="run.trigger"></td><td role="cell" class="text-tx-3 truncate" x-text="automationsDateLabel(automationsRunTimestamp(run))"></td><td role="cell" class="text-right text-tx-3" x-text="automationsWall(run)"></td><td role="cell" class="text-right text-tx-4"><span class="automations-cell-label">Exit</span><span x-text="run.exit_code ?? '—'"></span></td><td role="cell" class="text-right pr-3 text-tx-3"><span class="automations-cell-label">Est. cost</span><span x-text="automationsCost(run.cost)"></span></td><td role="cell" class="truncate font-sans text-[12.5px] text-tx-2" :title="run.result" x-text="run.result || '—'"></td><td role="cell" class="text-right text-tx-4">›</td></tr></template></tbody></table>
                     <p x-show="!automationsHistory.length && !automationsHistoryLoading" class="py-8 text-[12px] text-tx-3">No runs recorded. Use run now to start the first run.</p>
                     <div class="flex items-center gap-3 py-3 font-mono text-[11px] text-tx-4"><button type="button" x-show="automationsHistory.length < automationsHistoryTotal" @click="automationsLoadHistory(true)" :disabled="automationsHistoryLoading" class="text-accent">show more</button><span x-show="automationsHistoryLoading">loading…</span><span x-show="automationsHistoryTotal > automationsHistory.length" x-text="(automationsHistoryTotal - automationsHistory.length) + ' older not drawn'"></span></div>
                   </div>
                   <template x-if="automationsLogRun">
                     <div x-show="automationsLogRun" class="flex flex-col flex-1 min-h-0">
-                      <div class="shrink-0 flex flex-wrap items-center gap-3 px-6 pt-[11px] pb-[9px] font-mono text-[11px]"><div class="flex-1 min-w-0"><div class="flex items-center gap-3"><button type="button" @click="automationsAllRuns()" class="text-accent">← all runs</button><span class="text-tx-2" x-text="'run #' + automationsLogRun.n"></span><span :class="automationsOutcomeClass(automationsLogRun)" x-text="automationsOutcome(automationsLogRun)"></span></div><div class="mt-2 text-surface-600" x-text="[automationsLogRun.trigger, automationsDateLabel(automationsRunTimestamp(automationsLogRun)), automationsWall(automationsLogRun), 'exit ' + (automationsLogRun.exit_code ?? '—'), automationsCost(automationsLogRun.cost) + ' est.'].join(' · ')"></div></div><button type="button" @click="automationsStepRun(-1)" :disabled="automationsRunIndex() <= 0 || automationsHistoryLoading" class="px-2 py-[2px] rounded-md border border-edge-input text-surface-600">↑ newer</button><button type="button" @click="automationsStepRun(1)" :disabled="automationsRunIndex() + 1 >= automationsHistoryTotal || automationsHistoryLoading" class="px-2 py-[2px] rounded-md border border-edge-input text-surface-600">↓ older</button></div>
-                      <div class="flex-1 min-h-0 mx-6 mb-5 bg-surface-deep border border-surface-700 rounded-[10px] px-[18px] py-[14px] overflow-auto font-mono text-[12px] leading-[1.6]">
+                      <div class="automations-log-controls shrink-0 flex flex-wrap items-center gap-3 px-6 pt-[11px] pb-[9px] font-mono text-[11px]"><div class="flex-1 min-w-0"><div class="flex items-center gap-3"><button type="button" @click="automationsAllRuns()" class="text-accent">← all runs</button><span class="text-tx-2" x-text="'run #' + automationsLogRun.n"></span><span :class="automationsOutcomeClass(automationsLogRun)" x-text="automationsOutcome(automationsLogRun)"></span></div><div class="mt-2 text-surface-600" x-text="[automationsLogRun.trigger, automationsDateLabel(automationsRunTimestamp(automationsLogRun)), automationsWall(automationsLogRun), 'exit ' + (automationsLogRun.exit_code ?? '—'), automationsCost(automationsLogRun.cost) + ' est.'].join(' · ')"></div></div><button type="button" @click="automationsStepRun(-1)" :disabled="automationsRunIndex() <= 0 || automationsHistoryLoading" class="px-2 py-[2px] rounded-md border border-edge-input text-surface-600">↑ newer</button><button type="button" @click="automationsStepRun(1)" :disabled="automationsRunIndex() + 1 >= automationsHistoryTotal || automationsHistoryLoading" class="px-2 py-[2px] rounded-md border border-edge-input text-surface-600">↓ older</button></div>
+                      <div class="automations-log-output flex-1 min-h-0 mx-6 mb-5 bg-surface-deep border border-surface-700 rounded-[10px] px-[18px] py-[14px] overflow-auto font-mono text-[12px] leading-[1.6]">
                         <p x-show="automationsLogLoading" role="status" class="text-tx-3">Loading log…</p><p x-show="automationsLogError" role="alert" class="text-err"><span x-text="automationsLogError"></span> <button type="button" @click="automationsOpenRun(automationsLogRun)" class="text-accent">retry</button></p><p x-show="!automationsLogLoading && !automationsLogError && !automationsLog.length" class="text-tx-4">No log output recorded.</p>
                         <template x-for="(line, index) in automationsLog" :key="index"><div class="automations-log-line grid grid-cols-[62px_58px_minmax(0,1fr)] gap-[10px]"><time class="text-tx-faint num" x-text="automationsLogTime(line.at)"></time><span class="text-tx-4" x-text="line.source"></span><span class="whitespace-pre-wrap break-words" :class="automationsLogClass(line)" x-text="line.text"></span></div></template>
                       </div>
                     </div>
                   </template>
                 </div>
-                <div x-show="automationsTab === 'prompt'" role="tabpanel" class="flex-1 min-h-0 overflow-auto px-6 py-4"><div class="flex items-center gap-3 max-w-[calc(42rem+28px)] mb-3"><span class="side-label">prompt template</span><span class="font-mono text-[11px] text-tx-faint" x-text="automationsRow().prompt.length + ' chars · go template'"></span><button type="button" @click="automationsEdit()" class="ml-auto font-mono text-[11px] text-accent">edit →</button></div><pre class="max-w-[calc(42rem+28px)] whitespace-pre-wrap break-words font-mono text-sm leading-[1.75] text-tx-2 rounded-[8px] border border-surface-700 px-[14px] py-3" x-text="automationsRow().prompt"></pre><p class="mt-3 text-[11px] text-surface-600">Go template, the same syntax as stages. .Automation.Name, .Automation.Path, .Run.Number, .Run.Branch, .Run.Date and .LastRun.StartedAt are set on every run.</p></div>
+                <div x-show="automationsTab === 'prompt'" role="tabpanel" class="automations-prompt flex-1 min-h-0 overflow-auto px-6 py-4"><div class="flex items-center gap-3 max-w-[calc(42rem+28px)] mb-3"><span class="side-label">prompt template</span><span class="font-mono text-[11px] text-tx-faint" x-text="automationsRow().prompt.length + ' chars · go template'"></span><button type="button" @click="automationsEdit()" class="ml-auto font-mono text-[11px] text-accent">edit →</button></div><pre class="max-w-[calc(42rem+28px)] whitespace-pre-wrap break-words font-mono text-sm leading-[1.75] text-tx-2 rounded-[8px] border border-surface-700 px-[14px] py-3" x-text="automationsRow().prompt"></pre><p class="mt-3 text-[11px] text-surface-600">Go template, the same syntax as stages. .Automation.Name, .Automation.Path, .Run.Number, .Run.Branch, .Run.Date and .LastRun.StartedAt are set on every run.</p></div>
               </div>
               <details open class="automations-rail w-[308px] shrink-0 min-h-0 overflow-auto border-l border-surface-700/50 bg-surface-frame">
                 <summary class="automations-rail-summary">Schedule and configuration</summary>
@@ -3449,25 +3444,35 @@
           </article>
         </template>
         <template x-if="automationsEditing">
-          <div class="flex flex-1 min-h-0 min-w-0 bg-surface-950">
-            <div class="flex-1 min-w-0 overflow-y-auto"><form @submit.prevent="automationsSaveDraft()" @input="automationsDraftChanged()" @change="automationsDraftChanged()" :aria-busy="automationsPending" class="automations-editor max-w-2xl mx-auto px-8 py-6 flex flex-col gap-5">
-              <div class="flex items-start gap-4"><div class="flex-1"><h1 class="text-base font-semibold text-tx-2" x-text="automationsSelected ? 'Edit automation' : 'New automation'"></h1><p class="font-mono text-[10px] uppercase tracking-widest text-surface-600 mt-1">writes an entry under automations: in <span class="break-all" x-text="automationsConfigPath()"></span></p></div><button type="button" @click="automationsBack()" :disabled="automationsPending" class="font-mono text-[11px] text-tx-4 border border-surface-700 rounded px-1.5 py-0.5">esc</button></div>
+          <div data-compact-scroll class="routed-form-scroll automations-editor-layout flex-1 min-h-0 min-w-0 overflow-y-auto bg-surface-950">
+            <form @submit.prevent="automationsSaveDraft()" @input="automationsDraftChanged()" @change="automationsDraftChanged()" :aria-busy="automationsPending" class="automations-editor min-w-0 w-full max-w-2xl mx-auto px-8 py-6 flex flex-col gap-5">
+              <div class="flex items-start gap-4"><div class="flex-1"><h1 class="text-base font-semibold text-tx-2" x-text="automationsSelected ? 'Edit automation' : 'New automation'"></h1><p class="automations-editor-path font-mono text-[10px] uppercase tracking-widest text-surface-600 mt-1">writes an entry under automations: in <span class="break-all" x-text="automationsConfigPath()"></span></p></div><button type="button" @click="automationsBack()" :disabled="automationsPending" class="font-mono text-[11px] text-tx-4 border border-surface-700 rounded px-1.5 py-0.5">Back</button></div>
               <div x-show="automationsConflict" role="alert" class="text-[12px] text-warn"><span x-text="automationsConflict"></span> <button type="button" @click="automationsReload()" :disabled="automationsPending" class="text-accent underline">reload saved version</button></div>
               <fieldset :disabled="automationsPending || !!automationsCreate" class="flex flex-col gap-5 min-w-0">
-                <div class="flex flex-col gap-1"><label for="automation-name" class="text-[13px] font-mono text-tx-3">Name <span class="text-accent">*</span></label><input id="automation-name" x-ref="automationName" required x-model="automationsDraft.name" class="bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:border-accent/40" placeholder="Nightly dependency review"><p class="text-[11px] text-surface-600">Config key <code x-text="automationsKey()"></code>. Shown on the run log and in notifications.</p></div>
+                <div class="flex flex-col gap-1"><label for="automation-name" class="text-[13px] font-mono text-tx-3">Name <span class="text-accent">*</span></label><input id="automation-name" required x-model="automationsDraft.name" class="bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:border-accent/40" placeholder="Nightly dependency review"><p class="text-[11px] text-surface-600">Config key <code x-text="automationsKey()"></code>. Shown on the run log and in notifications.</p></div>
                 <div class="flex flex-col gap-1"><label for="automation-prompt" class="text-[13px] font-mono text-tx-3">Prompt <span class="text-accent">*</span></label><textarea id="automation-prompt" rows="9" required x-model="automationsDraft.prompt" class="bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono leading-[1.6] focus:border-accent/40" placeholder="Review recent changes and report regressions."></textarea><p class="text-[11px] text-surface-600">Go template, the same syntax as stages. .Automation.Name, .Automation.Path, .Run.Number, .Run.Branch, .Run.Date and .LastRun.StartedAt are set on every run.</p></div>
-                <div class="flex flex-col gap-1"><label for="automation-path" class="text-[13px] font-mono text-tx-3">Path <span class="text-accent">*</span></label><input id="automation-path" required list="automation-projects" x-model="automationsDraft.path" class="bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:border-accent/40" placeholder="~/projects/repository"><datalist id="automation-projects"><template x-for="project in configCache?.projects || []" :key="project.path"><option :value="project.path" x-text="project.name"></option></template></datalist><p class="text-[11px] text-surface-600">Directory the agent starts in. Supports ~. A configured project's hooks apply.</p></div>
-                <div><div class="automations-editor-agent-fields gap-3"><div><label id="automation-agent-label" :for="_agentPickerPopoverSupported ? agentPickerTriggerID('automations') : agentPickerFallbackID('automations')" class="text-[13px] font-mono text-tx-3 mb-1 block">Agent</label><div x-data="{ pickerHost: 'automations' }" x-html="agentPickerControl"></div></div><div><label for="automation-model" class="text-[13px] font-mono text-tx-3 mb-1 block">Model</label><input id="automation-model" x-model="automationsDraft.model" placeholder="agent default" class="w-full h-9 bg-surface-800 border border-surface-700/50 rounded px-3 text-sm text-tx-2 font-mono focus:border-accent/40"></div><div><label for="automation-timeout" class="text-[13px] font-mono text-tx-3 mb-1 block">Timeout</label><input id="automation-timeout" required x-model="automationsDraft.timeout" placeholder="30m" class="w-full h-9 bg-surface-800 border border-surface-700/50 rounded px-3 text-sm text-tx-2 font-mono focus:border-accent/40"></div></div><p class="mt-1.5 text-[11px] text-surface-600">Agent uses the binary and args from agents:. Model overrides the agent's default. Timeout stops the run and marks it failed.</p></div>
-                <div class="flex flex-col gap-2"><label for="automation-schedule" class="text-[13px] font-mono text-tx-3">Schedule <span class="text-accent">*</span></label><div class="flex flex-wrap gap-1.5"><template x-for="preset in automationsPresets" :key="preset.value"><button type="button" @click="automationsDraft.schedule = preset.value; automationsDraftChanged()" :aria-pressed="automationsDraft.schedule === preset.value" class="font-mono text-[11px] px-2.5 py-1 rounded-full border" :class="automationsDraft.schedule === preset.value ? 'text-st-open bg-st-open/10 border-st-open/40' : 'bg-surface-900 border-edge-input text-tx-3'" x-text="preset.label"></button></template></div><div class="flex items-center h-9 px-2.5 bg-surface-800 rounded border" :class="automationsPreviewError ? 'border-err/50' : automationsPreviewValidKey ? 'border-st-open/50' : 'border-surface-700/50'"><input id="automation-schedule" required x-model="automationsDraft.schedule" :aria-invalid="!!automationsPreviewError" aria-describedby="automation-schedule-help" class="flex-1 min-w-0 bg-transparent text-sm font-mono text-tx-2 border-0 outline-none" placeholder="0 9 * * 1-5"><span class="w-px h-4 bg-surface-700 mx-2"></span><span class="font-mono text-[10px] text-surface-600 whitespace-nowrap">cron, or 30m, 6h</span></div><p id="automation-schedule-help" role="status" class="font-mono text-[11.5px]" :class="automationsPreviewError ? 'text-err' : 'text-tx-2'" x-text="automationsPreviewLoading ? 'Calculating schedule…' : automationsPreviewError || '→ ' + automationsPreviewHuman"></p><ol class="font-mono text-[11px] text-surface-600"><template x-for="fire in automationsPreview" :key="fire"><li x-text="'→ ' + automationsDateLabel(fire, automationsDraft.timezone) + ' · ' + automationsRelative(fire)"></li></template></ol><button type="button" x-show="automationsPreviewError" @click="automationsSchedulePreview(true)" class="text-left font-mono text-[11px] text-accent">retry preview</button></div>
-                <div class="flex flex-col gap-1"><label for="automation-timezone" class="text-[13px] font-mono text-tx-3">Timezone</label><input id="automation-timezone" required list="automation-timezones" x-model="automationsDraft.timezone" class="h-9 bg-surface-800 border border-surface-700/50 rounded px-3 text-sm text-tx-2 font-mono focus:border-accent/40" placeholder="UTC"><datalist id="automation-timezones"><option value="UTC"></option><template x-for="zone in automationsTimezones" :key="zone"><option :value="zone"></option></template></datalist></div>
-                <div><span id="automation-workspace-label" class="text-[13px] font-mono text-tx-3 mb-1 block">Workspace</span><div role="group" aria-labelledby="automation-workspace-label" class="inline-flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]"><template x-for="value in ['worktree', 'repo']" :key="value"><button type="button" @click="automationsDraft.workspace = value; automationsDraftChanged()" :aria-pressed="automationsDraft.workspace === value" class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px]" :class="automationsDraft.workspace === value ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'" x-text="value"></button></template></div><p class="mt-1.5 text-[11px] text-surface-600" x-text="automationsDraft.workspace === 'repo' ? 'The agent runs in the repository checkout. This does not enforce read-only access.' : 'Each run gets a fresh git worktree on auto/' + automationsKey() + '-&lt;run&gt;. Commits or uncommitted changes retain it; clean, unchanged worktrees are removed.'"></p></div>
-                <div><span id="automation-overlap-label" class="text-[13px] font-mono text-tx-3 mb-1 block">If still running</span><div role="group" aria-labelledby="automation-overlap-label" class="inline-flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]"><template x-for="value in ['skip', 'queue', 'replace']" :key="value"><button type="button" @click="automationsDraft.overlap = value; automationsDraftChanged()" :aria-pressed="automationsDraft.overlap === value" class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px]" :class="automationsDraft.overlap === value ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'" x-text="value"></button></template></div><p class="mt-1.5 text-[11px] text-surface-600" x-text="({ skip: 'A run that comes due while the previous one is active is recorded as skipped.', queue: 'A due run waits for the active one and starts right after it. At most one waits.', replace: 'The active run is stopped and the new one starts.' })[automationsDraft.overlap]"></p></div>
-                <div class="flex items-center gap-3"><button type="button" role="switch" :aria-checked="automationsDraft.enabled" aria-label="Runs on schedule" @click="automationsDraft.enabled = !automationsDraft.enabled; automationsDraftChanged()" class="relative w-10 h-[22px] rounded-full transition-colors" :class="automationsDraft.enabled ? 'bg-accent' : 'bg-surface-700'"><span class="absolute top-[3px] w-4 h-4 rounded-full bg-accent-fg transition-all" :class="automationsDraft.enabled ? 'left-[21px]' : 'left-0.5'"></span></button><span class="font-mono text-[12px] text-tx-3" x-text="automationsDraft.enabled ? 'Runs on schedule' : 'Saved paused'"></span></div>
+                <section aria-labelledby="automation-execution-heading" class="automations-editor-section flex flex-col gap-3">
+                  <h2 id="automation-execution-heading" class="text-sm font-semibold text-tx-hi">Execution</h2>
+                  <div class="flex flex-col gap-1"><label for="automation-path" class="text-[13px] font-mono text-tx-3">Path <span class="text-accent">*</span></label><input id="automation-path" required list="automation-projects" x-model="automationsDraft.path" class="bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:border-accent/40" placeholder="~/projects/repository"><datalist id="automation-projects"><template x-for="project in configCache?.projects || []" :key="project.path"><option :value="project.path" x-text="project.name"></option></template></datalist><p class="text-[11px] text-surface-600">Directory the agent starts in. Supports ~. A configured project's hooks apply.</p></div>
+                  <div><div class="automations-editor-agent-fields gap-3"><div><label id="automation-agent-label" :for="_agentPickerPopoverSupported ? agentPickerTriggerID('automations') : agentPickerFallbackID('automations')" class="text-[13px] font-mono text-tx-3 mb-1 block">Agent</label><div x-data="{ pickerHost: 'automations' }" x-html="agentPickerControl"></div></div><div><label for="automation-model" class="text-[13px] font-mono text-tx-3 mb-1 block">Model</label><input id="automation-model" x-model="automationsDraft.model" placeholder="agent default" class="w-full h-9 bg-surface-800 border border-surface-700/50 rounded px-3 text-sm text-tx-2 font-mono focus:border-accent/40"></div><div><label for="automation-timeout" class="text-[13px] font-mono text-tx-3 mb-1 block">Timeout</label><input id="automation-timeout" required x-model="automationsDraft.timeout" placeholder="30m" class="w-full h-9 bg-surface-800 border border-surface-700/50 rounded px-3 text-sm text-tx-2 font-mono focus:border-accent/40"></div></div><p class="mt-1.5 text-[11px] text-surface-600">Agent uses the binary and args from agents:. Model overrides the agent's default. Timeout stops the run and marks it failed.</p></div>
+                  <div><span id="automation-workspace-label" class="text-[13px] font-mono text-tx-3 mb-1 block">Workspace</span><div role="group" aria-labelledby="automation-workspace-label" class="inline-flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]"><template x-for="value in ['worktree', 'repo']" :key="value"><button type="button" @click="automationsDraft.workspace = value; automationsDraftChanged()" :aria-pressed="automationsDraft.workspace === value" class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px]" :class="automationsDraft.workspace === value ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'" x-text="value"></button></template></div><p class="mt-1.5 text-[11px] text-surface-600" x-text="automationsDraft.workspace === 'repo' ? 'The agent runs in the repository checkout. This does not enforce read-only access.' : 'Each run gets a fresh git worktree on auto/' + automationsKey() + '-&lt;run&gt;. Commits or uncommitted changes retain it; clean, unchanged worktrees are removed.'"></p></div>
+                  <div><span id="automation-overlap-label" class="text-[13px] font-mono text-tx-3 mb-1 block">If still running</span><div role="group" aria-labelledby="automation-overlap-label" class="inline-flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]"><template x-for="value in ['skip', 'queue', 'replace']" :key="value"><button type="button" @click="automationsDraft.overlap = value; automationsDraftChanged()" :aria-pressed="automationsDraft.overlap === value" class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px]" :class="automationsDraft.overlap === value ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'" x-text="value"></button></template></div><p class="mt-1.5 text-[11px] text-surface-600" x-text="({ skip: 'A run that comes due while the previous one is active is recorded as skipped.', queue: 'A due run waits for the active one and starts right after it. At most one waits.', replace: 'The active run is stopped and the new one starts.' })[automationsDraft.overlap]"></p></div>
+                </section>
+                <section aria-labelledby="automation-schedule-heading" class="automations-editor-section flex flex-col gap-3">
+                  <h2 id="automation-schedule-heading" class="text-sm font-semibold text-tx-hi">Timing</h2>
+                  <div class="automations-editor-schedule-fields gap-3">
+                    <div class="flex flex-col gap-2"><label for="automation-schedule" class="text-[13px] font-mono text-tx-3">Schedule <span class="text-accent">*</span></label><div class="flex items-center h-9 automations-editor-schedule-input px-2.5 bg-surface-800 rounded border" :class="automationsPreviewError ? 'border-err/50' : automationsPreviewValidKey ? 'border-st-open/50' : 'border-surface-700/50'"><input id="automation-schedule" required x-model="automationsDraft.schedule" :aria-invalid="!!automationsPreviewError" aria-describedby="automation-schedule-format automation-schedule-help" class="flex-1 min-w-0 bg-transparent text-sm font-mono text-tx-2 border-0 outline-none" placeholder="0 9 * * 1-5"></div><p id="automation-schedule-format" class="text-[11px] text-surface-600">Use cron or an interval, such as 30m or 6h.</p></div>
+                    <div class="flex flex-col gap-1"><label for="automation-timezone" class="text-[13px] font-mono text-tx-3">Timezone</label><input id="automation-timezone" required list="automation-timezones" x-model="automationsDraft.timezone" class="h-9 bg-surface-800 border border-surface-700/50 rounded px-3 text-sm text-tx-2 font-mono focus:border-accent/40" placeholder="UTC"><datalist id="automation-timezones"><option value="UTC"></option><template x-for="zone in automationsTimezones" :key="zone"><option :value="zone"></option></template></datalist></div>
+                  </div>
+                  <div role="group" aria-label="Schedule presets" class="flex flex-wrap gap-1.5"><template x-for="preset in automationsPresets" :key="preset.value"><button type="button" @click="automationsDraft.schedule = preset.value; automationsDraftChanged()" :aria-pressed="automationsDraft.schedule === preset.value" class="font-mono text-[11px] px-2.5 py-1 rounded-full border" :class="automationsDraft.schedule === preset.value ? 'text-st-open bg-st-open/10 border-st-open/40' : 'bg-surface-900 border-edge-input text-tx-3'" x-text="preset.label"></button></template></div>
+                  <div class="flex flex-col gap-1"><p id="automation-schedule-help" role="status" class="font-mono text-[11.5px]" :class="automationsPreviewError ? 'text-err' : 'text-tx-2'" x-text="automationsPreviewLoading ? 'Calculating schedule…' : automationsPreviewError || '→ ' + automationsPreviewHuman"></p><ol class="font-mono text-[11px] text-surface-600"><template x-for="fire in automationsPreview" :key="fire"><li x-text="'→ ' + automationsDateLabel(fire, automationsDraft.timezone) + ' · ' + automationsRelative(fire)"></li></template></ol><button type="button" x-show="automationsPreviewError" @click="automationsSchedulePreview(true)" class="text-left font-mono text-[11px] text-accent">retry preview</button></div>
+                  <button type="button" role="switch" :aria-checked="automationsDraft.enabled" aria-label="Runs on schedule" @click="automationsDraft.enabled = !automationsDraft.enabled; automationsDraftChanged()" class="flex flex-wrap items-center gap-3 self-start text-left"><span class="relative w-10 h-[22px] rounded-full transition-colors shrink-0" :class="automationsDraft.enabled ? 'bg-accent' : 'bg-surface-700'"><span class="absolute top-[3px] w-4 h-4 rounded-full bg-accent-fg transition-all" :class="automationsDraft.enabled ? 'left-[21px]' : 'left-0.5'"></span></span><span class="font-mono text-[12px] text-tx-3" x-text="automationsDraft.enabled ? 'Runs on schedule' : 'Saved paused'"></span></button>
+                </section>
               </fieldset>
               <p x-show="automationsNotice" role="status" class="font-mono text-[12px] text-warn" x-text="automationsNotice"></p>
-              <footer class="flex flex-wrap items-center gap-2 pt-3 border-t border-surface-700/30"><button x-show="automationsSelected" type="button" data-automations-delete-trigger @click="automationsOpenDelete($event.currentTarget)" :disabled="automationsPending" class="h-8 px-3 rounded bg-err/15 border border-err/25 text-err font-mono text-[11px]">delete</button><div class="flex-1"></div><button type="button" @click="automationsSaveDraft(true)" :disabled="!automationsCanSave()" class="h-8 px-3 rounded bg-surface-900 border border-surface-700/60 text-tx-3 font-mono text-[11px]">▷ save &amp; run now</button><button type="button" @click="automationsBack()" :disabled="automationsPending" class="h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3 font-mono text-[11px]">cancel</button><button type="submit" :disabled="!automationsCanSave()" class="h-8 px-4 rounded bg-accent text-accent-fg border border-accent font-mono text-[11px] font-medium" x-text="automationsPending ? 'saving…' : automationsCreate ? 'retry save' : automationsSelected ? 'save changes' : 'create automation'"></button></footer>
-            </form></div>
-            <aside class="automations-editor-preview flex-col w-[420px] shrink-0 min-h-0 bg-surface-deep border-l border-surface-700"><div class="px-5 py-4 border-b border-surface-700/50"><h2 class="side-label mb-1">config preview</h2><span class="font-mono text-[10px] text-surface-600 break-all" x-text="automationsConfigPath()"></span></div><pre class="flex-1 overflow-auto p-5 whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.75] text-tx-3"><template x-for="(line, index) in automationsYAMLLines()" :key="index"><span class="block" :class="line.class" x-text="line.text"></span></template></pre></aside>
+              <footer class="automations-editor-actions flex flex-wrap items-center gap-2 pt-3 border-t border-surface-700/30"><button x-show="automationsSelected" type="button" data-automations-delete-trigger @click="automationsOpenDelete($event.currentTarget)" :disabled="automationsPending" class="h-8 px-3 rounded bg-err/15 border border-err/25 text-err font-mono text-[11px]">delete</button><div class="flex-1"></div><button type="button" @click="automationsSaveDraft(true)" :disabled="!automationsCanSave()" class="h-8 px-3 rounded bg-surface-900 border border-surface-700/60 text-tx-3 font-mono text-[11px]">▷ save &amp; run now</button><button type="button" @click="automationsBack()" :disabled="automationsPending" class="h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3 font-mono text-[11px]">cancel</button><button type="submit" :disabled="!automationsCanSave()" class="h-8 px-4 rounded bg-accent text-accent-fg border border-accent font-mono text-[11px] font-medium" x-text="automationsPending ? 'saving…' : automationsCreate ? 'retry save' : automationsSelected ? 'save changes' : 'create automation'"></button></footer>
+            </form>
+            <aside class="automations-editor-preview bg-surface-deep"><div class="px-5 py-4 border-b border-surface-700/50"><h2 class="side-label mb-1">config preview</h2><span class="font-mono text-[10px] text-surface-600 break-all" x-text="automationsConfigPath()"></span></div><pre class="flex-1 overflow-auto p-5 whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.75] text-tx-3"><template x-for="(line, index) in automationsYAMLLines()" :key="index"><span class="block" :class="line.class" x-text="line.text"></span></template></pre></aside>
           </div>
         </template>
         <div x-show="automationsToast" x-cloak role="status" class="fixed bottom-[22px] left-1/2 -translate-x-1/2 z-[110] max-w-[calc(100vw-24px)] px-4 py-3 rounded-[9px] bg-surface-800 border border-surface-700 shadow-[0_10px_30px_-12px_rgba(0,0,0,.6)] font-mono text-[11.5px] text-tx-2"><span class="text-accent mr-2">▸</span><span x-text="automationsToast"></span></div>
@@ -3482,9 +3487,9 @@
       <div class="stats-filters flex items-center gap-2.5 shrink-0">
         <span class="stats-title text-[11px]">stats</span>
         <span class="w-px h-4 bg-surface-700"></span>
-        <div class="flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
+        <div class="stats-range flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]" role="group" aria-label="Stats range">
           <template x-for="r in statsRanges" :key="r">
-            <button @click="setStatsRange(r)"
+            <button type="button" @click="setStatsRange(r)" :aria-pressed="statsRange === r"
                     class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px] transition-colors"
                     :class="statsRange === r ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'"
                     x-text="statsRangeLabel(r)"></button>
@@ -3520,7 +3525,7 @@
         <template x-for="k in statsCards()" :key="k.label">
           <div class="stats-card stats-kpi flex-col gap-1.5" :data-tip-t="k.tip">
             <span class="font-mono text-[10px] font-semibold tracking-[.12em] uppercase text-tx-4" x-text="k.label"></span>
-            <div class="flex items-baseline gap-1.5">
+            <div class="stats-kpi-value flex items-baseline gap-1.5">
               <span class="num font-mono text-[26px] font-bold text-tx-hi leading-none" x-text="k.value"></span>
               <span class="text-[12px] text-tx-4" x-text="k.unit"></span>
             </div>
@@ -3606,7 +3611,7 @@
             <span class="stats-title" x-text="statsStageMode === 'tokens' ? 'where the tokens go' : 'where the time goes'"></span>
             <div class="flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
               <template x-for="m in statsStageModes" :key="m">
-                <button @click="setStatsStageMode(m)"
+                <button type="button" @click="setStatsStageMode(m)" :aria-pressed="statsStageMode === m"
                         class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px] transition-colors"
                         :class="statsStageMode === m ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'"
                         x-text="m"></button>
@@ -3651,13 +3656,13 @@
             <span class="stats-title">agents &amp; models</span>
             <span class="stats-cap">first-pass = verified complete, no retry</span>
           </div>
-          <div class="grid grid-cols-[1.3fr_48px_104px_50px_56px] gap-2.5 font-mono text-[9px] tracking-[.02em] uppercase text-tx-4 pb-1.5 border-b border-surface-700 whitespace-nowrap">
+          <div class="stats-agent-head grid grid-cols-[1.3fr_48px_104px_50px_56px] gap-2.5 font-mono text-[9px] tracking-[.02em] uppercase text-tx-4 pb-1.5 border-b border-surface-700 whitespace-nowrap">
             <span>agent</span><span class="text-right">runs</span><span>first-pass</span><span class="text-right">median</span><span class="text-right">tok/run</span>
           </div>
           <span class="stats-cap" x-show="statsDerived && !statsDerived.agents.length">no data in this window</span>
           <div class="flex flex-col gap-0.5 flex-1 min-h-0 overflow-y-auto">
             <template x-for="a in (statsDerived ? statsDerived.agents : [])" :key="a.name">
-              <div class="grid grid-cols-[1.3fr_48px_104px_50px_56px] gap-2.5 items-center px-1 py-[9px] rounded-md whitespace-nowrap hover:bg-surface-850" :data-tip-t="a.tip">
+              <div class="stats-agent-row grid grid-cols-[1.3fr_48px_104px_50px_56px] gap-2.5 items-center px-1 py-[9px] rounded-md whitespace-nowrap hover:bg-surface-850" :data-tip-t="a.tip">
                 <div class="flex items-center gap-[7px] min-w-0">
                   <span class="w-1.5 h-1.5 rounded-full shrink-0"
                         :style="a.running ? 'background:rgba(var(--warn),1);box-shadow:0 0 0 2px rgba(var(--warn),.2)' : 'background:rgba(var(--surface-600),1)'"></span>
@@ -3666,9 +3671,10 @@
                     <span class="num font-mono text-[10px] text-tx-4 truncate" x-text="a.sub"></span>
                   </div>
                 </div>
-                <span class="num font-mono text-[12px] text-tx-2 text-right" x-text="a.runs"></span>
-                <div class="flex items-center gap-[7px]">
-                  <div class="flex-1 h-[5px] rounded-full bg-surface-700 overflow-hidden">
+                <div class="stats-agent-metric num font-mono text-[12px] text-tx-2 text-right"><span class="stats-metric-label">Runs</span><span x-text="a.runs"></span></div>
+                <div class="stats-agent-metric stats-agent-pass flex items-center gap-[7px]">
+                  <span class="stats-metric-label">First pass</span>
+                  <div class="stats-agent-bar flex-1 h-[5px] rounded-full bg-surface-700 overflow-hidden">
                     <div class="h-full rounded-full"
                          :class="a.tone === 'ok' ? 'bg-ok' : a.tone === 'warn' ? 'bg-warn' : a.tone === 'neutral' ? 'bg-surface-600' : 'bg-err'"
                          :style="'width:' + a.pctWidth + '%'"></div>
@@ -3677,8 +3683,8 @@
                         :class="a.tone === 'ok' ? 'text-ok' : a.tone === 'warn' ? 'text-warn' : a.tone === 'neutral' ? 'text-tx-4' : 'text-err'"
                         x-text="a.pct"></span>
                 </div>
-                <span class="num font-mono text-[12px] text-tx-2 text-right" x-text="a.median"></span>
-                <span class="num font-mono text-[12px] text-tx-3 text-right" x-text="a.perRun"></span>
+                <div class="stats-agent-metric num font-mono text-[12px] text-tx-2 text-right"><span class="stats-metric-label">Median</span><span x-text="a.median"></span></div>
+                <div class="stats-agent-metric num font-mono text-[12px] text-tx-3 text-right"><span class="stats-metric-label">Tokens/run</span><span x-text="a.perRun"></span></div>
               </div>
             </template>
           </div>
@@ -3766,7 +3772,7 @@
     <div id="archive-view" class="relative flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame">
 
       <!-- Toolbar -->
-      <div :inert="archiveDetailOpen()" class="shrink-0 flex flex-col gap-[9px] px-4 pt-3 pb-2.5 border-b border-surface-700/[.55]">
+      <div :inert="archiveDetailOpen()" class="archive-controls shrink-0 flex flex-col gap-[9px] px-4 pt-3 pb-2.5 border-b border-surface-700/[.55]">
         <div class="archive-toolbar flex items-center gap-2.5">
           <span class="stats-title text-[11px]">archive</span>
           <span class="w-px h-4 bg-surface-700"></span>
@@ -3804,7 +3810,7 @@
 
         <!-- Filter pills. Same shape as the Stats bar: a label with a
              transparent native select covering it. -->
-        <div class="flex items-center gap-2 flex-wrap">
+        <div class="archive-filters flex items-center gap-2 flex-wrap">
           <template x-for="f in ['status', 'project', 'pipeline', 'agent']" :key="f">
             <label class="relative flex items-center gap-[7px] h-7 px-2.5 rounded-[7px] border text-[12px] transition-colors"
                    :class="archiveFilterValue(f) === 'all' ? 'bg-surface-900 border-edge-card text-tx-2' : 'bg-accent/[.12] border-accent/[.38] text-accent-bright'">
@@ -3831,10 +3837,20 @@
               </template>
             </select>
           </label>
-          <button type="button" @click="archiveToggleSortDir()"
+          <label class="archive-sort-key items-center gap-[7px] px-2.5 rounded-[7px] bg-surface-900 border border-edge-card text-tx-2">
+            <span class="font-mono text-[10px] uppercase tracking-[.1em] text-tx-4">Sort by</span>
+            <select aria-label="Sort archive by" @change="archiveSetSortKey($event.target.value); $refs.archiveList.scrollTop = 0" class="bg-surface-900">
+              <template x-for="key in archiveSortKeys" :key="key">
+                <option :value="key" :selected="key === archiveSortKey" x-text="archiveSortLabels[key]"></option>
+              </template>
+            </select>
+          </label>
+          <button type="button" @click="archiveToggleSortDir(); $refs.archiveList.scrollTop = 0"
                   class="flex items-center gap-[7px] h-7 px-2.5 rounded-[7px] bg-surface-900 border border-edge-card text-[12px] text-tx-2 hover:border-edge-hover transition-colors">
-            <span class="font-mono text-[10px] uppercase tracking-[.1em] text-tx-4">order</span>
-            <span x-text="archiveSortKey + ' ' + (archiveSortDir === 'asc' ? '↑' : '↓')"></span>
+            <span aria-hidden="true" class="font-mono text-[10px] uppercase tracking-[.1em] text-tx-4">order</span>
+            <span class="archive-sort-wide"><span x-text="archiveSortLabels[archiveSortKey]"></span> <span aria-hidden="true" x-text="archiveSortDir === 'asc' ? '↑' : '↓'"></span></span>
+            <span aria-hidden="true" class="archive-sort-compact" x-text="archiveSortDir === 'asc' ? 'Ascending' : 'Descending'"></span>
+            <span class="sr-only" x-text="archiveSortDir === 'asc' ? 'Ascending. Switch to descending' : 'Descending. Switch to ascending'"></span>
           </button>
           <button type="button" x-show="archiveFiltersActive()" @click="archiveClearFilters()"
                   class="font-mono text-[11px] text-tx-4 hover:text-err transition-colors">clear all</button>
@@ -3843,9 +3859,9 @@
 
       <!-- Header strip and rows share one horizontal scroller, so the columns
            stay aligned when the pane is narrower than the table. -->
-      <div :inert="archiveDetailOpen()" x-show="archiveLoading || archiveView().shown > 0" class="archive-table-scroll flex-1 min-h-0 overflow-auto" role="region" aria-label="Archived tickets table, scroll horizontally for all columns" tabindex="0">
-        <div class="min-w-[1120px]">
-          <div class="sticky top-0 z-10 flex items-center h-7 px-4 bg-surface-frame border-b border-surface-700/60 font-mono text-[10px] font-bold uppercase tracking-[.1em] text-tx-4">
+      <div x-ref="archiveList" :inert="archiveDetailOpen()" x-show="archiveLoading || archiveView().shown > 0" class="archive-table-scroll flex-1 min-h-0 overflow-auto" role="region" aria-label="Archived tickets" tabindex="0">
+        <div class="archive-table min-w-[1120px]">
+          <div class="archive-columns sticky top-0 z-10 flex items-center h-7 px-4 bg-surface-frame border-b border-surface-700/60 font-mono text-[10px] font-bold uppercase tracking-[.1em] text-tx-4">
             <button type="button" @click="archiveSort('id')" class="archive-row-identity w-24 shrink-0 text-left hover:text-tx-3 transition-colors">
               id<span class="text-accent ml-1" x-text="archiveSortMark('id')"></span></button>
             <button type="button" @click="archiveSort('title')" class="flex-1 min-w-[220px] text-left hover:text-tx-3 transition-colors">
@@ -3866,7 +3882,7 @@
 
           <template x-for="row in archiveVisibleRows()" :key="row.id">
             <div @click="archiveRowClick(row, $event)"
-                 class="flex items-center h-8 px-4 border-b border-surface-700/[.32] cursor-pointer transition-colors"
+                 class="archive-row flex items-center h-8 px-4 border-b border-surface-700/[.32] cursor-pointer transition-colors"
                  :class="selectedTicket && selectedTicket.id === row.id ? 'bg-surface-850 shadow-[inset_2px_0_0_rgba(var(--accent),1)]' : 'hover:bg-surface-900'">
               <span class="archive-row-identity w-24 shrink-0 font-mono text-[11.5px] text-tx-3 truncate pr-2" x-text="row.id"></span>
               <button type="button" @click.stop="archiveOpenRow(row)" class="archive-row-title flex-1 min-w-[220px] text-left text-[12.5px] text-tx truncate pr-3" :title="row.title">
@@ -3875,20 +3891,20 @@
                       x-text="'[' + archiveTitleTag(row).tag + ']'"></span>
                 <span x-text="archiveTitleTag(row).rest"></span>
               </button>
-              <span class="w-24 shrink-0 font-mono text-[11px] truncate pr-2"
+              <span class="archive-row-project w-24 shrink-0 font-mono text-[11px] truncate pr-2"
                     :data-pipe-color="archiveProjectColor(row)"
                     style="color: hsl(var(--pipe-h, 240 10% 55%))" x-text="row.project"></span>
-              <span class="w-[88px] shrink-0 flex items-center gap-1.5 pr-2 min-w-0">
+              <span class="archive-row-secondary w-[88px] shrink-0 flex items-center gap-1.5 pr-2 min-w-0">
                 <span class="w-[5px] h-[5px] rounded-full shrink-0" x-bind="archivePipeDot(row)"></span>
                 <span class="font-mono text-[11px] text-tx-4 truncate" x-text="row.pipeline"></span>
               </span>
-              <span class="w-[104px] shrink-0 pr-2">
+              <span class="archive-row-status w-[104px] shrink-0 pr-2">
                 <span class="status-chip status-chip-sm" :data-status="archiveRowStatus(row)" x-text="archiveRowStatus(row)"></span>
               </span>
-              <span class="w-[78px] shrink-0 font-mono text-[11px] text-tx-3 truncate pr-2" x-text="row.agent"></span>
-              <span class="w-[154px] shrink-0 font-mono text-[11px] text-tx-4 truncate pr-2" :title="row.branch" x-text="row.branch"></span>
-              <span class="w-16 shrink-0 font-mono num text-[11px] text-tx-3 text-right" x-text="archiveWall(row)"></span>
-              <span class="w-24 shrink-0 font-mono text-[11px] text-tx-3 text-right" :title="row.archived_at" x-text="archiveWhen(row)"></span>
+              <span class="archive-row-secondary w-[78px] shrink-0 font-mono text-[11px] text-tx-3 truncate pr-2" x-text="row.agent"></span>
+              <span class="archive-row-secondary w-[154px] shrink-0 font-mono text-[11px] text-tx-4 truncate pr-2" :title="row.branch" x-text="row.branch"></span>
+              <span class="archive-row-wall w-16 shrink-0 font-mono num text-[11px] text-tx-3 text-right"><span class="archive-row-label">Wall</span><span x-text="archiveWall(row)"></span></span>
+              <span class="archive-row-date w-24 shrink-0 font-mono text-[11px] text-tx-3 text-right" :title="row.archived_at"><span class="archive-row-label">Archived</span><span x-text="archiveWhen(row)"></span></span>
               <!-- The row's own @click reads data-act, so these three carry no
                    binding of their own. Pointer events stay off the svg so the
                    handler always sees the button. -->
@@ -3940,34 +3956,22 @@
         <!-- Header -->
         <div class="archive-detail-header shrink-0 flex flex-wrap items-center gap-[11px] px-5 py-[11px] border-b border-surface-700/70">
           <button type="button" @click="archiveCloseDetail()"
-                  class="shrink-0 whitespace-nowrap font-mono text-[12px] text-tx-3 hover:text-tx-2 transition-colors">archive</button>
-          <span class="shrink-0 text-edge-faint">/</span>
-          <span class="min-w-0 max-w-full break-all font-mono text-[12px] text-tx-2" x-text="selectedTicket?.id"></span>
-          <span class="status-chip shrink-0" :data-status="archiveDetailStatus()"
+                  class="archive-detail-back shrink-0 whitespace-nowrap font-mono text-[12px] text-tx-3 hover:text-tx-2 transition-colors"><span class="archive-detail-wide">archive</span><span class="archive-detail-compact">Back to archive</span></button>
+          <span class="archive-detail-wide shrink-0 text-edge-faint">/</span>
+          <span class="archive-detail-wide min-w-0 max-w-full break-all font-mono text-[12px] text-tx-2" x-text="selectedTicket?.id"></span>
+          <span class="archive-detail-wide status-chip shrink-0" :data-status="archiveDetailStatus()"
                 x-text="archiveDetailStatus()"></span>
-          <span class="shrink-0 whitespace-nowrap h-[21px] px-2.5 inline-flex items-center rounded-full border border-surface-700 font-mono text-[10.5px] text-tx-faint"
+          <span class="archive-detail-wide shrink-0 whitespace-nowrap h-[21px] px-2.5 inline-flex items-center rounded-full border border-surface-700 font-mono text-[10.5px] text-tx-faint"
                 x-text="archiveStamp()"></span>
           <div class="flex-1"></div>
           <button type="button" @click="archiveRestore(selectedTicket.id)"
                   class="shrink-0 whitespace-nowrap h-7 px-2.5 rounded-[7px] bg-st-done/[.16] border border-st-done/[.42] text-st-done font-mono text-[11.5px] font-bold hover:bg-st-done/[.26] transition-colors">restore to board</button>
-          <button type="button" @click="copyTicketId(selectedTicket?.id)"
-                  class="shrink-0 whitespace-nowrap h-7 px-2.5 rounded-[7px] bg-surface-900 border border-edge-input text-tx-2 font-mono text-[11.5px] hover:border-edge-hover transition-colors"
-                  x-text="copiedId ? '✓ copied' : 'copy id'"></button>
-          <button type="button" x-show="selectedTicket?.branch" @click="copyBranch(selectedTicket?.branch)"
-                  class="shrink-0 whitespace-nowrap h-7 px-2.5 rounded-[7px] bg-surface-900 border border-edge-input text-tx-2 font-mono text-[11.5px] hover:border-edge-hover transition-colors"
-                  x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : 'copy branch'"></button>
           <button type="button" @click="archiveCloseDetail()" aria-label="Close"
-                  class="shrink-0 w-7 h-7 rounded-[7px] bg-surface-900 border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors flex items-center justify-center">
+                  class="archive-detail-wide shrink-0 w-7 h-7 rounded-[7px] bg-surface-900 border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors flex items-center justify-center">
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 18 18 6M6 6l12 12"/></svg>
           </button>
         </div>
 
-        <details x-show="isGraphTicket(selectedTicket)" class="px-5 py-3 font-mono text-[11px] text-tx-3">
-          <summary>Workflow graph · execution</summary>
-          <pre class="whitespace-pre-wrap" x-text="graphText(selectedTicket)"></pre>
-        </details>
-
-        <!-- Title, stage ribbon and meters -->
         <div class="archive-detail-title shrink-0 px-5 pt-3.5 pb-[13px] flex items-end gap-5">
           <div class="flex-1 min-w-0 flex flex-col gap-2.5">
             <h2 class="m-0 text-[16px] font-semibold leading-[1.4] text-tx-hi [text-wrap:pretty]">
@@ -3976,27 +3980,6 @@
                     x-text="'[' + parseTitleTag(selectedTicket || {}).tag + ']'"></span>
               <span x-text="parseTitleTag(selectedTicket || {}).rest"></span>
             </h2>
-            <div class="flex gap-[9px] items-stretch min-w-0" x-show="stageRibbon().length">
-              <template x-for="seg in stageRibbon()" :key="seg.name">
-                <div class="flex-1 min-w-0 flex flex-col gap-[7px]" :class="seg.state === 'done' ? '' : 'opacity-50'">
-                  <div class="flex items-baseline gap-1.5 min-w-0">
-                    <span class="font-mono text-[11.5px] text-tx-2 truncate"><span x-show="seg.state === 'done'" aria-hidden="true">✓ </span><span x-text="seg.name"></span></span>
-                    <span class="font-mono text-[10.5px] text-surface-600 truncate" x-text="seg.meta"></span>
-                    <span x-show="costLabel(seg.cost)" :title="costTooltip(seg.cost)"
-                          class="font-mono text-[10.5px] text-tx-3 shrink-0" x-text="costLabel(seg.cost)"></span>
-                  </div>
-                  <div class="h-[5px] rounded-[3px]" :class="seg.state === 'done' ? 'bg-st-done/50' : 'bg-surface-700'"></div>
-                </div>
-              </template>
-            </div>
-          </div>
-          <div class="shrink-0 flex items-end gap-[18px] pl-5 border-l border-surface-700/70" x-show="archiveMeters().length">
-            <template x-for="m in archiveMeters()" :key="m.k">
-              <div class="flex flex-col gap-[3px]">
-                <span class="font-mono text-[10px] uppercase tracking-[.12em] text-tx-faint" x-text="m.k"></span>
-                <span class="font-mono text-[14px] text-tx-hi num" :title="m.title || ''" x-text="m.v"></span>
-              </div>
-            </template>
           </div>
         </div>
 
@@ -4005,25 +3988,53 @@
                rail exactly as it does on the board. -->
           <div class="archive-detail-tabs shrink-0 flex items-stretch border-b border-surface-700/70">
             <div class="flex-1 min-w-0 px-5 pt-[11px] flex items-center gap-5">
-              <button type="button" @click="archiveTab = 'ticket'"
+              <button type="button" @click="archiveTab = 'ticket'; $refs.archiveContent.scrollTop = 0" :aria-pressed="archiveTab === 'ticket'"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="archiveTab === 'ticket' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">ticket</button>
-              <button type="button" @click="archiveTab = 'activity'"
+              <button type="button" @click="archiveTab = 'activity'; $refs.archiveContent.scrollTop = 0" :aria-pressed="archiveTab === 'activity'"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="archiveTab === 'activity' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">activity</button>
-              <div class="flex-1"></div>
-              <span class="pb-[9px] font-mono text-[10px] uppercase tracking-[.1em] text-tx-faint">read-only · restore to edit</span>
+              <button type="button" @click="archiveTab = 'details'" :aria-pressed="archiveTab === 'details'"
+                      class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
+                      :class="archiveTab === 'details' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">details</button>
+              <div class="archive-detail-wide flex-1"></div>
+              <span class="archive-detail-wide pb-[9px] font-mono text-[10px] uppercase tracking-[.1em] text-tx-faint">read-only · restore to edit</span>
             </div>
             <div class="w-[308px] shrink-0 border-l border-surface-700/50"></div>
           </div>
 
-          <div class="archive-detail-columns flex-1 min-h-0 flex">
+          <div class="archive-detail-columns flex-1 min-h-0 flex" :data-panel="archiveTab">
             <!-- Content column -->
-            <div class="archive-detail-content flex-1 min-w-0 overflow-y-auto px-5 pt-4 pb-7">
+            <div x-ref="archiveContent" class="archive-detail-content flex-1 min-w-0 overflow-y-auto px-5 pt-4 pb-7">
               <div x-show="archiveTab === 'ticket'" class="max-w-[760px] flex flex-col gap-[11px]">
                 <span class="font-mono text-[10.5px] text-tx-4" x-text="selectedTicket?.id ? selectedTicket.id + '.md' : ''"></span>
                 <div x-show="archiveDetailLoading" class="font-mono text-[11.5px] text-surface-600">loading…</div>
                 <div class="ticket-prose ticket-read" x-effect="setProse($el, selectedTicket?.body || '')"></div>
+                <details x-show="isGraphTicket(selectedTicket)" class="font-mono text-[11px] text-tx-3">
+                  <summary>Workflow graph · execution</summary>
+                  <pre class="whitespace-pre-wrap" x-text="graphText(selectedTicket)"></pre>
+                </details>
+                <div class="flex gap-[9px] items-stretch min-w-0" x-show="stageRibbon().length">
+                  <template x-for="seg in stageRibbon()" :key="seg.name">
+                    <div class="flex-1 min-w-0 flex flex-col gap-[7px]" :class="seg.state === 'done' ? '' : 'opacity-50'">
+                      <div class="flex items-baseline gap-1.5 min-w-0">
+                        <span class="font-mono text-[11.5px] text-tx-2 truncate"><span x-show="seg.state === 'done'" aria-hidden="true">✓ </span><span x-text="seg.name"></span></span>
+                        <span class="font-mono text-[10.5px] text-surface-600 truncate" x-text="seg.meta"></span>
+                        <span x-show="costLabel(seg.cost)" :title="costTooltip(seg.cost)"
+                              class="font-mono text-[10.5px] text-tx-3 shrink-0" x-text="costLabel(seg.cost)"></span>
+                      </div>
+                      <div class="h-[5px] rounded-[3px]" :class="seg.state === 'done' ? 'bg-st-done/50' : 'bg-surface-700'"></div>
+                    </div>
+                  </template>
+                </div>
+                <div class="flex flex-wrap items-end gap-[18px]" x-show="archiveMeters().length">
+                  <template x-for="m in archiveMeters()" :key="m.k">
+                    <div class="flex flex-col gap-[3px]">
+                      <span class="font-mono text-[10px] uppercase tracking-[.12em] text-tx-faint" x-text="m.k"></span>
+                      <span class="font-mono text-[14px] text-tx-hi num" :title="m.title || ''" x-text="m.v"></span>
+                    </div>
+                  </template>
+                </div>
               </div>
 
               <div x-show="archiveTab === 'activity'" class="flex flex-col gap-2.5">
@@ -4046,6 +4057,15 @@
 
             <!-- Rail -->
             <div class="archive-detail-rail w-[308px] shrink-0 border-l border-surface-700/50 overflow-y-auto p-4 pb-[22px] flex flex-col gap-4">
+              <div class="flex flex-wrap gap-2">
+                <button type="button" @click="copyTicketId(selectedTicket?.id)"
+                        class="shrink-0 whitespace-nowrap h-7 px-2.5 rounded-[7px] bg-surface-900 border border-edge-input text-tx-2 font-mono text-[11.5px] hover:border-edge-hover transition-colors"
+                        x-text="copiedId ? '✓ copied' : 'copy id'"></button>
+                <button type="button" x-show="selectedTicket?.branch" @click="copyBranch(selectedTicket?.branch)"
+                        class="shrink-0 whitespace-nowrap h-7 px-2.5 rounded-[7px] bg-surface-900 border border-edge-input text-tx-2 font-mono text-[11.5px] hover:border-edge-hover transition-colors"
+                        x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : 'copy branch'"></button>
+              </div>
+
               <!-- Churn -->
               <div class="flex flex-col gap-[9px]">
                 <div class="flex items-baseline gap-2">
@@ -4108,7 +4128,7 @@
               <div class="flex flex-col gap-[9px]">
                 <div class="h-px bg-surface-700"></div>
                 <span class="side-label">details</span>
-                <div class="grid grid-cols-[62px_1fr] gap-x-[10px] gap-y-[6px] font-mono text-[11px] items-start">
+                <div class="grid grid-cols-[62px_minmax(0,1fr)] gap-x-[10px] gap-y-[6px] font-mono text-[11px] items-start">
                   <span class="text-surface-600">id</span>
                   <span class="text-tx-2 break-all" x-text="selectedTicket?.id"></span>
                   <span class="text-surface-600">project</span>
@@ -4195,31 +4215,30 @@
 
       <!-- Content pane -->
       <div class="flex-1 min-w-0 flex flex-col min-h-0">
-        <div class="flex-1 min-h-0 overflow-y-auto">
+        <div data-compact-scroll class="routed-form-scroll flex-1 min-h-0 overflow-y-auto">
           <div class="settings-content max-w-[62rem] p-6 px-7 pb-12 flex flex-col gap-6">
-            <label class="settings-mobile-section font-mono text-sm text-tx-3" for="settings-mobile-section">Settings section
-              <select id="settings-mobile-section" :value="settingsSection" @change="settingsNavigate($event.target.value)" class="w-full mt-2 px-3 py-2 rounded bg-surface-900 border border-edge-input text-tx">
-                <template x-for="section in settingsSections" :key="section.key">
-                  <option :value="section.key" x-text="sectionTitle(section.key)"></option>
-                </template>
-              </select>
-            </label>
-
-            <section class="settings-mobile-section settings-mobile-context" aria-label="Configuration location and unsaved changes">
-              <p role="status" x-text="settingsDirty() || _settingsHasDrafts() ? 'Unsaved changes' : settingsState === 'ok' ? 'No unsaved changes' : 'Configuration not loaded'"></p>
-              <p>Configuration file: <span class="settings-technical break-all" x-text="configCache?.config_path || 'Config path unavailable'"></span></p>
-            </section>
-
-            <section class="settings-mobile-section" aria-label="Settings filter">
-              <label class="font-mono text-sm text-tx-3" for="settings-search-compact">Search settings</label>
-              <div class="flex items-center gap-2 mt-2">
-                <input id="settings-search-compact" type="search" x-model="settingsQuery" placeholder="Search settings"
-                       @input="settingsQueryChanged()" @keydown.escape="if (settingsQuery) { $event.stopPropagation(); settingsQuery = ''; settingsQueryChanged() }"
-                       class="flex-1 min-w-0 px-3 py-2 rounded bg-surface-900 border border-edge-input text-tx focus:outline-none focus:border-accent">
-                <button type="button" x-show="settingsQuery" @click="settingsQuery = ''; settingsQueryChanged()" aria-label="Clear settings search"
-                        class="px-3 py-2 rounded border border-edge-input font-mono text-sm text-tx-3">clear</button>
+            <div class="settings-mobile-section">
+              <div class="settings-compact-tools">
+                <select id="settings-mobile-section" aria-label="Settings section" :value="settingsSection" @change="settingsNavigate($event.target.value)" class="w-full px-2.5 py-2 rounded bg-surface-900 border border-edge-input text-tx">
+                  <template x-for="section in settingsSections" :key="section.key">
+                    <option :value="section.key" x-text="sectionTitle(section.key)"></option>
+                  </template>
+                </select>
+                <div class="settings-compact-search">
+                  <input id="settings-search-compact" x-ref="settingsCompactSearch" type="search" aria-label="Search settings" x-model="settingsQuery" placeholder="Search settings"
+                         @input="settingsQueryChanged()" @keydown.escape="if (settingsQuery) { $event.stopPropagation(); settingsQuery = ''; settingsQueryChanged() }"
+                         class="min-w-0 px-2.5 py-2 rounded bg-surface-900 border border-edge-input text-tx focus:outline-none focus:border-accent">
+                  <button type="button" x-show="settingsQuery" @click="settingsQuery = ''; settingsQueryChanged(); $refs.settingsCompactSearch.focus()" aria-label="Clear settings search"
+                          class="rounded border border-edge-input text-tx-3">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg>
+                  </button>
+                </div>
               </div>
-            </section>
+              <section class="settings-mobile-context" aria-label="Configuration location and unsaved changes">
+                <p role="status" x-text="settingsDirty() || _settingsHasDrafts() ? 'Unsaved changes' : settingsState === 'ok' ? 'No unsaved changes' : 'Configuration not loaded'"></p>
+                <p>Configuration file: <span class="settings-technical break-all" x-text="configCache?.config_path || 'Config path unavailable'"></span></p>
+              </section>
+            </div>
 
             <!-- Page header -->
             <div class="flex items-start justify-between gap-4">
@@ -4353,7 +4372,7 @@
                               </div>
                               <div class="flex flex-col gap-3 min-w-0">
                                 <template x-for="field in ['model', 'effort']" :key="field">
-                                  <div class="flex flex-col"
+                                  <div class="settings-per-agent flex flex-col"
                                        x-data="{ p: 'stages.' + name + '.' + field, label: fieldTitle(field), labelClass: 'text-[11px]', inputId: settingsFieldID(['stages', name, field]), hint: &quot;the agent's own&quot; }"
                                        x-html="settingsPerAgentControl"></div>
                                 </template>
@@ -4503,7 +4522,7 @@
                         </div>
                         <div class="flex flex-col gap-1.5 min-w-0">
                           <div x-data="{ p: path, label: fieldTitle(path), labelClass: 'sr-only', inputId: 'gen-' + path, hint: &quot;the agent's configured default&quot; }"
-                               x-html="settingsPerAgentControl"></div>
+                               x-html="settingsPerAgentControl" class="settings-per-agent"></div>
                           <span class="settings-help" x-text="settingsPerAgentLabel(path) || 'Uses the agent’s configured default'"></span>
                         </div>
                       </div>
@@ -4521,7 +4540,7 @@
                     </header>
                     <div class="p-4 px-[18px] flex flex-col gap-2.5">
                       <template x-for="key in settingsEnvKeys()" :key="key">
-                        <div class="flex items-center gap-2.5">
+                        <div class="settings-value-row flex items-center gap-2.5">
                           <input type="text" :value="key" readonly aria-label="variable name"
                                  class="w-[232px] flex-none bg-surface-850 border border-surface-700/60 rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none">
                           <span class="font-mono text-surface-600">=</span>
@@ -5062,7 +5081,7 @@
                         </div>
                         <div class="flex flex-col gap-1.5 min-w-0">
                           <template x-for="key in settingsNotifHeaderKeys(name)" :key="key">
-                            <div class="flex items-center gap-2">
+                            <div class="settings-value-row flex items-center gap-2">
                               <input type="text" :value="key" readonly :aria-label="name + ' header'"
                                      class="w-40 flex-none bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none">
                               <span class="text-surface-600 font-mono">=</span>
@@ -5315,8 +5334,8 @@
         </div>
 
         <!-- Review bar -->
-        <div x-show="settingsDirty() || _settingsHasDrafts() || settingsSaving" x-cloak class="shrink-0 border-t border-surface-700/60 bg-surface-deep slide-up">
-          <div x-show="settingsDiffOpen" x-cloak class="max-h-64 overflow-auto py-2.5 border-b border-surface-700/40">
+        <div x-show="settingsDirty() || _settingsHasDrafts() || settingsSaving" x-cloak class="settings-review-bar shrink-0 border-t border-surface-700/60 bg-surface-deep slide-up">
+          <div id="settings-review-diff" x-show="settingsDiffOpen" x-cloak class="settings-review-diff max-h-64 overflow-auto py-2.5 border-b border-surface-700/40">
             <template x-for="h in settingsDiffHunks()" :key="h.path">
               <div>
                 <div class="settings-technical text-tx-faint pt-2 pb-1 px-6" x-text="'@@ ' + h.path + ' @@'"></div>
@@ -5330,15 +5349,16 @@
           </div>
 
           <div class="settings-review-actions p-3 px-6 flex items-center gap-3">
-            <button type="button" @click="settingsDiffOpen = !settingsDiffOpen" class="flex-1 min-w-0 flex items-center gap-2 text-left">
-              <span class="font-mono text-[11px] text-surface-600 shrink-0" x-text="settingsDiffOpen ? '▾' : '▸'"></span>
-              <span class="font-mono text-[11px] text-accent shrink-0">
+            <button type="button" @click="settingsDiffOpen = !settingsDiffOpen" :aria-expanded="settingsDiffOpen" aria-controls="settings-review-diff" aria-labelledby="settings-review-label" aria-describedby="settings-review-count" class="flex-1 min-w-0 flex items-center gap-2 text-left">
+              <span aria-hidden="true" class="font-mono text-[11px] text-surface-600 shrink-0" x-text="settingsDiffOpen ? '▾' : '▸'"></span>
+              <span id="settings-review-label" class="font-mono text-[11px] text-tx-2 shrink-0">Review changes</span>
+              <span id="settings-review-count" class="font-mono text-[11px] text-accent shrink-0">
                 <span x-text="settingsChangedPaths().length"></span> <span x-text="settingsChangedPaths().length === 1 ? 'field' : 'fields'"></span> changed
               </span>
-              <span class="font-mono text-[11px] text-tx-4 min-w-0 truncate"
+              <span aria-hidden="true" class="settings-review-hint font-mono text-[11px] text-tx-4 min-w-0 truncate"
                     x-text="settingsDiffOpen ? settingsChangedPaths().join(' · ') : 'review the yaml diff'"></span>
             </button>
-            <span class="font-mono text-[11px] shrink-0" :class="settingsSaving ? 'text-tx-3' : 'text-surface-600'"
+            <span class="settings-review-status font-mono text-[11px] shrink-0" :data-saving="settingsSaving || null" :class="settingsSaving ? 'text-tx-3' : 'text-surface-600'"
                   x-text="settingsSaving ? 'writing config.yaml' : 'not written yet'"></span>
             <button type="button" @click="discardSettings()" :disabled="settingsSaving"
                     class="shrink-0 font-mono text-[12px] h-8 px-4 rounded-md bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 transition-colors">discard</button>
@@ -5353,8 +5373,8 @@
     <!-- ============================================================= -->
     <!-- Assistant pane. A flex sibling of the views, not an overlay:  -->
     <!-- the board narrows and stays visible while a chat is open.     -->
-    <!-- Never built below the phone breakpoint; that layer has a       -->
-    <!-- bottom sheet of its own.                                      -->
+    <!-- Never built below the phone breakpoint; that layer has a      -->
+    <!-- full-height Assistant modal.                                 -->
     <!-- ============================================================= -->
     <template x-if="!isMobile && assistantOpen && !assistantRail">
     <aside id="assistant-pane" x-data="assistantWidthOwner()" class="relative shrink-0 flex flex-col min-w-0 min-h-0 border-l border-surface-700 bg-surface-rail"
@@ -5444,19 +5464,6 @@
   <template x-if="isMobile">
   <div x-show="!loading && currentView === 'board'" class="mobile-board-layer">
 
-    <div x-show="!needsInputOnly && !mobileSearching() && epics.length" x-ref="mobileEpicRail" data-mobile-board-background aria-label="Epics" role="group" class="flex gap-2 overflow-x-auto p-3">
-      <span class="mobile-label shrink-0 self-center">Epics</span>
-      <template x-for="e in epics" :key="e.id">
-        <button type="button" @click="openEpic(e.id)" :title="e.title || e.id" :data-mobile-ticket-key="ticketKey(e)"
-                class="shrink-0 flex flex-col items-start gap-1 px-3 py-2 rounded border border-edge-input font-mono text-xs text-accent">
-          <span x-text="e.title || e.id"></span>
-          <span x-show="epicIsAgent(e)" :class="epicNoteClass(e.id)" x-text="epicNote(e.id)"></span>
-          <span x-show="!epicIsAgent(e)" class="text-tx-3">passive epic</span>
-          <span class="text-surface-600" x-text="epicRollup(e.id).done + ' of ' + epicRollup(e.id).total + ' done'"></span>
-        </button>
-      </template>
-    </div>
-
     <div data-mobile-board-background x-ref="mobileCardList" class="mobile-ticket-list">
       <template x-if="!needsInputOnly && ticketBoardEmpty()">
         <div id="board-empty-mobile" style="border:1px solid rgba(var(--surface-700),.6);border-radius:12px;background:rgba(var(--surface-900),1);padding:18px 16px;margin-top:6px;display:flex;flex-direction:column;gap:12px;">
@@ -5474,8 +5481,8 @@
         <p role="status">No agents need input among tickets matching your filters.</p>
         <button type="button" class="text-accent underline" @click="toggleNeedsInput(); $refs.mobileNeedsInputToggle.focus()">Turn off Needs input filter</button>
       </div>
-      <p x-show="!ticketBoardEmpty() && !ticketsLoadError && !ticketSourcesFailed() && !mobileTicketList().rows.length && (!needsInputOnly || needsInputCount)"
-         class="mobile-list-empty" x-text="mobileSearching() ? 'No tickets match your search.' : 'No tickets in this view.'"></p>
+      <p x-show="!ticketBoardEmpty() && !ticketsLoadError && !ticketSourcesFailed() && !mobileTicketList().rows.length && !mobileTicketList().epics.length && (!needsInputOnly || needsInputCount)"
+         class="mobile-list-empty">No tickets match the current filters and search.</p>
       <template x-for="(ticket, index) in mobileTickets()" :key="ticketKey(ticket)">
         <div class="mobile-list-item">
         <h2 x-show="mobileTicketList().attention && (index === 0 || index === mobileTicketList().attention)" class="mobile-list-heading"
@@ -5483,6 +5490,9 @@
         <button type="button" @click="openMobileTicket(ticket)" :data-mobile-ticket-key="ticketKey(ticket)" class="mobile-card shrink-0"
                 :data-pipe-color="ticketPipeColor(ticket)"
                 :style="(ticket.status==='cancelled' ? 'opacity:.62;' : (ticket.status === 'open' && ticket.scheduled_at ? 'opacity:.72;' : '')) + (!ticket.kontora ? 'border-style:dashed;' : '')">
+          <p class="mobile-card-title" :style="ticket.status==='cancelled' ? 'text-decoration:line-through;text-decoration-color:rgba(var(--surface-600),.6);' : ''">
+            <template x-if="parseTitleTag(ticket).tag"><span class="title-tag" :data-pipe-color="pipelineColorByName(parseTitleTag(ticket).tag)" x-text="'[' + parseTitleTag(ticket).tag + '] '"></span></template><span x-text="parseTitleTag(ticket).rest"></span>
+          </p>
           <div class="mobile-card-row">
             <div class="mobile-card-context">
               <span x-show="epicIsAgent(ticket)" class="pipe-tag">Supervisor</span>
@@ -5491,6 +5501,12 @@
                 <span class="mobile-card-state text-st-progress">
                   <span x-text="epicIsAgent(ticket) ? 'supervising' : ticket.stage"></span>
                 </span>
+              </template>
+              <span class="mobile-card-id" :title="ticket.id" x-text="ticket.id" x-show="isSecondary(ticket)"></span>
+              <span x-show="isSecondary(ticket)" class="mobile-technical text-accent" :title="sourceLabel(ticket)" x-text="sourceLabel(ticket)"></span>
+              <span x-show="!isSecondary(ticket) && ticket.path" x-text="ticketProjectName(ticket)"></span>
+              <template x-if="showAgentMeta && ticket.agent">
+                <span class="mobile-card-agent" :title="ticket.agent" x-text="ticket.agent"></span>
               </template>
               <span class="mobile-card-state" :class="ticket.status === 'paused' ? 'card-glyph-paused' : ''" x-text="mobileTicketStatus(ticket)"></span>
               <template x-if="ticket.status === 'open' && scheduleChip(ticket)">
@@ -5511,9 +5527,6 @@
               <span class="mobile-label text-warn">not init'd</span>
             </template>
           </div>
-          <p class="mobile-card-title" :style="ticket.status==='cancelled' ? 'text-decoration:line-through;text-decoration-color:rgba(var(--surface-600),.6);' : ''">
-            <template x-if="parseTitleTag(ticket).tag"><span class="title-tag" :data-pipe-color="pipelineColorByName(parseTitleTag(ticket).tag)" x-text="'[' + parseTitleTag(ticket).tag + '] '"></span></template><span x-text="parseTitleTag(ticket).rest"></span>
-          </p>
           <template x-if="cardStageProgress(ticket)">
             <div class="card-progress" role="img" :aria-label="cardStageProgress(ticket).label" :title="cardStageProgress(ticket).label">
               <div :style="'width:' + cardStageProgress(ticket).percent + '%'"></div>
@@ -5526,19 +5539,18 @@
           <template x-if="ticket.attempt > 0 && ticket.status !== 'done' && ticket.status !== 'cancelled'">
             <span class="mobile-label text-err" x-text="'retry ' + ticket.attempt"></span>
           </template>
-          <div class="mobile-card-meta">
-            <span class="mobile-card-identity">
-              <span class="mobile-card-id" :title="ticket.id" x-text="ticket.id"></span>
-              <span x-show="isSecondary(ticket)" class="mobile-technical text-accent" :title="sourceLabel(ticket)" x-text="sourceLabel(ticket)"></span>
-              <template x-if="showAgentMeta && ticket.agent">
-                <span x-text="ticket.agent"></span>
-              </template>
-            </span>
-            <span x-text="executionActive(ticket) && ticket.started_at ? formatDuration(ticket) : (reviewFinishedAt(ticket) ? finishedAgo(reviewFinishedAt(ticket)) : timeAgo(ticket.created_at))"></span>
-          </div>
         </button>
         </div>
       </template>
+      <section x-show="mobileTicketList().epics.length" role="group" aria-label="Epics" class="mobile-epic-list">
+        <h2 class="mobile-list-heading">Epics</h2>
+        <template x-for="e in mobileTicketList().epics" :key="e.id">
+          <button type="button" @click="openEpic(e.id)" :data-mobile-ticket-key="ticketKey(e)" data-mobile-epic-opener class="mobile-control">
+            <span x-text="e.title || e.id"></span>
+            <small x-text="epicRollup(e.id).done + ' of ' + epicRollup(e.id).total + ' done'"></small>
+          </button>
+        </template>
+      </section>
       <button type="button" x-show="mobileTickets().length < mobileTicketList().rows.length"
               @click="mobileLoadMore()" class="mobile-control text-accent">Load more</button>
     </div>
@@ -5567,40 +5579,9 @@
         <header class="mobile-epic-resting-header shrink-0 p-4 border-b border-surface-700 flex flex-col gap-3">
           <div class="mobile-detail-route">
             <button type="button" @click="mobileDetailBack()" class="mobile-control">Back</button>
+            <h1 class="text-lg text-tx-hi" :title="selectedEpic?.title" x-text="selectedEpic?.title"></h1>
             <button type="button" @click="openActionsSheet(selectedEpic)" class="mobile-control" aria-haspopup="dialog">Actions</button>
           </div>
-          <h1 class="text-lg text-tx-hi" x-text="selectedEpic?.title"></h1>
-          <div class="mobile-epic-meta mobile-label text-tx-3">
-            <span class="mobile-technical" x-text="selectedEpic?.path"></span>
-            <span x-text="epicIsAgent(selectedEpic) ? 'Supervisor: ' + statusLabel(selectedEpic?.status) : 'passive epic'"></span>
-            <span x-text="selectedEpic?.agent"></span>
-            <span :class="selectedEpic?.branch ? 'mobile-technical' : ''" x-text="selectedEpic?.branch || 'no branch yet'"></span>
-          </div>
-          <span x-show="needsLiveInput(selectedEpic)" class="waiting-chip" :title="'Waiting for input: ' + waitingLabel(selectedEpic)">
-            needs input
-            <span x-text="waitingFor(selectedEpic)"></span>
-          </span>
-          <div class="flex flex-wrap gap-2">
-            <template x-for="a in epicSupervisorActions()" :key="a.label">
-              <button type="button" @click="a.run()" :disabled="!!actionLoading || !!plannotatorInFlight[selectedEpic?.id]"
-                      :title="a.label === 'pause supervisor' ? 'Stops only the supervisor. Child agents keep running.' : ''"
-                      class="px-3 py-2 rounded border border-edge-input font-mono text-xs text-accent disabled:opacity-40" x-text="a.label"></button>
-            </template>
-          </div>
-          <p class="font-mono text-xs text-tx-3" x-text="epicRollup(selectedEpic?.id).done + '/' + epicRollup(selectedEpic?.id).total + ' sub-tickets done'"></p>
-          <p class="text-xs text-tx-3" x-text="epicBreakdown(selectedEpic?.id)"></p>
-          <template x-if="epicRollup(selectedEpic?.id).next">
-            <button type="button" class="epic-rollup-control text-left text-accent" @click="openTicketRef(epicRollup(selectedEpic?.id).next)" x-text="'Next child: ' + epicRollup(selectedEpic?.id).next.id + ' ' + epicRollup(selectedEpic?.id).next.title"></button>
-          </template>
-          <template x-if="epicRollup(selectedEpic?.id).holder">
-            <div class="flex flex-wrap gap-2">
-              <button type="button" class="epic-rollup-control text-left text-accent" @click="openTicketRef(epicRollup(selectedEpic?.id).holder)" x-text="'Blocking child: ' + epicRollup(selectedEpic?.id).holder.id + ' (' + statusLabel(epicRollup(selectedEpic?.id).holder.status) + ')'"></button>
-              <button type="button" class="epic-rollup-control text-accent" x-show="epicRollup(selectedEpic?.id).holder.status === 'human_review'" :disabled="lifecycleBusy(epicRollup(selectedEpic?.id).holder) || !ticketCanControl(epicRollup(selectedEpic?.id).holder)" @click="epicApproveHolder()">Mark done</button>
-            </div>
-          </template>
-          <template x-if="selectedEpic?.last_error">
-            <p class="border-l-[3px] border-err pl-3 font-mono text-xs text-err whitespace-pre-wrap break-words" role="alert" x-text="selectedEpic?.last_error"></p>
-          </template>
         </header>
         <p x-show="ticketDetailRefreshError" x-text="ticketDetailRefreshError" role="alert" class="shrink-0 px-4 py-2 text-sm text-warn"></p>
         <nav class="shrink-0 flex gap-5 px-4 pt-3 overflow-x-auto border-b border-surface-700" aria-label="Epic tabs">
@@ -5614,6 +5595,39 @@
                   class="mobile-tab" :class="epicTab === 'notes' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">Notes</button>
         </nav>
         <div x-show="epicTab === 'children'" class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-4">
+          <div class="mobile-epic-overview">
+            <div class="mobile-epic-meta mobile-label text-tx-3">
+              <span class="mobile-technical" x-text="selectedEpic?.path"></span>
+              <span x-text="epicIsAgent(selectedEpic) ? 'Supervisor: ' + statusLabel(selectedEpic?.status) : 'passive epic'"></span>
+              <span x-text="selectedEpic?.agent"></span>
+              <span :class="selectedEpic?.branch ? 'mobile-technical' : ''" x-text="selectedEpic?.branch || 'no branch yet'"></span>
+            </div>
+            <span x-show="needsLiveInput(selectedEpic)" class="waiting-chip" :title="'Waiting for input: ' + waitingLabel(selectedEpic)">
+              needs input
+              <span x-text="waitingFor(selectedEpic)"></span>
+            </span>
+            <div class="flex flex-wrap gap-2">
+              <template x-for="a in epicSupervisorActions()" :key="a.label">
+                <button type="button" @click="a.run()" :disabled="!!actionLoading || !!plannotatorInFlight[selectedEpic?.id]"
+                        :title="a.label === 'pause supervisor' ? 'Stops only the supervisor. Child agents keep running.' : ''"
+                        class="px-3 py-2 rounded border border-edge-input font-mono text-xs text-accent disabled:opacity-40" x-text="a.label"></button>
+              </template>
+            </div>
+            <p class="font-mono text-xs text-tx-3" x-text="epicRollup(selectedEpic?.id).done + '/' + epicRollup(selectedEpic?.id).total + ' sub-tickets done'"></p>
+            <p class="text-xs text-tx-3" x-text="epicBreakdown(selectedEpic?.id)"></p>
+            <template x-if="epicRollup(selectedEpic?.id).next">
+              <button type="button" class="epic-rollup-control text-left text-accent" @click="openTicketRef(epicRollup(selectedEpic?.id).next)" x-text="'Next child: ' + epicRollup(selectedEpic?.id).next.id + ' ' + epicRollup(selectedEpic?.id).next.title"></button>
+            </template>
+            <template x-if="epicRollup(selectedEpic?.id).holder">
+              <div class="flex flex-wrap gap-2">
+                <button type="button" class="epic-rollup-control text-left text-accent" @click="openTicketRef(epicRollup(selectedEpic?.id).holder)" x-text="'Blocking child: ' + epicRollup(selectedEpic?.id).holder.id + ' (' + statusLabel(epicRollup(selectedEpic?.id).holder.status) + ')'"></button>
+                <button type="button" class="epic-rollup-control text-accent" x-show="epicRollup(selectedEpic?.id).holder.status === 'human_review'" :disabled="lifecycleBusy(epicRollup(selectedEpic?.id).holder) || !ticketCanControl(epicRollup(selectedEpic?.id).holder)" @click="epicApproveHolder()">Mark done</button>
+              </div>
+            </template>
+            <template x-if="selectedEpic?.last_error">
+              <p class="border-l-[3px] border-err pl-3 font-mono text-xs text-err whitespace-pre-wrap break-words" role="alert" x-text="selectedEpic?.last_error"></p>
+            </template>
+          </div>
           <div x-html="epicPickerMarkup"></div>
           <p x-show="!epicRollup(selectedEpic?.id).total" class="text-tx-3">No sub-tickets yet. Create one or add an existing ticket.</p>
           <template x-for="g in epicGroups()" :key="g.key">
@@ -5851,64 +5865,20 @@
           <span role="status" x-text="editSubmitting ? 'Saving…' : (editSaved ? 'Saved' : '')"></span>
           <button type="button" @pointerdown.prevent @click="mobileFinishDescriptionEdit()" class="mobile-input-done">Done</button>
         </div>
-        <div class="mobile-detail-route mobile-ticket-route">
+        <div class="mobile-detail-route mobile-ticket-route" :class="{ 'mobile-ticket-route-imported': isSecondary(selectedTicket) }">
           <button type="button" @click="mobileDetailBack()" class="mobile-control">Back</button>
-          <button type="button" @click="openActionsSheet(selectedTicket)" class="mobile-control" aria-haspopup="dialog">Actions</button>
-        </div>
-        <div class="mobile-detail-context">
           <div class="mobile-detail-heading">
             <span class="font-mono text-[11px] text-tx-3" x-text="selectedTicket?.id"></span>
             <span class="mobile-detail-title" :title="selectedTicket?.title"><span x-show="parseTitleTag(selectedTicket || {}).tag" class="title-tag" :data-pipe-color="pipelineColorByName(parseTitleTag(selectedTicket || {}).tag)" x-text="'[' + parseTitleTag(selectedTicket || {}).tag + ']'"></span><span class="mobile-detail-title-text" x-text="parseTitleTag(selectedTicket || {}).rest"></span></span>
           </div>
+          <button type="button" @click="openActionsSheet(selectedTicket)" class="mobile-control" aria-haspopup="dialog">Actions</button>
           <button type="button" x-show="isSecondary(selectedTicket)" @click="claimTicket()"
                   :disabled="!ticketCanClaim(selectedTicket) || claimSubmitting" :title="selectedTicket?.refusal_reason || 'Move into primary without starting work. Related tickets are not moved; references resolve in primary.'"
                   class="font-mono text-xs px-3 py-2 rounded bg-accent text-accent-fg disabled:opacity-50 disabled:cursor-not-allowed"
                   x-text="claimSubmitting ? 'Claiming…' : 'Claim'"></button>
-          <button type="button" x-show="!isSecondary(selectedTicket) && selectedTicket?.kind === 'epic'" @click="openEpic(selectedTicket.id)" class="font-mono text-xs text-accent">epic overview</button>
           <button type="button" @click="sheet = { type: 'navigation' }" class="mobile-icon-button" aria-label="Open navigation" aria-haspopup="dialog"><svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
-          <button type="button" @click="openAssistantSheet()" class="mobile-icon-button assistant-launch" aria-label="Assistant" :aria-description="assistantLaunchHint()" aria-haspopup="dialog"><span class="assistant-launch-state" x-show="assistantLaunchLabel()" x-text="assistantLaunchLabel()"></span><svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-3 3V11.5a10 10 0 0 1 20 0z"/></svg></button>
+          <button type="button" @click="openAssistantSheet($event.currentTarget)" class="mobile-icon-button assistant-launch" aria-label="Assistant" :aria-description="assistantLaunchHint()" aria-haspopup="dialog"><span class="assistant-launch-state" x-show="assistantLaunchLabel()" x-text="assistantLaunchLabel()"></span><svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-3 3V11.5a10 10 0 0 1 20 0z"/></svg></button>
 
-        </div>
-        <div class="mobile-detail-secondary" style="align-items:center;gap:8px;padding:0 16px 10px;flex-wrap:wrap;">
-          <span class="pipe-tag" :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'" x-text="selectedTicket ? mobileTagLabel(selectedTicket) : ''"></span>
-          <button type="button" class="status-chip" :data-status="selectedTicket?.status" :disabled="!ticketCanControl(selectedTicket) || lifecycleBusy(selectedTicket)" @click="openMoveSheet(selectedTicket)" :aria-label="workflowStatusLabel(selectedTicket) + '. Move to status'" x-text="workflowStatusLabel(selectedTicket)"></button>
-          <span x-show="selectedTicket?.agent" class="mobile-label text-tx-3" x-text="selectedTicket?.agent"></span>
-          <span x-show="selectedTicket?.branch" class="mobile-technical text-tx-3" x-text="selectedTicket?.branch"></span>
-          <span class="mobile-technical text-tx-3 break-all" x-text="sourceLabel(selectedTicket)"></span>
-          <span x-show="isSecondary(selectedTicket) && !ticketCanClaim(selectedTicket)" class="w-full font-mono text-[11px] text-warn" x-text="selectedTicket?.refusal_reason || 'This ticket cannot be claimed.'"></span>
-          <template x-if="scheduleLabel(selectedTicket)">
-            <button @click="canSchedule(selectedTicket) && openScheduleSheet(selectedTicket)" class="sched-chip" :disabled="!canSchedule(selectedTicket)" :style="canSchedule(selectedTicket) ? 'cursor:pointer;' : 'cursor:default;'">
-              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
-              <span x-text="'starts ' + scheduleLabel(selectedTicket)"></span>
-            </button>
-          </template>
-          <template x-if="needsLiveInput(selectedTicket)">
-            <span class="waiting-chip" :title="'Waiting for input: ' + waitingLabel(selectedTicket)">
-              needs input
-              <span x-text="waitingFor(selectedTicket)"></span>
-            </span>
-          </template>
-          <span x-show="!isSecondary(selectedTicket) && mobileTicketCostLabel()" :title="costTooltip(currentTicketCost())" :aria-label="costTooltip(currentTicketCost())"
-                class="mobile-label text-tx-2"
-                x-text="mobileTicketCostLabel()"></span>
-          <template x-if="selectedTicket && !selectedTicket.kontora">
-            <span class="mobile-label text-warn">not a kontora ticket</span>
-          </template>
-          <details x-show="isGraphTicket(selectedTicket)" class="w-full font-mono text-[11px] text-tx-3">
-            <summary>Workflow graph · execution</summary>
-            <pre class="whitespace-pre-wrap" x-text="graphText(selectedTicket)"></pre>
-            <button x-show="canRestartGraph()" @click="restartGraphWorkflow()" class="text-warn">Restart at configured entry</button>
-          </details>
-          <template x-if="selectedTicket && !isSecondary(selectedTicket) && !epicIsAgent(selectedTicket) && detailTab !== 'logs' && stageRibbon().length">
-            <div class="mobile-stage-strip" role="list" aria-label="Pipeline stage progress">
-              <template x-for="seg in stageRibbon()" :key="seg.name">
-                <div class="mobile-stage-segment" role="listitem" :style="mobileStageStyle(seg)" :aria-label="seg.name + ': ' + mobileStageState(seg)">
-                  <span x-text="seg.name"></span>
-                  <span class="mobile-stage-track" aria-hidden="true"><span></span></span>
-                </div>
-              </template>
-            </div>
-          </template>
         </div>
         <nav class="mobile-detail-tabs flex" aria-label="Ticket panels">
           <button type="button" class="mobile-tab" @click="mobileSwitchPanel('ticket')" :aria-pressed="mobilePanel() === 'ticket'">Ticket</button>
@@ -5929,23 +5899,21 @@
         <div class="mobile-detail-content" :style="{ visibility: detailLoading ? 'hidden' : 'visible' }">
 
         <div x-show="mobilePanel() === 'notes'" class="flex-1 min-h-0" x-html="detailNotesMarkup"></div>
-        <div x-show="mobilePanel() === 'changes'" class="mobile-ticket-pane overflow-y-auto" x-html="detailChangesMarkup"></div>
+        <div x-show="mobilePanel() === 'changes'" data-detail-scroll="changes" class="mobile-ticket-pane overflow-y-auto" x-html="detailChangesMarkup"></div>
         <p x-show="mobilePanel() === 'output' && needsLiveInput(selectedTicket)"
-           class="mobile-live-question shrink-0 max-h-24 overflow-y-auto px-4 py-2 text-sm text-tx-2 whitespace-pre-wrap break-words" x-text="liveQuestion(selectedTicket)"></p>
+           data-detail-scroll="question" class="mobile-live-question shrink-0 max-h-24 overflow-y-auto px-4 py-2 text-sm text-tx-2 whitespace-pre-wrap break-words" x-text="liveQuestion(selectedTicket)"></p>
         <div x-show="mobilePanel() === 'output' && !mobileTerminalTyping()" class="mobile-output-row">
           <select aria-label="Output view" :value="detailTab" @change="mobileSwitchTab($event.target.value)" :disabled="isSecondary(selectedTicket) || importedRun(activityStage, activityRun)">
             <option value="terminal" :disabled="!executionActive(selectedTicket)">Terminal</option><option value="activity">Activity</option><option value="logs">Stage logs</option>
           </select>
+          <select x-show="!isSecondary(selectedTicket) && detailTab !== 'terminal'" aria-label="Run" :value="outputRunKey()" @change="selectOutputRun($event.target.value)" :disabled="!outputRuns().length"><option x-show="!outputRuns().length" value="">No recorded runs</option><template x-for="r in outputRuns()" :key="r.key"><option :value="r.key" :selected="r.key === outputRunKey()" x-text="r.label"></option></template></select>
           <div x-show="detailTab === 'terminal'" class="mobile-history-controls">
             <button type="button" x-show="terminalHistoryReviewing" @click="scrollLogToEnd()">Jump to live</button>
             <span x-show="terminalBufferType === 'alternate'">Screen history unavailable</span>
             <button type="button" x-show="terminalBufferType === 'alternate'" @click="openCurrentTerminalActivity()">View Activity</button>
           </div>
         </div>
-        <div x-show="mobilePanel() === 'output'" class="mobile-output-toolbar detail-shared" :class="{ 'mobile-output-evidence-only': isSecondary(selectedTicket) || importedRun(activityStage, activityRun) }">
-          <div x-show="!isSecondary(selectedTicket)" class="detail-output-selectors">
-            <label class="detail-field"><span>Run</span><select aria-label="Run" :value="outputRunKey()" @change="selectOutputRun($event.target.value)" :disabled="!outputRuns().length"><option x-show="!outputRuns().length" value="">No recorded runs</option><template x-for="r in outputRuns()" :key="r.key"><option :value="r.key" :selected="r.key === outputRunKey()" x-text="r.label"></option></template></select></label>
-          </div>
+        <div x-show="mobilePanel() === 'output'" data-detail-scroll="evidence" class="mobile-output-toolbar detail-shared" :class="{ 'mobile-output-evidence-only': isSecondary(selectedTicket) || importedRun(activityStage, activityRun) }">
           <template x-if="!isSecondary(selectedTicket)"><div x-html="detailRunEvidenceMarkup"></div></template>
           <div x-show="!isSecondary(selectedTicket) && importedRun(activityStage, activityRun)" class="flex flex-wrap items-center gap-2 px-4 pb-2">
             <button type="button" @click="openRawLog()" class="raw-log-action">⧉ raw</button>
@@ -6017,7 +5985,7 @@
           <div x-show="activity?.tape?.truncated" class="shrink-0 px-4 pt-2 font-mono text-[11px] text-surface-600">Transcript truncated. Raw exports the selected run if its log is available.</div>
           <!-- The desktop activity-scroll lives in !isMobile, so this id is shared.
                x-show reveals the pane on an animation frame, after Alpine's next tick. -->
-          <div id="activity-scroll" class="flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-4"
+          <div id="activity-scroll" data-detail-scroll="activity" class="flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-4"
                x-effect="activity; if (detailTab === 'activity' && logFollow) $nextTick(() => requestAnimationFrame(() => { if (detailTab === 'activity' && logFollow) $el.scrollTop = $el.scrollHeight; }))">
             <template x-if="activityLoading">
               <p class="font-mono text-xs text-surface-600">Loading activity...</p>
@@ -6090,7 +6058,7 @@
         </div>
 
         <!-- logs (stage history) -->
-        <div x-show="!isSecondary(selectedTicket) && detailTab==='logs'" class="overflow-y-auto" style="flex:1;min-height:0;padding:14px 16px 24px;">
+        <div x-show="!isSecondary(selectedTicket) && detailTab==='logs'" data-detail-scroll="logs" class="overflow-y-auto" style="flex:1;min-height:0;padding:14px 16px 24px;">
           <div x-show="mobileTicketCostLabel()" class="font-mono text-xs text-tx-3 mb-3" :title="costTooltip(currentTicketCost())" x-text="mobileTicketCostLabel()"></div>
           <template x-if="stageRibbon().length">
             <div aria-label="Stages and cost estimates" style="display:flex;align-items:center;gap:7px;overflow-x:auto;padding-bottom:12px;">
@@ -6123,7 +6091,49 @@
         </div>
 
         <!-- ticket (body) -->
-        <div x-show="detailTab==='ticket'" class="mobile-ticket-pane overflow-y-auto">
+        <div x-show="detailTab==='ticket'" data-detail-scroll="overview" class="mobile-ticket-pane overflow-y-auto">
+          <button type="button" x-show="!isSecondary(selectedTicket) && selectedTicket?.kind === 'epic'" @click="openEpic(selectedTicket.id)" class="mobile-control">Epic overview</button>
+          <div class="mobile-detail-secondary">
+            <span class="pipe-tag" :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'" x-text="selectedTicket ? mobileTagLabel(selectedTicket) : ''"></span>
+            <button type="button" class="status-chip" :data-status="selectedTicket?.status" :disabled="!ticketCanControl(selectedTicket) || lifecycleBusy(selectedTicket)" @click="openMoveSheet(selectedTicket)" :aria-label="workflowStatusLabel(selectedTicket) + '. Move to status'" x-text="workflowStatusLabel(selectedTicket)"></button>
+            <span x-show="selectedTicket?.agent" class="mobile-label text-tx-3" x-text="selectedTicket?.agent"></span>
+            <span x-show="selectedTicket?.branch" class="mobile-technical text-tx-3" x-text="selectedTicket?.branch"></span>
+            <span class="mobile-technical text-tx-3 break-all" x-text="sourceLabel(selectedTicket)"></span>
+            <span x-show="isSecondary(selectedTicket) && !ticketCanClaim(selectedTicket)" class="w-full font-mono text-[11px] text-warn" x-text="selectedTicket?.refusal_reason || 'This ticket cannot be claimed.'"></span>
+            <template x-if="scheduleLabel(selectedTicket)">
+              <button @click="canSchedule(selectedTicket) && openScheduleSheet(selectedTicket)" class="sched-chip" :disabled="!canSchedule(selectedTicket)" :style="canSchedule(selectedTicket) ? 'cursor:pointer;' : 'cursor:default;'">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+                <span x-text="'starts ' + scheduleLabel(selectedTicket)"></span>
+              </button>
+            </template>
+            <template x-if="needsLiveInput(selectedTicket)">
+              <span class="waiting-chip" :title="'Waiting for input: ' + waitingLabel(selectedTicket)">
+                needs input
+                <span x-text="waitingFor(selectedTicket)"></span>
+              </span>
+            </template>
+            <span x-show="!isSecondary(selectedTicket) && mobileTicketCostLabel()" :title="costTooltip(currentTicketCost())" :aria-label="costTooltip(currentTicketCost())"
+                  class="mobile-label text-tx-2"
+                  x-text="mobileTicketCostLabel()"></span>
+            <template x-if="selectedTicket && !selectedTicket.kontora">
+              <span class="mobile-label text-warn">not a kontora ticket</span>
+            </template>
+            <details x-show="isGraphTicket(selectedTicket)" class="w-full font-mono text-[11px] text-tx-3">
+              <summary>Workflow graph · execution</summary>
+              <pre class="whitespace-pre-wrap" x-text="graphText(selectedTicket)"></pre>
+              <button x-show="canRestartGraph()" @click="restartGraphWorkflow()" class="text-warn">Restart at configured entry</button>
+            </details>
+            <template x-if="selectedTicket && !isSecondary(selectedTicket) && !epicIsAgent(selectedTicket) && detailTab !== 'logs' && stageRibbon().length">
+              <div class="mobile-stage-strip" role="list" aria-label="Pipeline stage progress">
+                <template x-for="seg in stageRibbon()" :key="seg.name">
+                  <div class="mobile-stage-segment" role="listitem" :style="mobileStageStyle(seg)" :aria-label="seg.name + ': ' + mobileStageState(seg)">
+                    <span x-text="seg.name"></span>
+                    <span class="mobile-stage-track" aria-hidden="true"><span></span></span>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
           <template x-if="selectedTicket?.last_error">
             <div role="alert" class="mobile-prose text-err" style="border-left:3px solid rgba(var(--err),1);padding-left:12px;margin-bottom:18px;white-space:pre-wrap;overflow-wrap:anywhere;" x-text="selectedTicket.last_error"></div>
           </template>
@@ -6208,8 +6218,7 @@
       </div>
 
       <!-- action bar -->
-      <div x-show="ticketCanControl(selectedTicket)" class="mobile-detail-actions">
-        <button type="button" @click="openMoveSheet(selectedTicket)" :disabled="lifecycleBusy(selectedTicket) || !mobileMoveDestinations(selectedTicket).length" class="mobile-control">Move to</button>
+      <div x-show="ticketCanControl(selectedTicket) && !mobilePrimaryAction(selectedTicket).hidden" class="mobile-detail-actions">
         <button type="button" @click="mobilePrimaryAction(selectedTicket).run()" :disabled="lifecycleBusy(selectedTicket) || mobilePrimaryAction(selectedTicket).disabled" class="mobile-primary">
           <span x-text="mobilePrimaryAction(selectedTicket).label"></span>
         </button>
@@ -6223,7 +6232,7 @@
   <template x-if="isMobile">
     <nav class="mobile-bottom-nav" data-mobile-board-background data-mobile-sheet-background aria-label="Main navigation">
       <button type="button" @click="mobileNavigate('board')" :aria-current="currentView === 'board' ? 'page' : null" data-mobile-focus-fallback>Tickets</button>
-      <button type="button" id="assistant-mobile-trigger" @click="openAssistantSheet()" :aria-description="assistantLaunchHint()" aria-haspopup="dialog">
+      <button type="button" id="assistant-mobile-trigger" @click="openAssistantSheet($event.currentTarget)" :aria-description="assistantLaunchHint()" aria-haspopup="dialog">
         Assistant <span x-show="assistantLaunchLabel()" x-text="assistantLaunchLabel()" class="text-accent" aria-hidden="true"></span>
       </button>
       <button type="button" @click="mobileNavigate('settings')" :aria-current="currentView === 'settings' ? 'page' : null">Settings</button>
@@ -6236,13 +6245,46 @@
       <div class="mobile-sheet-viewport">
         <div @click="closeSheet()" class="sheet-scrim mobile-sheet-scrim" aria-hidden="true"></div>
         <div class="sheet-panel mobile-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="mobile-sheet-title"
-             tabindex="-1" x-ref="mobileSheetDialog" data-mobile-sheet-dialog>
-          <div class="mobile-sheet-handle" aria-hidden="true"></div>
-          <div class="mobile-sheet-heading">
-            <h2 id="mobile-sheet-title" class="mobile-label text-tx-2 m-0"
-                x-text="({ browse: 'Browse', navigation: 'Navigation', actions: 'Ticket actions', move: 'Move to', schedule: 'Start later', assistant: 'Assistant', new: 'New ticket' })[sheet.type] || 'Ticket' "></h2>
-            <button type="button" @click="closeSheet()" class="mobile-sheet-close" data-mobile-sheet-initial-focus>Close</button>
-          </div>
+             tabindex="-1" x-ref="mobileSheetDialog" data-mobile-sheet-dialog :id="sheet.type === 'assistant' ? 'assistant-sheet' : null">
+          <div class="mobile-sheet-handle" x-show="sheet.type !== 'assistant'" aria-hidden="true"></div>
+          <header class="mobile-sheet-header">
+            <div class="mobile-sheet-heading">
+              <h2 id="mobile-sheet-title" class="mobile-label text-tx-2 m-0"
+                  x-text="({ browse: 'Browse', navigation: 'Navigation', filters: 'Ticket filters', actions: 'Ticket actions', move: 'Move to', schedule: 'Start later', assistant: 'Assistant', new: 'New ticket' })[sheet.type] || 'Ticket' "></h2>
+              <button type="button" @click="assistantNewThread()" x-show="sheet.type === 'assistant' && assistantEnabled()"
+                      class="mobile-assistant-new" aria-label="New chat">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg>
+              </button>
+              <button type="button" @click="closeSheet()" class="mobile-sheet-close" data-mobile-sheet-initial-focus>Close</button>
+            </div>
+            <template x-if="sheet.type === 'assistant'">
+              <div x-html="companionSheetTabsMarkup"></div>
+            </template>
+          </header>
+
+          <template x-if="sheet.type === 'filters'">
+            <div class="mobile-ticket-filters">
+              <label for="mobile-ticket-status">Status
+                <select id="mobile-ticket-status" x-model="mobileStatusFilter">
+                  <option value=":attention">Attention first</option>
+                  <option value=":all">All statuses</option>
+                  <template x-for="col in columns" :key="col.key"><option :value="col.key" :selected="mobileStatusFilter === col.key" x-text="col.label"></option></template>
+                </select>
+              </label>
+              <label for="mobile-ticket-project">Project
+                <select id="mobile-ticket-project" x-model="mobileProjectFilter">
+                  <option value="">All projects</option>
+                  <template x-for="project in mobileFacetOptions('project')" :key="project"><option :value="project" :selected="mobileProjectFilter === project" x-text="project"></option></template>
+                </select>
+              </label>
+              <label for="mobile-ticket-agent">Agent
+                <select id="mobile-ticket-agent" x-model="mobileAgentFilter">
+                  <option value="">All agents</option>
+                  <template x-for="agent in mobileFacetOptions('agent')" :key="agent"><option :value="agent" :selected="mobileAgentFilter === agent" x-text="agent"></option></template>
+                </select>
+              </label>
+            </div>
+          </template>
 
           <template x-if="sheet.type === 'browse'">
             <nav class="mobile-navigation" aria-label="Browse destinations">
@@ -6263,7 +6305,6 @@
               </template>
               <button type="button" @click="closeSheet(); openAssistantSheet()">Assistant</button>
               <button type="button" x-show="selectedTicket || selectedEpic" @click="openActionsSheet(selectedTicket || selectedEpic)">Ticket actions</button>
-              <button type="button" @click="closeSheet(); $refs.uploadInput.click()">Upload .md files</button>
             </nav>
           </template>
 
@@ -6293,7 +6334,7 @@
 
           <!-- schedule sheet: set, move or clear a ticket's pickup time. -->
           <template x-if="sheet.type==='schedule' && ticketCanControl(sheet.ticket)">
-            <div style="display:flex;flex-direction:column;min-height:0;">
+            <div class="mobile-schedule-sheet">
               <div style="padding:0 18px 14px;border-bottom:1px solid rgba(var(--surface-700),.4);">
                 <div class="mobile-label text-tx-3"><span class="mobile-technical" x-text="sheet.ticket.id"></span>: <span x-text="sheet.ticket.status"></span></div>
                 <template x-if="mobileScheduleCurrent(sheet.ticket)">
@@ -6303,7 +6344,7 @@
                   </div>
                 </template>
               </div>
-              <div style="overflow-y:auto;padding:14px 18px 0;display:flex;flex-direction:column;gap:10px;">
+              <div data-compact-scroll class="mobile-schedule-fields">
                 <div class="mobile-label text-tx-3">When</div>
 
                 <template x-for="p in mobileSchedulePresets()" :key="p.key">
@@ -6329,48 +6370,47 @@
                 </div>
 
                 <p x-show="mobileScheduleConsequence()" class="mobile-label text-tx-3 m-0" x-text="mobileScheduleConsequence()"></p>
-                <div x-show="scheduleError" style="font-size:12px;color:rgba(var(--err),1);" x-text="scheduleError"></div>
-
-                <div style="display:flex;gap:10px;margin-top:4px;">
-                  <button @click="sheet.ticket.scheduled_at ? clearScheduleSheet(sheet.ticket) : closeSheet()" :disabled="scheduleSubmitting"
-                          class="mobile-control flex-1"
-                          x-text="sheet.ticket.scheduled_at ? 'clear' : 'cancel'"></button>
-                  <button @click="submitScheduleMobile(sheet.ticket)" :disabled="scheduleSubmitting || !mobileScheduleParsed().iso" class="mobile-sheet-primary"
-                          x-text="scheduleSubmitting ? 'saving…' : 'schedule'"></button>
-                </div>
                 <button @click="runNowFromSheet(sheet.ticket)" class="mobile-label text-tx-3 self-center p-3">run now instead</button>
+              </div>
+              <p role="alert" class="flex-none m-0 px-[18px] overflow-y-auto break-words text-xs text-err"
+                 style="max-height:calc(var(--mobile-vv-height, 100dvh) / 4);" x-text="scheduleError"></p>
+              <div class="mobile-schedule-actions">
+                <button @click="sheet.ticket.scheduled_at ? clearScheduleSheet(sheet.ticket) : closeSheet()" :disabled="scheduleSubmitting"
+                        class="mobile-control flex-1"
+                        x-text="sheet.ticket.scheduled_at ? 'clear' : 'cancel'"></button>
+                <button @click="submitScheduleMobile(sheet.ticket)" :disabled="scheduleSubmitting || !mobileScheduleParsed().iso" class="mobile-sheet-primary"
+                        x-text="scheduleSubmitting ? 'saving…' : 'schedule'"></button>
               </div>
             </div>
           </template>
 
           <!-- assistant sheet. The phone equivalent of the docked pane. -->
           <template x-if="isMobile && sheet.type==='assistant'">
-            <div id="assistant-sheet" class="mobile-assistant-sheet">
-              <div style="display:flex;align-items:center;gap:8px;padding:0 18px 12px;border-bottom:1px solid rgba(var(--surface-700),.4);">
-                <span class="text-tx-3 flex shrink-0" aria-hidden="true">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-3 3V11.5a10 10 0 0 1 20 0z"/></svg>
-                </span>
-                <span style="flex:1;min-width:0;font-size:15px;font-weight:600;color:rgba(var(--tx),1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-                      x-text="assistantView === 'history' ? 'Chats' : (assistantThread && assistantThreadVisible() ? assistantThread.title : 'Assistant')"></span>
-                <span x-show="assistantStreaming" class="mobile-label text-tx-3" role="status">Working</span>
-                <button @click="assistantNewThread()" x-show="assistantEnabled()" style="width:28px;height:28px;border:none;background:transparent;color:rgba(var(--surface-600),1);flex:none;" aria-label="New chat">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
-                </button>
+            <div class="mobile-assistant-sheet" :data-expanded="assistantMenu || assistantError || assistantAutonomyOpen ? '' : null">
+              <div x-show="companionEnabled() && assistantView === 'inbox'" x-cloak data-assistant-scroll="inbox"
+                   class="companion-inbox-view" role="region" aria-label="Inbox" tabindex="0">
+                <template x-if="companionEnabled() && assistantView === 'inbox'">
+                  <div x-html="companionStatusMarkup"></div>
+                </template>
+                <div x-html="companionInboxMarkup"></div>
               </div>
-
-              <div class="companion-surface" x-html="companionHeaderMarkup"></div>
-              <div class="companion-inbox-view" x-show="companionEnabled() && assistantView === 'inbox'" x-cloak x-html="companionInboxMarkup"></div>
-              <div class="assistant-fragment" x-html="assistantContextMarkup"></div>
-              <div x-show="assistantView === 'history'" x-cloak class="flex-1 min-h-0 overflow-y-auto p-2" x-html="assistantHistoryMarkup"></div>
-              <div id="assistant-sheet-thread" x-show="assistantView === 'thread' && assistantThreadVisible()" @scroll.passive="assistantThreadScrolled()" class="mobile-assistant-thread">
-                <button type="button" x-show="assistantHiddenRows()" @click="assistantLoadEarlier()" class="companion-note">Load earlier messages and events</button>
-                <div class="assistant-fragment" x-html="assistantSheetTranscriptMarkup"></div>
+              <div id="assistant-sheet-thread" x-data="assistantSheetScrollOwner()" x-show="assistantView === 'thread'" x-cloak
+                   @scroll.passive="if (assistantThreadVisible()) assistantThreadScrolled()" data-assistant-scroll="chat"
+                   class="mobile-assistant-thread" role="region" aria-label="Chat transcript" tabindex="0">
+                <template x-if="assistantView === 'thread' && companionEnabled() && companionThread()">
+                  <div x-html="companionStatusMarkup + companionChatHintMarkup"></div>
+                </template>
+                <p x-show="assistantThread && assistantThreadVisible()" class="mobile-assistant-chat-title" x-text="assistantThread?.title"></p>
+                <div class="assistant-fragment" x-html="assistantContextMarkup"></div>
+                <button type="button" x-show="assistantThreadVisible() && assistantHiddenRows()" @click="assistantLoadEarlier()" class="companion-note">Load earlier messages and events</button>
+                <div data-assistant-transcript x-show="assistantThreadVisible()" x-html="assistantSheetTranscriptMarkup"></div>
+                <div class="assistant-fragment" x-html="assistantSheetConfigureMarkup"></div>
               </div>
-
-              <div class="assistant-fragment" x-html="assistantSheetConfigureMarkup"></div>
-
+              <div x-show="assistantView === 'history'" x-cloak data-assistant-scroll="history"
+                   class="p-2" role="region" aria-label="Chat history" tabindex="0" x-html="assistantHistoryMarkup"></div>
+              <div class="assistant-fragment" x-html="assistantSheetApprovalMarkup"></div>
+              <p role="status" class="mobile-assistant-error companion-note" x-text="assistantError"></p>
               <div class="assistant-fragment" x-html="assistantSheetComposerMarkup"></div>
-              <p x-show="assistantError" x-cloak role="status" class="companion-note" x-text="assistantError"></p>
             </div>
           </template>
 

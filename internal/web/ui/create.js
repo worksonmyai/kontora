@@ -36,6 +36,7 @@ function cleanProjectPath(raw) {
 export function kontoraCreate() {
   return {
     createError: null,
+    createUploadReceipt: '',
     _createGeneration: 0,
     _createDraftActive: false,
     _createRequest: null,
@@ -54,6 +55,7 @@ export function kontoraCreate() {
       if (this._createRequest || this.createSubmitting) return false;
       this._createGeneration++;
       this.createError = null;
+      this.createUploadReceipt = '';
       this.createSubmitting = false;
       return true;
     },
@@ -436,6 +438,8 @@ export function kontoraCreate() {
     },
 
     async handleUpload(fileList) {
+      const newDraft = this.currentView === 'new' && this._createContext();
+      if (newDraft) this.createUploadReceipt = '';
       const mdFiles = [...fileList].filter(f => f.name.toLowerCase().endsWith('.md'));
       if (!mdFiles.length) {
         this.error = 'No .md files selected';
@@ -457,10 +461,17 @@ export function kontoraCreate() {
           }
         }
         const message = details.filter(Boolean).join('; ');
-        if (!res.ok) this.error = 'Upload failed (HTTP ' + res.status + ')' + (message ? ': ' + message : '');
-        else if (message) {
-          const ids = Array.isArray(data?.tickets) ? data.tickets.map(ticket => ticket?.id).filter(Boolean) : [];
+        if (!res.ok) {
+          this.error = 'Upload failed (HTTP ' + res.status + ')' + (message ? ': ' + message : '');
+          return;
+        }
+        const ids = Array.isArray(data?.tickets) ? data.tickets.map(ticket => ticket?.id).filter(Boolean) : [];
+        if (message) {
           this.error = ids.length ? 'Created tickets: ' + ids.join(', ') + '. Upload errors: ' + message : message;
+        } else if (ids.length && !this._appDestroyed) {
+          const receipt = (ids.length === 1 ? 'Imported ticket: ' : 'Imported tickets: ') + ids.join(', ') + '.';
+          if (this.currentView === 'new' && newDraft && newDraft()) this.createUploadReceipt = receipt;
+          else this.showToast(receipt);
         }
       } catch (e) {
         this.error = 'Upload failed: ' + e.message;

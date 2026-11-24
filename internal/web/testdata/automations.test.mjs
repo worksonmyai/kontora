@@ -316,8 +316,9 @@ test('automation rail retains configuration, timezone, copy values and cost cove
   assert.match(css, /@container automations \(max-width: 1100px\)/);
   assert.match(css, /automations-detail-body[^}]*flex-direction: column/);
   assert.match(css, /automations-table[^}]*last-child[^}]*position: sticky; right: 0/);
-  const mobile = html.slice(html.indexOf('class="automations-mobile-actions'), html.indexOf('class="automations-mobile-actions') + 1800);
-  assert.match(mobile, /@click="automationsNew\(automationsRow\(\)\)"[^>]*>Duplicate/);
+  const mobile = html.match(/class="automations-mobile-actions[\s\S]*?class="automations-detail-title/)[0];
+  assert.match(mobile, /role="menuitem" tabindex="-1" @click="automationsNew\(automationsRow\(\)\)"[^>]*>Duplicate/);
+  assert.match(mobile, /x-show="automationsCanStop\(\)" @click="automationsStop\(\)"/);
   assert.match(html, /x-text="line.source"/);
 });
 

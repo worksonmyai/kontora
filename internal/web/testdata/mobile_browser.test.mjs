@@ -100,7 +100,15 @@ const model = (page, name) => page.locator(`[x-model="${name}"]:visible`);
 const phoneNav = page => page.locator('.mobile-bottom-nav');
 const phoneDestination = (page, name) => phoneNav(page).getByRole('button', { name, exact: true });
 const browseSheet = page => page.getByRole('dialog', { name: 'Browse', exact: true });
-const phoneStatus = page => page.getByRole('combobox', { name: 'Status', exact: true });
+const phoneFilters = page => page.getByRole('dialog', { name: 'Ticket filters', exact: true });
+const phoneFilterButton = page => page.getByRole('button', { name: 'Filters', exact: true });
+const phoneStatus = page => phoneFilters(page).getByRole('combobox', { name: 'Status', exact: true });
+const phoneFilterSummary = page => page.locator('.mobile-filter-summary');
+async function selectPhoneStatus(page, value) {
+  await phoneFilterButton(page).click();
+  await phoneStatus(page).selectOption(value);
+  await phoneFilters(page).getByRole('button', { name: 'Close', exact: true }).click();
+}
 const phoneSearch = page => page.getByRole('searchbox', { name: 'Search tickets', exact: true });
 const phoneCount = page => page.locator('.mobile-filter-tools').getByRole('status', { includeHidden: true });
 const phoneList = page => page.locator('.mobile-ticket-list');
@@ -1306,6 +1314,10 @@ describe('Settings final review regressions', { concurrency: 2 }, () => {
 });
 
 const automationButton = (page, name) => page.getByRole('button', { name, exact: true }).filter({ visible: true });
+async function automationMenuAction(page, name) {
+  await automationButton(page, 'More automation actions').click();
+  await page.getByRole('menuitem', { name, exact: true }).click();
+}
 async function emitAutomationEvent(page, type = 'automations_updated') {
   await page.evaluate(type => window.__fixtureSSE.filter(stream => !stream.closed && stream.url === '/api/events').forEach(stream => stream.emit(type)), type);
   await ready(page);
@@ -1317,7 +1329,292 @@ async function automationSaveReady(page) {
   await page.waitForFunction(() => !!Alpine.$data(document.body).automationsCanSave());
 }
 
+async function expectFieldAboveCompactKeyboard(page, field) {
+  await expect(field).toBeFocused();
+  await field.evaluate(el => el.scrollIntoView({ block: 'end' }));
+  const height = 300;
+  assert.ok(await field.evaluate(el => el.getBoundingClientRect().bottom) > height,
+    'The keyboard must cover part of the focused field before the resize handler runs');
+  try {
+    await visualViewport(page, height, null);
+    await expect.poll(() => field.evaluate(el => {
+      const field = el.getBoundingClientRect();
+      const scroll = el.closest('[data-compact-scroll]')?.getBoundingClientRect();
+      return !!scroll && field.top >= Math.max(scroll.top, visualViewport.offsetTop) - 1
+        && field.bottom <= Math.min(scroll.bottom, visualViewport.offsetTop + visualViewport.height) + 1;
+    })).toBe(true);
+    await expect(field).toBeFocused();
+    assert.equal(page.viewportSize().width, 390, 'Only the visual viewport shrank');
+    assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), 0);
+  } finally {
+    await visualViewport(page, null, null);
+  }
+}
+
+async function resizeWithCompactFormDraft(page, draft) {
+  for (const viewport of [{ width: 844, height: 390 }, { width: 320, height: 568 }]) {
+    await page.setViewportSize(viewport);
+    for (const [field, value] of draft) {
+      await expect(field).toHaveCount(1);
+      await expect(field).toHaveValue(value);
+    }
+    await noPageOverflow(page);
+  }
+}
+
+test('Compact routed forms: New keeps its schedule and pending draft across rotation', async t => {
+  await withPage(t, 390, 'dark', async (page, fixture) => {
+    await routeTo(page, '#/new');
+    const title = page.locator('#new-title');
+    const path = page.locator('#new-path');
+    await inViewport(title);
+    await inViewport(path);
+    await title.fill('Scheduled from a short viewport');
+    await page.keyboard.press('Tab');
+    await expect(path).toBeFocused();
+    await path.fill('/fixtures/repository-with-a-long-name');
+    await page.getByRole('button', { name: 'Schedule for later', exact: true }).click();
+    const date = page.locator('#new-scheduled-at');
+    const save = page.getByRole('button', { name: 'Schedule ticket', exact: true });
+    await expect(save).toBeDisabled();
+    await date.fill('2099-09-01 09:00');
+    const branch = page.locator('#new-base-branch');
+    await branch.fill('release');
+    await expectFieldAboveCompactKeyboard(page, branch);
+    const draft = [[title, 'Scheduled from a short viewport'], [path, '/fixtures/repository-with-a-long-name'],
+      [date, '2099-09-01 09:00'], [branch, 'release']];
+    const held = deferred();
+    fixture.behavior.createWait = held.promise;
+    try {
+      await Promise.all([
+        page.waitForRequest(r => r.url() === base + '/api/tickets' && r.method() === 'POST'),
+        save.click(),
+      ]);
+      await resizeWithCompactFormDraft(page, draft);
+      await expect(date).toBeDisabled();
+      await expect(page.getByRole('button', { name: 'Creating…', exact: true })).toBeDisabled();
+      held.resolve();
+      await expect.poll(() => fixture.mutations.filter(m => m.path === '/api/tickets').length).toBe(1);
+      const created = fixture.mutations.find(m => m.path === '/api/tickets');
+      assert.equal(created.body.status, 'open');
+      assert.match(created.body.scheduled_at, /^2099-09-01T09:00/);
+    } finally { held.resolve(); }
+  }, { height: 568, hasTouch: true });
+});
+
+test('Compact routed forms: New confirms Markdown import without replacing the draft', async t => {
+  await withPage(t, 320, 'dark', async (page, fixture) => {
+    await routeTo(page, '#/new');
+    const form = page.locator('#new-view');
+    const title = form.locator('#new-title');
+    await title.fill('Keep this draft');
+    const button = form.getByRole('button', { name: 'Import tickets from .md', exact: true });
+    await expect(button).toHaveAccessibleDescription('Valid files are imported immediately as Open tickets. This form stays unchanged.');
+    const [picker] = await Promise.all([page.waitForEvent('filechooser'), button.tap()]);
+    await picker.setFiles({ name: 'fixture.md', mimeType: 'text/markdown', buffer: Buffer.from('# Imported ticket') });
+    const receipt = form.getByRole('status').filter({ hasText: 'Imported ticket: kon-imported.' });
+    await inViewport(receipt);
+    assert.equal(fixture.uploads.length, 1);
+    await expect(title).toHaveValue('Keep this draft');
+    assert.equal(new URL(page.url()).hash, '#/new');
+  }, { height: 568, hasTouch: true, uploadResponse: {
+    status: 201, contentType: 'application/json', body: JSON.stringify({ tickets: [{ id: 'kon-imported' }], errors: null }),
+  } });
+});
+
+test('Compact Schedule reports a rejected save above the footer at 320×340', async t => {
+  await withPage(t, 320, 'dark', async (page, fixture) => {
+    const endpoint = '/api/tickets/kon-draft/schedule';
+    await page.route('**' + endpoint, route => {
+      assert.equal(route.request().method(), 'POST');
+      fixture.expectedHTTPFailures.push(base + endpoint);
+      return route.fulfill({ status: 503, json: { error: 'Could not save the schedule. Try again.' } });
+    });
+    await openTicket(page, 'kon-draft');
+    await page.getByRole('button', { name: 'Actions', exact: true }).tap();
+    await page.getByRole('dialog', { name: 'Ticket actions' }).getByRole('button', { name: 'Schedule…', exact: true }).tap();
+    const schedule = page.getByRole('dialog', { name: 'Start later', exact: true });
+    const draft = schedule.getByRole('textbox', { name: 'Start date or duration', exact: true });
+    await draft.fill('2h');
+    await draft.blur();
+    await page.setViewportSize({ width: 320, height: 340 });
+    const save = schedule.getByRole('button', { name: 'schedule', exact: true });
+    await save.tap();
+    const alert = schedule.getByRole('alert');
+    await expect(alert).toHaveText('Could not save the schedule. Try again.');
+    await inViewport(alert);
+    assert.ok(await alert.evaluate(el => {
+      const r = el.getBoundingClientRect();
+      return el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+    }), 'The Schedule error is not clipped or covered');
+    await inViewport(save);
+    await expect(save).toBeEnabled();
+    await expect(draft).toHaveValue('2h');
+  }, { height: 568, hasTouch: true });
+});
+
+test('Compact routed forms: Settings stage overrides use the per-agent grid', async t => {
+  await withPage(t, 320, 'light', async page => {
+    await routeTo(page, '#/settings/stages');
+    const view = settingsView(page);
+    await view.getByRole('button', { name: /^code\b/ }).tap();
+    const overrides = view.locator('details[data-settings-overrides]');
+    await overrides.locator('summary').tap();
+    const model = overrides.getByRole('textbox', { name: 'pi Model', exact: true });
+    await expect(model).toHaveValue('fixture-model');
+    await expect(model.locator('..')).toHaveCSS('display', 'grid');
+  }, { height: 568, rawConfig: settingsRaw, hasTouch: true });
+});
+
+test('Compact routed forms: Settings reveals a closed field and still guards the draft after rotation', async t => {
+  await withPage(t, 390, 'light', async (page, fixture) => {
+    await routeTo(page, '#/settings/general');
+    const paths = settingsView(page).locator('details').filter({ hasText: 'Paths and naming' });
+    await expect(paths).not.toHaveAttribute('open');
+    await inViewport(page.locator('#settings-mobile-section'));
+    await inViewport(settingsSearch(page));
+    await settingsSearch(page).fill('branch_prefix');
+    await page.getByRole('region', { name: 'Settings search results' }).getByRole('button', { name: /General Branch prefix/ }).click();
+    const field = page.locator('#gen-branch_prefix');
+    await expect(paths).toHaveAttribute('open');
+    await expect(field).toBeFocused();
+    await field.fill('compact-draft');
+    await expectFieldAboveCompactKeyboard(page, field);
+    await resizeWithCompactFormDraft(page, [[field, 'compact-draft']]);
+    const review = settingsButton(page, 'Review changes');
+    await inViewport(review);
+    await expect(review).toHaveAccessibleDescription('1 field changed');
+    await review.tap();
+    await expect(review).toHaveAttribute('aria-expanded', 'true');
+    await review.tap();
+    await inViewport(settingsButton(page, 'save & reload'));
+    await page.evaluate(() => { location.hash = '#/'; });
+    const guard = page.locator('#settings-guard-layer');
+    await guard.getByRole('button', { name: 'Keep editing', exact: false }).click();
+    await expect(guard).toBeHidden();
+    await expect(field).toHaveValue('compact-draft');
+    assert.equal(settingsWrites(fixture).length, 0);
+  }, { height: 568, rawConfig: settingsRaw, hasTouch: true });
+});
+
+test('Compact routed forms: Automation keeps prompt, preview and unsaved-edit guard across rotation', async t => {
+  await withPage(t, 390, 'dark', async (page, fixture) => {
+    await routeTo(page, '#/automations/new');
+    const editor = page.locator('.automations-editor');
+    const name = editor.locator('#automation-name');
+    const prompt = editor.locator('#automation-prompt');
+    const schedule = editor.locator('#automation-schedule');
+    await name.fill('Compact fixture');
+    await prompt.fill('Keep these draft instructions.');
+    await expectFieldAboveCompactKeyboard(page, prompt);
+    await schedule.fill('30m');
+    await resizeWithCompactFormDraft(page, [[name, 'Compact fixture'], [prompt, 'Keep these draft instructions.'], [schedule, '30m']]);
+    await automationSaveReady(page);
+    await expect(page.locator('.automations-editor-preview')).toContainText('Keep these draft instructions.');
+    await expect(page.locator('.automations-editor-preview')).toBeVisible();
+    const cancel = editor.getByRole('button', { name: 'cancel', exact: true });
+    const dismissed = page.waitForEvent('dialog').then(dialog => dialog.dismiss());
+    await cancel.tap();
+    await dismissed;
+    assert.equal(new URL(page.url()).hash, '#/automations/new');
+    await expect(prompt).toHaveValue('Keep these draft instructions.');
+    assert.ok(!fixture.mutations.some(m => m.path === '/api/automations'));
+  }, { height: 568, hasTouch: true });
+});
+
 describe('API-backed Automations', { concurrency: 2 }, () => {
+  test('Automation compact Stop is available while Run now awaits reconciliation', async t => {
+    await withPage(t, 320, 'dark', async (page, fixture) => {
+      await routeTo(page, '#/automations/auto-review');
+      await automationDetailReady(page, 'auto-review');
+      fixture.behavior.loseRun = true;
+      await automationButton(page, 'run now').tap();
+      await expect(page.locator('.automations-detail').getByRole('alert')).toContainText('Run response lost after allocation');
+      await emitAutomationEvent(page);
+      const stop = automationButton(page, 'stop'), retry = automationButton(page, 'retry run now');
+      await inViewport(stop);
+      await inViewport(retry);
+      await expect(stop).toBeEnabled();
+      await expect(retry).toBeEnabled();
+      await automationButton(page, 'More automation actions').tap();
+      await inViewport(page.getByRole('menuitem', { name: 'delete automation' }));
+      await page.keyboard.press('Escape');
+      await stop.tap();
+      await expect(stop).toBeHidden();
+      assert.equal(fixture.mutations.findLast(m => m.path.endsWith('/stop')).body.n, 30);
+      await retry.tap();
+      await expect(retry).toBeHidden();
+      const requests = fixture.mutations.filter(m => m.path.endsWith('/run'));
+      assert.equal(requests.length, 2);
+      assert.deepEqual(requests[0].body, requests[1].body);
+      assert.equal(fixture.runReceipts.size, 1);
+      assert.equal(fixture.definitions.get('auto-review').last_run.result, 'stopped by user');
+    }, { hasTouch: true, height: 568 });
+  });
+
+  for (const width of [320, 1280]) test(`Automation row keyboard entry and Back restore focus / ${width}px`, async t => {
+    await withPage(t, width, 'dark', async page => {
+      await routeTo(page, '#/automations');
+      const opener = automationButton(page, 'Open Repository review');
+      await opener.press('Enter');
+      await automationDetailReady(page, 'auto-review');
+      await expect(page.locator('.automations-list')).toHaveJSProperty('inert', true);
+      if (width === 320) {
+        const back = automationButton(page, 'Back to automations');
+        await expect(back).toBeFocused();
+        await page.keyboard.press('Enter');
+      } else {
+        await expect(page.locator('.automations-detail').getByRole('tab', { name: /^runs/ })).toBeFocused();
+        await page.keyboard.press('Escape');
+      }
+      await page.waitForURL('**/#/automations');
+      await expect(page.locator('.automations-list')).toHaveJSProperty('inert', false);
+      await expect(opener).toBeFocused();
+    }, { height: 568 });
+  });
+
+  test('Automation compact menu supports keyboard navigation and focus return', async t => {
+    await withPage(t, 390, 'dark', async page => {
+      await routeTo(page, '#/automations/auto-review');
+      await automationDetailReady(page, 'auto-review');
+      const trigger = automationButton(page, 'More automation actions');
+      const menu = page.getByRole('menu', { name: 'Automation actions' });
+      const resume = menu.getByRole('menuitem', { name: 'resume' });
+      const edit = menu.getByRole('menuitem', { name: 'edit' });
+      const remove = menu.getByRole('menuitem', { name: 'delete automation' });
+      await trigger.press('Enter');
+      await expect(resume).toBeFocused();
+      await page.keyboard.press('ArrowDown');
+      await expect(edit).toBeFocused();
+      await page.keyboard.press('ArrowUp');
+      await expect(resume).toBeFocused();
+      await page.keyboard.press('ArrowUp');
+      await expect(remove).toBeFocused();
+      await page.keyboard.press('Home');
+      await expect(resume).toBeFocused();
+      await page.keyboard.press('End');
+      await expect(remove).toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(menu).toBeHidden();
+      await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      await expect(trigger).toBeFocused();
+      assert.equal(new URL(page.url()).hash, '#/automations/auto-review', 'Escape only dismisses the menu');
+      await page.keyboard.press('ArrowUp');
+      await expect(remove).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(menu).toBeHidden();
+      await expect(page.locator('.automations-detail').getByRole('tab', { name: /^runs/ })).toBeFocused();
+      await trigger.click();
+      await expect(resume).toBeFocused();
+      await page.keyboard.press('ArrowDown');
+      await page.keyboard.press('Enter');
+      await page.waitForURL('**/#/automations/auto-review/edit');
+      await expect(page.locator('#automation-name')).toBeFocused();
+      await automationButton(page, 'Back').press('Enter');
+      await expect(automationButton(page, 'Back to automations')).toBeFocused();
+    }, { height: 700 });
+  });
+
   for (const width of [320, 390, 767, 768, 1280]) for (const theme of themes) {
     test(`routes, editor controls, retry, conflict and dirty guards / ${width}px / ${theme}`, { timeout: 60000 }, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
@@ -1366,7 +1663,9 @@ describe('API-backed Automations', { concurrency: 2 }, () => {
         assert.equal(new URL(page.url()).hash, '#/automations/auto-created-0');
         const saved = fixture.definitions.get('auto-created-0'); assert.equal(saved.model, 'opus'); assert.equal(saved.timeout, '45m'); assert.equal(saved.enabled, false); assert.equal(saved.overlap, 'skip');
         await page.reload({ waitUntil: 'domcontentloaded' }); await automationDetailReady(page, saved.id);
-        await automationButton(page, 'edit').click(); await page.waitForURL('**/#/automations/auto-created-0/edit');
+        if (width < 768) await automationMenuAction(page, 'edit');
+        else await automationButton(page, 'edit').click();
+        await page.waitForURL('**/#/automations/auto-created-0/edit');
         assert.equal(await model(page, 'automationsDraft.prompt').inputValue(), 'Review with ordinary agent permissions.');
         await model(page, 'automationsDraft.prompt').fill('My unsaved instructions');
         page.once('dialog', dialog => dialog.dismiss()); await automationButton(page, 'cancel').click();
@@ -1410,13 +1709,15 @@ describe('API-backed Automations', { concurrency: 2 }, () => {
         await automationButton(page, '↑ newer').click(); await visible(detail.getByText('run #29', { exact: true }));
         await automationButton(page, '← all runs').click();
         await detail.getByRole('tab', { name: 'prompt', exact: true }).click(); await visible(detail.getByText('Review recent changes. {{ .Run.Number }}', { exact: true }));
-        await automationButton(page, width < 768 ? 'resume' : 'resume schedule').click();
+        if (width < 768) await automationMenuAction(page, 'resume');
+        else await automationButton(page, 'resume schedule').click();
         await page.waitForFunction(() => Alpine.$data(document.body).automationsRow()?.enabled);
-        await automationButton(page, width < 768 ? 'pause' : 'pause schedule').click();
+        if (width < 768) await automationMenuAction(page, 'pause');
+        else await automationButton(page, 'pause schedule').click();
         await page.waitForFunction(() => !Alpine.$data(document.body).automationsRow()?.enabled);
         fixture.behavior.loseRun = true; await automationButton(page, 'run now').click();
         await visible(page.getByText(/Run response lost after allocation/).filter({ visible: true }).first());
-        await automationButton(page, width < 768 ? 'run now' : 'retry run now').click();
+        await automationButton(page, 'retry run now').click();
         await page.waitForFunction(() => Alpine.$data(document.body).automationsTab === 'session' && Alpine.$data(document.body).terminalOpen);
         await visible(page.locator('#automation-terminal-session .xterm'));
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
@@ -1441,12 +1742,10 @@ describe('API-backed Automations', { concurrency: 2 }, () => {
         await page.waitForFunction(() => !Alpine.$data(document.body).automationsRow()?.running);
         assert.equal(fixture.definitions.get('auto-review').last_run.result, 'stopped by user');
         assert.equal(fixture.mutations.findLast(m => m.path.endsWith('/stop')).body.n, 31);
-        if (width >= 768) { await automationButton(page, 'More automation actions').click(); await page.getByRole('menuitem', { name: 'delete automation', exact: true }).click(); }
-        else await automationButton(page, 'delete').click();
+        await automationMenuAction(page, 'delete automation');
         const dialog = page.getByRole('dialog', { name: 'Delete automation', exact: true }); await visible(dialog);
         await dialog.getByRole('button', { name: 'cancel', exact: true }).click(); assert.equal(fixture.definitions.size, 1);
-        if (width >= 768) { await automationButton(page, 'More automation actions').click(); await page.getByRole('menuitem', { name: 'delete automation', exact: true }).click(); }
-        else await automationButton(page, 'delete').click();
+        await automationMenuAction(page, 'delete automation');
         await dialog.getByRole('button', { name: 'delete automation', exact: true }).click();
         await page.waitForURL('**/#/automations'); assert.equal(fixture.definitions.size, 0);
         await visible(page.getByText(/deleted auto-review · logs kept/)); await noPageOverflow(page);
@@ -1483,7 +1782,7 @@ describe('mobile polish fixture evidence', () => {
       await withPage(t, width, theme, async (page, fixture) => {
         await mobileCapture(page, width, theme, 'board-open-scheduled-secondary');
         if (width < 768) {
-          await phoneStatus(page).selectOption(':all');
+          await selectPhoneStatus(page, ':all');
           await visible(page.locator('.mobile-board-layer .mobile-card-title').filter({ hasText: 'Queued ordinary ticket' }));
           await mobileCapture(page, width, theme, 'board-running-queued-paused-attention');
           await page.locator('.mobile-board-layer button[data-pipe-color]').filter({ hasText: 'kon-queued' }).scrollIntoViewIfNeeded();
@@ -1565,7 +1864,7 @@ describe('mobile polish fixture evidence', () => {
 });
 
 async function polishTypography(surface) {
-  const roles = await surface.locator('.mobile-label, .mobile-prose, .mobile-card-title, .mobile-card-meta, .mobile-control, .mobile-primary, .mobile-tab, .mobile-technical, .mobile-card-id, .side-label, .mobile-terminal-compose, .mobile-terminal-send, .mobile-terminal-direct').evaluateAll(elements =>
+  const roles = await surface.locator('.mobile-label, .mobile-prose, .mobile-card-title, .mobile-control, .mobile-primary, .mobile-tab, .mobile-technical, .mobile-card-id, .side-label, .mobile-terminal-compose, .mobile-terminal-send, .mobile-terminal-direct').evaluateAll(elements =>
     elements.filter(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden').map(el => {
       const css = getComputedStyle(el);
       return { text: el.textContent.trim().slice(0, 80), technical: el.matches('.mobile-technical, .mobile-card-id'),
@@ -1625,7 +1924,7 @@ async function polishCardGeometry(page) {
     const boxes = cards.map(card => {
       const box = card.getBoundingClientRect();
       if (card.scrollWidth > card.clientWidth + 1 || card.scrollHeight > card.clientHeight + 1) outside.push({ card: card.textContent.slice(0, 80), scroll: true });
-      for (const row of card.querySelectorAll('.mobile-card-row, .mobile-card-meta, .mobile-card-context, .mobile-card-identity')) {
+      for (const row of card.querySelectorAll('.mobile-card-row, .mobile-card-context')) {
         const children = [...row.children].filter(el => el.getClientRects().length).map(el => el.getBoundingClientRect());
         for (let i = 0; i < children.length; i++) for (let j = i + 1; j < children.length; j++) {
           const a = children[i], b = children[j];
@@ -1812,12 +2111,15 @@ describe('custom execution activity', () => {
     const parked = ticket('kon-parked', 'Parked waiting ticket', { status: 'awaiting_data', execution_active: false });
     await withPage(t, width, 'dark', async (page, fixture) => {
       const column = () => page.locator(width < 768 ? '.mobile-board-layer' : '#col-awaiting_data');
-      if (width < 768) await phoneStatus(page).selectOption('awaiting_data');
+      if (width < 768) await selectPhoneStatus(page, 'awaiting_data');
       const card = id => column().locator(width < 768 ? '.mobile-card' : '.kt-card').filter({ hasText: id });
       await visible(card(active.id)); await visible(card(parked.id));
       await expect(page.locator('.running-pill:visible').first()).toContainText('2');
-      const elapsed = await page.evaluate(record => Alpine.$data(document.body).formatDuration(record), active);
-      await visible(card(active.id).getByText(elapsed, { exact: true }));
+      if (width < 768) await expect(card(active.id).locator('.mobile-card-state')).toContainText(['code', 'Awaiting data']);
+      else {
+        const elapsed = await page.evaluate(record => Alpine.$data(document.body).formatDuration(record), active);
+        await visible(card(active.id).getByText(elapsed, { exact: true }));
+      }
       await visible(card(active.id).locator('.card-progress'));
       assert.equal(await card(parked.id).locator('.card-progress').count(), 0);
       if (width >= 768) {
@@ -1853,7 +2155,7 @@ describe('custom execution activity', () => {
       await expect.poll(() => page.evaluate(() => window.__fixtureSockets.filter(socket => new URL(socket.url).pathname === '/ws/terminal/kon-live').every(socket => socket.readyState === WebSocket.CLOSED))).toBe(true);
       await visible(page.locator('#activity-scroll').filter({ visible: true }).getByText('Fixture activity revision 0', { exact: true }));
       await backToBoard(page);
-      if (width < 768) await phoneStatus(page).selectOption('awaiting_data');
+      if (width < 768) await selectPhoneStatus(page, 'awaiting_data');
       await visible(card(active.id)); await visible(card(parked.id));
       assert.equal(await card(active.id).locator('.card-progress').count(), 0);
       const sockets = fixture.sockets.length;
@@ -1930,8 +2232,8 @@ describe('mobile desktop parity', () => {
         stages: [{ name: 'cost-only', cost_usd: '0.42', tracked_runs: 1, priced_runs: 1 }], runs: [] };
       await withPage(t, width, theme, async (page, fixture) => {
         const board = page.locator('.mobile-board-layer');
-        const card = () => board.locator('.mobile-card').filter({ hasText: 'kon-live' });
-        const runningColumn = () => phoneStatus(page).selectOption('in_progress');
+        const card = () => board.locator('.mobile-card[data-mobile-ticket-key="kon-live"]');
+        const runningColumn = () => selectPhoneStatus(page, 'in_progress');
         await runningColumn();
         const progress = card().locator('.card-progress');
         assert.equal(await progress.getAttribute('aria-label'), 'Stage 2 of 3: code');
@@ -1939,7 +2241,8 @@ describe('mobile desktop parity', () => {
         await visible(card().getByText('retry 2', { exact: true }));
         await fixedColor(card().locator('.title-tag'), 'color', `hsl(${pipePalettes[theme][1]})`);
         await fixedColor(card().getByText('Epic: 0 of 1 done', { exact: true }), 'color', `hsl(${pipePalettes[theme][3]} / 0.9)`);
-        assert.equal(await board.locator('.mobile-card').filter({ hasText: supervisorID }).locator('.card-progress').count(), 0);
+        const supervisor = board.locator(`.mobile-card[data-mobile-ticket-key="${supervisorID}"]`);
+        assert.equal(await supervisor.locator('.card-progress').count(), 0);
         await polishCardGeometry(page);
         if (captureDirectory) await mobileCapture(page, width, theme, 'parity-independent-colors-progress');
         await routeTo(page, '#/settings');
@@ -1955,7 +2258,7 @@ describe('mobile desktop parity', () => {
             assert.equal(await card().locator('.pipe-tag:visible').count(), 0);
             assert.equal(await card().getByText(liveAgent, { exact: true }).count(), 0);
             await visible(progress);
-            await visible(board.locator('.mobile-card').filter({ hasText: supervisorID }).getByText('Supervisor', { exact: true }));
+            await visible(supervisor.getByText('Supervisor', { exact: true }));
           } else {
             const desktop = page.locator('[data-ticket-id="kon-live"]');
             await visible(desktop);
@@ -2057,7 +2360,7 @@ describe('mobile desktop parity', () => {
           }
         }
         if (width < 768) {
-          await phoneStatus(page).selectOption(':all');
+          await selectPhoneStatus(page, ':all');
           const running = page.locator('.mobile-card').filter({ hasText: 'kon-live' });
           await fixedColor(running.locator('.mobile-card-state.text-st-progress'), 'color', 'hsl(35 75% 38%)');
           const paused = page.locator('.mobile-card').filter({ hasText: 'kon-paused' });
@@ -2076,7 +2379,7 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
         const card = id => board.locator('.mobile-card').filter({ has: page.locator('.mobile-card-id', { hasText: id }) });
         await visible(card('kon-scheduled').locator('.sched-chip'));
         await polishCardGeometry(page);
-        await phoneStatus(page).selectOption(':all');
+        await selectPhoneStatus(page, ':all');
         for (const [id, label] of [['kon-queued', 'Queued'], ['kon-paused', /^paused$/i]]) {
           await visible(card(id).getByText(label, { exact: true }));
         }
@@ -2113,7 +2416,7 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
             assert.equal(await toggle.getAttribute('aria-checked'), String(enabled));
           }
           await backToBoard(page);
-          await phoneStatus(page).selectOption(':all');
+          await selectPhoneStatus(page, ':all');
           assert.equal(await card('kon-live').locator('[x-show="showPipelineBadges"]').isVisible(), enabled);
           assert.equal(await card('kon-live').locator('[x-show="showPipelineBadges"]').textContent(), 'standard');
           assert.equal(await card('kon-live').getByText(liveAgent, { exact: true }).count(), enabled ? 1 : 0);
@@ -2270,6 +2573,7 @@ describe('desktop automation handoff', { concurrency: 2 }, () => {
         await inViewport(sidebar); near((await sidebar.boundingBox()).width, 220, 'sidebar');
         assert.equal(await sidebar.locator('nav > button').nth(1).getAttribute('aria-current'), 'page');
         // Cell padding and collapsed borders add 3px to the 36px action targets.
+        await expect(view.locator('.automations-table thead')).toBeVisible();
         const row = view.locator('.automations-table tbody tr').first(); near((await row.boundingBox()).height, 39, 'list row');
         for (const name of ['Run Repository review', 'Edit Repository review', 'Open Repository review']) {
           const action = row.getByRole('button', { name, exact: true });
@@ -2327,8 +2631,11 @@ describe('desktop automation handoff', { concurrency: 2 }, () => {
         assert.equal(await view.getByRole('switch', { name: 'Runs on schedule' }).getAttribute('aria-checked'), 'false');
         const editor = view.locator('.automations-editor'), preview = view.locator('.automations-editor-preview');
         near((await view.boundingBox()).x, 220, 'editor retains sidebar');
-        if (stacked) await expect(preview).toBeHidden();
-        else {
+        if (stacked) {
+          const compactPreview = editor.getByText('YAML preview', { exact: true }).first();
+          await expect(preview.getByRole('heading', { name: 'config preview' })).toBeVisible();
+          await expect(compactPreview).toBeHidden();
+        } else {
           await visible(preview);
           near((await preview.boundingBox()).width, 420, 'YAML preview');
           await page.waitForFunction(() => Alpine.$data(document.body).automationsYAML.includes('enabled: false'));
@@ -2388,11 +2695,12 @@ describe('historical primary ticket navigation from other views', () => {
 });
 async function visualViewport(page, height, top = 0) {
   await page.evaluate(({ height, top }) => {
-    Object.defineProperties(window.visualViewport, {
-      height: { configurable: true, value: height }, offsetTop: { configurable: true, value: top },
-    });
-    window.visualViewport.dispatchEvent(new Event('resize'));
-    window.visualViewport.dispatchEvent(new Event('scroll'));
+    const viewport = window.visualViewport;
+    if (height === null) delete viewport.height;
+    else Object.defineProperty(viewport, 'height', { configurable: true, value: height });
+    if (top !== null) Object.defineProperty(viewport, 'offsetTop', { configurable: true, value: top });
+    viewport.dispatchEvent(new Event('resize'));
+    if (top !== null) viewport.dispatchEvent(new Event('scroll'));
   }, { height, top });
 }
 
@@ -2838,7 +3146,7 @@ describe('initial board and mobile detail loading', { timeout: 120000 }, () => {
   test('pending detail hides body and logs while preserving a fitted terminal host', async t => {
     await withPage(t, 390, 'dark', async (page, fixture) => {
       const held = fixture.holdDetail('primary', 'kon-live');
-      await phoneStatus(page).selectOption('in_progress');
+      await selectPhoneStatus(page, 'in_progress');
       await page.locator('.mobile-board-layer').getByRole('button').filter({ hasText: liveTitle }).click();
       await held.started;
       const detail = mobileDetail(page);
@@ -3803,6 +4111,45 @@ describe('desktop stage ribbon browser regressions', () => {
   });
 });
 
+test('small phone can tap the first attention row without scrolling', async t => {
+  await withPage(t, 320, 'dark', async page => {
+    const row = phoneRows(page).first();
+    await expect(row).toContainText('First attention ticket');
+    assert.equal(await phoneList(page).evaluate(el => el.scrollTop), 0);
+    await expect(row).toBeInViewport({ ratio: 1 });
+    assert.ok(await row.evaluate(el => {
+      const r = el.getBoundingClientRect();
+      const limit = el.closest('.mobile-ticket-list').getBoundingClientRect();
+      return r.top >= limit.top && r.bottom <= limit.bottom &&
+        el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+    }));
+    await row.tap();
+    await page.waitForURL('**/#/t/kon-attention');
+    await expect(mobileDetail(page).getByRole('status').filter({ hasText: 'Loading ticket…' })).toBeHidden();
+  }, { height: 568, hasTouch: true, records: [ticket('kon-attention', 'First attention ticket', { status: 'human_review' })] });
+});
+
+test('phone Activity gets half the viewport with long ticket metadata', async t => {
+  const repeated = 'a-long-reference-'.repeat(14);
+  await withPage(t, 390, 'dark', async page => {
+    const detail = mobileDetail(page);
+    await detailPanel(page, 'Output');
+    const mode = detail.getByRole('combobox', { name: 'Output view', exact: true });
+    await mode.selectOption('activity');
+    const transcript = detail.locator('[data-detail-scroll="activity"]');
+    await expect(transcript).toBeVisible();
+    const frame = await detail.boundingBox();
+    assert.ok((await transcript.boundingBox()).height >= frame.height / 2);
+    const panel = detail.getByRole('button', { name: 'Notes', exact: true });
+    await panel.tap();
+    await expect(panel).toHaveAttribute('aria-pressed', 'true');
+    await noPageOverflow(page);
+  }, { height: 844, hasTouch: true, hash: '#/t/kon-live', records: [
+    ticket('kon-live', 'Run ' + repeated, { status: 'in_progress', stage: 'code', execution_active: true,
+      path: '/fixtures/' + repeated, branch: repeated, agent: repeated }),
+  ] });
+});
+
 describe('phone ticket navigation and recovery', () => {
   test('phone Browse routes to secondary destinations and returns to Tickets', async t => {
     await withPage(t, 390, 'dark', async (page, fixture) => {
@@ -3831,8 +4178,7 @@ describe('phone ticket navigation and recovery', () => {
 
   test('phone board retains its filtered snapshot after refresh fails and Retry replaces it', async t => {
     await withPage(t, 390, 'light', async (page, fixture) => {
-      const picker = phoneStatus(page);
-      await picker.selectOption('open');
+      await selectPhoneStatus(page, 'open');
       const titles = phoneRowTitles(page);
       await expect(titles.filter({ hasText: 'Primary draft' })).toBeVisible();
       fixture.records.get('primary/kon-draft').title = 'Updated primary draft';
@@ -3863,7 +4209,7 @@ describe('phone ticket navigation and recovery', () => {
       await expect(stale).toBeHidden();
       await expect(retry).toBeHidden();
       await expect(titles.filter({ hasText: 'Updated primary draft' })).toBeVisible();
-      await expect(picker).toHaveValue('open');
+      await expect(phoneFilterSummary(page)).toContainText('Open');
       assert.equal(requests(), before + 2);
       assert.deepEqual(fixture.mutations, []);
     }, { beforeNavigation: page => page.clock.setFixedTime(new Date(stamp)) });
@@ -3967,7 +4313,7 @@ describe('phone ticket navigation and recovery', () => {
       await page.waitForURL('**/#/');
       await expect(mobileDetail(page)).toBeHidden();
       assert.equal(await entries(), directLength, 'Direct-entry Back replaces the detail URL');
-      await phoneStatus(page).selectOption('open');
+      await selectPhoneStatus(page, 'open');
       await row.scrollIntoViewIfNeeded();
       await row.focus();
       const offset = await scroll();
@@ -3980,7 +4326,7 @@ describe('phone ticket navigation and recovery', () => {
       await back.click();
       await page.waitForURL('**/#/');
       await expect(row).toBeFocused();
-      await expect(phoneStatus(page)).toHaveValue('open');
+      await expect(phoneFilterSummary(page)).toContainText('Open');
       assert.equal(await scroll(), offset, 'Back must not reset the list or scroll it during focus restoration');
       assert.equal(await entries(), directLength + 1, 'In-app Back traverses instead of adding a board entry');
       await page.goForward();
@@ -3991,12 +4337,29 @@ describe('phone ticket navigation and recovery', () => {
     }, { hash: route, records, ...loadingOptions });
   });
 
-  test('phone epic Back restores focus to the Epics rail opener', async t => {
+  test('320px imported ticket keeps identity visible in Notes and Output', async t => {
+    await withPage(t, 320, 'dark', async page => {
+      const route = mobileDetail(page).locator('.mobile-ticket-route');
+      for (const panel of ['Notes', 'Output']) {
+        await mobileDetail(page).getByRole('button', { name: panel, exact: true }).tap();
+        const identity = route.locator('.mobile-detail-heading');
+        await expect(identity.getByText('kon-draft', { exact: true })).toBeVisible();
+        await expect(identity.getByText('Secondary namesake', { exact: true })).toBeVisible();
+        assert.ok((await identity.boundingBox()).width >= 120);
+        await expect(route.getByRole('button', { name: 'Claim', exact: true })).toBeVisible();
+        await noPageOverflow(page);
+      }
+    }, { hash: `#/s/${source}/t/kon-draft`, height: 568, hasTouch: true, ...loadingOptions });
+  });
+
+  test('phone epic Back restores focus to the Epics list opener', async t => {
     await withPage(t, 390, 'dark', async page => {
-      const rail = page.getByRole('group', { name: 'Epics', exact: true });
-      const opener = rail.getByRole('button', { name: /Passive fixture epic/ });
+      const rail = phoneList(page).getByRole('group', { name: 'Epics', exact: true });
+      const opener = rail.locator(`[data-mobile-ticket-key="${supervisorID}"]`);
+      await expect(phoneList(page).locator(`.mobile-card[data-mobile-ticket-key="${supervisorID}"]`)).toBeVisible();
+      await opener.scrollIntoViewIfNeeded();
       await opener.press('Enter');
-      await page.waitForURL('**/#/e/kon-epic');
+      await page.waitForURL(`**/#/e/${supervisorID}`);
       const back = page.getByRole('region', { name: 'Epic overview' }).getByRole('button', { name: 'Back', exact: true });
       await expect(back).toBeFocused();
       await back.click();
@@ -4038,20 +4401,20 @@ describe('phone ticket navigation and recovery', () => {
       ...Array.from({ length: 103 }, (_, i) => ticket(`kon-window-${i}`, `Window fixture ${i}`, { status: customStatus })),
     ];
     await withPage(t, 390, 'dark', async (page, fixture) => {
-      const picker = phoneStatus(page), list = phoneList(page), rows = phoneRows(page);
+      const list = phoneList(page), rows = phoneRows(page);
       const more = list.getByRole('button', { name: 'Load more', exact: true });
-      await expect(picker).toHaveValue(':attention');
+      await expect(phoneFilterSummary(page)).toContainText('Attention first');
       await expect(list.getByRole('heading', { name: 'Needs attention (2)', exact: true })).toBeVisible();
       await expect(list.getByRole('heading', { name: 'Other tickets', exact: true })).toBeVisible();
       const urgent = await phoneRowTitles(page).allTextContents();
       assert.deepEqual(urgent.slice(0, 2).sort(), ['Waiting for agent input', 'Waiting for human review']);
-      await picker.selectOption(customStatus);
+      await selectPhoneStatus(page, customStatus);
       await expect(rows).toHaveCount(100);
       await more.click();
       await expect(rows).toHaveCount(103);
       await expect(more).toBeHidden();
       await expect.poll(() => list.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
-      await picker.selectOption(':all');
+      await selectPhoneStatus(page, ':all');
       await expect(rows).toHaveCount(100);
       await expect(list.getByRole('heading', { name: /^Needs attention/ })).toBeHidden();
       await expect.poll(() => list.evaluate(el => el.scrollTop)).toBe(0);
@@ -4099,6 +4462,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await page.reload({ waitUntil: 'domcontentloaded' });
           await ready(page);
           const picker = phoneStatus(page), titles = phoneRowTitles(page);
+          await phoneFilterButton(page).click();
           await expect(picker).toHaveValue(':attention');
           await picker.focus();
           await picker.selectOption(status);
@@ -4114,6 +4478,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await expect(titles.filter({ hasText: 'Completed fixture' })).toBeVisible();
           await expect(titles.filter({ hasText: 'Archived fixture' })).toHaveCount(0);
           await picker.selectOption(':attention');
+          await phoneFilters(page).getByRole('button', { name: 'Close', exact: true }).click();
           fixture.records.delete(`${source}/${geometry.id}`);
         });
         await t.test('overflowing ticket lists keep each entry at its content height', async () => {
@@ -4154,14 +4519,14 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           assert.equal(await page.getByRole('combobox', { name: 'Filter by ticket folder', exact: true }).count(), 0);
           const error = page.getByText(unavailablePath + ': Fixture folder unavailable', { exact: true });
           await expect(error).toBeVisible();
-          const picker = phoneStatus(page), search = phoneSearch(page);
+          const search = phoneSearch(page);
           const titles = phoneRowTitles(page);
-          await picker.selectOption('open');
+          await selectPhoneStatus(page, 'open');
           await expect(titles).toHaveCount(3);
           await expect(titles).toContainText(['Primary draft', 'Secondary namesake']);
-          for (const title of ['Primary draft', 'Secondary namesake', 'Completed fixture']) {
+          for (const title of ['Primary draft', 'Secondary namesake']) {
             await search.fill(title);
-            await expect(picker).toBeDisabled();
+            await expect(phoneFilterSummary(page)).toContainText('Open');
             await expect(titles).toHaveText([title]);
             await expect(phoneCount(page)).toHaveText('1 match in loaded tickets');
             await expect(error).toBeVisible();
@@ -4170,9 +4535,8 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await search.fill('no-fixture-ticket-can-match-this');
           await expect(titles).toHaveCount(0);
           await expect(phoneCount(page)).toHaveText('0 matches in loaded tickets');
-          await page.getByRole('button', { name: 'Clear search', exact: true }).click();
-          await expect(picker).toBeEnabled();
-          await expect(picker).toHaveValue('open');
+          await search.fill('');
+          await expect(phoneFilterSummary(page)).toContainText('Open');
           await expect(titles).toHaveCount(3);
           await expect(titles.filter({ hasText: 'Completed fixture' })).toHaveCount(0);
           fixture.behavior.sourcesFailure = true;
@@ -4646,16 +5010,19 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await openTicket(page, longID);
           await noPageOverflow(page);
           const queue = page.getByRole('button', { name: /^Request pickup$/i }).filter({ visible: true });
-          const move = width < 768 ? page.getByRole('button', { name: 'Move to', exact: true }).filter({ visible: true })
-            : page.getByRole('combobox', { name: 'Move to status', exact: true }).filter({ visible: true });
-          await inViewport(queue); await inViewport(move);
+          await inViewport(queue);
           if (width < 768) {
-            await move.click();
+            await mobileDetail(page).getByRole('button', { name: 'Actions', exact: true }).click();
+            await page.getByRole('dialog', { name: 'Ticket actions' }).getByRole('button', { name: 'Move to', exact: true }).click();
             const moves = page.getByRole('dialog', { name: 'Move to', exact: true });
             const cancel = moves.getByRole('button', { name: 'Move to Cancelled', exact: true });
             await cancel.scrollIntoViewIfNeeded(); await inViewport(cancel);
             await moves.getByRole('button', { name: 'Close', exact: true }).click();
-          } else await expect(move.locator('option[value="cancelled"]')).toHaveText('Move to Cancelled');
+          } else {
+            const move = page.getByRole('combobox', { name: 'Move to status', exact: true }).filter({ visible: true });
+            await inViewport(move);
+            await expect(move.locator('option[value="cancelled"]')).toHaveText('Move to Cancelled');
+          }
           const more = width < 768 ? page.getByRole('button', { name: 'Actions', exact: true })
             : page.getByRole('banner').getByRole('button', { name: 'More actions', exact: true });
           await inViewport(more);
@@ -4669,7 +5036,8 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           }
           await page.setViewportSize({ width, height: 420 });
           await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--mobile-vv-height') === '420px');
-          await inViewport(queue); await inViewport(move);
+          await inViewport(queue);
+          if (width >= 768) await inViewport(page.getByRole('combobox', { name: 'Move to status', exact: true }).filter({ visible: true }));
           await inViewport(more);
           await noPageOverflow(page);
         });
@@ -4709,12 +5077,12 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await page.waitForFunction(() => !Alpine.$data(document.body).archiveDetailLoading);
           assert.equal(new URL(page.url()).hash, '#/archive/t/kon-archived');
           assert.equal(await page.evaluate(() => Alpine.$data(document.body).archiveDetailOpen()), true);
-          const header = page.locator('.archive-detail-header');
-          for (const name of ['restore to board', 'copy id', 'Close']) {
-            const control = header.getByRole('button', { name, exact: true });
-            await control.scrollIntoViewIfNeeded();
-            await inViewport(control);
-          }
+          const detail = page.locator('.archive-detail');
+          const header = detail.locator('.archive-detail-header');
+          await inViewport(header.getByRole('button', { name: 'restore to board' }));
+          await inViewport(header.getByRole('button', { name: /^(archive|back to archive)$/i }));
+          await detail.getByRole('button', { name: 'details', exact: true }).click();
+          await inViewport(detail.getByRole('button', { name: 'copy id', exact: true }));
           assert.ok(await header.evaluate(el => el.scrollWidth <= el.clientWidth + 1), 'Archive controls must wrap instead of scrolling sideways');
           await noPageOverflow(page);
           await openTicket(page, 'kon-live');
@@ -5234,7 +5602,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await schedule.getByRole('button', { name: 'Close', exact: true }).focus();
         await page.keyboard.press('Shift+Tab');
         await inViewport(page.locator(':focus'));
-        assert.ok(await schedule.getByRole('button', { name: 'run now instead', exact: true }).evaluate(el => el === document.activeElement));
+        await expect(saveSchedule).toBeFocused();
         await page.keyboard.press('Escape');
         await schedule.waitFor({ state: 'hidden' });
         await noPageOverflow(page);
@@ -5278,35 +5646,104 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       });
     });
 
-    test(`assistant views retain flex space in a short phone viewport / ${theme}`, async t => {
+    test(`assistant phone modal has one header and one scroll region per view / ${theme}`, async t => {
       await withPage(t, 390, theme, async page => {
-        await page.getByRole('button', { name: 'Assistant', exact: true }).filter({ visible: true }).click();
+        const opener = phoneDestination(page, 'Assistant');
+        await opener.tap();
         const dialog = page.getByRole('dialog', { name: 'Assistant', exact: true });
-        await visible(dialog);
-        await page.setViewportSize({ width: 390, height: 420 });
-        for (let i = 0; i < 3; i++) {
-          await dialog.getByRole('button', { name: 'Chat', exact: true }).click();
-          const thread = page.locator('#assistant-sheet-thread');
-          await visible(thread);
-          assert.equal(await thread.evaluate(el => getComputedStyle(el).display), 'flex');
-          assert.ok((await thread.boundingBox()).height > 0);
-          const composer = page.getByLabel('Message the assistant', { exact: true });
-          await composer.fill('A recoverable unsent draft');
-          await composer.scrollIntoViewIfNeeded();
-          await inViewport(composer);
-          const send = dialog.getByRole('button', { name: 'Send', exact: true });
-          await send.scrollIntoViewIfNeeded();
-          await inViewport(send);
-          await dialog.getByRole('button', { name: 'History', exact: true }).click();
-          await visible(dialog.getByText('No chats yet.', { exact: true }));
-          await dialog.getByRole('button', { name: 'Inbox', exact: true }).click();
+        const close = dialog.getByRole('button', { name: 'Close', exact: true });
+        const tabs = dialog.getByRole('navigation', { name: 'Assistant views', exact: true });
+        const composer = dialog.getByRole('combobox', { name: 'Message the assistant', exact: true });
+        await expect(close).toBeFocused();
+        const box = await dialog.boundingBox();
+        assert.ok(box && box.y === 0 && box.height === 420, JSON.stringify(box));
+        await expect(dialog.locator('header:visible')).toHaveCount(1);
+        await expect(dialog.getByRole('heading')).toHaveCount(1);
+        for (const [index, name] of ['Chat', 'History', 'Inbox', 'Chat'].entries()) {
+          await tabs.getByRole('button', { name, exact: true }).tap();
+          const scroll = dialog.locator('[data-assistant-scroll]:visible');
+          await expect(scroll).toHaveAttribute('data-assistant-scroll', name.toLowerCase());
+          assert.ok((await scroll.boundingBox()).height > 80);
+          assert.deepEqual(await dialog.evaluate(el => [el, ...el.querySelectorAll(':not(textarea)')].filter(node =>
+            node.getClientRects().length && ['auto', 'scroll'].includes(getComputedStyle(node).overflowY))
+            .map(node => node.dataset.assistantScroll)), [name.toLowerCase()]);
+          if (name === 'Chat') {
+            if (index === 0) await composer.fill('An unsent draft');
+            await expect(composer).toHaveValue('An unsent draft');
+            await inViewport(composer);
+            await inViewport(dialog.getByRole('button', { name: 'Send', exact: true }));
+          } else {
+            await expect(composer).toHaveCount(0);
+            if (name === 'History') await visible(dialog.getByText('No chats yet.', { exact: true }));
+            else await visible(dialog.getByRole('region', { name: 'Shared companion inbox', exact: true }));
+          }
         }
-        await page.keyboard.press('Escape');
-        await dialog.waitFor({ state: 'hidden' });
+        await close.tap();
+        await expect(dialog).toBeHidden();
+        await expect(opener).toBeFocused();
         await noPageOverflow(page);
-      });
+      }, { height: 420, hasTouch: true });
     });
   }
+  test('assistant phone modal keeps a pending approval and focused composer reachable above the keyboard', async t => {
+    const options = parityAssistantOptions();
+    options.assistantThreads[0].events.unshift(...Array.from({ length: 12 }, (_, i) => ({
+      kind: 'text', text: `Earlier recorded reply ${i + 1}.`, time: stamp,
+    })));
+    await withPage(t, 320, 'dark', async (page, fixture) => {
+      await openTicket(page, 'kon-draft');
+      const hash = new URL(page.url()).hash;
+      const detail = page.locator('.mobile-detail');
+      const originalDetail = await detail.elementHandle();
+      const opener = detail.getByRole('button', { name: 'Assistant', exact: true });
+      await opener.tap();
+      const dialog = page.getByRole('dialog', { name: 'Assistant', exact: true });
+      const transcript = dialog.getByRole('region', { name: 'Chat transcript', exact: true });
+      const composer = dialog.getByRole('combobox', { name: 'Message the assistant', exact: true });
+      const approve = dialog.getByRole('button', { name: 'Approve', exact: true });
+      const skip = dialog.getByRole('button', { name: 'Skip', exact: true });
+      await expect(approve).toBeInViewport({ ratio: 1 });
+      assert.ok(await transcript.evaluate(el => el.scrollHeight > el.clientHeight));
+      await dialog.getByRole('button', { name: 'Request details', exact: true }).tap();
+      await expect(dialog.locator('#assistant-sheet-proposal')).toBeFocused();
+      await transcript.evaluate(el => { el.scrollTop = 0; });
+      assert.ok(await detail.evaluate(el => !!el.closest('[inert]')));
+      await composer.tap();
+      await composer.fill('Keep the current draft');
+      await visualViewport(page, 320, 8);
+      await expect.poll(() => dialog.evaluate(el => {
+        const box = el.getBoundingClientRect();
+        return [box.y, box.height];
+      })).toEqual([8, 320]);
+      await expect(composer).toBeFocused();
+      for (const control of [composer, approve, skip, dialog.getByRole('button', { name: 'Send', exact: true })]) {
+        await expect.poll(() => control.evaluate(el => {
+          const box = el.getBoundingClientRect();
+          return box.width >= 44 && box.height >= 44 && box.top >= 8 && box.bottom <= 328 &&
+            el.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+        })).toBe(true);
+      }
+      for (let i = 0; i < 12; i++) {
+        await page.keyboard.press('Tab');
+        assert.ok(await dialog.evaluate(el => el.contains(document.activeElement)));
+      }
+      await visualViewport(page, 568);
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
+      await expect(opener).toBeFocused();
+      assert.equal(new URL(page.url()).hash, hash);
+      assert.ok(await detail.evaluate((el, original) => el === original && !el.closest('[inert]'), originalDetail));
+      await opener.tap();
+      await expect(composer).toHaveValue('Keep the current draft');
+      await skip.tap();
+      await expect(skip).toHaveCount(0);
+      await expect(composer).toHaveValue('Keep the current draft');
+      await expect.poll(() => fixture.mutations).toEqual([
+        { method: 'POST', path: '/api/assistant/gate/fixture-gate', body: { decision: 'skip' } },
+      ]);
+    }, { ...options, height: 568, hasTouch: true });
+  });
+
   for (const width of [320, 390, 402]) for (const theme of themes) {
     test(`supervisor terminal input lifecycle ${width}px / ${theme}`, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
@@ -6290,7 +6727,7 @@ describe('focused phone description save lifecycle', { concurrency: 2 }, () => {
           await expect(editor).toHaveCount(0);
           await expect(pane.locator(':scope > :not(template):not(.mobile-description)').filter({ visible: true })).toHaveCount(sections);
           await visible(pane.getByText('Protected note identity: browser-note-1', { exact: true }));
-          await visible(surface.locator('.mobile-detail-context'));
+          await visible(surface.locator('.mobile-ticket-route'));
           await visible(surface.locator('.mobile-detail-secondary'));
           await visible(surface.locator('.mobile-detail-tabs'));
           await visible(surface.locator('.mobile-detail-actions'));
@@ -7369,14 +7806,14 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
     await withPage(t, width, theme, async (page, fixture) => {
       const toggle = page.getByRole('button', { name: /^Needs input \d$/, exact: true });
       const phone = width < 768;
-      if (phone) await expect(phoneStatus(page)).toHaveValue(':attention');
+      if (phone) await expect(phoneFilterSummary(page)).toContainText('Attention first');
       await expect(toggle).toHaveText(/Needs input 2/);
       const query = phone ? phoneSearch(page) : page.getByRole('textbox', { name: 'Filter tickets' });
       await query.fill('Question worker');
       await expect(toggle).toHaveText(/Needs input 1/);
       if (phone) await toggle.tap(); else { await toggle.focus(); await page.keyboard.press('Space'); }
       await expect(toggle).toHaveAttribute('aria-pressed', 'true');
-      if (phone) await expect(phoneStatus(page)).toBeDisabled();
+      if (phone) await expect(phoneFilterSummary(page)).toContainText('Attention first');
       const card = phone ? page.getByText('Question worker', { exact: true }).filter({ visible: true })
         : page.locator('[data-ticket-id="kon-question"]');
       await card.click();
@@ -7398,7 +7835,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       await expect(page.getByText(wait.waiting_question, { exact: true }).filter({ visible: true })).toHaveCount(0);
       await backToBoard(page);
       await expect(toggle).toHaveText(/Needs input 0/);
-      if (phone) await expect(phoneStatus(page)).toHaveValue(':attention');
+      if (phone) await expect(phoneFilterSummary(page)).toContainText('Attention first');
       await expect(page.getByText('No agents need input among tickets matching your filters.', { exact: true })).toBeVisible();
       const exit = page.getByRole('button', { name: 'Turn off Needs input filter', exact: true });
       await exit.focus();
@@ -7406,7 +7843,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       await expect(exit).toBeHidden();
       await expect(toggle).toBeFocused();
       await expect(toggle).toHaveAttribute('aria-pressed', 'false');
-      if (phone) await expect(phoneStatus(page)).toBeDisabled();
+      if (phone) await expect(phoneFilterSummary(page)).toContainText('Attention first');
       await expect(query).toHaveValue('Question worker');
       await query.fill('');
       await expect(toggle).toHaveText(/Needs input 1/);
@@ -7426,14 +7863,14 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       const titles = phoneRowTitles(page);
       await toggle.click();
       await page.setViewportSize({ width: 390, height: 900 });
-      await expect(phoneStatus(page)).toHaveValue(':attention');
+      await expect(phoneFilterSummary(page)).toContainText('Attention first');
       await expect(toggle).toHaveAttribute('aria-pressed', 'true');
       await expect(titles).toHaveText(['Resize question worker']);
       await page.setViewportSize({ width: 900, height: 900 });
-      await expect(phoneStatus(page)).toBeHidden();
+      await expect(phoneFilterSummary(page)).toBeHidden();
       await toggle.click();
       await page.setViewportSize({ width: 390, height: 900 });
-      await expect(phoneStatus(page)).toHaveValue(':attention');
+      await expect(phoneFilterSummary(page)).toContainText('Attention first');
       await expect(toggle).toHaveAttribute('aria-pressed', 'false');
       await expect(titles).toHaveCount(2);
       await expect(titles.first()).toHaveText('Resize question worker');
@@ -7562,7 +7999,8 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       await withPage(t, width, 'light', async (page, fixture) => {
         await openTicket(page, 'kon-draft');
         if (width < 768) {
-          await page.getByRole('button', { name: 'Move to', exact: true }).filter({ visible: true }).click();
+          await mobileDetail(page).getByRole('button', { name: 'Actions', exact: true }).click();
+          await page.getByRole('dialog', { name: 'Ticket actions' }).getByRole('button', { name: 'Move to', exact: true }).click();
           await page.getByRole('button', { name: /^Move to Open$/i }).filter({ visible: true }).click();
         } else await page.getByRole('combobox', { name: 'Move to status', exact: true }).selectOption('open');
         await expect.poll(() => fixture.records.get('primary/kon-draft').status).toBe('open');
@@ -8759,6 +9197,42 @@ test('review-dialog mobile note deletion returns focus to the visible detail Bac
   }, { config: { author: 'Browser author' }, hasTouch: true });
 });
 
+test('short landscape touch navigation keeps the wide mount', async t => {
+  await withPage(t, 844, 'dark', async page => {
+    await page.setViewportSize({ width: 844, height: 390 });
+    const header = page.locator('.desktop-header');
+    await expect(header).toBeVisible();
+    await expect(page.locator('.mobile-bottom-nav')).toHaveCount(0);
+    assert.ok((await header.boundingBox()).height < 100);
+    const toggle = header.getByRole('button', { name: 'Show sidebar' });
+    if (await toggle.isVisible()) await toggle.tap();
+    const settings = page.locator('main').getByRole('button', { name: /^settings$/i }).first();
+    await settings.tap();
+    await expect(page.locator('#settings-view')).toBeVisible();
+    await expect(header.getByRole('button', { name: 'New ticket' })).toBeHidden();
+  }, { hasTouch: true });
+});
+
+test('phone sign-in remains hittable in the visual viewport', async t => {
+  await withPage(t, 390, 'dark', async page => {
+    const dialog = page.getByRole('dialog', { name: 'Enter access token' });
+    const token = dialog.locator('input');
+    await token.fill('fixture-token');
+    await visualViewport(page, 230, 8);
+    const submit = dialog.getByRole('button', { name: 'sign in' });
+    await expect.poll(async () => submit.evaluate(el => {
+      const r = el.getBoundingClientRect();
+      return r.bottom <= 238 && el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+    })).toBe(true);
+    await page.keyboard.press('Tab');
+    await expect(submit).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(token).toBeFocused();
+    await submit.tap();
+    await expect(dialog).toBeHidden();
+  }, { hasTouch: true, authRequired: true });
+});
+
 test('audit32-dialog short Archive traps focus and returns to the card kebab', async t => {
   await withPage(t, 1280, 'light', async page => {
     await page.setViewportSize({ width: 1280, height: 293 });
@@ -8783,21 +9257,161 @@ test('audit32-dialog short Archive traps focus and returns to the card kebab', a
   });
 });
 
-test('audit32-archive duplicate terms and scrolled empty state stay operable', async t => {
-  await withPage(t, 390, 'dark', async page => {
+test('Archive compact rows sort and open without panning', async t => {
+  await withPage(t, 320, 'dark', async (page, fixture) => {
+    const archived = fixture.records.get('primary/kon-archived');
+    await page.route('**/api/tickets/archived', route => route.fulfill({ json: { tickets: [
+      { ...archived, id: 'kon-zulu', title: 'Zulu ticket', archived_at: '2026-11-01T00:00:00Z' },
+      { ...archived, archived_at: '2026-10-01T00:00:00Z' },
+      { ...archived, id: 'kon-bravo', title: 'Bravo ticket', archived_at: '2026-09-01T00:00:00Z' },
+    ] } }));
     await routeTo(page, '#/archive');
-    const track = page.getByRole('region', { name: /archived tickets table/i });
-    await expect(track.getByText('Archived fixture')).toBeVisible();
-    await track.hover();
-    await page.mouse.wheel(900, 0);
-    await expect.poll(() => track.evaluate(el => el.scrollLeft)).toBeGreaterThan(0);
+    const track = page.getByRole('region', { name: 'Archived tickets', exact: true });
+    const titles = track.locator('.archive-row-title');
+    const order = () => titles.evaluateAll(nodes => nodes.map(node => node.title));
+    await expect.poll(order).toEqual(['Zulu ticket', 'Archived fixture', 'Bravo ticket']);
+    await expectFitsInline(track);
+    const key = page.getByRole('combobox', { name: 'Sort archive by' });
+    assert.deepEqual(await key.locator('option').evaluateAll(options => options.map(option => option.value)),
+      ['id', 'title', 'project', 'status', 'wall', 'archived']);
+    await key.selectOption('title');
+    await expect.poll(order).toEqual(['Archived fixture', 'Bravo ticket', 'Zulu ticket']);
+    await page.getByRole('button', { name: 'Ascending. Switch to descending', exact: true }).tap();
+    await expect.poll(order).toEqual(['Zulu ticket', 'Bravo ticket', 'Archived fixture']);
+    await page.getByRole('button', { name: 'Descending. Switch to ascending', exact: true }).tap();
+    const opener = track.getByTitle('Archived fixture', { exact: true });
+    await inViewport(opener);
+    await opener.tap();
+    await page.waitForURL('**/#/archive/t/kon-archived');
+    const detail = page.locator('.archive-detail');
+    const back = detail.getByRole('button', { name: 'Back to archive' });
+    const restore = detail.getByRole('button', { name: 'restore to board' });
+    await inViewport(back);
+    await inViewport(restore);
+    await restore.click({ trial: true });
+    await detail.getByRole('button', { name: 'activity', exact: true }).tap();
+    await expect(detail.getByRole('button', { name: 'activity', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expectFitsInline(detail);
+    await back.tap();
+    await page.waitForURL('**/#/archive');
     await page.getByRole('textbox', { name: 'Filter archive' }).fill('agent:missing agent:missing');
     await expect(page.getByRole('button', { name: /agent:missing/ })).toHaveCount(1);
     await expect(page.getByText('Nothing archived matches')).toBeVisible();
-    await page.getByRole('button', { name: 'reset filters' }).click();
-    await expect(track.getByText('Archived fixture')).toBeVisible();
+    await page.getByRole('button', { name: 'reset filters' }).tap();
+    await expect(titles).toHaveCount(3);
+    await expect(key).toHaveValue('title');
     await noPageOverflow(page);
-  });
+  }, { hasTouch: true, height: 568 });
+});
+
+test('short landscape Archive and Automations lists fit their panes', async t => {
+  await withPage(t, 844, 'dark', async page => {
+    await routeTo(page, '#/archive');
+    const archive = page.getByRole('region', { name: 'Archived tickets', exact: true });
+    await expect(archive.getByTitle('Archived fixture', { exact: true })).toBeVisible();
+    const sort = page.getByRole('combobox', { name: 'Sort archive by' });
+    await sort.selectOption('wall');
+    await expect(sort).toHaveValue('wall');
+    await sort.selectOption('archived');
+    await expectFitsInline(archive);
+    await routeTo(page, '#/automations');
+    const list = page.getByRole('region', { name: 'Automation list', exact: true });
+    await expect(list.getByRole('button', { name: /Repository review/ }).first()).toBeVisible();
+    await expectFitsInline(list);
+    await noPageOverflow(page);
+  }, { hasTouch: true, height: 390 });
+});
+
+test('Archive wider panes retain sortable table columns and local panning', async t => {
+  await withPage(t, 1280, 'dark', async page => {
+    await routeTo(page, '#/archive');
+    const track = page.getByRole('region', { name: 'Archived tickets', exact: true });
+    await expect(track.getByTitle('Archived fixture', { exact: true })).toBeVisible();
+    await track.getByRole('button', { name: 'title', exact: true }).click();
+    await expect(track.getByRole('button', { name: 'title▲' })).toBeVisible();
+    const direction = page.getByRole('button', { name: 'Title Ascending. Switch to descending', exact: true });
+    await direction.click();
+    await expect(page.getByRole('button', { name: 'Title Descending. Switch to ascending', exact: true })).toBeVisible();
+    await track.hover();
+    await page.mouse.wheel(900, 0);
+    await expect.poll(() => track.evaluate(el => el.scrollLeft)).toBeGreaterThan(0);
+    await inViewport(track.getByRole('button', { name: 'Restore to the board' }));
+    await noPageOverflow(page);
+  }, { sidebar: true });
+});
+
+async function expectFitsInline(locator) {
+  await expect.poll(() => locator.evaluate(el => el.scrollWidth - el.clientWidth),
+    { message: 'Primary content must fit without horizontal panning' }).toBeLessThanOrEqual(1);
+}
+
+test('Stats compact filters and agent metrics fit outside chart scrollers', async t => {
+  await withPage(t, 320, 'light', async page => {
+    await routeTo(page, '#/stats');
+    const stats = page.locator('#stats-view');
+    const ranges = stats.getByRole('group', { name: 'Stats range' });
+    await ranges.getByRole('button', { name: '1d', exact: true }).tap();
+    await expect(ranges.getByRole('button', { name: '1d', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    for (const name of ['Project', 'Pipeline']) {
+      const option = stats.getByRole('combobox', { name: new RegExp('^' + name, 'i') });
+      await inViewport(option);
+      assert.ok((await option.boundingBox()).height >= 44);
+    }
+    const agent = stats.locator('.stats-agent-row').filter({ hasText: 'fixture-agent' });
+    await expect(agent).toBeVisible();
+    await expect(agent.getByText('First pass', { exact: true })).toBeVisible();
+    await expect(agent.getByText('Tokens/run', { exact: true })).toBeVisible();
+    await expectFitsInline(agent);
+    await expectFitsInline(stats);
+    await noPageOverflow(page);
+  }, { populatedStats: true, hasTouch: true, height: 568 });
+});
+
+test('Automation compact list is inert under detail and exposes history and live output', async t => {
+  await withPage(t, 320, 'light', async (page, fixture) => {
+    fixture.definitions.set('auto-other', { ...fixture.definitions.get('auto-review'), id: 'auto-other', name: 'ZZ other automation' });
+    await routeTo(page, '#/automations');
+    const list = page.locator('.automations-list');
+    const listRows = list.locator('.automations-table tbody tr');
+    await expect(listRows).toHaveCount(2);
+    await expectFitsInline(list.getByRole('region', { name: 'Automation list' }));
+    const main = listRows.filter({ hasText: 'Repository review' });
+    const opener = main.getByRole('button', { name: /Fixture repository.*Repository review/ });
+    await opener.scrollIntoViewIfNeeded();
+    await inViewport(opener);
+    await opener.tap();
+    await automationDetailReady(page, 'auto-review');
+    await expect(list).toHaveJSProperty('inert', true);
+    const detail = page.locator('.automations-detail');
+    const history = detail.locator('.automations-history');
+    const back = detail.getByRole('button', { name: 'Back to automations' });
+    await back.focus();
+    assert.equal(await list.locator('input').evaluate(el => { el.focus(); return document.activeElement === el; }), false);
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await list.evaluate(el => el.contains(document.activeElement)), false);
+    const newest = history.getByRole('button', { name: '#29', exact: true });
+    await inViewport(newest);
+    await expectFitsInline(history);
+    await newest.tap();
+    await expect(detail.getByText('Inspect repository', { exact: true })).toBeVisible();
+    await inViewport(detail.getByRole('link', { name: '⧉ raw', exact: true }));
+    await inViewport(detail.getByRole('button', { name: '← all runs', exact: true }));
+    await detail.getByRole('tab', { name: 'prompt', exact: true }).tap();
+    await expect(detail.getByText('Review recent changes. {{ .Run.Number }}', { exact: true })).toBeVisible();
+    await detail.getByRole('button', { name: 'run now', exact: true }).tap();
+    await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+    const terminal = page.locator('#automation-terminal-session');
+    await inViewport(terminal);
+    assert.ok((await terminal.boundingBox()).height >= 120);
+    assert.ok(fixture.sockets.some(url => url.pathname === '/ws/automations/auto-review/30'));
+    await inViewport(detail.getByRole('button', { name: 'read-only', exact: true }));
+    await inViewport(detail.getByRole('button', { name: '⇣ follow', exact: true }));
+    await noPageOverflow(page);
+    await back.tap();
+    await page.waitForURL('**/#/automations');
+    await expect(list).toHaveJSProperty('inert', false);
+    await expect(opener).toBeEnabled();
+  }, { hasTouch: true, height: 568 });
 });
 
 for (const [width, touch] of [[390, false], [1280, true]]) test(`audit32-stats chart targets align and scroll locally / ${width}px`, async t => {
@@ -9455,62 +10069,57 @@ describe('mobile management and Assistant real-control parity', { concurrency: 2
     }, { hasTouch: width < 768 });
   });
 
-  test('management parity phone filter shortcuts stay touch-scrollable in a short viewport', async t => {
-    const projects = Array.from({ length: 8 }, (_, i) => ({ name: `Project ${i + 1}`, path: `/fixtures/project-${i + 1}` }));
-    const agents = Array.from({ length: 12 }, (_, i) => `agent-${i + 1}`);
-    await withPage(t, 320, 'dark', async page => {
-      await page.setViewportSize({ width: 320, height: 540 });
-      const shortcuts = page.locator('.mobile-filter-shortcuts');
-      await shortcuts.locator('summary').tap();
-      const list = shortcuts.locator(':scope > div');
-      const geometry = await list.evaluate(el => ({ scroll: el.scrollHeight, height: el.clientHeight }));
-      assert.ok(geometry.scroll > geometry.height, JSON.stringify(geometry));
-      const board = await page.locator('.mobile-board-layer').boundingBox();
-      assert.ok(board.height >= 44, `Phone board container is shorter than 44 px: ${JSON.stringify(board)}`);
-      const last = shortcuts.getByRole('button', { name: 'agent-12', exact: true });
-      await last.scrollIntoViewIfNeeded();
-      await inViewport(last);
-      await last.tap();
-      await expect(phoneSearch(page)).toHaveValue(/agent:=agent-12/);
-      await last.press('Tab');
-      await page.keyboard.press('Shift+Tab');
-      await expect(last).toBeFocused();
-      await last.press('Enter');
-      await expect(last).toHaveAttribute('aria-pressed', 'false');
-      await shortcuts.locator('summary').tap();
-      await expect(list).toBeHidden();
-    }, { hasTouch: true, config: { projects, agents } });
+  test('phone filters combine status, project, agent and query, with independent resets', async t => {
+    const record = (id, title, extra) => ticket(id, title, { path: '/fixtures/one', agent: 'one', status: 'open', ...extra });
+    const records = [record('kon-one', 'Alpha open'), record('kon-done', 'Alpha done', { status: 'done' }),
+      record('kon-other', 'Alpha other project', { path: '/fixtures/two' }),
+      record('kon-agent', 'Alpha other agent', { agent: 'two' }), record('kon-text', 'Beta open'),
+      record('kon-supervisor', 'Alpha supervisor', { kind: 'epic', epic_execution: 'agent', status: 'in_progress' })];
+    const projects = [{ name: 'Project One', path: '/fixtures/one' }, { name: 'Project Two', path: '/fixtures/two' }];
+    await withPage(t, 320, 'light', async page => {
+      const search = phoneSearch(page), filters = phoneFilters(page), summary = phoneFilterSummary(page);
+      await phoneFilterButton(page).tap();
+      const close = filters.getByRole('button', { name: 'Close', exact: true });
+      await expect(close).toBeFocused();
+      await phoneStatus(page).selectOption('open');
+      await filters.getByRole('combobox', { name: 'Project', exact: true }).selectOption('Project One');
+      const agent = filters.getByRole('combobox', { name: 'Agent', exact: true });
+      await agent.selectOption('one');
+      await agent.press('Tab');
+      await expect(close).toBeFocused();
+      await close.tap();
+      await expect(phoneFilterButton(page)).toBeFocused();
+      await search.fill('Alpha');
+      await expect(phoneRowTitles(page)).toHaveText(['Alpha open']);
+      await expect(summary).toContainText('Open · Project: Project One · Agent: one');
+      await phoneFilterButton(page).tap();
+      await expect(phoneStatus(page)).toHaveValue('open');
+      await expect(filters.getByRole('combobox', { name: 'Project', exact: true })).toHaveValue('Project One');
+      await expect(agent).toHaveValue('one');
+      await phoneStatus(page).selectOption(':all');
+      await close.tap();
+      await expect(search).toHaveValue('Alpha');
+      await expect(phoneRowTitles(page)).toHaveCount(3);
+      await expect(phoneRowTitles(page)).toContainText(['Alpha open', 'Alpha supervisor', 'Alpha done']);
+      await expect(summary).toContainText('All statuses · Project: Project One · Agent: one');
+      const epics = phoneList(page).getByRole('group', { name: 'Epics', exact: true });
+      await expect(epics.getByRole('button', { name: /Alpha supervisor/ })).toBeVisible();
+      await search.fill('Unmatched query');
+      await expect(epics).toBeHidden();
+      await expect(phoneList(page).getByText('No tickets match the current filters and search.')).toBeVisible();
+      await noPageOverflow(page);
+    }, { height: 568, hasTouch: true, onlyRecords: true, records, config: { projects, agents: ['one', 'two'] } });
   });
 
-  test('management parity phone filter shortcuts upload entry and settings context / 320px / light', async t => {
+  test('phone New reuses the upload chooser', async t => {
     await withPage(t, 320, 'light', async (page, fixture) => {
-      const filter = phoneSearch(page);
-      const shortcuts = page.locator('.mobile-filter-shortcuts');
-      await shortcuts.locator('summary').click();
-      await shortcuts.getByRole('button', { name: 'Fixture repository', exact: true }).click();
-      await expect(filter).toHaveValue(/project:/);
-      await shortcuts.getByRole('button', { name: 'fixture-agent', exact: true }).click();
-      await expect(filter).toHaveValue(/agent:=fixture-agent/);
-      await expect(shortcuts.getByRole('button', { name: 'fixture-agent', exact: true })).toHaveAttribute('aria-pressed', 'true');
-      await filter.fill('no-fixture-ticket-can-match-this');
-      await expect(page.getByRole('status').filter({ hasText: /^0 found across all statuses$/ })).toBeVisible();
-      await page.getByRole('button', { name: 'Clear search', exact: true }).filter({ visible: true }).click();
-      await expect(filter).toHaveValue('');
-      await expect(page.getByRole('status').filter({ hasText: /^[1-9]\d* tickets$/ })).toBeVisible();
-      await shortcuts.locator('summary').click();
-      await expect(phoneDestination(page, 'Tickets')).toHaveAttribute('aria-current', 'page');
-      await phoneDestination(page, 'Settings').click();
-      await expect(phoneDestination(page, 'Settings')).toHaveAttribute('aria-current', 'page');
-      await ready(page);
-      await visible(page.locator('.settings-mobile-context').getByText('/fixtures/config.yaml', { exact: true }));
-      await noPageOverflow(page);
-      await phoneDestination(page, 'Tickets').click();
+      await page.locator('.mobile-app-bar').getByRole('button', { name: 'New ticket' }).tap();
       const [chooser] = await Promise.all([
         page.waitForEvent('filechooser'),
-        page.getByRole('button', { name: 'Upload .md', exact: true }).click(),
+        page.locator('#new-view').getByRole('button', { name: 'Import tickets from .md', exact: true }).tap(),
       ]);
       assert.equal(chooser.isMultiple(), true);
-      await chooser.setFiles([]); // Cancel the real file input; no upload request.
+      await chooser.setFiles([]);
       assert.deepEqual(fixture.uploads, []);
       assert.deepEqual(fixture.mutations, []);
     }, { hasTouch: true });
@@ -9540,6 +10149,7 @@ describe('mobile management and Assistant real-control parity', { concurrency: 2
         assert.equal(fixture.requests.filter(r => r.includes('/messages') && r.startsWith('POST')).length, 0);
         await replacement.press('Enter');
         await expect.poll(() => fixture.mutations.filter(m => m.path.endsWith('/messages')).length).toBe(1);
+        await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).assistantSending)).toBe(false);
       } finally { await cdp.detach(); }
     }, options);
   });
@@ -9591,7 +10201,7 @@ describe('mobile management and Assistant real-control parity', { concurrency: 2
       await parityCapture(t, page, `assistant-recorded-${theme}`);
       const gateHeld = deferred(); fixture.behavior.assistantGateWait = gateHeld.promise;
       try {
-        await proposal.getByRole('button', { name: width === 1024 ? 'Skip' : 'Approve', exact: true }).click();
+        await surface.getByRole('button', { name: width === 1024 ? 'Skip' : 'Approve', exact: true }).click();
         await expect(proposal).toHaveCount(0);
         gateHeld.resolve();
         await expect.poll(() => fixture.mutations.filter(m => m.path === '/api/assistant/gate/fixture-gate').length).toBe(1);
@@ -9691,7 +10301,7 @@ describe('mobile management and Assistant real-control parity', { concurrency: 2
       const duplicate = page.getByRole('button', { name: /^duplicate$/i }).filter({ visible: true });
       if (!await duplicate.isVisible()) {
         await automationButton(page, 'More automation actions').click();
-        await page.getByRole('menuitem', { name: 'duplicate', exact: true }).click();
+        await page.getByRole('menuitem', { name: /^duplicate$/i }).click();
       } else await duplicate.click();
       await page.waitForURL('**/#/automations/new');
       await expect(model(page, 'automationsDraft.name')).toHaveValue('Repository review (copy)');
@@ -9731,4 +10341,132 @@ describe('mobile management and Assistant real-control parity', { concurrency: 2
       assert.deepEqual(fixture.mutations, []);
     }, { hasTouch: width < 768 });
   });
+});
+
+// Review regressions use the same loopback controls and viewport mock as the modal tests.
+function reviewAssistantOptions() {
+  const options = parityAssistantOptions();
+  options.assistantThreads[0].events.unshift(...Array.from({ length: 24 }, (_, i) => ({
+    kind: 'text', text: `Earlier Assistant reply ${i + 1}.`, time: stamp,
+  })));
+  return { ...options, height: 568, hasTouch: true };
+}
+
+for (const height of [230, 240]) test(`review Assistant Send is reachable with pending approval at ${height}px`, async t => {
+  await withPage(t, 320, 'dark', async page => {
+    await openAssistantControl(page);
+    const modal = assistantSurface(page);
+    const transcript = modal.getByRole('region', { name: 'Chat transcript', exact: true });
+    await visible(modal.getByRole('button', { name: 'Approve', exact: true }));
+    const input = modal.getByRole('combobox', { name: 'Message the assistant', exact: true });
+    await input.fill('Keep the draft');
+    await visualViewport(page, height, 8);
+    await expect.poll(async () => (await modal.boundingBox()).height).toBe(height);
+    assert.ok((await transcript.boundingBox()).height >= 44, 'The transcript has a usable scrollport');
+    const send = modal.getByRole('button', { name: 'Send', exact: true });
+    await send.scrollIntoViewIfNeeded();
+    await expect(send).toBeInViewport({ ratio: .99 });
+    const box = await send.boundingBox();
+    assert.ok(box.y >= 8 && box.y + box.height <= 8 + height + 1);
+    await send.click({ trial: true });
+    await expect(input).toHaveValue('Keep the draft');
+  }, reviewAssistantOptions());
+});
+
+test('review Assistant slash suggestions are tappable with a short keyboard viewport', async t => {
+  await withPage(t, 320, 'dark', async page => {
+    await openAssistantControl(page);
+    const modal = assistantSurface(page);
+    await visible(modal.getByRole('button', { name: 'Approve', exact: true }));
+    const input = modal.getByRole('combobox', { name: 'Message the assistant', exact: true });
+    await input.tap();
+    await visualViewport(page, 320, 8);
+    await expect.poll(async () => (await modal.boundingBox()).height).toBe(320);
+    for (const [command, draft] of [['status', /running right now/], ['stuck', /paused, failed/]]) {
+      await input.fill('/st');
+      await modal.getByRole('option', { name: new RegExp(`^/${command}\\b`) }).tap();
+      await expect(input).toHaveValue(draft);
+      await expect(input).toBeFocused();
+    }
+  }, reviewAssistantOptions());
+});
+
+for (const decision of ['Approve', 'Skip']) test(`review Assistant keeps ${decision} failure visible while reading older messages`, async t => {
+  await withPage(t, 320, 'dark', async (page, fixture) => {
+    const path = '/api/assistant/gate/fixture-gate';
+    fixture.expectedHTTPFailures.push(base + path);
+    await page.route('**' + path, route => {
+      assert.deepEqual(route.request().postDataJSON(), { decision: decision.toLowerCase() });
+      return route.fulfill({ status: 503, json: { error: 'The decision could not be saved.' } });
+    }, { times: 1 });
+    await openAssistantControl(page);
+    const modal = assistantSurface(page);
+    const transcript = modal.getByRole('region', { name: 'Chat transcript', exact: true });
+    const action = modal.getByRole('button', { name: decision, exact: true });
+    await visible(action);
+    await expect.poll(() => transcript.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(200);
+    await transcript.evaluate(el => { el.scrollTop = 80; });
+    await expect.poll(() => transcript.evaluate(el => el.scrollTop)).toBe(80);
+    await visualViewport(page, 320, 8);
+    await expect.poll(async () => (await modal.boundingBox()).height).toBe(320);
+    await action.tap();
+    const feedback = modal.getByRole('status').filter({ hasText: 'The decision could not be saved.' });
+    await expect(feedback).toBeInViewport({ ratio: .99 });
+    await expect(action).toBeInViewport({ ratio: .99 });
+    assert.equal(await transcript.evaluate(el => el.scrollTop), 80);
+    await action.tap();
+    await expect(action).toHaveCount(0);
+    await expect(feedback).toHaveCount(0);
+  }, reviewAssistantOptions());
+});
+
+test('review Assistant activity arriving in History keeps the previous Chat scroll position', async t => {
+  const options = reviewAssistantOptions();
+  delete options.assistantThreads[0].gate;
+  await withPage(t, 320, 'dark', async (page, fixture) => {
+    await openAssistantControl(page);
+    const modal = assistantSurface(page);
+    const transcript = modal.getByRole('region', { name: 'Chat transcript', exact: true });
+    const tabs = modal.getByRole('navigation', { name: 'Assistant views', exact: true });
+    await expect.poll(() => transcript.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(200);
+    await transcript.evaluate(el => { el.scrollTop = 80; });
+    await expect.poll(() => transcript.evaluate(el => el.scrollTop)).toBe(80);
+    const thread = fixture.assistantThreads.get(ordinaryThreadID);
+    const path = `/api/assistant/threads/${ordinaryThreadID}/activity`;
+    const held = fixture.holdRead(path);
+    try {
+      thread.events.push({ kind: 'text', text: 'A new reply arrived while History was open.', time: stamp });
+      await tabs.getByRole('button', { name: 'History', exact: true }).tap();
+      await expect.poll(() => held.claimed).toBe(true);
+      await expect(transcript).toBeHidden();
+      held.release();
+      const newReply = modal.getByText('A new reply arrived while History was open.', { exact: true });
+      await expect(newReply).toHaveCount(1);
+      await tabs.getByRole('button', { name: 'Chat', exact: true }).tap();
+      await expect(transcript).toBeVisible();
+      // Observe the first post-layout frame, including the resize observer.
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await transcript.evaluate(el => el.scrollTop), 80);
+    } finally { held.release(); }
+  }, options);
+});
+
+test('review Assistant Tab from request details resumes at the approval dock', async t => {
+  await withPage(t, 320, 'dark', async page => {
+    await openAssistantControl(page);
+    const modal = assistantSurface(page);
+    const details = modal.getByRole('button', { name: 'Request details', exact: true });
+    await details.focus();
+    await page.keyboard.press('Enter');
+    await expect(modal.locator('#assistant-sheet-proposal')).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(details).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(modal.getByRole('button', { name: 'Approve', exact: true })).toBeFocused();
+    await details.focus();
+    await page.keyboard.press('Enter');
+    await expect(modal.locator('#assistant-sheet-proposal')).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(modal.getByRole('button', { name: /inspect_missing/ })).toBeFocused();
+  }, reviewAssistantOptions());
 });

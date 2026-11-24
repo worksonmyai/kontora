@@ -18,7 +18,8 @@ const ARCHIVE_RANGE_DAYS = { '7d': 7, '30d': 30, '90d': 90 };
 const ARCHIVE_RANGE_LABELS = { all: 'All time', '7d': 'Last 7 days', '30d': 'Last 30 days', '90d': 'Last 90 days' };
 
 // The sortable columns, in header order.
-const ARCHIVE_SORT_KEYS = ['id', 'title', 'project', 'status', 'wall', 'archived'];
+const ARCHIVE_SORT_LABELS = { id: 'ID', title: 'Title', project: 'Project', status: 'Status', wall: 'Wall time', archived: 'Archive date' };
+const ARCHIVE_SORT_KEYS = Object.keys(ARCHIVE_SORT_LABELS);
 
 // Sorting these newest/largest first reads as the useful default; the string
 // columns read the other way.
@@ -212,6 +213,7 @@ export function kontoraArchive() {
 
     archiveRanges: ARCHIVE_RANGES,
     archiveSortKeys: ARCHIVE_SORT_KEYS,
+    archiveSortLabels: ARCHIVE_SORT_LABELS,
     archiveRowStatus: archiveRowStatus,
 
     // ---- the list ----------------------------------------------------------
@@ -397,13 +399,15 @@ export function kontoraArchive() {
     },
 
     archiveSort(key) {
-      this.archiveResetWindow();
-      if (this.archiveSortKey === key) {
-        this.archiveSortDir = this.archiveSortDir === 'asc' ? 'desc' : 'asc';
-        return;
-      }
+      if (this.archiveSortKey === key) this.archiveToggleSortDir();
+      else this.archiveSetSortKey(key);
+    },
+
+    archiveSetSortKey(key) {
+      if (!ARCHIVE_SORT_KEYS.includes(key) || this.archiveSortKey === key) return;
       this.archiveSortKey = key;
       this.archiveSortDir = ARCHIVE_SORT_DESC_FIRST[key] ? 'desc' : 'asc';
+      this.archiveResetWindow();
     },
 
     archiveSortMark(key) {
@@ -582,9 +586,9 @@ export function kontoraArchive() {
       this.ticketChanges = null;
     },
 
-    // Meters beside the ribbon. ribbonMeters() only produces meters for the two
-    // live statuses, so the overlay has its own rather than teaching the board's
-    // about a status that never runs.
+    // Meters in the archived Ticket panel, below the ribbon when present.
+    // ribbonMeters() only produces meters for the two live statuses, so the
+    // Archive renders its own without changing the board's behavior.
     archiveMeters() {
       const t = this.selectedTicket;
       if (!t) return [];

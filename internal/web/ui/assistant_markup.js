@@ -22,7 +22,13 @@ const ASSISTANT_HISTORY = `
   </div>
 </template>`;
 
-const ASSISTANT_TRANSCRIPT = `
+const ASSISTANT_APPROVAL_ACTIONS = `
+<div class="flex items-center gap-2">
+  <button type="button" id="assistant-approve" @click="resolveAssistantGate(true)" class="font-mono text-[11.5px] h-[26px] px-3 rounded-[6px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors">Approve</button>
+  <button type="button" id="assistant-skip" @click="resolveAssistantGate(false)" class="font-mono text-[11.5px] h-[26px] px-3 rounded-[6px] bg-surface-850 border border-edge-input text-tx-3 hover:text-tx-2 transition-colors">Skip</button>
+</div>`;
+
+const assistantTranscript = (approvalActions = '') => `
 <div x-show="assistantReadError" x-cloak role="status" class="font-mono text-[11px] text-warn">
   <span x-text="'Transcript updates unavailable. ' + assistantReadError"></span>
   <button type="button" x-show="assistantReadRetryable && assistantReadRetries > 4" @click="assistantRetryActivity()" class="underline">Retry</button>
@@ -81,16 +87,21 @@ const ASSISTANT_TRANSCRIPT = `
   <div class="flex items-center gap-2 font-mono text-[11px] text-surface-600" aria-live="polite"><span x-text="assistantWorkingLabel()"></span></div>
 </template>
 <template x-if="assistantGate">
-  <div id="assistant-proposal" class="rounded-[9px] border border-warn/60 bg-surface-900 p-2.5 flex flex-col gap-2">
+  <div id="assistant-proposal" tabindex="-1" class="rounded-[9px] border border-warn/60 bg-surface-900 p-2.5 flex flex-col gap-2">
     <div class="flex items-baseline gap-2 min-w-0">
       <span class="font-mono text-[10px] text-warn shrink-0" x-text="assistantApprovalLabel()"></span>
       <span class="font-mono text-[11px] text-tx-3 break-words min-w-0" x-text="assistantGate.tool"></span>
     </div>
     <code class="font-mono text-[11px] leading-[1.5] text-tx-2 bg-surface-850 border border-edge-input rounded px-2 py-1.5 break-words" x-text="assistantGate.arg"></code>
-    <div class="flex items-center gap-2">
-      <button type="button" id="assistant-approve" @click="resolveAssistantGate(true)" class="font-mono text-[11.5px] h-[26px] px-3 rounded-[6px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors">Approve</button>
-      <button type="button" id="assistant-skip" @click="resolveAssistantGate(false)" class="font-mono text-[11.5px] h-[26px] px-3 rounded-[6px] bg-surface-850 border border-edge-input text-tx-3 hover:text-tx-2 transition-colors">Skip</button>
-    </div>
+    ${approvalActions}
+  </div>
+</template>`;
+
+const ASSISTANT_SHEET_APPROVAL = `
+<template x-if="assistantGate && assistantView === 'thread' && assistantThreadVisible()">
+  <div class="assistant-approval-dock" role="group" aria-label="Pending approval">
+    <button type="button" class="assistant-approval-details" @click="assistantRevealApproval()" aria-controls="assistant-sheet-proposal">Request details</button>
+    ${ASSISTANT_APPROVAL_ACTIONS}
   </div>
 </template>`;
 
@@ -147,10 +158,11 @@ export function kontoraAssistantMarkup() {
   return {
     assistantContextMarkup: ASSISTANT_CONTEXT,
     assistantHistoryMarkup: ASSISTANT_HISTORY,
-    assistantTranscriptMarkup: ASSISTANT_TRANSCRIPT,
+    assistantTranscriptMarkup: assistantTranscript(ASSISTANT_APPROVAL_ACTIONS),
     assistantConfigureMarkup: ASSISTANT_CONFIGURE,
     assistantComposerMarkup: ASSISTANT_COMPOSER,
-    assistantSheetTranscriptMarkup: sheetIDs(ASSISTANT_TRANSCRIPT),
+    assistantSheetTranscriptMarkup: sheetIDs(assistantTranscript()),
+    assistantSheetApprovalMarkup: sheetIDs(ASSISTANT_SHEET_APPROVAL),
     assistantSheetConfigureMarkup: sheetIDs(ASSISTANT_CONFIGURE),
     assistantSheetComposerMarkup: sheetIDs(ASSISTANT_COMPOSER),
   };

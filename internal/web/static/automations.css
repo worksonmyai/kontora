@@ -12,23 +12,93 @@
 .automations-view .automations-table { border-collapse: collapse; }
 .automations-view .automations-table td { overflow: hidden; }
 .automations-view .automations-action { height: 28px; padding: 0 10px; border: 1px solid rgb(var(--edge-input)); border-radius: 7px; background: rgb(var(--surface-900)); font: 11.5px var(--font-technical); }
-.automations-view .automations-mobile-actions { display: none; }
+.automations-view .automations-mobile-actions, .automations-view .automations-cell-label { display: none; }
+.automations-view .automations-switch-track { position: absolute; inset: 0; margin: auto; width: 28px; height: 16px; border-radius: 99px; background: rgb(var(--surface-700)); }
+.automations-view .automations-switch-thumb { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: rgb(var(--accent-fg)); transition: transform .15s; }
+.automations-view .automations-switch[aria-checked="true"] .automations-switch-track { background: rgb(var(--accent)); }
+.automations-view .automations-switch[aria-checked="true"] .automations-switch-thumb { transform: translateX(12px); }
+.automations-view .automations-detail-body { display: grid; grid-template-columns: minmax(0, 1fr) 308px; grid-template-rows: auto minmax(0, 1fr); }
+.automations-view .automations-run-strip { grid-column: 1 / -1; }
 .automations-view .automations-log-line > * { min-width: 0; }
 .automations-view .automations-run-mark { min-width: 3px; height: 5px; }
 .automations-view .automations-editor :is(input, textarea):focus { outline: 1px solid rgba(var(--accent), .4); }
-.automations-view .automations-editor-preview { display: flex; }
 .automations-view .automations-editor-agent-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @container automations (max-width: 1100px) {
-  .automations-view .automations-editor-preview { display: none; }
   .automations-view .automations-detail { overflow-y: auto; }
-  .automations-view .automations-detail-body { flex-direction: column; min-height: 180px; overflow-y: auto; overscroll-behavior: contain; }
+  .automations-view .automations-detail-body { display: flex; flex-direction: column; min-height: 180px; overflow-y: auto; overscroll-behavior: contain; }
   .automations-view .automations-detail-main { flex: none; height: 65svh; min-height: 280px; }
   .automations-view .automations-rail { flex: none; width: 100%; overflow: visible; border-left: 0; border-top: 1px solid rgb(var(--surface-700)); }
   .automations-view .automations-run-strip { flex-wrap: wrap; }
   .automations-view .automations-meters { border-left: 0; padding-left: 0; }
 }
-@container automations (max-width: 650px) {
-  .automations-view .automations-editor-agent-fields { grid-template-columns: minmax(0, 1fr); }
+@container automations (max-width: 850px) {
+  .automations-view .automations-list-header { gap: 4px 8px; padding: 8px 12px; }
+  .automations-view .automations-list-header > .bg-surface-700 { display: none; }
+  .automations-view .automations-list-search { order: 1; flex: 1 0 100%; min-width: 0; max-width: none; }
+  .automations-view .automations-list-search svg { top: 50%; transform: translateY(-50%); pointer-events: none; }
+  .automations-view .automations-list-header > [role="group"] { order: 2; flex-wrap: wrap; }
+  .automations-view .automations-list-header > span:last-of-type { order: 3; }
+  .automations-view .automations-list-header > button { margin-inline-start: auto; }
+  .automations-view .automations-list-header input { height: 44px; font-size: 16px; }
+  .automations-view .automations-list-header button, .automations-view .automations-switch { min-width: 44px; min-height: 44px; }
+  .automations-view .automations-table :is(thead, colgroup) { display: none; }
+  .automations-view .automations-table, .automations-view .automations-table tbody { display: block; min-width: 0; }
+  .automations-view .automations-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: baseline; gap: 4px 8px; height: auto; padding: 6px 12px; }
+  .automations-view .automations-table td { min-width: 0; padding: 0; overflow: visible; overflow-wrap: anywhere; white-space: normal; }
+  .automations-view .automations-table td:is(:nth-child(2), :last-child) { position: static; z-index: auto; background: none; }
+  .automations-view .automations-table td:nth-child(1) { grid-column: 1; grid-row: 4; align-self: center; }
+  .automations-view .automations-table td:nth-child(2) { grid-column: 1; grid-row: 2; }
+  .automations-view .automations-table td:nth-child(3) { grid-column: 1 / -1; grid-row: 1; }
+  .automations-view .automations-table td:nth-child(3) > button { min-height: 44px; flex-wrap: wrap; font-size: 14px; }
+  .automations-view .automations-table td:nth-child(3) span { white-space: normal; }
+  .automations-view .automations-table td:nth-child(4) { grid-column: 2; grid-row: 3; }
+  .automations-view .automations-table td:nth-child(4) :is(div, span) { white-space: normal; flex-wrap: wrap; }
+  .automations-view .automations-table td:nth-child(5) { display: none; }
+  .automations-view .automations-table td:nth-child(6) { grid-column: 1; grid-row: 3; }
+  .automations-view .automations-table td:nth-child(7) { grid-column: 2; grid-row: 2; text-align: left; }
+  .automations-view .automations-table td:last-child { grid-column: 2; grid-row: 4; }
+  .automations-view .automations-table td:last-child button { min-width: 44px; min-height: 44px; }
+  .automations-view .automations-table td:last-child > div { flex-wrap: wrap; }
+  .automations-view .automations-table .automations-cell-label { display: block; color: rgb(var(--tx-4)); font: 10px var(--font-technical); }
+}
+@container automations (max-width: 900px) {
+  .automations-view .automations-detail { overflow: visible; }
+  .automations-view .automations-detail-title { max-height: 24%; overflow-y: auto; gap: 2px; padding: 6px 12px; overflow-wrap: anywhere; }
+  .automations-view .automations-detail-title > div { order: 1; }
+  .automations-view .automations-detail-title h1 { font-size: 16px; }
+  .automations-view .automations-title-context { display: none; }
+  .automations-view .automations-detail-body { min-height: 0; }
+  .automations-view .automations-detail-main { flex: 0 0 100%; height: auto; min-height: 224px; }
+  .automations-view .automations-detail-tabs { flex-wrap: wrap; gap: 0 8px; padding: 0 12px; }
+  .automations-view .automations-detail-tabs :is(button, a) { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; padding: 0 4px; }
+  .automations-view .automations-detail-tabs [role="tab"] { gap: 4px; }
+  .automations-view .automations-output-actions { gap: 0; padding: 0; }
+  .automations-view .automations-output-actions button:last-child { display: none; }
+  .automations-view .automations-run-strip { order: 1; flex-wrap: wrap; gap: 8px; padding: 12px; border-top: 1px solid rgb(var(--surface-700)); }
+  .automations-view .automations-run-strip > :first-child { flex-basis: 100%; }
+  .automations-view .automations-meters { flex-wrap: wrap; gap: 12px; }
+  .automations-view .automations-meters span { white-space: normal; }
+  .automations-view .automations-rail { order: 2; overflow-wrap: anywhere; }
+  .automations-view :is(.automations-history, .automations-prompt, .automations-log-controls, .automations-session-controls) { padding: 4px 12px; }
+  .automations-view .automations-history-table :is(thead, colgroup) { display: none; }
+  .automations-view .automations-history-table, .automations-view .automations-history-table tbody { display: block; min-width: 0; }
+  .automations-view .automations-history-table tr { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px 6px; align-items: center; height: auto; padding-block: 2px 8px; }
+  .automations-view .automations-history-table button { min-width: 44px; min-height: 44px; text-align: left; }
+  .automations-view .automations-history-table td { min-width: 0; padding: 0; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+  .automations-view .automations-history-table td:nth-child(2) { grid-column: span 2; }
+  .automations-view .automations-history-table td:nth-child(8) { grid-column: 1 / -1; }
+  .automations-view .automations-history-table td:nth-child(9) { display: none; }
+  .automations-view .automations-history-table .automations-cell-label { display: block; color: rgb(var(--tx-4)); font: 10px var(--font-technical); }
+  .automations-view :is(.automations-history, .automations-prompt, .automations-log-controls, .automations-session-controls) button { min-height: 44px; }
+  .automations-view .automations-log-controls { gap: 0 6px; }
+  .automations-view .automations-log-controls > div { flex: 1 0 100%; overflow-wrap: anywhere; }
+  .automations-view .automations-log-controls > div > div { flex-wrap: wrap; gap: 0 8px; }
+  .automations-view .automations-log-controls > div > div:nth-child(2) { margin-top: 0; }
+  .automations-view .automations-session-controls { gap: 0 8px; }
+  .automations-view .automations-session-context { flex-basis: 100%; overflow-wrap: anywhere; }
+  .automations-view :is(#automation-terminal-session, .automations-log-output) { min-height: 0; margin: 0 12px 10px; padding: 8px; }
+  .automations-view #automation-terminal-session { min-height: 80px; }
+  .automations-view .automations-prompt pre { overflow-wrap: anywhere; }
 }
 @media (pointer: coarse) {
   .automations-view .automations-table td:last-child button { min-width: 44px; min-height: 44px; }
@@ -38,10 +108,11 @@
   .automations-view { width: 100%; min-height: 0; }
   .automations-view .automations-mobile-actions { display: flex; }
   .automations-view .automations-editor { padding: 20px 16px; }
-  .automations-view .automations-detail { overflow-y: auto; }
-  .automations-view .automations-run-strip > :first-child { flex-basis: 100%; }
-  .automations-view .automations-meters { width: 100%; justify-content: space-between; gap: 10px; }
-  .automations-view .automations-action { min-height: 44px; }
+  .automations-view .automations-mobile-actions { flex-wrap: wrap; gap: 4px; padding-inline: 12px; }
+  .automations-view .automations-mobile-actions button { min-width: 44px; min-height: 44px; }
+  .automations-view .automations-action-menu { margin-inline-start: auto; }
+  .automations-view .automations-compact-menu { min-width: 9rem; }
+  .automations-view .automations-compact-menu button { padding-inline: 8px; text-align: start; font: 12px var(--font-technical); }
   .automations-view :is(button, a, summary) { touch-action: manipulation; }
   .automations-view .automations-editor :is(input, textarea) { font-size: 16px; }
   .automations-view .automations-detail > :is(div, header) { flex-shrink: 0; }
@@ -51,4 +122,46 @@
   .automations-view .automations-log-line > :nth-child(3) { grid-column: 1 / -1; }
   .automations-view .automations-table td:last-child button { min-width: 44px; min-height: 44px; }
   .automations-view .automations-table td:nth-child(3) > button { min-height: 44px; }
+}
+
+.automations-editor-layout > .automations-editor-preview {
+  display:flex; flex-direction:column; min-width:0; overflow-wrap:anywhere;
+}
+.automations-editor-layout > .automations-editor-preview pre { min-height:0; }
+.automations-editor-path { display:none; }
+.automations-editor-section { border-top:1px solid rgb(var(--surface-700) / .5); padding-top:12px; }
+.automations-editor-schedule-fields { display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr); }
+.automations-editor-layout :is(input,textarea,select) { min-width:0; max-width:100%; }
+.automations-editor-layout .automations-editor { overflow-wrap:anywhere; }
+.automations-editor-layout .automations-editor [role="group"] { flex-wrap:wrap; max-width:100%; }
+
+@container automations (min-width:1101px) {
+  .automations-editor-layout { display:grid; grid-template-columns:minmax(0,1fr) 420px; }
+  .automations-editor-layout > .automations-editor-preview {
+    position:sticky; top:0; align-self:start; max-height:75dvh;
+    border-left:1px solid rgb(var(--surface-700));
+  }
+  .automations-editor-path { display:block; }
+}
+
+@container automations (max-width:1100px) {
+  .automations-view .automations-editor-layout > .automations-editor-preview {
+    max-width:42rem; margin:0 auto 12px; border-top:1px solid rgb(var(--surface-700));
+  }
+}
+
+@container automations (max-width:650px) {
+  .automations-view .automations-editor { padding:12px; gap:14px; }
+  .automations-view .automations-editor-agent-fields { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .automations-editor-agent-fields > :first-child { grid-column:1 / -1; }
+  .automations-editor-actions > div { display:none; }
+  .automations-editor-actions > button { flex:1 1 auto; }
+}
+
+@media (max-width:767px), (max-height:500px) and (pointer:coarse) {
+  .automations-editor :is(button,[role="option"]) { min-width:44px; min-height:44px; }
+  .automations-editor button { height:auto; }
+  .automations-editor :is(input,textarea,select) { font-size:16px; }
+  .automations-editor :is(input,select,.automations-editor-schedule-input) { min-height:44px; }
+  .automations-editor #automation-prompt { height:7rem; }
 }

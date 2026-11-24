@@ -42,7 +42,8 @@ export function kontoraDetailView() {
       const key = this.ticketKey(ticket);
       const previous = views.get(key) || { scroll: {} };
       const mode = this.detailMode(mobile);
-      previous.scroll[mode] = this.detailViewScrollers(mobile).map(el => el.scrollTop);
+      previous.scroll[mode] = new Map(this.detailViewScrollers(mobile).map((el, i) =>
+        [el.dataset?.detailScroll || i, el.scrollTop]));
       views.set(key, { ...previous, mode, stage: this.activityStage, run: this.activityRun,
         explicit: this._activityExplicit, logStage: this.logViewStage, follow: this.logFollow });
       if (views.size > 100) views.delete(views.keys().next().value);
@@ -88,7 +89,7 @@ export function kontoraDetailView() {
         // and its Alpine render before writing scrollTop.
         if (pending()) return;
         finish();
-        this.detailViewScrollers().forEach((el, i) => { el.scrollTop = positions[i] || 0; });
+        this.detailViewScrollers().forEach((el, i) => { el.scrollTop = positions.get(el.dataset?.detailScroll || i) ?? 0; });
       }));
       // Alpine.watch returns a disposer; $watch only cleans up when the component is destroyed.
       stop = Alpine.watch(() => JSON.stringify([

@@ -2,7 +2,7 @@
 export const DETAIL_NOTES = `
 <div class="detail-notes detail-shared h-full min-h-0 flex flex-col bg-surface-frame" data-detail-notes>
   <div class="shrink-0 px-6 pt-[14px]"><div class="max-w-[820px] mx-auto flex items-center gap-[10px]"><h2 class="side-label !text-tx-3">Notes</h2><span class="font-mono text-[11px] text-tx-3" x-text="noteCount() || ''"></span><div class="flex-1 h-px bg-surface-700/80"></div><span class="font-mono text-[10.5px] text-tx-3" x-text="noteLastAgo()"></span></div></div>
-  <div class="detail-notes-scroll flex-1 min-h-0 overflow-y-auto px-6 pt-2 pb-[10px]" x-effect="if (detailNotesShouldFollow($el)) $nextTick(() => { if (detailMode() === 'notes') $el.scrollTop = $el.scrollHeight; })">
+  <div data-detail-scroll="notes" class="detail-notes-scroll flex-1 min-h-0 overflow-y-auto px-6 pt-2 pb-[10px]" x-effect="if (detailNotesShouldFollow($el)) $nextTick(() => { if (detailMode() === 'notes') $el.scrollTop = $el.scrollHeight; })">
     <div class="max-w-[820px] mx-auto flex flex-col">
       <template x-for="draft in noteRecoveryItems()" :key="draft.id"><section class="my-2 rounded-[10px] border border-edge-card bg-surface-900 p-3" aria-label="Recoverable note draft">
         <p class="text-xs text-tx-2" x-text="draft.kind + (draft.unresolved ? ' · unresolved target' : ' · recoverable draft')"></p>

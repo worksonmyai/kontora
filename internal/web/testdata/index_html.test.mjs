@@ -9895,17 +9895,17 @@ function mobileLifecycleDOM({ visualViewport = true } = {}) {
   };
 }
 
-test('phone status picker offers attention, all statuses, and the current schema', () => {
+test('phone status picker offers the grouped view, all statuses, and the current schema', () => {
   const html = htmlNoComments();
   const picker = html.match(/<select\b[^>]*\bx-model="mobileStatusFilter"[^>]*>[\s\S]*?<\/select>/)?.[0];
   assert.ok(picker, 'phone board has a status picker');
   assert.doesNotMatch(picker, /:disabled=/, 'status remains editable during search');
-  assert.match(picker, /<option value=":attention">Attention first<\/option>/);
+  assert.match(picker, /<option value=":attention">In progress first<\/option>/);
   assert.match(picker, /<option value=":all">All statuses<\/option>/);
   assert.match(picker, /<template x-for="col in columns" :key="col.key">\s*<option :value="col.key" :selected="mobileStatusFilter === col.key" x-text="col.label">/);
 });
 
-test('phone list groups attention and active runs before other tickets and respects filters', () => {
+test('phone list groups active runs before attention and other tickets and respects filters', () => {
   const state = loadKontoraState();
   const waiting = { id: 'waiting', title: 'Needs an answer', status: 'in_progress', kontora: true, waiting_for_input: true };
   state.configCache = { custom_statuses: ['awaiting_data'] };
@@ -9921,9 +9921,9 @@ test('phone list groups attention and active runs before other tickets and respe
   const keys = () => Array.from(state.mobileTickets(), t => state.ticketKey(t));
   const headings = () => vmValue(state.mobileTicketList().headings);
   state.recomputeBoard();
-  assert.equal(state.mobileFilterLabel(), 'Attention first');
-  assert.deepEqual(headings(), { 0: 'Needs attention (2)', 2: 'In progress (1)', 3: 'Other tickets' });
-  assert.deepEqual(keys(), ['waiting', 'review', 'active', 'same', 'idle', 'paused', 'team/same']);
+  assert.equal(state.mobileFilterLabel(), 'In progress first');
+  assert.deepEqual(headings(), { 0: 'In progress (1)', 1: 'Needs attention (2)', 3: 'Other tickets' });
+  assert.deepEqual(keys(), ['active', 'waiting', 'review', 'same', 'idle', 'paused', 'team/same']);
 
   state.mobileStatusFilter = ':all';
   assert.deepEqual(headings(), {});

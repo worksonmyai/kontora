@@ -25,6 +25,22 @@ make assets         # Re-download vendored web assets + rebuild app.css
 Single package: `go test ./internal/process/...`
 Single test: `go test ./internal/pipeline/... -run TestEvaluate/advance_on_exit_0`
 
+### Web UI checks
+
+```bash
+go test ./internal/web                   # Go and JavaScript tests; Node.js on PATH
+make test-browser-install                # Install pinned Playwright and browsers if missing
+make test-browser                        # Run behavior tests in Chromium and WebKit
+KONTORA_BROWSER_TEST_FILTER='phone In progress first puts' make test-browser BROWSER_ENGINE=chromium
+make test-visual                         # Compare screenshots in the pinned Linux x64 Docker renderer
+make test-visual-update                  # Generate candidates without changing baselines
+make test-visual-repeat                  # Repeat every screenshot comparison ten times
+```
+
+Replace `KONTORA_BROWSER_TEST_FILTER` with a test name or regex. Browser tests use a loopback fixture server and do not need a daemon.
+
+For screenshot updates, follow [the visual test workflow](docs/visual-tests.md). Review the candidates under `test-results/visual-candidates/linux-x64-chromium/`. Get human approval before copying the changed PNGs into the baseline directory, then run the check and repeat commands. Allow about 11 minutes for the repeat run on an Arm Mac. Run visual commands one at a time because they share report directories.
+
 ## Architecture
 
 Kontora is an agent orchestration daemon that coordinates AI coding agents through multi-stage pipelines, managing ticket lifecycle with retries, rollbacks, and git worktree isolation. Inspired by [wedow/ticket](https://github.com/wedow/ticket) — tickets are markdown files, no database.

@@ -6267,7 +6267,7 @@
             <div class="mobile-ticket-filters">
               <label for="mobile-ticket-status">Status
                 <select id="mobile-ticket-status" x-model="mobileStatusFilter">
-                  <option value=":attention">Attention first</option>
+                  <option value=":attention">In progress first</option>
                   <option value=":all">All statuses</option>
                   <template x-for="col in columns" :key="col.key"><option :value="col.key" :selected="mobileStatusFilter === col.key" x-text="col.label"></option></template>
                 </select>

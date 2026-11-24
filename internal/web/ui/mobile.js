@@ -20,7 +20,7 @@ export function kontoraMobile() {
     _mobileWindowSize: listPageSize,
 
     mobileFilterLabel() {
-      if (this.mobileStatusFilter === ':attention') return 'Attention first';
+      if (this.mobileStatusFilter === ':attention') return 'In progress first';
       return this.columns.find(col => col.key === this.mobileStatusFilter)?.label || 'All statuses';
     },
 
@@ -61,7 +61,7 @@ export function kontoraMobile() {
       if (listProjection?.board === board && listProjection.facets === facets) return listProjection;
       const exact = value => value ? [{ value: value.toLowerCase(), exact: true }] : [];
       const query = { project: exact(this.mobileProjectFilter), agent: exact(this.mobileAgentFilter), epic: [], text: '' };
-      const attention = [], inProgress = [], remaining = [];
+      const inProgress = [], attention = [], remaining = [];
       const cols = this.columns.filter(col => col.key === filter);
       for (const col of cols.length ? cols : this.columns) {
         for (const ticket of this.boardTickets(col.key)) {
@@ -72,15 +72,15 @@ export function kontoraMobile() {
         }
       }
       const headings = {};
-      if (attention.length) headings[0] = `Needs attention (${attention.length})`;
-      if (inProgress.length) headings[attention.length] = `In progress (${inProgress.length})`;
-      const otherStart = attention.length + inProgress.length;
+      if (inProgress.length) headings[0] = `In progress (${inProgress.length})`;
+      if (attention.length) headings[inProgress.length] = `Needs attention (${attention.length})`;
+      const otherStart = inProgress.length + attention.length;
       if (otherStart && remaining.length) headings[otherStart] = 'Other tickets';
       const search = this.parseFilterQuery(this.searchQuery);
       const epics = this.needsInputOnly || (this.sourceFilter && this.sourceFilter !== 'primary') ? [] : this.epics.filter(epic =>
         (!cols.length || cols.some(col => col.statuses.includes(epic.status))) &&
         this.ticketMatchesQuery(epic, search) && this.ticketMatchesQuery(epic, query));
-      listProjection = { board, facets, rows: attention.concat(inProgress, remaining), headings, epics };
+      listProjection = { board, facets, rows: inProgress.concat(attention, remaining), headings, epics };
       return listProjection;
     },
 

@@ -4393,30 +4393,29 @@ describe('phone ticket navigation and recovery', () => {
     });
   });
 
-  test('phone Attention first puts urgent and running tickets before other tickets', async t => {
-    const customStatus = 'awaiting_data';
+  test('phone In progress first puts running tickets above a full page of reviews', async t => {
     const records = [
       ticket('kon-review', 'Waiting for human review', { status: 'human_review' }),
       ticket('kon-waiting', 'Waiting for agent input', { status: 'in_progress', waiting_for_input: true }),
       ticket('kon-running', 'Running without input', { status: 'in_progress' }),
       ticket('kon-draft', 'Ordinary backlog ticket'),
-      ...Array.from({ length: 103 }, (_, i) => ticket(`kon-window-${i}`, `Window fixture ${i}`, { status: customStatus })),
+      ...Array.from({ length: 102 }, (_, i) => ticket(`kon-window-${i}`, `Review fixture ${i}`, { status: 'human_review' })),
     ];
     await withPage(t, 390, 'dark', async (page, fixture) => {
       const list = phoneList(page), rows = phoneRows(page);
       const more = list.getByRole('button', { name: 'Load more', exact: true });
-      await expect(phoneFilterSummary(page)).toContainText('Attention first');
+      await expect(phoneFilterSummary(page)).toContainText('In progress first');
       const headings = list.getByRole('heading');
-      await expect(headings).toHaveText(['Needs attention (2)', 'In progress (1)', 'Other tickets']);
-      const titles = await phoneRowTitles(page).allTextContents();
-      assert.deepEqual(titles.slice(0, 2).sort(), ['Waiting for agent input', 'Waiting for human review']);
-      assert.deepEqual(titles.slice(2, 4), ['Running without input', 'Ordinary backlog ticket']);
+      await expect(headings).toHaveText(['In progress (1)', 'Needs attention (104)']);
+      await expect(phoneRowTitles(page).first()).toHaveText('Running without input');
+      await expect(phoneRowTitles(page).nth(1)).toHaveText('Waiting for agent input');
+      await expect(more).toBeVisible();
 
       await phoneSearch(page).fill('Running without input');
       await expect(headings).toHaveText(['In progress (1)']);
       await expect(phoneRowTitles(page)).toHaveText(['Running without input']);
       await phoneSearch(page).clear();
-      await selectPhoneStatus(page, customStatus);
+      await selectPhoneStatus(page, 'human_review');
       await expect(rows).toHaveCount(100);
       await more.click();
       await expect(rows).toHaveCount(103);
@@ -4428,7 +4427,7 @@ describe('phone ticket navigation and recovery', () => {
       await expect.poll(() => list.evaluate(el => el.scrollTop)).toBe(0);
       await expect(more).toBeVisible();
       assert.deepEqual(fixture.mutations, []);
-    }, { onlyRecords: true, records, config: { custom_statuses: [customStatus] } });
+    }, { onlyRecords: true, records });
   });
 });
 
@@ -7814,14 +7813,14 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
     await withPage(t, width, theme, async (page, fixture) => {
       const toggle = page.getByRole('button', { name: /^Needs input \d$/, exact: true });
       const phone = width < 768;
-      if (phone) await expect(phoneFilterSummary(page)).toContainText('Attention first');
+      if (phone) await expect(phoneFilterSummary(page)).toContainText('In progress first');
       await expect(toggle).toHaveText(/Needs input 2/);
       const query = phone ? phoneSearch(page) : page.getByRole('textbox', { name: 'Filter tickets' });
       await query.fill('Question worker');
       await expect(toggle).toHaveText(/Needs input 1/);
       if (phone) await toggle.tap(); else { await toggle.focus(); await page.keyboard.press('Space'); }
       await expect(toggle).toHaveAttribute('aria-pressed', 'true');
-      if (phone) await expect(phoneFilterSummary(page)).toContainText('Attention first');
+      if (phone) await expect(phoneFilterSummary(page)).toContainText('In progress first');
       const card = phone ? page.getByText('Question worker', { exact: true }).filter({ visible: true })
         : page.locator('[data-ticket-id="kon-question"]');
       await card.click();
@@ -7843,7 +7842,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       await expect(page.getByText(wait.waiting_question, { exact: true }).filter({ visible: true })).toHaveCount(0);
       await backToBoard(page);
       await expect(toggle).toHaveText(/Needs input 0/);
-      if (phone) await expect(phoneFilterSummary(page)).toContainText('Attention first');
+      if (phone) await expect(phoneFilterSummary(page)).toContainText('In progress first');
       await expect(page.getByText('No agents need input among tickets matching your filters.', { exact: true })).toBeVisible();
       const exit = page.getByRole('button', { name: 'Turn off Needs input filter', exact: true });
       await exit.focus();
@@ -7851,7 +7850,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       await expect(exit).toBeHidden();
       await expect(toggle).toBeFocused();
       await expect(toggle).toHaveAttribute('aria-pressed', 'false');
-      if (phone) await expect(phoneFilterSummary(page)).toContainText('Attention first');
+      if (phone) await expect(phoneFilterSummary(page)).toContainText('In progress first');
       await expect(query).toHaveValue('Question worker');
       await query.fill('');
       await expect(toggle).toHaveText(/Needs input 1/);
@@ -7871,14 +7870,14 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       const titles = phoneRowTitles(page);
       await toggle.click();
       await page.setViewportSize({ width: 390, height: 900 });
-      await expect(phoneFilterSummary(page)).toContainText('Attention first');
+      await expect(phoneFilterSummary(page)).toContainText('In progress first');
       await expect(toggle).toHaveAttribute('aria-pressed', 'true');
       await expect(titles).toHaveText(['Resize question worker']);
       await page.setViewportSize({ width: 900, height: 900 });
       await expect(phoneFilterSummary(page)).toBeHidden();
       await toggle.click();
       await page.setViewportSize({ width: 390, height: 900 });
-      await expect(phoneFilterSummary(page)).toContainText('Attention first');
+      await expect(phoneFilterSummary(page)).toContainText('In progress first');
       await expect(toggle).toHaveAttribute('aria-pressed', 'false');
       await expect(titles).toHaveCount(2);
       await expect(titles.first()).toHaveText('Resize question worker');

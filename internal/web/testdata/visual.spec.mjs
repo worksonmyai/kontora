@@ -133,10 +133,10 @@ async function populatedBoard(page) {
   const phone = page.viewportSize().width < 768;
   if (phone) {
     const board = page.locator('.mobile-board-layer');
-    await expect(page.locator('.mobile-filter-summary')).toContainText('Attention first');
-    await expect(board.getByRole('heading', { name: /^Needs attention/ })).toBeInViewport();
-    await expect(board.getByText('Agent needs an answer before continuing', { exact: true })).toBeInViewport();
+    await expect(page.locator('.mobile-filter-summary')).toContainText('In progress first');
     await expect(board.getByRole('heading', { name: /^In progress \(/ })).toBeInViewport();
+    await expect(board.getByText(/^Long identifiers must stay inside their card/)).toBeInViewport();
+    await expect(board.getByRole('heading', { name: /^Needs attention/ })).toBeInViewport();
   } else {
     await expect(page.getByRole('listitem', { name: /^Ticket kon-scheduled:/ })).toBeInViewport();
     await expect(page.getByRole('listitem', { name: /^Ticket kon-done:/ })).toBeInViewport();

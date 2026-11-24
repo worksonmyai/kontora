@@ -117,6 +117,10 @@ changes in #106](https://github.com/worksonmyai/kontora/pull/106):
 - Mobile Notes recovery
 - Read-only mobile terminal at both viewport heights
 
+On November 24, 2026, Alexander Akhmetov approved the populated mobile board,
+empty mobile board, and mobile Assistant screenshots for the In progress first
+view.
+
 ## Read failures
 
 - Screenshot mismatches save actual, expected, and diff PNGs in `test-results/visual/`.

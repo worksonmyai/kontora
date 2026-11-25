@@ -221,6 +221,64 @@ hook effects, host-power-loss durability, or arbitrary detached-process
 containment is promised. Graph participation grants no commit or publication
 authority.
 
+## Starter graph and offline simulation
+
+Preview the opt-in starter graph with `kontora setup --recipe implement-test-review`.
+
+Implementation leads to tests. A passing check leads to a fresh review. A
+repairable failure takes the loop, which can enter `repair` twice per execution.
+Retrying the same visit does not spend another repeat. A normally completed
+check with an exit other than `0` or `1`, an accepted agent failure,
+`changes_requested`, repair-budget exhaustion, or wait timeout routes to
+`inspection` (`paused`). Ordinary Retry cannot leave an end node. Launch errors,
+interruptions, and invalid agent reports can pause at the current visit.
+
+An `approved` verdict parks the ticket at a 24-hour human wait, blocking
+dependents. **Release wait** continues to `handoff` (`human_review`), resolving
+the dependency and keeping the worktree. Neither the verdict nor release
+approves a specific diff or permits publication. Prompts prohibit commits,
+pushes, and PRs; they do not isolate the filesystem.
+
+Before merging, simulate or preflight with `--recipe`. Save this scenario as
+`scenario.json`:
+
+```json
+[
+  {"node": "implement"},
+  {"node": "tests", "exit_code": 1},
+  {"node": "repair"},
+  {"node": "tests", "exit_code": 0},
+  {"node": "review", "verdict": "approved"},
+  {"node": "release", "wait": "released"}
+]
+```
+
+```sh
+kontora workflow-simulate --recipe implement-test-review --scenario scenario.json
+kontora workflow-simulate --recipe implement-test-review --preflight
+```
+
+The scenario should end at `handoff` without starting anything. Preflight checks
+reachable condition inputs using representative shell exit codes, agent verdicts
+that fit in a result file, ordinary agent failures, and declared wait outcomes.
+It keeps the preceding result through waits and reports witnesses for incompatible
+inputs. If exploration reaches the cap, preflight also reports `inconclusive`.
+Witnesses already printed still apply. Neither mode reads tickets or validates
+actual commands or release authority.
+
+To install the recipe, merge the YAML under `stages:` and `pipelines:` and set
+the agent on all three agent nodes. Replace `exit 2` on `tests` and
+`YOUR_TEST_COMMAND` in the repair prompt with the same trusted test command.
+Use `0` for pass, `1` only for repairable test failures, and another nonzero exit
+for other failures. After merging, preflight with `--config FILE --pipeline NAME`:
+
+```sh
+kontora workflow-simulate --config /path/to/config.yaml --pipeline implement-test-review --preflight
+```
+
+Verify the real test command separately; neither mode runs it. Create a draft
+with `kontora new --status open --pipeline implement-test-review "TITLE"`.
+
 ## Durable waits
 
 Waits are graph-only. Legacy lists, automations and epic supervisors cannot use them.

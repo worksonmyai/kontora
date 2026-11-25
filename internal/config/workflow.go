@@ -102,6 +102,7 @@ type WorkflowNode struct {
 	Max         int                `yaml:"max,omitempty"`
 	Status      string             `yaml:"status,omitempty"`
 	Wake        *WorkflowWake      `yaml:"wake,omitempty" json:"wake,omitempty"`
+	Handoff     string             `yaml:"handoff,omitempty" json:"handoff,omitempty"`
 	Mode        string             `yaml:"mode,omitempty" json:"mode,omitempty"`
 	Environment string             `yaml:"environment,omitempty" json:"environment,omitempty"`
 }
@@ -110,6 +111,17 @@ type WorkflowNode struct {
 type WorkflowWake struct {
 	Max          int      `yaml:"max" json:"max"`
 	CheckTimeout Duration `yaml:"check_timeout,omitempty" json:"check_timeout,omitzero"`
+}
+
+const WorkflowHandoffPrevious = "previous"
+
+func (g *WorkflowGraph) UsesPreviousHandoff() bool {
+	for _, node := range g.Nodes {
+		if node.Type == "agent" && node.Handoff == WorkflowHandoffPrevious {
+			return true
+		}
+	}
+	return false
 }
 
 type WorkflowCondition struct {
@@ -144,7 +156,7 @@ func (n *WorkflowNode) UnmarshalYAML(value *yaml.Node) error {
 	var fields []string
 	switch n.Type {
 	case "agent":
-		fields = []string{"stage", "agent", "verdicts", "wake"}
+		fields = []string{"stage", "agent", "verdicts", "wake", "handoff"}
 	case "wait":
 		fields = []string{"mode", "environment", "timeout"}
 	case "check":
@@ -162,8 +174,12 @@ func (n *WorkflowNode) UnmarshalYAML(value *yaml.Node) error {
 		allowed[field] = true
 	}
 	for i := 0; i < len(value.Content); i += 2 {
-		if key := value.Content[i].Value; !allowed[key] {
+		key := value.Content[i].Value
+		if !allowed[key] {
 			return fmt.Errorf("node %q: field %q is not supported for type %q", n.ID, key, n.Type)
+		}
+		if key == "handoff" && n.Handoff != WorkflowHandoffPrevious {
+			return fmt.Errorf("node %q: handoff must be previous when configured", n.ID)
 		}
 	}
 	return nil
@@ -489,7 +505,7 @@ func executableWorkflowNode(node WorkflowNode) bool {
 
 func validateWorkflowNodeFields(node WorkflowNode) error {
 	// In-memory definitions need the same kind restrictions as decoded YAML.
-	if node.Type != "agent" && (node.Stage != "" || node.Agent != "" || len(node.Verdicts) != 0 || node.Wake != nil) ||
+	if node.Type != "agent" && (node.Stage != "" || node.Agent != "" || len(node.Verdicts) != 0 || node.Wake != nil || node.Handoff != "") ||
 		node.Type != "check" && node.Command != "" ||
 		node.Type != "check" && node.Type != "wait" && node.Timeout.Duration != 0 ||
 		node.Type != "wait" && (node.Mode != "" || node.Environment != "") ||
@@ -513,6 +529,9 @@ func (c *Config) validateWorkflowNode(node WorkflowNode) error {
 			if node.Wake.CheckTimeout.Duration < 0 {
 				return fmt.Errorf("wake.check_timeout must be positive")
 			}
+		}
+		if node.Handoff != "" && node.Handoff != WorkflowHandoffPrevious {
+			return fmt.Errorf("handoff must be previous when configured")
 		}
 		return c.validateWorkflowAgent(node)
 	case "wait":

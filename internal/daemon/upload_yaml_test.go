@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/store"
 )
 
 func TestUploadRejectsShadowedAliasExpansion(t *testing.T) {
@@ -48,6 +50,81 @@ func TestUploadRejectsShadowedAliasExpansion(t *testing.T) {
 			assert.Equal(t, before, after)
 			assert.Empty(t, d.tickets)
 			assert.Empty(t, d.queuedIDs())
+		})
+	}
+}
+
+func TestUploadAndTransferStripPredecessorHandoff(t *testing.T) {
+	const input = `---
+id: tst-handoff
+status: paused
+stage: repair
+graph_state:
+  version: 1
+  execution_id: execution
+  revision: 8
+  definition_fingerprint: definition
+  visit: 2
+  visit_id: execution.2
+  handoff:
+    execution_id: execution
+    node_id: tests
+    visit_id: execution.1
+    invocation_id: check-1
+    destination_visit_id: execution.2
+    check:
+      exit_code: 1
+      log_path: exact.log
+      output: local diagnostic bytes
+      output_available: true
+---
+# Imported
+`
+	anchored := strings.Replace(input, "output: local diagnostic", "output: &diagnostic local diagnostic", 1)
+	plainFrontmatter, body, _ := strings.Cut(input[4:], "\n---\n")
+	beforeState, state, _ := strings.Cut(plainFrontmatter, "graph_state:\n")
+	merged := "---\n" + beforeState + "<<:\n  graph_state:\n    " + strings.ReplaceAll(state, "\n", "\n    ") + "\n---\n" + body
+	for _, tc := range []struct {
+		name  string
+		data  string
+		alias bool
+	}{
+		{name: "plain", data: input},
+		{name: "inline root merge", data: merged},
+		{name: "alias to output", data: strings.Replace(anchored, "\n---\n", "\ncustom: [*diagnostic]\n---\n", 1), alias: true},
+		{name: "root merge copies output", data: strings.Replace(anchored, "\n---\n", "\n<<: {custom: *diagnostic}\n---\n", 1), alias: true},
+		{name: "alias to graph state", data: strings.Replace(strings.Replace(input, "graph_state:", "graph_state: &live", 1), "\n---\n", "\ncustom: *live\n---\n", 1), alias: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := ticket.ParseBytes([]byte(tc.data))
+			require.NoError(t, err)
+			require.Equal(t, "local diagnostic bytes", parsed.GraphState.Handoff.Check.Output)
+			assertStripped := func(path string) {
+				t.Helper()
+				data, err := os.ReadFile(path)
+				require.NoError(t, err)
+				require.NotContains(t, string(data), "graph_state:")
+				require.NotContains(t, string(data), "local diagnostic bytes")
+			}
+			h := newHarness(t)
+			d := h.newDaemon(h.cfg)
+			info, uploadErr := d.UploadTicket([]byte(tc.data))
+			src, dst := t.TempDir(), t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(src, parsed.ID+".md"), []byte(tc.data), 0o600))
+			rev, err := store.Revision(src, parsed.ID)
+			require.NoError(t, err)
+			moved, transferErr := store.Transfer(store.TransferRequest{ID: parsed.ID, SourceDir: src, DestinationDir: dst, Revision: rev})
+			if tc.alias {
+				require.ErrorContains(t, uploadErr, "graph_state shares YAML nodes")
+				require.ErrorContains(t, transferErr, "graph_state shares YAML nodes")
+				require.Empty(t, d.tickets)
+				require.NoFileExists(t, filepath.Join(dst, parsed.ID+".md"))
+				return
+			}
+			require.NoError(t, uploadErr)
+			require.NoError(t, transferErr)
+			assertStripped(filepath.Join(h.tasksDir, info.ID+".md"))
+			assertStripped(moved.FilePath)
 		})
 	}
 }

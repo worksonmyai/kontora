@@ -25,6 +25,144 @@ export function kontoraLifecycle() {
     _lifecycleDeleteCommand: null,
     _lifecycleArchiveCommand: null,
     _lifecycleInitCommand: null,
+    workflowReleases: Object.create(null),
+
+    _humanWaitIdentity(ticket) {
+      const x = ticket?.graph_execution, w = x?.wait;
+      if (!this.ticketCanControl(ticket) || !this.workflowWaiting(ticket) || this.executionActive(ticket) ||
+          ticket.invocation_id || w.kind !== 'human' || w.phase !== 'pending' || w.disarmed || w.receipt ||
+          w.invocation_id || !x.execution_id || !w.id || w.execution_id !== x.execution_id ||
+          w.visit_id !== x.visit_id || w.node_id !== x.current_node ||
+          !Number.isSafeInteger(x.revision) || x.revision < 0) return '';
+      return JSON.stringify([x.execution_id, w.id, x.revision]);
+    },
+
+    workflowInspectedWait() {
+      const t = this.selectedTicket;
+      if (this._appDestroyed || this.needsAuth || this.detailLoading || t?._graphDetailPending || this.currentView === 'archive') return '';
+      const inspected = this._humanWaitIdentity(t);
+      return inspected && inspected === this._humanWaitIdentity(this.lifecycleResolve(t)) ? inspected : '';
+    },
+
+    _workflowReleaseRecords() {
+      return this.workflowReleases[this.ticketKey(this.selectedTicket)] || {};
+    },
+
+    workflowReleaseState() {
+      const x = this.selectedTicket?.graph_execution, records = this._workflowReleaseRecords();
+      return records[JSON.stringify([x?.execution_id, x?.wait?.id])] || Object.values(records).at(-1);
+    },
+
+    workflowReleaseForm() {
+      const inspected = this.workflowInspectedWait();
+      if (!inspected) return '';
+      const state = this._workflowReleaseRecords()[JSON.stringify(JSON.parse(inspected).slice(0, 2))];
+      return !state || state.outcome === 'failed' || state.outcome === 'pending' && state.inspected === inspected ? inspected : '';
+    },
+
+    _reconcileWorkflowReleaseReceipts(ticket) {
+      const records = this.workflowReleases[this.ticketKey(ticket)], x = ticket.graph_execution;
+      if (!records || !x) return;
+      for (const run of [x, ...(x.previous_executions || [])]) {
+        const accept = (wait, receipt) => {
+          if (!receipt?.request_id) return;
+          const state = records[JSON.stringify([run.execution_id, wait])];
+          if (state?.requestID === receipt.request_id) state.outcome = 'accepted';
+        };
+        for (const w of [run.wait, ...(run.wait_history || [])]) {
+          if (w) accept(w.id, w.receipt);
+        }
+        if (run.wake) accept(run.wake.wait_id, run.wake.receipt);
+      }
+    },
+
+    workflowReleaseMessages() {
+      const uncertain = Object.values(this._workflowReleaseRecords()).filter(state => state.outcome === 'uncertain');
+      const messages = uncertain.map(state => 'Release acceptance is unknown. Request ID: ' + state.requestID +
+        '. Refresh wait details to look for a matching receipt. A missing receipt does not mean the release failed. Do not submit a new release for this wait.');
+      const state = this.workflowReleaseState();
+      if (state?.outcome === 'accepted') {
+        const [, wait] = JSON.parse(state.inspected);
+        messages.push('Release accepted for ' + wait + '. Check the recorded execution for progress.');
+      } else if (state?.message && state.outcome !== 'uncertain') {
+        messages.push(state.message);
+      }
+      return messages;
+    },
+
+    workflowCanRefreshRelease() {
+      return this.workflowReleaseState()?.outcome === 'conflict' ||
+        Object.values(this._workflowReleaseRecords()).some(state => state.outcome === 'uncertain');
+    },
+
+    async workflowRefreshRelease() {
+      const key = this.ticketKey(this.selectedTicket), detail = this._ticketDetailSeq;
+      if (!this.workflowCanRefreshRelease() || this.lifecycleBusy(key)) return;
+      const records = this._workflowReleaseRecords();
+      const conflicts = Object.entries(records).filter(([, state]) => state.outcome === 'conflict');
+      const response = await this.reloadTicketDetail({ fresh: true });
+      if (response?.ok && detail === this._ticketDetailSeq && key === this.ticketKey(this.selectedTicket)) {
+        for (const [wait, state] of conflicts) {
+          if (records[wait] === state && state.outcome === 'conflict') delete records[wait];
+        }
+      }
+    },
+
+    async releaseWorkflowWait(inspected, reason, form) {
+      const key = this.ticketKey(this.selectedTicket), detail = this._ticketDetailSeq, navigation = this._navigationSeq;
+      reason = reason.trim();
+      if (!key || !reason || !inspected || inspected !== this.workflowReleaseForm() || this.lifecycleBusy(key)) return;
+      const ownsDetail = () => detail === this._ticketDetailSeq && navigation === this._navigationSeq && key === this.ticketKey(this.selectedTicket);
+      const stillInspected = () => ownsDetail() && (!form || form.isConnected) && inspected === this.workflowReleaseForm();
+      const [execution_id, wait_id, revision] = JSON.parse(inspected);
+      const wait = JSON.stringify([execution_id, wait_id]);
+      this.workflowReleases[key] ||= Object.create(null);
+      const records = this.workflowReleases[key];
+      this.lifecyclePending = { __proto__: null, ...this.lifecyclePending, [key]: 'workflow-release' };
+      try {
+        if (!await this.lifecycleDraftBarrier(key)) {
+          if (stillInspected()) records[wait] = { inspected, outcome: 'failed', message: 'Save pending ticket changes before releasing this wait.' };
+          return;
+        }
+        if (!stillInspected()) return;
+        const requestID = crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
+        records[wait] = { inspected, requestID, outcome: 'pending' };
+        const state = records[wait];
+        const result = await this._postWorkflowRelease(key, { execution_id, wait_id, revision, request_id: requestID, reason });
+        if (state.outcome !== 'accepted') Object.assign(state, result);
+      } catch (_) {
+        if (stillInspected()) records[wait] = { inspected, outcome: 'failed', message: 'Could not prepare the release request.' };
+        return;
+      } finally {
+        delete this.lifecyclePending[key];
+      }
+      if (ownsDetail()) await this.reloadTicketDetail({ fresh: true });
+    },
+
+    async _postWorkflowRelease(key, body) {
+      try {
+        return await this.ticketRead(async signal => {
+          const response = await fetch(this.ticketURL(key, '/workflow-release'), {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body), signal,
+          });
+          if (response.ok) {
+            const receipt = await response.json();
+            if (receipt?.id && receipt.request_id === body.request_id) return { outcome: 'accepted' };
+          } else if (response.status >= 400 && response.status < 500) {
+            const failure = await response.json().catch(() => null);
+            if (response.status === 409) {
+              const message = 'Release refused. Refresh and inspect the current wait.';
+              return { outcome: 'conflict', message: failure?.error ? message + ' ' + failure.error : message };
+            }
+            return { outcome: 'failed', message: failure?.error || 'Release request failed.' };
+          }
+          return { outcome: 'uncertain' };
+        });
+      } catch (_) {
+        return { outcome: 'uncertain' };
+      }
+    },
 
     lifecycleResolve(subject) {
       const key = this.ticketKey(subject);

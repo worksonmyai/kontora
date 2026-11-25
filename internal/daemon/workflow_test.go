@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 	"github.com/worksonmyai/kontora/internal/config"
@@ -17,6 +19,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"gopkg.in/yaml.v3"
 )
@@ -63,6 +66,7 @@ func TestWorkflowExecution(t *testing.T) {
 		loops         int
 		badVerdict    bool
 		missingReport bool
+		handoff       bool
 		blocked       bool
 		endStatus     string
 		dirty         bool
@@ -72,7 +76,7 @@ func TestWorkflowExecution(t *testing.T) {
 		{name: "approval", approveAt: 1, status: ticket.StatusHumanReview, runs: 2},
 		{name: "done cleans worktree", approveAt: 1, endStatus: "done", status: ticket.StatusDone, runs: 2},
 		{name: "done preserves dirty worktree", approveAt: 1, endStatus: "done", status: ticket.StatusDone, runs: 2, dirty: true},
-		{name: "three repairs then approval", approveAt: 4, status: ticket.StatusHumanReview, runs: 8, loops: 3},
+		{name: "three repairs then approval", approveAt: 4, status: ticket.StatusHumanReview, runs: 8, loops: 3, handoff: true},
 		{name: "exhaustion", status: ticket.StatusPaused, runs: 8, loops: 3, reason: "loop revise exhausted"},
 		{name: "invalid end status", approveAt: 1, endStatus: "todo", status: ticket.StatusPaused, runs: 2, reason: "invalid end status"},
 		{name: "undeclared verdict", status: ticket.StatusPaused, runs: 2, badVerdict: true, reason: "executable protocol error", outcome: "protocol_error"},
@@ -82,7 +86,11 @@ func TestWorkflowExecution(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			cfg := h.cfg
-			cfg.Pipelines["graph"] = config.PipelineDefinition{Graph: workflowTestGraph()}
+			graph := workflowTestGraph()
+			if tc.handoff {
+				graph.Nodes[0].Handoff = config.WorkflowHandoffPrevious
+			}
+			cfg.Pipelines["graph"] = config.PipelineDefinition{Graph: graph}
 			cfg.Agents["agent1"] = config.Agent{Binary: "claude"}
 			cfg.Agents["agent2"] = config.Agent{Binary: "claude"}
 			cfg = loadWorkflowTestConfig(t, cfg)
@@ -172,7 +180,16 @@ func TestWorkflowExecution(t *testing.T) {
 			defer mu.Unlock()
 			require.Len(t, launches, tc.runs)
 			logs := make(map[string]bool)
-			for _, launch := range launches {
+			for i, launch := range launches {
+				args := strings.Join(launch.Args, "\n")
+				if tc.handoff && i > 0 && i%2 == 0 {
+					producer := got.History[i-1]
+					require.Contains(t, args, fmt.Sprintf("Producer invocation: %q", producer.InvocationID))
+					require.Contains(t, args, `Validated summary: "node finished"`)
+					require.Contains(t, args, `Validated verdict: "changes"`)
+				} else {
+					require.NotContains(t, args, "Workflow predecessor evidence")
+				}
 				require.Equal(t, "2", launch.Env[session.ResultVersionEnvVar])
 				require.NotContains(t, fmt.Sprint(launch.Args), "Supervised local delivery")
 				require.False(t, logs[launch.LogFile])
@@ -341,6 +358,195 @@ func TestWorkflowCheck(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWorkflowCheckHandoffRetryWakeAndLoop(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Agents["agent1"] = config.Agent{Binary: "claude"}
+	edge := func(from, port, to string) config.WorkflowEdge {
+		return config.WorkflowEdge{From: config.WorkflowPort{Node: from, Port: port}, To: to}
+	}
+	h.cfg.Pipelines["graph"] = config.PipelineDefinition{Graph: &config.WorkflowGraph{Version: 2, Entry: "tests", Nodes: []config.WorkflowNode{
+		{ID: "tests", Type: "check", Command: "true", Timeout: config.Duration{Duration: time.Minute}},
+		{ID: "retry_budget", Type: "loop", Max: 2},
+		{ID: "repair", Type: "agent", Stage: "step1", Agent: "agent1", Handoff: config.WorkflowHandoffPrevious, Wake: &config.WorkflowWake{Max: 1}},
+		{ID: "stop", Type: "end", Status: "paused"},
+	}, Edges: []config.WorkflowEdge{
+		edge("tests", "fail", "retry_budget"), edge("tests", "pass", "stop"),
+		edge("retry_budget", "repeat", "repair"), edge("retry_budget", "exhausted", "stop"),
+		edge("repair", "complete", "tests"), edge("repair", "failed", "stop"),
+	}}}
+	h.cfg = loadWorkflowTestConfig(t, h.cfg)
+	clock := newWorkflowWaitTestClock()
+	var checks []RunnerParams
+	var repairs []RunnerParams
+	d := h.newDaemon(h.cfg, WithWorkflowWaitClock(clock), WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+		if p.Env[session.ResultStageEnvVar] == "tests" {
+			checks = append(checks, p)
+			require.NoError(t, os.WriteFile(p.LogFile, fmt.Appendf(nil, "diagnostic-from-check-%d", len(checks)), 0o600))
+			return workflowWaitTestResult(clock, 1), nil
+		}
+		repairs = append(repairs, p)
+		report := session.Result{Outcome: "complete", Summary: "repaired"}
+		switch len(repairs) {
+		case 1:
+			report = session.Result{Outcome: "blocked", Summary: "need operator", NextStep: "retry"}
+		case 2:
+			report = session.Result{Outcome: "waiting", Summary: "waiting on a timer", NextStep: "continue repair", Wait: &session.WaitRequest{Kind: "timer", Until: clock.Now().Add(time.Hour)}}
+		}
+		return workflowWaitTestResult(clock, 0), publishWorkflowWaitTestResult(p, report)
+	}))
+	const id = "tst-handoff"
+	name := id + ".md"
+	path := h.writeTicket(name, h.taskMD(id, "todo", "graph"))
+	d.tickets[id] = newTicketState(h.readTask(name), path)
+	ctx := context.Background()
+	d.runTicket(ctx, id)
+	queued := h.readTask(name)
+	require.Equal(t, "repair", queued.Stage)
+	first := queued.GraphState.Handoff
+	require.NotNil(t, first)
+	require.Equal(t, queued.GraphState.VisitID, first.DestinationVisitID)
+	require.Equal(t, queued.History[0].InvocationID, first.InvocationID)
+	require.Equal(t, checks[0].LogFile, first.Check.LogPath)
+	for _, detail := range []bool{false, true} {
+		api, err := json.Marshal(app.BuildView(h.cfg, queued, detail))
+		require.NoError(t, err)
+		require.NotContains(t, string(api), first.Check.Output)
+	}
+	require.NoError(t, os.Remove(checks[0].LogFile))
+	// Retry must reuse the frozen input even after the source log is deleted.
+	d.runTicket(ctx, id)
+	blocked := h.readTask(name)
+	require.Equal(t, ticket.StatusPaused, blocked.Status)
+	require.Equal(t, first, blocked.GraphState.Handoff)
+	require.NoError(t, d.RetryTicket(id))
+	d.runTicket(ctx, id)
+	parked := h.readTask(name)
+	require.NotNil(t, parked.GraphState.Wait)
+	require.Equal(t, first, parked.GraphState.Handoff)
+	clock.Advance(time.Hour)
+	d.reconcileWorkflowWaits(ctx)
+	require.Equal(t, first, h.readTask(name).GraphState.Handoff)
+	d.runTicket(ctx, id) // wake and complete
+	require.Nil(t, h.readTask(name).GraphState.Handoff, "new non-opted-in visit must clear live evidence")
+	d.runTicket(ctx, id)
+	second := h.readTask(name).GraphState.Handoff
+	require.NotNil(t, second)
+	require.NotEqual(t, first.InvocationID, second.InvocationID)
+	require.NotEqual(t, first.DestinationVisitID, second.DestinationVisitID)
+	d.runTicket(ctx, id) // visit repair again
+	require.Len(t, repairs, 4)
+	for _, p := range repairs[:3] {
+		require.Equal(t, first.DestinationVisitID, p.Env[session.NodeVisitIDEnvVar])
+		require.Contains(t, strings.Join(p.Args, "\n"), `Output excerpt: "diagnostic-from-check-1"`)
+	}
+	require.Contains(t, strings.Join(repairs[2].Args, "\n"), "Workflow wake handoff")
+	require.Contains(t, strings.Join(repairs[3].Args, "\n"), `Output excerpt: "diagnostic-from-check-2"`)
+	require.NotContains(t, strings.Join(repairs[3].Args, "\n"), first.Check.Output)
+	history, err := json.Marshal(h.readTask(name).History)
+	require.NoError(t, err)
+	require.NotContains(t, string(history), "diagnostic-from-check")
+}
+
+func TestWorkflowCheckHandoffAfterStageEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		hookExit   int
+		captureErr error
+	}{
+		{name: "freeze original bytes before hook"},
+		{name: "warn and route without evidence", hookExit: 1},
+		{name: "incomplete capture is unavailable", captureErr: errors.New("sink did not reach EOF")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			const id = "tst-hook-handoff"
+			logDir := filepath.Join(h.cfg.LogsDir, id)
+			cwd, err := os.Getwd()
+			require.NoError(t, err)
+			h.cfg.LogsDir, err = filepath.Rel(cwd, h.cfg.LogsDir)
+			require.NoError(t, err)
+			h.cfg.Hooks = config.Hooks{config.HookStageEnd: {{
+				Run:       fmt.Sprintf(`for path in %q/tests.*.*.log; do echo replaced > "$path"; done; exit %d`, logDir, tc.hookExit),
+				OnFailure: config.HookOnFailureWarn,
+			}}}
+			h.cfg.Pipelines["graph"] = config.PipelineDefinition{Graph: &config.WorkflowGraph{Version: 2, Entry: "tests", Nodes: []config.WorkflowNode{
+				{ID: "tests", Type: "check", Command: "true", Timeout: config.Duration{Duration: time.Minute}},
+				{ID: "repair", Type: "agent", Stage: "step1", Agent: "agent1", Handoff: config.WorkflowHandoffPrevious},
+				{ID: "stop", Type: "end", Status: "paused"},
+			}, Edges: []config.WorkflowEdge{
+				{From: config.WorkflowPort{Node: "tests", Port: "pass"}, To: "stop"},
+				{From: config.WorkflowPort{Node: "tests", Port: "fail"}, To: "repair"},
+				{From: config.WorkflowPort{Node: "repair", Port: "complete"}, To: "stop"},
+				{From: config.WorkflowPort{Node: "repair", Port: "failed"}, To: "stop"},
+			}}}
+			h.cfg = loadWorkflowTestConfig(t, h.cfg)
+			var logPath string
+			d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+				require.True(t, p.WaitForLog)
+				logPath = p.LogFile
+				require.NoError(t, os.WriteFile(logPath, []byte("original test output"), 0o600))
+				result := workflowWaitTestResult(newWorkflowWaitTestClock(), 1)
+				result.LogCaptureError = tc.captureErr
+				return result, nil
+			}))
+			name := id + ".md"
+			path := h.writeTicket(name, h.taskMD(id, "todo", "graph"))
+			d.tickets[id] = newTicketState(h.readTask(name), path)
+			d.runTicket(t.Context(), id)
+			saved := h.readTask(name)
+			require.Equal(t, ticket.StatusTodo, saved.Status)
+			require.Equal(t, "repair", saved.Stage)
+			data, err := os.ReadFile(logPath)
+			require.NoError(t, err)
+			require.Equal(t, "replaced\n", string(data))
+			if tc.hookExit != 0 {
+				require.Nil(t, saved.GraphState.Handoff)
+				return
+			}
+			require.NotNil(t, saved.GraphState.Handoff)
+			capture := saved.GraphState.Handoff.Check
+			require.NotNil(t, capture)
+			require.Equal(t, 1, capture.ExitCode)
+			require.True(t, filepath.IsAbs(capture.LogPath))
+			require.Equal(t, filepath.Join(logDir, filepath.Base(logPath)), capture.LogPath)
+			if tc.captureErr != nil {
+				require.False(t, capture.OutputAvailable)
+				require.Empty(t, capture.Output)
+			} else {
+				require.True(t, capture.OutputAvailable)
+				require.Equal(t, "original test output", capture.Output)
+			}
+		})
+	}
+}
+
+func TestWorkflowHandoffOutputBoundedUTF8(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invocation.log")
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+	out, available, truncated := readGraphHandoffOutput(path)
+	require.Empty(t, out)
+	require.True(t, available)
+	require.False(t, truncated)
+
+	prefix := "\xff" + strings.Repeat("a", graphHandoffOutputLimit-3)
+	require.NoError(t, os.WriteFile(path, []byte(prefix+"雪 after limit"), 0o600))
+	out, available, truncated = readGraphHandoffOutput(path)
+	require.True(t, available)
+	require.True(t, truncated)
+	require.True(t, utf8.ValidString(out))
+	require.Equal(t, strings.ToValidUTF8(prefix, "�"), out)
+	require.Len(t, out, graphHandoffOutputLimit)
+
+	// Invalid bytes may collapse to one replacement rune, but that must not
+	// let bytes beyond the raw limit into the excerpt.
+	invalid := strings.Repeat("\xff", graphHandoffOutputLimit-1)
+	require.NoError(t, os.WriteFile(path, []byte(invalid+"ab"), 0o600))
+	out, available, truncated = readGraphHandoffOutput(path)
+	require.True(t, available)
+	require.True(t, truncated)
+	require.Equal(t, "�a", out)
 }
 
 func requireWorkflowRunMetrics(t *testing.T, measured map[string]metricdata.Metrics, outcomes, stages, agents map[string]int64) {

@@ -33,7 +33,7 @@ export function kontoraActivity() {
     // when a run ends, so the running one is the next index.
     runningRun() {
       var t = this.outputSubject();
-      if (!this.executionActive(t) || !t.stage) return null;
+      if (!this.executionActive(t) || !t.stage || t._graphDetailPending) return null;
       if (t.graph_definition && !(t.graph_definition.nodes || []).some(n => n.id === t.stage && ['agent', 'check'].includes(n.type))) return null;
       var run = 0;
       (t.history || []).forEach(function (h) { if (h.stage === t.stage) run++; });
@@ -325,10 +325,10 @@ export function kontoraActivity() {
         }
       } else if (openTerminal && this.outputTab() === 'session' && !this.terminalOpen) {
         this.openTerminal();
-      } else if (this.outputTab() === 'activity' && !this._activityExplicit) {
+      } else if (this.outputTab() === 'activity' && !this._activityExplicit && !t._graphDetailPending) {
         // History arrives before final status. Stay on the displayed execution
         // until a new start or stage, rather than inventing the next attempt.
-        if (this.executionActive(previous) && previous.stage === t.stage &&
+        if (!previous._graphDetailPending && this.executionActive(previous) && previous.stage === t.stage &&
             previous.started_at === t.started_at && previous.history !== undefined && this.activityStage !== null) return;
         var run = this.activityTarget();
         if (run && (run.stage !== this.activityStage || run.run !== this.activityRun)) {

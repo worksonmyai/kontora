@@ -126,6 +126,7 @@ export function kontoraDetail() {
             if (updateSeq !== this._selectedTicketUpdateSeq) continue;
             if (full.id !== ticket.id || (full.source && full.source !== (ticket.source || 'primary'))) return;
             const updated = { ...full, source: ticket.source || full.source };
+            this._reconcileWorkflowReleaseReceipts?.(updated);
             this._noteReconcileTicket?.(updated);
             this.selectedTicket = updated;
             this._touchTicket(updated);

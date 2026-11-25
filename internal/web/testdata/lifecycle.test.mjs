@@ -18,6 +18,7 @@ function app(extra = {}) {
     tickets: [{ id: 'a', status: 'paused', kontora: true, stage: 'code', attempt: 2 }, { id: 'b', status: 'paused', kontora: true }],
     selectedTicket: null, selectedEpic: null, configCache: { custom_statuses: ['waiting_external'] },
     _editorSaves: {}, _editorAckVersions: Object.create(null), plannotatorInFlight: {}, editing: false,
+    _ticketDetailSeq: 0, _navigationSeq: 0, _selectedTicketUpdateSeq: 0, scheduleBoardFlush() {},
     recomputeBoard() {}, showToast(message) { this.toast = message; }, applyTicketUpdate(t) { this._touchTicket(t); const i = this.tickets.findIndex(x => x.id === t.id); if (i >= 0) this.tickets[i] = t; },
     needsInitModal: () => false,
     boardEntry: t => t, ...extra,
@@ -95,6 +96,212 @@ test('failed saves block execution and changed state invalidates captured comman
       assert.equal(result.error, a.error);
     }
   }
+});
+
+function humanWait(revision = 1) {
+  const node = 'operator', execution = 'exec', visit = 'exec.' + revision;
+  return { id: 'a', status: 'paused', graph_execution: {
+    execution_id: execution, revision, visit_id: visit, current_node: node,
+    wait: { id: 'wait-' + revision, kind: 'human', phase: 'pending', execution_id: execution, visit_id: visit, node_id: node },
+  } };
+}
+
+test('release does not send after the inspected wait, permission or detail owner changes', async () => {
+  const fetchBefore = globalThis.fetch;
+  let posts = 0;
+  globalThis.fetch = async () => { posts++; throw new Error('unexpected POST'); };
+  try {
+    for (const change of ['wait', 'permission', 'reopen', 'navigation', 'failed draft']) {
+      const a = app(), save = deferred();
+      a.tickets[0] = a.selectedTicket = humanWait();
+      a.lifecycleDraftBarrier = () => save.promise;
+      const release = a.releaseWorkflowWait(a.workflowReleaseForm(), 'Continue');
+      assert.equal(a.lifecycleBusy('a'), true);
+      if (change === 'wait') a.tickets[0] = a.selectedTicket = humanWait(2);
+      if (change === 'permission') a.tickets[0] = { ...a.tickets[0], can_control: false };
+      if (change === 'reopen') a._ticketDetailSeq++;
+      if (change === 'navigation') a._navigationSeq++;
+      save.resolve(change !== 'failed draft');
+      await release;
+      assert.equal(a.lifecycleBusy('a'), false, change);
+    }
+    assert.equal(posts, 0);
+  } finally { globalThis.fetch = fetchBefore; }
+});
+
+test('only inspected live human waits with safe revisions can be released', () => {
+  for (const [mutate, allowed] of [
+    [() => {}, true],
+    [t => { t.graph_execution.revision = Number.MAX_SAFE_INTEGER + 1; }, false],
+    [t => { t.graph_execution.wait.kind = 'deployment'; }, false],
+    [t => { t.graph_execution.wait.kind = 'timer'; }, false],
+    [t => { t.graph_execution.wait.disarmed = true; }, false],
+    [t => { t.graph_execution.wait.phase = 'recovery'; }, false],
+    [t => { t.graph_execution.wait.visit_id = 'other'; }, false],
+    [t => { t.status = 'archived'; }, false],
+    [t => { t.source = 'secondary'; }, false],
+    [t => { t.invocation_id = 'running'; }, false],
+    [t => { t._graphDetailPending = true; }, false],
+  ]) {
+    const ticket = humanWait();
+    mutate(ticket);
+    const a = app({ selectedTicket: ticket, tickets: [ticket] });
+    assert.equal(!!a.workflowReleaseForm(), allowed, JSON.stringify(ticket));
+  }
+});
+
+test('release receipts never replace ticket state and lost replies reconcile by request ID', async () => {
+  const fetchBefore = globalThis.fetch;
+  try {
+    for (const outcome of ['accepted', 'conflict', 'lost', 'lost with receipt']) {
+      const t = humanWait();
+      const a = app({ tickets: [t], selectedTicket: t });
+      let sent, reloads = 0;
+      a.applyTicketUpdate = () => assert.fail('receipt is not a ticket projection');
+      a.reloadTicketDetail = async () => {
+        reloads++;
+        if (outcome === 'lost with receipt') {
+          const { wait, ...execution } = t.graph_execution;
+          a.tickets[0] = a.selectedTicket = { ...t, graph_execution: { ...execution, revision: 2, wait_history: [
+            { ...wait, receipt: { id: 'r', request_id: sent.request_id } },
+          ] } };
+          a._reconcileWorkflowReleaseReceipts(a.selectedTicket);
+        }
+        return { ok: true };
+      };
+      globalThis.fetch = async (url, options) => {
+        assert.equal(url, '/api/tickets/a/workflow-release');
+        assert.equal(sent, undefined, 'never resend automatically');
+        sent = JSON.parse(options.body);
+        if (outcome === 'accepted') return { ok: true, json: async () => ({ id: 'r', request_id: sent.request_id }) };
+        if (outcome === 'conflict') return { ok: false, status: 409, json: async () => ({ error: 'stale wait' }) };
+        throw new Error('link dropped');
+      };
+      await a.releaseWorkflowWait(a.workflowReleaseForm(), ' Continue ');
+      assert.deepEqual(sent, { execution_id: 'exec', wait_id: 'wait-1', revision: 1, request_id: a.workflowReleaseState().requestID, reason: 'Continue' });
+      assert.ok(sent.request_id);
+      assert.equal(reloads, 1);
+      assert.equal(a.workflowReleaseForm(), '');
+      const [message] = a.workflowReleaseMessages();
+      if (outcome === 'accepted' || outcome === 'lost with receipt') assert.match(message, /^Release accepted/);
+      if (outcome === 'accepted') assert.equal(a.selectedTicket.graph_execution.wait.id, 'wait-1');
+      if (outcome === 'lost') {
+        assert.equal(message, `Release acceptance is unknown. Request ID: ${sent.request_id}. Refresh wait details to look for a matching receipt. A missing receipt does not mean the release failed. Do not submit a new release for this wait.`);
+      }
+      if (outcome === 'conflict') {
+        assert.match(message, /Refresh and inspect/);
+        await a.workflowRefreshRelease();
+        assert.ok(a.workflowReleaseForm());
+      }
+    }
+  } finally { globalThis.fetch = fetchBefore; }
+});
+
+for (const stall of ['headers', 'receipt body', 'conflict body']) {
+  test(`a release with stalled ${stall} unlocks the ticket and keeps the request ID`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const ticket = humanWait(), refresh = deferred(), stalled = deferred();
+    const a = app({ tickets: [ticket], selectedTicket: ticket, reloadTicketDetail: () => refresh.promise });
+    let sent, signal, readingBody = false;
+    t.mock.method(globalThis, 'fetch', async (_url, options) => {
+      assert.equal(sent, undefined, 'never resend automatically');
+      sent = JSON.parse(options.body);
+      signal = options.signal;
+      if (stall === 'headers') return stalled.promise;
+      return { ok: stall === 'receipt body', status: 409, json() { readingBody = true; return stalled.promise; } };
+    });
+    const release = a.releaseWorkflowWait(a.workflowReleaseForm(), 'Continue');
+    await until(() => stall === 'headers' ? sent : readingBody);
+    assert.equal(a.lifecycleBusy('a'), true);
+    t.mock.timers.tick(10_000);
+    await until(() => !a.lifecycleBusy('a'));
+    assert.equal(signal.aborted, true);
+    assert.equal(a.workflowReleaseState().outcome, 'uncertain');
+    assert.match(a.workflowReleaseMessages()[0], new RegExp(sent.request_id));
+    assert.equal(a.workflowReleaseForm(), '');
+    assert.equal(a.workflowCanRefreshRelease(), true);
+    refresh.resolve({ ok: true });
+    await release;
+  });
+}
+
+test('release receipts stay matched to their wait and request after later submissions and thin refreshes', async t => {
+  const first = humanWait(), later = humanWait(2);
+  const a = app({ tickets: [first], selectedTicket: first, reloadTicketDetail: async () => ({ ok: true }) });
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    throw new Error('reply lost');
+  });
+  const select = ticket => { a.tickets[0] = a.selectedTicket = ticket; };
+  const submit = () => a.releaseWorkflowWait(a.workflowReleaseForm(), 'Continue');
+  await submit();
+  const [request] = requests;
+  select({ ...first, graph_execution: { ...first.graph_execution, revision: 2 } });
+  assert.equal(a.workflowReleaseForm(), '', 'a new revision does not make resubmission safe');
+  select(later);
+  a.lifecycleDraftBarrier = async () => false;
+  await submit();
+  assert.equal(requests.length, 1);
+  assert.equal(a.workflowReleaseMessages().length, 2);
+  assert.ok(a.workflowReleaseMessages()[0].includes(request.request_id));
+  assert.match(a.workflowReleaseMessages()[1], /Save pending ticket changes/);
+  await a.workflowRefreshRelease();
+  assert.ok(a.workflowReleaseMessages()[0].includes(request.request_id), 'absence is not a refusal');
+  a.lifecycleDraftBarrier = async () => true;
+  await submit();
+  assert.equal(requests.length, 2);
+  assert.equal(a.workflowReleaseMessages().length, 2);
+  for (const { request_id } of requests) assert.ok(a.workflowReleaseMessages().some(message => message.includes(request_id)));
+
+  const historicalReceipt = (execution, wait, request_id) => ({ ...later, graph_execution: {
+    ...later.graph_execution, previous_executions: [{ execution_id: execution, wait_history: [{ id: wait, receipt: { id: 'r', request_id } }] }],
+  } });
+  for (const mismatch of [
+    ['wrong execution', 'wait-1', request.request_id],
+    ['exec', 'wrong wait', request.request_id],
+    ['exec', 'wait-1', 'wrong request'],
+  ]) {
+    a._reconcileWorkflowReleaseReceipts(historicalReceipt(...mismatch));
+    assert.ok(a.workflowReleaseMessages().some(message => message.includes(request.request_id)));
+  }
+  a._reconcileWorkflowReleaseReceipts(historicalReceipt('exec', 'wait-1', request.request_id));
+  select({ ...later, _graphDetailPending: true });
+  assert.equal(a.workflowReleaseMessages().length, 1);
+  assert.ok(a.workflowReleaseMessages()[0].includes(requests[1].request_id));
+  select(first);
+  assert.ok(a.workflowReleaseMessages().some(message => message.startsWith('Release accepted for wait-1.')));
+  assert.equal(a.workflowReleaseForm(), '');
+});
+
+test('release reads detail after the POST instead of joining a stale GET', async t => {
+  const ticket = humanWait(), staleBody = deferred();
+  const a = app({ tickets: [ticket], selectedTicket: ticket });
+  let sent, reads = 0, readingStaleBody = false;
+  const advanced = { ...ticket, stage: 'next', status: 'done', graph_execution: { execution_id: 'exec', revision: 2 } };
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (url.endsWith('/workflow-release')) {
+      sent = JSON.parse(options.body);
+      return { ok: true, json: async () => ({ id: 'receipt', request_id: sent.request_id }) };
+    }
+    reads++;
+    return { ok: true, json: () => {
+      if (sent) return advanced;
+      readingStaleBody = true;
+      return staleBody.promise;
+    } };
+  });
+  const stale = a.reloadTicketDetail();
+  await until(() => readingStaleBody);
+  const release = a.releaseWorkflowWait(a.workflowReleaseForm(), 'Continue');
+  try {
+    await until(() => reads === 2 && a.selectedTicket.status === 'done');
+  } finally {
+    staleBody.resolve(ticket);
+    await Promise.all([stale, release]);
+  }
+  assert.equal(a.selectedTicket, advanced);
+  assert.equal(a.workflowReleaseForm(), '');
 });
 
 test('missing or secondary subjects never fall back to selected primary namesake', async () => {

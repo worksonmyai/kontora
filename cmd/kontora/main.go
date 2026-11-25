@@ -98,6 +98,7 @@ var handlers = map[string]func(){
 	"release":             cmdRelease,
 	"workflow-restart":    func() { cmdWorkflow("workflow-restart") },
 	"workflow-recover":    func() { cmdWorkflow("workflow-recover") },
+	"workflow-simulate":   cmdWorkflowSimulate,
 	"skip":                cmdSkip,
 	"set-stage":           cmdSetStage,
 	"cancel":              func() { cmdAction("cancel") },
@@ -258,6 +259,28 @@ func runDaemon(cfg *config.Config, configPath string, override func(*config.Conf
 		daemon.WithVersion(version),
 	)
 	return d.Run(ctx)
+}
+
+func cmdWorkflowSimulate() {
+	fs := flag.NewFlagSet("workflow-simulate", flag.ExitOnError)
+	var opts cli.WorkflowSimulationOptions
+	fs.StringVar(&opts.Recipe, "recipe", "", "built-in graph recipe name")
+	fs.StringVar(&opts.Config, "config", "", "explicit config file path (requires --pipeline)")
+	fs.StringVar(&opts.Pipeline, "pipeline", "", "graph pipeline name in --config")
+	fs.StringVar(&opts.Scenario, "scenario", "", "path to JSON scenario")
+	fs.BoolVar(&opts.Preflight, "preflight", false, "explore normal outcomes for incompatible condition inputs")
+	_ = fs.Parse(os.Args[2:])
+	if fs.NArg() != 0 {
+		log.Fatalf("unexpected argument %q: workflow-simulate takes no positional arguments", fs.Arg(0))
+	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name != "preflight" && strings.TrimSpace(f.Value.String()) == "" {
+			log.Fatalf("--%s requires a value", f.Name)
+		}
+	})
+	if err := cli.WorkflowSimulate(os.Stdout, opts); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func cmdSetup() {

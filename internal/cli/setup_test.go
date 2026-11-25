@@ -730,6 +730,7 @@ func TestSetupModel_PipelineChoice(t *testing.T) {
 			view := m.View()
 			assert.Contains(t, view, "Which one do new tickets run?")
 			assert.Contains(t, view, "Choose plan-only per ticket.")
+			assert.NotContains(t, view, "implement-test-review", "the graph is preview-only")
 			assert.Contains(t, view, "stops at human_review without a commit or push")
 			assert.Contains(t, view, "commits locally, then stops at human_review")
 			assert.Contains(t, view, "It does not push or create a pull request.")
@@ -759,6 +760,9 @@ func TestSetupModel_PipelineChoice(t *testing.T) {
 			assert.Equal(t, 3, cfg.MaxConcurrentAgents)
 			assert.Equal(t, tc.want, cfg.DefaultPipeline)
 			assert.Len(t, cfg.Pipelines, 4)
+			assert.NotContains(t, cfg.Stages, "starter-graph-implement")
+			assert.NotContains(t, cfg.Stages, "starter-graph-repair")
+			assert.NotContains(t, cfg.Stages, "starter-graph-review")
 			for _, name := range []string{"default", "implement-review-commit", "implement-review", "plan-only"} {
 				assert.Contains(t, cfg.Pipelines, name)
 			}

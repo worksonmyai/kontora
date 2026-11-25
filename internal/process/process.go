@@ -46,8 +46,9 @@ type Result struct {
 	ExitedAt    time.Time
 	Termination TerminationEvidence
 	// Interruption records cancellation or timeout, even when the process exits zero.
-	Interruption   error
-	FailurePattern *string
+	Interruption    error
+	FailurePattern  *string
+	LogCaptureError error
 }
 
 func Run(ctx context.Context, params RunParams) (Result, error) {

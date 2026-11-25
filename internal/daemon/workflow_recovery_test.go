@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -376,6 +377,124 @@ func TestWorkflowTransitionReplayUsesFrozenState(t *testing.T) {
 			data, err := os.ReadFile(f.path)
 			require.NoError(t, err)
 			assert.Equal(t, string(before), string(data), "reconciliation must not evaluate the loop again")
+		})
+	}
+}
+
+func TestWorkflowHandoffJournalReplay(t *testing.T) {
+	for _, mode := range []string{"deleted", "replaced", "only visit log", "stale invocation", "failed stage_end"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newWorkflowRecoveryFixture(t)
+			graph := &config.WorkflowGraph{Version: 2, Entry: f.tkt.Stage, Nodes: []config.WorkflowNode{
+				{ID: f.tkt.Stage, Type: "check"},
+				{ID: "repair", Type: "agent", Agent: "agent1", Stage: "step1", Handoff: config.WorkflowHandoffPrevious},
+				{ID: "stop", Type: "end", Status: "paused"},
+			}, Edges: []config.WorkflowEdge{
+				{From: config.WorkflowPort{Node: f.tkt.Stage, Port: "fail"}, To: "repair"},
+				{From: config.WorkflowPort{Node: "repair", Port: "complete"}, To: "stop"},
+			}}
+			f.h.cfg.Agents["agent1"] = config.Agent{Binary: "claude"}
+			f.h.cfg.Pipelines[f.tkt.Pipeline] = config.PipelineDefinition{Graph: graph}
+			if mode == "failed stage_end" {
+				f.h.cfg.Hooks = config.Hooks{config.HookStageEnd: {{Name: "fail finalization", Run: "exit 7", OnFailure: "pause"}}}
+			}
+			fingerprint, err := workflowFingerprint(f.h.cfg, f.tkt, graph)
+			require.NoError(t, err)
+			state := f.tkt.GraphState.Clone()
+			state.DefinitionFingerprint = fingerprint
+			state.VisitID = fmt.Sprintf("%s.%d", state.ExecutionID, state.Visit)
+			state.LoopCounts = nil
+			require.NoError(t, f.tkt.SetField("graph_state", state))
+			f.rec.GraphBefore = state.Clone()
+			f.rec.NodeKind, f.rec.Template = "check", ""
+			f.rec.Invocation.NodeVisitID = state.VisitID
+			f.rec.Invocation.DefinitionFingerprint = fingerprint
+			f.rec.Invocation.Verdicts = nil
+			f.write(t)
+			f.d.tickets[f.tkt.ID] = newTicketState(f.tkt, f.path)
+			path := graphLogPath(f.h.cfg, f.tkt)
+			if mode != "only visit log" {
+				require.NoError(t, os.WriteFile(path, []byte("original check diagnostic"), 0o600))
+			}
+			fallback := session.GraphLogPath(f.h.logsDir, f.tkt.ID, f.tkt.Stage, state.VisitID)
+			require.NoError(t, os.WriteFile(fallback, []byte("output of another attempt"), 0o600))
+			snapshot := f.tkt.Clone()
+			switch mode {
+			case "stale invocation":
+				require.NoError(t, f.tkt.SetField("invocation_id", "replacement-invocation"))
+				f.write(t)
+			case "failed stage_end":
+			default:
+				// Let finalization persist the transition, but block its ticket save.
+				require.NoError(t, os.Chmod(f.path, 0o444))
+				t.Cleanup(func() { require.NoError(t, os.Chmod(f.path, 0o644)) })
+			}
+			ctx := context.WithValue(context.Background(), workflowExecutionKey{}, f.rec)
+			p := spawnAgentParams{cfg: f.h.cfg, stageName: snapshot.Stage, ticketID: snapshot.ID, filePath: f.path, log: f.d.log, wtPath: f.h.repoDir}
+			now := time.Now()
+			run := agentRun{Execution: f.rec, Outcome: "failed", Result: process.Result{ExitCode: 1, StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone}}
+			f.d.finishGraphTicket(ctx, ctx, f.h.cfg, f.d.log, snapshot, f.path, p, graph.Nodes[0], run, mode == "failed stage_end")
+			before := f.h.readTask(resultTicketID + ".md")
+			require.Nil(t, before.GraphState.Handoff)
+			if mode == "stale invocation" {
+				require.Equal(t, "replacement-invocation", before.InvocationID)
+				require.Nil(t, f.rec.Transition, "the stale claim cannot journal evidence")
+				return
+			}
+			if mode == "failed stage_end" {
+				require.Equal(t, snapshot.Stage, before.Stage)
+				require.Equal(t, ticket.StatusPaused, before.Status)
+				require.Contains(t, before.LastError, "exited with code 7")
+				return
+			}
+			require.Equal(t, ticket.StatusInProgress, before.Status)
+			journal, err := loadExecution(f.h.cfg, f.tkt.ID)
+			require.NoError(t, err)
+			require.NotNil(t, journal.Transition)
+			frozen := journal.Transition.GraphState.Handoff
+			require.NotNil(t, frozen)
+			require.Equal(t, path, frozen.Check.LogPath)
+			require.Equal(t, 1, frozen.Check.ExitCode)
+			require.Equal(t, snapshot.InvocationID, frozen.InvocationID)
+			require.Equal(t, state.VisitID, frozen.VisitID)
+			if mode == "only visit log" {
+				require.False(t, frozen.Check.OutputAvailable)
+				require.Empty(t, frozen.Check.Output)
+			} else {
+				require.True(t, frozen.Check.OutputAvailable)
+				require.Equal(t, "original check diagnostic", frozen.Check.Output)
+			}
+			if mode == "deleted" {
+				require.NoError(t, os.Remove(path))
+			} else {
+				require.NoError(t, os.WriteFile(path, []byte("late changed output"), 0o600))
+			}
+			require.NoError(t, os.Chmod(f.path, 0o644))
+			// The fresh daemon must use the journal without rereading the changed or deleted capture.
+			d := f.h.newDaemon(f.h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+				require.Equal(t, frozen.DestinationVisitID, p.Env[session.NodeVisitIDEnvVar])
+				args := strings.Join(p.Args, "\n")
+				if mode == "only visit log" {
+					require.Contains(t, args, "Output unavailable.")
+				} else {
+					require.Contains(t, args, `Output excerpt: "original check diagnostic"`)
+				}
+				require.NotContains(t, args, "late changed output")
+				require.NotContains(t, args, "output of another attempt")
+				result := run.Result
+				result.ExitCode = 0
+				return result, publishWorkflowWaitTestResult(p, session.Result{Outcome: "complete", Summary: "repair complete"})
+			}))
+			require.NoError(t, d.initialScan(f.h.tasksDir))
+			got := f.h.readTask(resultTicketID + ".md")
+			require.Equal(t, ticket.StatusTodo, got.Status)
+			require.Equal(t, "repair", got.Stage)
+			require.Equal(t, got.GraphState.VisitID, frozen.DestinationVisitID)
+			require.Equal(t, frozen, got.GraphState.Handoff)
+			d.runTicket(context.Background(), got.ID)
+			finished := f.h.readTask(resultTicketID + ".md")
+			require.Equal(t, "stop", finished.Stage)
+			require.Nil(t, finished.GraphState.Handoff)
 		})
 	}
 }

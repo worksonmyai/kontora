@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 	"github.com/worksonmyai/kontora/internal/worktree"
@@ -120,6 +121,65 @@ func TestWorkflowHumanRelease(t *testing.T) {
 			conflict.RequestID = "new-stale-request"
 			_, err = f.d.WorkflowRelease(f.tkt.ID, conflict)
 			require.ErrorIs(t, err, web.ErrInvalidState)
+		})
+	}
+}
+
+func TestWorkflowHandoffAcrossDeclaredWait(t *testing.T) {
+	for _, port := range []string{"released", "timeout"} {
+		t.Run(port, func(t *testing.T) {
+			h := newHarness(t)
+			edge := func(from, port, to string) config.WorkflowEdge {
+				return config.WorkflowEdge{From: config.WorkflowPort{Node: from, Port: port}, To: to}
+			}
+			h.cfg.Pipelines["graph"] = config.PipelineDefinition{Graph: &config.WorkflowGraph{Version: 2, Entry: "tests", Nodes: []config.WorkflowNode{
+				{ID: "tests", Type: "check", Command: "true", Timeout: config.Duration{Duration: time.Minute}},
+				{ID: "gate", Type: "wait", Mode: "human", Timeout: config.Duration{Duration: time.Hour}},
+				{ID: "repair", Type: "agent", Stage: "step1", Agent: "agent1", Handoff: config.WorkflowHandoffPrevious},
+				{ID: "stop", Type: "end", Status: "paused"},
+			}, Edges: []config.WorkflowEdge{
+				edge("tests", "pass", "stop"), edge("tests", "fail", "gate"),
+				edge("gate", "released", "repair"), edge("gate", "timeout", "repair"),
+				edge("repair", "complete", "stop"), edge("repair", "failed", "stop"),
+			}}}
+			h.cfg = loadWorkflowTestConfig(t, h.cfg)
+			clock := newWorkflowWaitTestClock()
+			var checkLog string
+			d := h.newDaemon(h.cfg, WithWorkflowWaitClock(clock), WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+				checkLog = p.LogFile
+				return workflowWaitTestResult(clock, 1), os.WriteFile(checkLog, []byte("before wait"), 0o600)
+			}))
+			const id = "tst-gated-handoff"
+			name := id + ".md"
+			path := h.writeTicket(name, h.taskMD(id, "todo", "graph"))
+			d.tickets[id] = newTicketState(h.readTask(name), path)
+			ctx := context.Background()
+			d.runTicket(ctx, id)
+			parked := h.readTask(name)
+			require.NotNil(t, parked.GraphState.Wait)
+			pending := parked.GraphState.Handoff
+			require.NotNil(t, pending)
+			require.Empty(t, pending.DestinationVisitID)
+			require.Equal(t, "before wait", pending.Check.Output)
+			require.NoError(t, os.Remove(checkLog))
+			if port == "released" {
+				req := eventHumanRequest(&resultFixture{tkt: parked})
+				_, err := d.WorkflowRelease(id, req)
+				require.NoError(t, err)
+				event, err := readWorkflowEvent(d.workflowEventPath("human", req.RequestID))
+				require.NoError(t, err)
+				require.Equal(t, pending.Check, event.Applications[0].After.State.Handoff.Check)
+			} else {
+				clock.Advance(time.Hour)
+				d.reconcileWorkflowWaits(ctx)
+			}
+			ready := h.readTask(name)
+			require.Equal(t, ticket.StatusTodo, ready.Status)
+			require.Equal(t, "repair", ready.Stage)
+			require.Equal(t, port, ready.GraphState.Transitions[len(ready.GraphState.Transitions)-1].Port)
+			expected := pending.Clone()
+			expected.DestinationVisitID = ready.GraphState.VisitID
+			require.Equal(t, expected, ready.GraphState.Handoff)
 		})
 	}
 }

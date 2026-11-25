@@ -2023,10 +2023,9 @@
         </h1>
       </div>
 
-      <details x-show="isGraphTicket(selectedTicket)" class="px-6 pb-3 font-mono text-[11px] text-tx-3">
-        <summary>Workflow graph · execution</summary>
-        <pre class="whitespace-pre-wrap" x-text="graphText(selectedTicket)"></pre>
-        <button x-show="canRestartGraph()" @click="restartGraphWorkflow()" class="text-warn">Restart at configured entry</button>
+      <details x-show="showWorkflowGraph(selectedTicket)" :open="!!selectedTicket?.graph_execution?.wait || workflowReleaseMessages().length > 0" class="px-6 pb-3 font-mono text-[11px] text-tx-3">
+        <summary>Workflow graph · execution <span x-text="selectedTicket?.graph_execution?.current_node || ''"></span></summary>
+        <div class="max-h-[36vh] overflow-y-auto p-1" x-html="detailWorkflowMarkup"></div>
       </details>
 
       <!-- Stage ribbon: one segment per stage, grown by its real duration -->
@@ -4010,10 +4009,7 @@
                 <span class="font-mono text-[10.5px] text-tx-4" x-text="selectedTicket?.id ? selectedTicket.id + '.md' : ''"></span>
                 <div x-show="archiveDetailLoading" class="font-mono text-[11.5px] text-surface-600">loading…</div>
                 <div class="ticket-prose ticket-read" x-effect="setProse($el, selectedTicket?.body || '')"></div>
-                <details x-show="isGraphTicket(selectedTicket)" class="font-mono text-[11px] text-tx-3">
-                  <summary>Workflow graph · execution</summary>
-                  <pre class="whitespace-pre-wrap" x-text="graphText(selectedTicket)"></pre>
-                </details>
+                <div x-show="showWorkflowGraph(selectedTicket)" x-html="detailWorkflowMarkup"></div>
                 <div class="flex gap-[9px] items-stretch min-w-0" x-show="stageRibbon().length">
                   <template x-for="seg in stageRibbon()" :key="seg.name">
                     <div class="flex-1 min-w-0 flex flex-col gap-[7px]" :class="seg.state === 'done' ? '' : 'opacity-50'">
@@ -5899,6 +5895,11 @@
         </div>
         <div class="mobile-detail-content" :style="{ visibility: detailLoading ? 'hidden' : 'visible' }">
 
+        <details x-show="showWorkflowGraph(selectedTicket) && (mobilePanel() === 'ticket' || mobilePanel() === 'output')"
+                 :open="!!selectedTicket?.graph_execution?.wait || workflowReleaseMessages().length > 0" class="shrink-0 px-4 py-2 text-xs text-tx-3">
+          <summary>Workflow graph · execution <span x-text="selectedTicket?.graph_execution?.current_node || ''"></span></summary>
+          <div class="max-h-[36vh] overflow-y-auto p-1" x-html="detailWorkflowMarkup"></div>
+        </details>
         <div x-show="mobilePanel() === 'notes'" class="flex-1 min-h-0" x-html="detailNotesMarkup"></div>
         <div x-show="mobilePanel() === 'changes'" data-detail-scroll="changes" class="mobile-ticket-pane overflow-y-auto" x-html="detailChangesMarkup"></div>
         <p x-show="mobilePanel() === 'output' && needsLiveInput(selectedTicket)"
@@ -6119,11 +6120,6 @@
             <template x-if="selectedTicket && !selectedTicket.kontora">
               <span class="mobile-label text-warn">not a kontora ticket</span>
             </template>
-            <details x-show="isGraphTicket(selectedTicket)" class="w-full font-mono text-[11px] text-tx-3">
-              <summary>Workflow graph · execution</summary>
-              <pre class="whitespace-pre-wrap" x-text="graphText(selectedTicket)"></pre>
-              <button x-show="canRestartGraph()" @click="restartGraphWorkflow()" class="text-warn">Restart at configured entry</button>
-            </details>
             <template x-if="selectedTicket && !isSecondary(selectedTicket) && !epicIsAgent(selectedTicket) && detailTab !== 'logs' && stageRibbon().length">
               <div class="mobile-stage-strip" role="list" aria-label="Pipeline stage progress">
                 <template x-for="seg in stageRibbon()" :key="seg.name">

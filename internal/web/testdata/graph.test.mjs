@@ -30,6 +30,7 @@ function state(ticket = graphTicket()) {
   return Object.assign(merged, {
     selectedTicket: ticket, now: Date.now(), outputSubject() { return this.selectedTicket; }, currentTicketCost: () => null,
     ticketStageCost: () => null, ticketCanControl: () => true, plannotatorInFlight: {}, configCache: {},
+    isSecondary: t => !!t?.source && t.source !== 'primary',
   });
 }
 
@@ -40,15 +41,20 @@ test('graph topology and selected transitions never imply YAML-order progress', 
   assert.equal(s.canSkipStage(), false);
   assert.equal(s.stageMaxAttempts(), 0);
   assert.deepEqual(s.stageRibbon().map(r => r.name), ['work']);
-  assert.doesNotMatch(s.graphText(s.selectedTicket), /Stage \d|\d of \d/);
-  assert.match(s.graphText(s.selectedTicket), /current: work · template code/);
-  assert.match(s.graphText(s.selectedTicket), /\[selected\] again.repeat -> work/);
-  assert.match(s.graphText(s.selectedTicket), /r3: again.repeat -> work/);
-  assert.match(s.graphText(s.selectedTicket), /loop again: 1 \/ 2/);
+  const execution = s.selectedTicket.graph_execution;
+  assert.doesNotMatch(s.workflowCursorText(s.selectedTicket), /Stage \d|\d of \d/);
+  assert.match(s.workflowCursorText(s.selectedTicket), /Current node: work · template code/);
+  assert.match(s.workflowCursorText(s.selectedTicket), /Loop again: 1 \/ 2/);
+  assert.match(s.workflowTraceText(execution), /r3: again.repeat -> work/);
+  assert.match(s.workflowConfigText(definition), /again.repeat -> work/);
+  assert.doesNotMatch(s.workflowConfigText(definition), /\[selected\]|r3:/);
+  const reconfigured = { ...definition, edges: [{ from: { node: 'again', port: 'repeat' }, to: 'unused' }] };
+  assert.match(s.workflowConfigText(reconfigured), /again.repeat -> unused/);
+  assert.match(s.workflowTraceText(execution), /r3: again.repeat -> work/);
   assert.equal(s.mobileStageState({ name: 'unused', state: 'queued', runs: 0 }), 'No recorded visit');
-  delete s.selectedTicket.graph_execution.loops[0].max;
-  assert.match(s.graphText(s.selectedTicket), /loop again: 1 \/ unknown/);
-  assert.doesNotMatch(s.graphText(s.selectedTicket), /undefined|1 \/ 0/);
+  delete execution.loops[0].max;
+  assert.match(s.workflowCursorText(s.selectedTicket), /Loop again: 1 \/ unknown/);
+  assert.doesNotMatch(s.workflowCursorText(s.selectedTicket), /undefined|1 \/ 0/);
 });
 
 for (const scenario of [
@@ -85,6 +91,45 @@ test('graph output navigation separates visits from retries and preserves artifa
   assert.match(s.activityRunLabel(), /visit exec.2 · attempt 1/);
   s.activityRun = 3;
   assert.match(s.activityRunLabel(), /visit exec.2 · attempt 2/);
+});
+
+test('graph runs link completed local rows by occurrence, including imported rows in the count', () => {
+  const t = graphTicket();
+  t.history = history.map((h, i) => ({ ...h, imported: i === 0, completed_at: i === 2 ? '' : '2026-01-01T00:00:00Z' }));
+  const s = state(t), opens = [];
+  s.openActivity = (...args) => opens.push(args);
+  const rows = s.workflowRunRows(t, t.graph_execution);
+  assert.deepEqual(rows.map(r => r.run), [0, 1, 2]);
+  for (const row of rows) s.openWorkflowRun(row);
+  assert.deepEqual(opens, [['work', 1]]);
+  assert.deepEqual(s.workflowRunRows(t, { execution_id: 'earlier' }), []);
+  s.selectedTicket = { ...t, history: [] };
+  s.openWorkflowRun(rows[1]);
+  assert.equal(opens.length, 1);
+});
+
+test('thin list keeps a trace only for the same ticket, execution and revision', () => {
+  for (const patch of [{}, { execution_id: 'new' }, { revision: 5 }, { definition_fingerprint: 'changed' }]) {
+    const s = state(), t = s.selectedTicket;
+    s.sameTicket = (a, b) => a.id === b.id;
+    s.ticketKey = t => t.id;
+    s.queueTicketUpdate = projection => { s.selectedTicket = projection; };
+    const { transitions, ...thin } = t.graph_execution;
+    s._reconcileSnapshotSelection([{ id: t.id, status: 'paused', graph_execution: { ...thin, ...patch }, _graphDetailPending: true }], false, new Set());
+    if (Object.keys(patch).length === 0) {
+      assert.deepEqual(s.selectedTicket.graph_execution.transitions, transitions);
+      assert.equal(s.selectedTicket.history, t.history);
+      assert.equal(s.selectedTicket._graphDetailPending, undefined);
+    } else {
+      assert.equal(s.selectedTicket.graph_execution.transitions, undefined);
+      assert.equal(s.selectedTicket.history, t.history);
+      assert.equal(s.selectedTicket._graphDetailPending, true);
+      assert.deepEqual(s.workflowRunRows(s.selectedTicket, s.selectedTicket.graph_execution), []);
+      s.selectedTicket.execution_active = true;
+      assert.equal(s.runningRun(), null, 'a thin snapshot cannot supply the live occurrence');
+      assert.deepEqual(s.outputRuns().map(r => r.run), [2, 1, 0]);
+    }
+  }
 });
 
 test('graph SSE updates runtime without replacing unsaved text or editor state', () => {

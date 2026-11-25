@@ -174,6 +174,12 @@ var Commands = []Command{
 		{Name: "agent", Desc: "Print setup instructions for a coding agent"},
 		{Name: "recipe", Desc: SetupRecipeHelp, Value: "name"},
 	}},
+	{Name: "workflow-simulate", Group: "Getting started", Desc: "Simulate or preflight a workflow graph offline", Config: true, Flags: []Flag{
+		{Name: "recipe", Desc: "Built-in graph recipe name", Value: "name", Choices: []string{graphRecipeName}},
+		{Name: "pipeline", Desc: "Graph pipeline name in the explicit config", Value: "pipeline"},
+		{Name: "scenario", Desc: "Path to JSON scenario", Value: "path"},
+		{Name: "preflight", Desc: "Explore normal outcomes for incompatible condition inputs"},
+	}},
 	{Name: "doctor", Group: "Getting started", Desc: "Validate prerequisites and configuration", Config: true},
 	{Name: "config", Group: "Other", Desc: "Show effective configuration", Config: true, Remote: true, Subcommands: []Command{{Name: "edit", Desc: "Edit configuration", Config: true, Remote: true}}},
 	{Name: "fmt", Group: "Other", Desc: "Format stream-json from stdin"},

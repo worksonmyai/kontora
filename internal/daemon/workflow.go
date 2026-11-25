@@ -7,17 +7,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/hook"
 	"github.com/worksonmyai/kontora/internal/pipeline"
 	"github.com/worksonmyai/kontora/internal/process"
+	"github.com/worksonmyai/kontora/internal/prompt"
 	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
@@ -315,6 +320,10 @@ func (d *Daemon) runGraphTicket(root, task context.Context, cfg *config.Config, 
 			finishFailure("render workflow prompt: " + renderErr.Error())
 			return
 		}
+		if h := rec.GraphBefore.Handoff; node.Handoff == config.WorkflowHandoffPrevious && h != nil &&
+			h.ExecutionID == rec.Invocation.WorkflowExecutionID && h.DestinationVisitID == rec.Invocation.NodeVisitID {
+			rendered += prompt.PreviousHandoff(h)
+		}
 		p.rendered = rendered + buildOperationalAppendix(t.ID, path, wtPath, true, checkpointKind(p.agentCfg)) + graphResultInstructions(node)
 		attempt := d.runAgentOnce(task, t, p, binary, nil)
 		if !attempt.started && attempt.run.Result.StartedAt.IsZero() {
@@ -396,10 +405,13 @@ func (d *Daemon) finishGraphTicket(root, task context.Context, cfg *config.Confi
 		log.Error("persist workflow finalization", "err", err)
 		return
 	}
+	capture := freezeWorkflowCheckLog(cfg, log, t, node, run)
+	var hookWarned bool
 	if stageStartCompleted && task.Err() == nil && d.executionCurrent(task, t, path) {
-		hookErr := d.runHooks(task, cfg, log, hook.Context{Event: config.HookStageEnd,
+		warned, hookErr := d.runHooksWithWarnings(task, cfg, log, hook.Context{Event: config.HookStageEnd,
 			TicketID: t.ID, TicketFile: path, Worktree: p.wtPath, RepoPath: p.repoPath, Branch: t.Branch,
 			Stage: node.ID, Agent: p.agentName, ExitCode: new(run.Result.ExitCode), RunOutcome: run.Outcome})
+		hookWarned = warned
 		if hookErr != nil {
 			run.ForcePause, run.Outcome, run.OutcomeReason = true, "failed", hookErr.Error()
 		}
@@ -414,7 +426,13 @@ func (d *Daemon) finishGraphTicket(root, task context.Context, cfg *config.Confi
 	}
 	completion := &pipeline.GraphCompletion{NodeID: node.ID, VisitID: t.GraphState.VisitID,
 		InvocationID: rec.Invocation.ID, Outcome: run.Outcome, Verdict: run.Verdict, ExitCode: run.Result.ExitCode,
-		InfrastructureError: run.ForcePause, Interrupted: run.Result.Interruption != nil || task.Err() != nil}
+		InfrastructureError: run.ForcePause, Interrupted: run.Result.Interruption != nil || task.Err() != nil,
+		SuppressHandoff: hookWarned}
+	// For a successful graph agent, classifyGraphExecution sets OutcomeReason
+	// to the validated result summary, not the transcript's final message.
+	if node.Type == "agent" && run.Outcome == "complete" && run.Reported {
+		completion.Summary = run.OutcomeReason
+	}
 	var after pipeline.GraphAdvance
 	if run.Outcome == "waiting" && !run.ForcePause {
 		after = d.agentWaitAdvance(t, rec, run)
@@ -433,6 +451,9 @@ func (d *Daemon) finishGraphTicket(root, task context.Context, cfg *config.Confi
 		d.finishWorkflowExit(root, saved, p, node, run)
 	}
 	saved, err := d.patchFinalExecution(context.WithoutCancel(task), t, path, rec, func(current *ticket.Ticket) error {
+		if h := after.State.Handoff; capture != nil && !after.Rejected && h != nil && h.Check != nil && h.InvocationID == rec.Invocation.ID {
+			h.Check = capture
+		}
 		appendRunHistory(current, run, p.agentName, node.ID, p.run)
 		if err := d.finishControlAdvance(current, after); err != nil {
 			return err
@@ -449,6 +470,67 @@ func (d *Daemon) finishGraphTicket(root, task context.Context, cfg *config.Confi
 		return
 	}
 	d.completeFinalization(rec, saved)
+}
+
+func freezeWorkflowCheckLog(cfg *config.Config, log *slog.Logger, t *ticket.Ticket, node config.WorkflowNode, run agentRun) *ticket.GraphCheckHandoff {
+	if node.Type != "check" || run.ForcePause || !cfg.Pipelines[t.Pipeline].Graph.UsesPreviousHandoff() {
+		return nil
+	}
+	capture := &ticket.GraphCheckHandoff{ExitCode: run.Result.ExitCode}
+	// Never fall back to the visit log; it can contain another attempt's output.
+	path, err := filepath.Abs(graphLogPath(cfg, t))
+	if err != nil {
+		log.Warn("resolve workflow check log path", "err", err)
+		return capture
+	}
+	capture.LogPath = path
+	if run.Result.LogCaptureError != nil {
+		log.Warn("workflow check log capture incomplete", "err", run.Result.LogCaptureError)
+		return capture
+	}
+	capture.Output, capture.OutputAvailable, capture.OutputTruncated = readGraphHandoffOutput(path)
+	return capture
+}
+
+const graphHandoffOutputLimit = 16 * 1024
+
+func readGraphHandoffOutput(path string) (output string, available, truncated bool) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return "", false, false
+	}
+	defer f.Close()
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		return "", false, false
+	}
+	data, err := io.ReadAll(io.LimitReader(f, graphHandoffOutputLimit+1))
+	if err != nil {
+		return "", false, false
+	}
+	truncated = len(data) > graphHandoffOutputLimit
+	if truncated {
+		data = data[:graphHandoffOutputLimit]
+		// A raw byte limit can land inside a rune. Drop just that suffix;
+		// malformed UTF-8 elsewhere is replaced below.
+		for start := len(data) - 1; start >= len(data)-utf8.UTFMax+1; start-- {
+			if utf8.RuneStart(data[start]) {
+				if !utf8.FullRune(data[start:]) {
+					data = data[:start]
+				}
+				break
+			}
+		}
+	}
+	output = strings.ToValidUTF8(string(data), "\uFFFD")
+	if len(output) > graphHandoffOutputLimit {
+		end := graphHandoffOutputLimit
+		for !utf8.RuneStart(output[end]) {
+			end--
+		}
+		output = output[:end]
+		truncated = true
+	}
+	return output, true, truncated
 }
 
 func (d *Daemon) finishWorkflowExit(root context.Context, saved *ticket.Ticket, p spawnAgentParams, node config.WorkflowNode, run agentRun) {

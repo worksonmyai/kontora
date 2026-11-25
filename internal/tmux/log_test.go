@@ -232,7 +232,7 @@ func TestDrainPaneLogIOFailureStillDrains(t *testing.T) {
 			assert.Zero(t, input.Len())
 			assert.Equal(t, 1, output.writes, "must stop writing after an I/O failure")
 			assert.True(t, output.closed)
-			require.NoError(t, scanner.finish())
+			require.NoError(t, scanner.finish(nil))
 			pattern, err := scan.wait(t.Context())
 			require.NoError(t, err)
 			assert.Equal(t, new("provider error"), pattern)

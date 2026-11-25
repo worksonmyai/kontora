@@ -344,8 +344,9 @@ or containment of arbitrary detached processes.
 Both forms require a running daemon, locally or through `--url`. No offline fallback exists.
 They print the accepted receipt ID. Use stable request/event IDs when retrying uncertain responses.
 
-For a declared human wait, inspect current detail through `GET /api/tickets/{id}` or the TUI.
-Copy `graph_execution.execution_id`, `graph_execution.wait.id` and `graph_execution.revision` from the inspected state:
+For a declared human wait, use **Release wait** in the live web ticket detail and enter a reason. The receipt confirms acceptance; check the recorded execution to see whether the graph advanced.
+
+For CLI release, inspect current detail through `GET /api/tickets/{id}` or the TUI. Copy `graph_execution.execution_id`, `graph_execution.wait.id` and `graph_execution.revision` from the inspected state:
 
 ```sh
 kontora release --execution-id EXECUTION_ID --wait-id WAIT_ID --revision N \
@@ -945,9 +946,50 @@ Runs the daemon in the foreground. Only one instance per config directory: a sec
 
 All setup modes are local-only. Plain `setup` runs the interactive wizard to write a fresh config. `setup --agent` prints a brief for a coding agent without writing a config. The brief describes the schema the installed version accepts.
 
-`setup --recipe implement-review` or `setup --recipe plan-only` prints only the named YAML fragment to stdout. Preview needs no terminal and does not read or edit the config, create tickets, or start work. Do not combine `--recipe` with `--agent` or `--config`.
+`setup --recipe NAME` prints only the named YAML fragment to stdout. Choose `implement-review`, `plan-only`, or the opt-in graph `implement-test-review`. Preview needs no terminal and does not read or edit the config, create tickets, or start work. Do not combine `--recipe` with `--agent` or `--config`.
 
-Replace `YOUR_AGENT` with a configured agent name in each step. Create `stages:` or `pipelines:` if absent. Otherwise, copy only the recipe entries under each key. Keep existing entries and rename any colliding recipe entry. Update recipe steps that refer to a renamed stage. Select a renamed pipeline by its new name. Keep one YAML document and run `kontora doctor`. See [Adding a starter recipe](configuration.md#adding-a-starter-recipe).
+Before merging `implement-test-review`, simulate or preflight with `--recipe`. After merging, preflight with `--config FILE --pipeline NAME`. Verify the real test command separately; neither mode runs it.
+
+Replace `YOUR_AGENT` with a configured agent name in each step or agent node. Create `stages:` or `pipelines:` if absent. Otherwise, copy only the recipe entries under each key. Keep existing entries and rename any colliding recipe entry, updating any references to renamed stages. Keep one YAML document and run `kontora doctor`. See [Adding a starter recipe](configuration.md#adding-a-starter-recipe).
+
+For `implement-test-review`, replace the `tests` node's fail-closed `exit 2` and the repair prompt's `YOUR_TEST_COMMAND` with the same trusted test command for the target repository. Use exit `0` for pass, `1` only for repairable test failures, and another nonzero exit for other failures. The recipe is not installed by the wizard or Docker and does not change any defaults. Create a draft from the target repository (or pass `--path`), explicitly selecting the pipeline or its new name:
+
+```sh
+kontora new --status open --pipeline implement-test-review "Try the test-and-review graph"
+```
+
+The draft does not queue work. For a real run, inspect the draft, commands, hooks, and agent permissions before `kontora run TICKET_ID`. The loop can enter `repair` twice per execution. Retrying the same visit does not spend another repeat. A normally completed check with an exit other than `0` or `1`, an accepted agent failure, `changes_requested`, repair-budget exhaustion, or wait timeout routes to `inspection` (`paused`). Ordinary Retry cannot leave an end node. Launch errors, interruptions, and invalid agent reports can pause at the current visit.
+
+An `approved` agent verdict parks the ticket at a 24-hour human wait, blocking dependents. **Release wait** permits continuation to `handoff` (`human_review`), which resolves the dependency and retains the worktree. Neither release nor the agent verdict approves a particular diff or authorizes publication. The recipe prompts prohibit commits, pushes, and PRs; prompts do not isolate the filesystem or restrict tool permissions.
+
+### `kontora workflow-simulate`
+
+```sh
+kontora workflow-simulate --recipe implement-test-review --scenario scenario.json
+kontora workflow-simulate --recipe implement-test-review --preflight
+kontora workflow-simulate --config /path/to/config.yaml --pipeline implement-test-review --preflight
+```
+
+Choose either the built-in graph recipe (validated with a synthetic agent) or an explicit, complete config and graph pipeline. Choose exactly one mode: `--scenario FILE` or `--preflight`. The command is offline even with `KONTORA_URL` set. It does not invoke agents, checks, hooks, or Git; contact the daemon; or create a config, tickets, worktrees, or logs.
+
+A scenario is a JSON array of ordered events. Each event names an executable node or declared wait in `node`. Executables accept `outcome: complete` or `failed` and an integer `exit_code` from `0` to `255`. Checks require an exit code; agents default to zero. Omitted outcome defaults to `complete` for zero and `failed` otherwise. Checks route by exit code, reject `failed` with zero, and cannot supply a verdict. An agent verdict must be declared. A successful agent must supply one if the node declares verdicts. Wait events use `wait: released` or, when configured, `wait: timeout`, with no completion fields.
+
+For example, save this as `scenario.json` to try one repair and a human release:
+
+```json
+[
+  {"node": "implement"},
+  {"node": "tests", "exit_code": 1},
+  {"node": "repair"},
+  {"node": "tests", "exit_code": 0},
+  {"node": "review", "verdict": "approved"},
+  {"node": "release", "wait": "released"}
+]
+```
+
+The trace prints ordered transitions and the final cursor. An end, a wait with no supplied outcome, and an executable missing its next event are distinct stops and exit zero. A rejected transition, including an unexpected node or extra event after an end, exits nonzero.
+
+Preflight explores agent verdicts that can fit in a result file, normal agent failures, representative shell exits in `0..255`, and declared release/timeout paths. It reports incompatible condition inputs with the preceding result (if any) and a witness path from entry. It exits nonzero when it finds a rejected path or when exploration is **inconclusive** (more work remains after 4,096 interpreter steps). This is a routing check, not a test of actual commands, prompts, runtime failures, agent suspension, or release authority. It does not change config acceptance by the daemon.
 
 ### `kontora doctor`
 

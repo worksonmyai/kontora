@@ -813,7 +813,7 @@ pipelines:
 
 | Node `type` | Fields | Required outgoing ports |
 |-------------|--------|-------------------------|
-| `agent` | `stage` names a prompt template; `agent` names a configured agent. Optional `verdicts` declares allowed result strings; `wake` permits suspension. | `complete`, `failed` |
+| `agent` | `stage` names a prompt template; `agent` names a configured agent. Optional `verdicts` declares allowed result strings; `wake` permits suspension; `handoff: previous` supplies predecessor evidence. | `complete`, `failed` |
 | `wait` | `mode: human` or `deployment`; deployment requires `environment`. Optional positive `timeout`. | `released`; also `timeout` when a timeout is configured |
 | `check` | `command` runs in the worktree; `timeout` must be positive. | `pass` (exit zero), `fail` (nonzero) |
 | `condition` | `when: {field: verdict, equals: approved}` or `when: {field: exit_code, equals: 0}`. | `true`, `false` |
@@ -865,6 +865,42 @@ and clients cannot interpret graph definitions or cursor state.
 Recovery does not promise exactly-once shell or hook
 effects, host-power-loss durability, or containment of arbitrary detached
 processes. A missing tmux window alone does not prove termination.
+
+### Predecessor evidence
+
+Set `handoff: previous` on an agent node to include evidence from the last
+accepted executable on the path to that visit:
+
+```yaml
+- {id: repair, type: agent, stage: repair, agent: claude, handoff: previous}
+```
+
+Conditions, loops, and declared waits do not replace the producer. A check
+supplies its exit code and exact invocation log reference, plus a UTF-8 excerpt
+of the first 16 KiB at most. The prompt distinguishes unavailable, empty, and
+truncated output. Kontora never substitutes another attempt's visit log. A
+successful agent supplies the validated result summary and any declared verdict,
+not transcript text; an ordinary agent failure can identify the producer but
+has no accepted summary or verdict. Suspension, interruption, a rejected
+completion, and failed finalization do not create new evidence.
+
+The evidence is frozen for the destination visit. Retry and same-visit wakes
+reuse it, even if the log changes or disappears. A new visit gets only its own
+predecessor, if opted in; `workflow-restart` starts with no live handoff. There
+is no aggregation across executable nodes. The agent receives the evidence as
+untrusted diagnostic data, separate from wake context.
+
+**Storage and rollout:** If any agent node opts in, accepted check output can be
+saved in local ticket state and recovery journals while a declared wait is
+pending, even if no agent receives it. Only opted-in visits receive the evidence
+in their prompt. Kontora does not guarantee secret redaction. Excerpts are not
+added to ordinary ticket API projections or run history. Ticket upload and
+transfer strip live graph state and reject YAML that shares it with other
+fields. Upgrade all clients and the daemon to matching versions before enabling
+this field; older
+clients can drop fields when rewriting typed state. Omitting the field preserves
+existing fingerprints and behavior. Adding it changes the fingerprint, so use
+it for new executions or restart an existing execution after inspection.
 
 ### Durable waits
 

@@ -171,7 +171,7 @@ func (s *paneLogScanner) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (s *paneLogScanner) finish() error {
+func (s *paneLogScanner) finish(captureErr error) error {
 	for _, scanner := range s.scanners {
 		if scanner.input != nil {
 			_ = scanner.input.Close()
@@ -188,9 +188,14 @@ func (s *paneLogScanner) finish() error {
 	if !s.eof && s.err == nil {
 		s.err = io.ErrUnexpectedEOF
 	}
-	result.Complete = s.err == nil
-	if s.err != nil {
-		result.Error = s.err.Error()
+	resultErr := s.err
+	// Without patterns, this acknowledgement covers the capture itself.
+	if len(s.patterns) == 0 {
+		resultErr = errors.Join(resultErr, captureErr)
+	}
+	result.Complete = resultErr == nil
+	if resultErr != nil {
+		result.Error = resultErr.Error()
 	}
 	return errors.Join(s.err, publishPaneLogScan(s.path, result))
 }

@@ -204,6 +204,9 @@ func normalizeTransfer(t *ticket.Ticket, md []byte) ([]byte, error) {
 		return nil, err
 	}
 	root := doc.Content[0]
+	if err := ticket.RejectGraphStateAliases(root); err != nil {
+		return nil, err
+	}
 	var expected map[string]any
 	if err := root.Decode(&expected); err != nil {
 		return nil, err

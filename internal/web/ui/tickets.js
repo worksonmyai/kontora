@@ -322,7 +322,10 @@ export function kontoraTickets() {
           try {
             const data = await this.ticketRead(signal => this.readTicketJSON('/api/tickets', signal, 'Failed to fetch tickets'));
             if (this._appDestroyed || this.needsAuth) return;
-            const incoming = (data.tickets || []).map(t => this.boardEntry(t));
+            const incoming = (data.tickets || []).map(t => {
+              this._reconcileWorkflowReleaseReceipts?.(t);
+              return this.boardEntry(this.isGraphTicket(t) ? { ...t, _graphDetailPending: true } : t);
+            });
             this._protectPendingMoves?.(incoming, touched);
             this.tickets = this._mergeSnapshot(incoming, this.tickets, touched);
             this._reconcileSnapshotSelection(this.tickets, false, touched);
@@ -357,6 +360,24 @@ export function kontoraTickets() {
         if (!secondary) {
           // The list omits empty refs; a missing field clears the stored value.
           Object.assign(projection, this.liveWaitFields(current), this.changesRefs(current));
+          if (this.isGraphTicket(selected) || this.isGraphTicket(current)) {
+            const before = selected.graph_execution, after = current.graph_execution;
+            const sameRun = before && after && before.execution_id === after.execution_id &&
+              before.revision === after.revision && before.definition_fingerprint === after.definition_fingerprint;
+            if (sameRun && !selected._graphDetailPending) {
+              const { transitions, wait_history, previous_executions } = before;
+              projection.graph_execution = { ...after, transitions, wait_history, previous_executions };
+              projection.last_error = current.last_error ?? selected.last_error;
+              delete projection._graphDetailPending;
+            } else {
+              // Thin lists omit history. Keep known artifact occurrences, but don't treat them as a complete trace.
+              projection.graph_execution = after;
+              projection.history = selected.history;
+              projection.last_error = current.last_error;
+              projection._graphDetailPending = true;
+            }
+            projection.graph_definition = current.graph_definition;
+          }
         }
         this.queueTicketUpdate(projection, { openTerminal: false });
       }
@@ -409,7 +430,7 @@ export function kontoraTickets() {
       return refreshFlight;
     },
 
-    async reloadTicketDetail() {
+    async reloadTicketDetail({ fresh = false } = {}) {
       if (this.currentView === 'archive') return null;
       const ticket = this.selectedTicket || this.selectedEpic;
       if (!ticket) return null;
@@ -424,22 +445,22 @@ export function kontoraTickets() {
       if (!this.sourceAvailable(ticket)) return failed('The ticket folder is unavailable. Return to Tickets and tap Refresh.');
       try {
         if (this.selectedEpic) await this.epicFetchDetail(ticket.id, { refreshing: true });
-        else await this.refreshSelectedTicket();
+        else await this.refreshSelectedTicket({ fresh });
         return { ok: true };
       } catch (e) {
         return failed('Could not refresh this ticket.', e.message);
       }
     },
 
-    refreshSelectedTicket() {
+    refreshSelectedTicket({ fresh = false } = {}) {
       var selected = this.selectedTicket;
       if (!selected || !this.sourceAvailable(selected)) return;
       var detail = this._ticketDetailSeq;
-      if (detailFlight && detailFlight.detail === detail && this.sameTicket(detailFlight.selected, selected)) return detailFlight.promise;
+      if (!fresh && detailFlight && detailFlight.detail === detail && this.sameTicket(detailFlight.selected, selected)) return detailFlight.promise;
       var flight = { selected, detail, promise: null };
       detailFlight = flight;
       flight.promise = this.ticketRead(async signal => {
-        var mine = () => !signal.aborted && !this._appDestroyed && detail === this._ticketDetailSeq &&
+        var mine = () => detailFlight === flight && !signal.aborted && !this._appDestroyed && detail === this._ticketDetailSeq &&
           this.sameTicket(this.selectedTicket, selected) && this.sourceAvailable(selected);
         const key = this.ticketKey(selected);
         if (this._editorSaves[key]?.pending) await this._waitEditorSaves(key);
@@ -632,6 +653,7 @@ export function kontoraTickets() {
 
     applyTicketUpdate(ticket, outputOptions) {
       if (this.isSecondary(ticket)) { this.applySecondaryUpdate(ticket); return; }
+      this._reconcileWorkflowReleaseReceipts?.(ticket);
       if (!outputOptions?.optimisticMove) this._touchTicket(ticket);
       this._noteReconcileTicket?.(ticket);
       this.refreshInitContext(ticket.id);
@@ -707,6 +729,9 @@ export function kontoraTickets() {
             this.selectedTicket.attempt = ticket.attempt;
             this.selectedTicket.graph_definition = ticket.graph_definition;
             this.selectedTicket.graph_execution = ticket.graph_execution;
+            this.selectedTicket._graphDetailPending = ticket._graphDetailPending;
+            this.selectedTicket.last_error = ticket.last_error;
+            this.selectedTicket.can_control = ticket.can_control;
             this.selectedTicket.invocation_id = ticket.invocation_id;
             this.selectedTicket.started_at = ticket.started_at;
             this.selectedTicket.finished_at = ticket.finished_at;
@@ -995,40 +1020,79 @@ export function kontoraTickets() {
       const x = t?.graph_execution, w = x?.wait;
       if (!this.workflowWaiting(t)) return '';
       if (w.disarmed) return 'Wait is disarmed. Inspect diagnostics, then explicitly retry to rearm; retry does not release the wait.';
-      if (w.kind === 'human') return 'kontora release ' + t.id + ' --execution-id ' + x.execution_id + ' --wait-id ' + w.id + ' --revision ' + x.revision + ' --request-id <unique-id> --reason <reason>';
+      if (w.kind === 'human') {
+        if (t._graphDetailPending) return 'Refresh and inspect the current wait before releasing it.';
+        if (!Number.isSafeInteger(x.revision)) return 'Use the CLI to inspect the exact revision before releasing this wait.';
+        if (w.phase !== 'pending' || t.invocation_id || w.invocation_id) return 'This wait is not ready for release. Inspect its diagnostics.';
+        return 'kontora release ' + t.id + ' --execution-id ' + x.execution_id + ' --wait-id ' + w.id + ' --revision ' + x.revision + ' --request-id <unique-id> --reason <reason>';
+      }
       if (w.kind === 'deployment') return 'Report the actual full deployed commit (required: ' + w.required_commit + '): kontora release --repo ' + quoteShellArg(w.worktree) + ' --environment ' + quoteShellArg(w.environment) + ' --rev <full-deployed-commit> --event-id <unique-id>';
       return 'The daemon resumes this visit automatically when the timer or check is satisfied, or its deadline expires.';
     },
 
-    graphText(t) {
-      if (!this.isGraphTicket(t)) return '';
-      const d = t.graph_definition;
-      const x = t.graph_execution;
-      const lines = [];
-      if (d) lines.push('entry: ' + d.entry);
-      if (x) {
-        lines.push('current: ' + x.current_node + (x.current_template ? ' · template ' + x.current_template : ''));
-        lines.push('execution: ' + x.execution_id + ' · revision ' + x.revision + ' · visit ' + x.visit + ' · attempt ' + ((x.attempt || 0) + 1));
-        if (x.last_result) lines.push('result: ' + x.last_result.node_id + ' · visit ' + x.last_result.visit_id + ' · ' + x.last_result.outcome + (x.last_result.verdict ? ' · verdict ' + x.last_result.verdict : '') + (x.last_result.exit_code !== undefined ? ' · exit ' + x.last_result.exit_code : ''));
-        lines.push('wake count: ' + (x.wake_count || 0) + (x.continuation ? ' · continuation (not a retry)' : ''));
-        if (x.wake) lines.push('wake: ' + x.wake.reason + ' · wait ' + x.wake.wait_id + ' · count ' + x.wake.count + '\n' + (x.wake.output || '') + '\nnext: ' + (x.wake.next || ''));
-        if (x.wait) lines.push(this.workflowWaitText(x.wait), this.workflowReleaseInstructions(t));
-        for (const w of x.wait_history || []) lines.push(this.workflowWaitText(w, 'historical wait'));
-        for (const loop of x.loops || []) lines.push('loop ' + loop.node_id + ': ' + loop.used + ' / ' + (loop.max > 0 ? loop.max : 'unknown') + (loop.exhausted ? ' · exhausted' : ''));
+    workflowTransitionText(edge) {
+      return edge ? 'r' + edge.revision + ': ' + edge.from + '.' + edge.port + ' -> ' + edge.to : '';
+    },
+
+    workflowCursorText(t) {
+      const x = t?.graph_execution;
+      if (!x) return '';
+      const lines = ['Current node: ' + x.current_node + (x.current_template ? ' · template ' + x.current_template : ''),
+        'Execution ' + x.execution_id + ' · revision ' + x.revision + ' · visit ' + x.visit + ' · attempt ' + ((x.attempt || 0) + 1)];
+      const last = x.transitions?.at(-1);
+      if (last) lines.push('Latest transition: ' + this.workflowTransitionText(last));
+      const result = x.last_result;
+      if (result) {
+        lines.push('Last result: ' + result.node_id + ' · ' + result.outcome + (result.verdict ? ' · verdict ' + result.verdict : '') + (result.exit_code !== undefined ? ' · exit ' + result.exit_code : ''));
+        const reason = result.invocation_id && t.history?.find(row => row.workflow_execution_id === x.execution_id &&
+          row.node_visit_id === result.visit_id && row.invocation_id === result.invocation_id)?.outcome_reason;
+        if (reason) lines.push('Result reason: ' + reason);
       }
-      for (const n of d?.nodes || []) lines.push(n.id + ' [' + n.type + ']' + (n.template ? ' · template ' + n.template : '') + (n.command ? ' · ' + n.command : '') + (n.when ? ' · ' + n.when.field + ' = ' + JSON.stringify(n.when.equals) : '') + (n.type === 'loop' ? ' · max ' + n.max : '') + (n.mode ? ' · mode ' + n.mode : '') + (n.environment ? ' · environment ' + n.environment : '') + (n.timeout ? ' · timeout ' + n.timeout : '') + (n.wake ? ' · wake max ' + n.wake.max + ' · check timeout ' + n.wake.check_timeout : '') + (n.status ? ' · ' + n.status : ''));
-      for (const e of d?.edges || []) {
-        const selected = (x?.selected_edges || []).some(s => s.from === e.from.node && s.port === e.from.port && s.to === e.to);
-        lines.push((selected ? '[selected] ' : '') + e.from.node + '.' + e.from.port + ' -> ' + e.to);
-      }
-      for (const e of x?.transitions || []) lines.push('r' + e.revision + ': ' + e.from + '.' + e.port + ' -> ' + e.to);
-      for (const previous of x?.previous_executions || []) {
-        lines.push('previous execution: ' + previous.execution_id);
-        if (previous.wait) lines.push(this.workflowWaitText(previous.wait, 'retained wait'));
-        for (const w of previous.wait_history || []) lines.push(this.workflowWaitText(w, 'historical wait'));
-        for (const e of previous.transitions || []) lines.push('r' + e.revision + ': ' + e.from + '.' + e.port + ' -> ' + e.to);
-      }
+      for (const loop of x.loops || []) lines.push('Loop ' + loop.node_id + ': ' + loop.used + ' / ' + (loop.max > 0 ? loop.max : 'unknown') + (loop.exhausted ? ' · exhausted' : ''));
       return lines.join('\n');
+    },
+
+    workflowTraceText(x) {
+      if (!x) return '';
+      const lines = (x.transitions || []).map(e => this.workflowTransitionText(e));
+      if (x.wake) lines.push('Wake: ' + x.wake.reason + ' · wait ' + x.wake.wait_id + ' · count ' + x.wake.count + (x.continuation ? ' · continuation (not a retry)' : '') + '\n' + (x.wake.output || '') + '\nNext: ' + (x.wake.next || ''));
+      for (const w of x.wait_history || []) lines.push(this.workflowWaitText(w, 'Historical wait'));
+      return lines.join('\n');
+    },
+
+    workflowCurrentDefinition(t) {
+      const infos = this.configCache?.pipeline_infos;
+      if (!t?.pipeline || this.isSecondary(t) || !Array.isArray(infos)) return t?.graph_definition;
+      return infos.find(p => p.name === t.pipeline)?.graph_definition;
+    },
+
+    showWorkflowGraph(t) {
+      return !!(t?.graph_execution || this.workflowCurrentDefinition(t));
+    },
+
+    workflowConfigText(d) {
+      if (!d) return 'No graph is configured for this pipeline.';
+      const lines = ['Entry: ' + d.entry];
+      for (const n of d.nodes || []) lines.push(n.id + ' [' + n.type + ']' + (n.template ? ' · template ' + n.template : '') + (n.command ? ' · ' + n.command : '') + (n.when ? ' · ' + n.when.field + ' = ' + JSON.stringify(n.when.equals) : '') + (n.type === 'loop' ? ' · max ' + n.max : '') + (n.mode ? ' · mode ' + n.mode : '') + (n.environment ? ' · environment ' + n.environment : '') + (n.timeout ? ' · timeout ' + n.timeout : '') + (n.wake ? ' · wake max ' + n.wake.max + ' · check timeout ' + n.wake.check_timeout : '') + (n.status ? ' · ' + n.status : ''));
+      for (const e of d.edges || []) lines.push(e.from.node + '.' + e.from.port + ' -> ' + e.to);
+      return lines.join('\n');
+    },
+
+    workflowRunRows(t, execution) {
+      if (!execution?.execution_id || t?._graphDetailPending) return [];
+      return this.historyArtifactRuns(t).filter(({ history }) => history.workflow_execution_id === execution.execution_id && history.node_visit_id && !history.kind);
+    },
+
+    workflowCanOpenRun(t, row) {
+      return !!t && !this.isSecondary(t) && t.status !== 'archived' && !row.imported &&
+        !!row.history.completed_at && !row.history.completed_at.startsWith('0001-');
+    },
+
+    openWorkflowRun(row) {
+      const t = this.selectedTicket;
+      if (!this.workflowCanOpenRun(t, row) || t?._graphDetailPending || t.history?.[row.historyIndex] !== row.history) return;
+      const run = this.historyArtifactRun(row.historyIndex, t);
+      if (run !== null) this.openActivity(row.stage, run);
     },
 
     canRestartGraph(ticket = this.selectedTicket) {

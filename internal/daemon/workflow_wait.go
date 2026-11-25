@@ -52,12 +52,7 @@ func (d *Daemon) signalWorkflowWait() {
 }
 
 func workflowStateVersion(graph *config.WorkflowGraph) int {
-	for _, node := range graph.Nodes {
-		if node.Type == "wait" || node.Wake != nil {
-			return 2
-		}
-	}
-	return 1
+	return pipeline.GraphStateVersion(graph)
 }
 func workflowWait(t *ticket.Ticket) *ticket.WorkflowWait {
 	if t == nil || t.GraphState == nil || t.GraphState.Wait == nil || t.Status == ticket.StatusCancelled || t.Status == ticket.StatusArchived || t.Status == ticket.StatusDone {

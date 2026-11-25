@@ -21,8 +21,8 @@ test('paused plus durable wait projects Waiting without inventing a status', () 
   assert.equal(t.status, 'paused');
   assert.equal(s.workflowStatusLabel({ status: 'paused' }), 'paused');
   assert.equal(s.workflowStatusLabel({ ...t, status: 'done' }), 'done');
-  const text = s.graphText(t);
-  for (const fragment of ['Waiting: human', 'polls: 3', 'deadline: 2026-', 'wake count: 2', 'Review sign-off', '<script>not HTML</script>', 'historical wait: timer', 'receipt: receipt']) assert.ok(text.includes(fragment), fragment);
+  const text = s.workflowWaitText(t.graph_execution.wait) + '\n' + s.workflowTraceText(t.graph_execution);
+  for (const fragment of ['Waiting: human', 'polls: 3', 'deadline: 2026-', 'Review sign-off', '<script>not HTML</script>', 'Historical wait: timer', 'receipt: receipt']) assert.ok(text.includes(fragment), fragment);
   assert.match(s.workflowReleaseInstructions(t), /kontora release ticket --execution-id exec --wait-id wait --revision 7 --request-id/);
   t.graph_execution.wait.disarmed = true;
   assert.match(s.workflowReleaseInstructions(t), /retry does not release/);

@@ -18,6 +18,7 @@ type GraphState struct {
 	LoopLimits            map[string]int    `yaml:"loop_limits,omitempty" json:"loop_limits,omitempty"`
 	LoopCounts            map[string]int    `yaml:"loop_counts,omitempty" json:"loop_counts,omitempty"`
 	LastResult            *GraphResult      `yaml:"last_result,omitempty" json:"last_result,omitempty"`
+	Handoff               *GraphHandoff     `yaml:"handoff,omitempty" json:"handoff,omitempty"`
 	Transitions           []GraphTransition `yaml:"transitions,omitempty" json:"transitions,omitempty"`
 	PreviousExecutions    []GraphEvidence   `yaml:"previous_executions,omitempty" json:"previous_executions,omitempty"`
 	Wait                  *WorkflowWait     `yaml:"wait,omitempty" json:"wait,omitempty"`
@@ -157,6 +158,40 @@ type GraphResult struct {
 	Outcome      string `yaml:"outcome" json:"outcome"`
 }
 
+// GraphHandoff holds materialized evidence from one accepted executable. It
+// is pending at a control cursor until bound to a DestinationVisitID. It is
+// local execution state, not part of run history or public projections.
+type GraphHandoff struct {
+	ExecutionID        string             `yaml:"execution_id" json:"execution_id"`
+	NodeID             string             `yaml:"node_id" json:"node_id"`
+	VisitID            string             `yaml:"visit_id" json:"visit_id"`
+	InvocationID       string             `yaml:"invocation_id" json:"invocation_id"`
+	DestinationVisitID string             `yaml:"destination_visit_id,omitempty" json:"destination_visit_id,omitempty"`
+	Check              *GraphCheckHandoff `yaml:"check,omitempty" json:"check,omitempty"`
+	Summary            string             `yaml:"summary,omitempty" json:"summary,omitempty"`
+	Verdict            string             `yaml:"verdict,omitempty" json:"verdict,omitempty"`
+}
+
+type GraphCheckHandoff struct {
+	ExitCode        int    `yaml:"exit_code" json:"exit_code"`
+	LogPath         string `yaml:"log_path,omitempty" json:"log_path,omitempty"`
+	Output          string `yaml:"output,omitempty" json:"output,omitempty"`
+	OutputAvailable bool   `yaml:"output_available,omitempty" json:"output_available,omitempty"`
+	OutputTruncated bool   `yaml:"output_truncated,omitempty" json:"output_truncated,omitempty"`
+}
+
+func (h *GraphHandoff) Clone() *GraphHandoff {
+	if h == nil {
+		return nil
+	}
+	out := *h
+	if h.Check != nil {
+		check := *h.Check
+		out.Check = &check
+	}
+	return &out
+}
+
 type GraphTransition struct {
 	From      string `yaml:"from" json:"from"`
 	Port      string `yaml:"port" json:"port"`
@@ -174,6 +209,7 @@ func (s *GraphState) Clone() *GraphState {
 	out.LoopLimits = maps.Clone(s.LoopLimits)
 	out.LoopCounts = maps.Clone(s.LoopCounts)
 	out.Transitions = slices.Clone(s.Transitions)
+	out.Handoff = s.Handoff.Clone()
 	out.Wait = s.Wait.Clone()
 	out.Wake = s.Wake.Clone()
 	out.WaitHistory = cloneWaitHistory(s.WaitHistory)

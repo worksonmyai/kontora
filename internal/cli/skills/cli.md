@@ -933,21 +933,53 @@ Local only, and it does not return.
 Plain `setup` runs the interactive wizard to write a fresh config.
 `setup --agent` prints the setup brief without writing a config.
 
-Use `kontora setup --recipe implement-review` or `kontora setup --recipe plan-only`
-to print only the named YAML fragment. Preview needs no terminal and does not
-read or change the config, create tickets, or start work. Do not combine it with
-`--agent` or `--config`.
+Use `kontora setup --recipe NAME` to print only the named YAML fragment. Choose
+`implement-review`, `plan-only`, or the opt-in graph `implement-test-review`.
+Preview needs no terminal and does not read or change the config, create tickets,
+or start work. Do not combine it with `--agent` or `--config`.
 
-To install a recipe, replace `YOUR_AGENT` with a configured agent name in each step.
-Create `stages:` or `pipelines:` if absent. Otherwise, copy only the recipe entries
-under each key. Keep existing entries and rename any colliding recipe entry.
-Update recipe steps that refer to a renamed stage. Keep one YAML document and run
-`kontora doctor` after the merge.
+To install a recipe, replace `YOUR_AGENT` with a configured agent name in each step
+or agent node. Merge the entries under `stages:` and `pipelines:` without replacing
+existing entries. Rename collisions and update references to renamed stages. For
+`implement-test-review`, replace the `tests` node's `exit 2` and the repair
+prompt's `YOUR_TEST_COMMAND` with the same trusted test command. Use `0` for
+pass, `1` only for repairable test failures, and another nonzero exit for other
+failures. Keep one YAML document and run `kontora doctor` after the merge.
 
-Select a recipe on a draft with `kontora new --status open --pipeline implement-review "TITLE"`.
-Run the example from the target repository's main checkout. From another directory,
-pass `--path` with the target repository's path. Use `--pipeline plan-only` to request
-a plan without implementation. If you renamed a pipeline, select it by its new name.
+Select a recipe explicitly on a draft, for example
+`kontora new --status open --pipeline implement-test-review "TITLE"`.
+Run the example from the target repository's main checkout or pass `--path`.
+Use `--pipeline plan-only` for a plan without implementation. If you renamed a
+pipeline, select it by its new name.
+
+## kontora workflow-simulate
+
+`kontora workflow-simulate --recipe implement-test-review --scenario scenario.json`
+
+`kontora workflow-simulate --config /path/to/config.yaml --pipeline NAME --preflight`
+
+Choose one source (the built-in graph recipe or an explicit config and graph
+pipeline) and one mode (`--scenario FILE` or `--preflight`). The command is
+read-only and offline, ignoring `KONTORA_URL`. It never runs checks, hooks, Git,
+or agents, and never opens a ticket store or makes worktrees or logs.
+
+A scenario is a JSON array. Each event names an executable node or declared wait
+in `node`. Executables accept `outcome: complete` or `failed` and an integer
+`exit_code` from `0` to `255`. Checks require an exit code; agents default to
+zero. Omitted outcome defaults to `complete` for zero and `failed` otherwise.
+Checks route by exit code, reject `failed` with zero, and cannot supply a verdict.
+An agent verdict must be declared. A successful agent must supply one if the node
+declares verdicts. Wait events use `wait: released` or, when configured,
+`wait: timeout`, with no completion fields.
+
+The final line distinguishes end, waiting, missing input, and rejection. Only
+rejection exits nonzero among those stops.
+
+Preflight reports reachable incompatible condition inputs with a witness path.
+Rejections and inconclusive exploration (more than 4,096 interpreter steps
+needed) exit nonzero. It models normal completions and declared waits, not real
+execution, suspension, or release authority. See the `pipelines` skill for a
+starter scenario.
 
 ## kontora doctor
 

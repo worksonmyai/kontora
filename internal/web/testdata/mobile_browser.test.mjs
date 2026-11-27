@@ -4126,7 +4126,7 @@ test('small phone can tap the first attention row without scrolling', async t =>
     await row.tap();
     await page.waitForURL('**/#/t/kon-attention');
     await expect(mobileDetail(page).getByRole('status').filter({ hasText: 'Loading ticket…' })).toBeHidden();
-  }, { height: 568, hasTouch: true, records: [ticket('kon-attention', 'First attention ticket', { status: 'human_review' })] });
+  }, { height: 568, hasTouch: true, onlyRecords: true, records: [ticket('kon-attention', 'First attention ticket', { status: 'human_review' })] });
 });
 
 test('phone Activity gets half the viewport with long ticket metadata', async t => {

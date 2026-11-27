@@ -227,6 +227,36 @@ objects with `id`, `title`, `status`, `kontora`, `path`, `project`, `pipeline`,
 `child_order` is stored display order, not membership. Read each child's `parent`
 across the complete listing to find all children. The listing omits the ticket body.
 
+## Polling for ticket attention
+
+Poll the daemon with a read-only `GET /api/tickets` request. Use the API because
+`kontora ls --json` omits `waiting_for_input` in both local and remote mode.
+
+Set `KONTORA_URL` to the daemon's web URL. Set `KONTORA_TOKEN` to that daemon's
+bearer token. If the daemon requires no token, unset `KONTORA_TOKEN`. Use a URL
+that the shell can reach directly: the snippet bypasses proxies to protect
+loopback bearer tokens.
+
+Run the Bash snippet with `curlie` and `jq` in an external shell at each polling
+interval. The dashboard assistant can show the recipe. It refuses the snippet in
+read mode and requires approval in ask and auto modes.
+
+```bash
+set -o pipefail
+url=${KONTORA_URL:?Set KONTORA_URL to the daemon URL}
+while [[ $url == */ ]]; do url=${url%/}; done
+args=(--noproxy '*' --fail --silent --show-error --max-time 5 GET "$url/api/tickets")
+if [[ -n ${KONTORA_TOKEN:-} ]]; then args+=("Authorization:Bearer $KONTORA_TOKEN"); fi
+curlie "${args[@]}" | jq -ce '[.tickets[] | select(.status == "human_review" or .waiting_for_input == true)]'
+```
+
+Each successful poll prints a JSON array of tickets on the primary board in
+`human_review` or with a live question reported by a Pi stage. It prints `[]`
+when neither condition matches. A parked workflow does not imply a live question.
+Polling can miss short-lived changes between reads. Use `hooks` for worktree
+or stage actions. For scheduled agent runs, use Automations (see
+`kontora skills show cli 'kontora automation'`).
+
 ## kontora search
 
 `kontora search [flags] QUERY` — match a Go regular expression against every

@@ -906,7 +906,7 @@
 </head>
 
 <body class="app-shell bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal || _initOpening) closeInitModal(); else if (settingsGuard) { if (!settingsSaving) settingsGuardKeepEditing(); } else if (automationsDeleteOpen) automationsCloseDelete(); else if (automationsMenu) automationsMenu = false; else if (currentView === 'automations' && (automationsDetail || automationsEditing)) { if (terminalRW && terminalWanted()) toggleTerminalRW(); else automationsBack(); } else if (sheet) closeSheet(); else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) { if (dismissStageTooltip($event.repeat)) $event.preventDefault(); else closeDetail(); } else if (selectedEpic) closeEpic(); else if (assistantEscape()) {}"
+      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal || _initOpening) closeInitModal(); else if (settingsGuard) { if (!settingsSaving) settingsGuardKeepEditing(); } else if (automationsDeleteOpen) automationsCloseDelete(); else if (automationsMenu) automationsMenu = false; else if (currentView === 'automations' && (automationsDetail || automationsEditing)) { if (terminalRW && terminalWanted()) toggleTerminalRW(); else automationsBack(); } else if (sheet) closeSheet(); else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) { if (dismissStageTooltip($event.repeat)) $event.preventDefault(); else if (isMobile) mobileDetailBack(); else closeDetail(); } else if (selectedEpic) { if (isMobile) mobileDetailBack(); else closeEpic(); } else if (isMobile && currentView === 'board' && mobileColumnKey) mobileColumnBack(); else if (assistantEscape()) {}"
       @keyup.escape.window.capture="_stageTooltipEscapeHeld = false"
       @blur.window="_stageTooltipEscapeHeld = false"
       @dragenter="onUploadDragEnter($event)"
@@ -1623,8 +1623,7 @@
 
   <!-- Phone chrome precedes the shared host so header height is intrinsic. -->
   <template x-if="isMobile">
-    <header class="mobile-chrome" :class="{ 'mobile-chrome-refresh-failed': currentView === 'board' && (ticketsLoadError || ticketSourcesFailed()) }"
-            data-mobile-sheet-background data-mobile-board-background>
+    <header x-show="currentView !== 'board'" class="mobile-chrome" data-mobile-sheet-background data-mobile-board-background>
     <div class="mobile-chrome-inner">
       <div class="mobile-app-bar">
         <div class="mobile-wordmark">
@@ -1634,28 +1633,13 @@
             <span class="mobile-running-label" style="color:rgba(var(--surface-600),1);">running</span>
           </span>
         </div>
-        <button type="button" x-show="currentView === 'board'" x-ref="mobileRefresh" @click="refreshTickets()" :disabled="loading || ticketsRefreshing" aria-label="Refresh tickets" class="mobile-control">Refresh</button>
-        <button type="button" x-show="currentView === 'board'" @click="mobileNavigate('new')" class="mobile-primary" aria-label="New ticket">New</button>
-      </div>
-      <div x-show="currentView === 'board'" class="mobile-board-filters">
-        <div class="mobile-search-row">
-          <input type="search" x-model="searchQuery" placeholder="Search tickets" aria-label="Search tickets" class="mobile-ticket-search"/>
-          <button type="button" x-ref="mobileFilters" @click="sheet = { type: 'filters' }" class="mobile-control" aria-haspopup="dialog">Filters</button>
-          <button type="button" x-ref="mobileNeedsInputToggle" @click="toggleNeedsInput()" :aria-pressed="needsInputOnly" class="mobile-control mobile-input-filter">
-            Needs input <span x-text="needsInputCount"></span>
-          </button>
-        </div>
-        <div class="mobile-filter-tools">
-          <span x-text="mobileFilterSummary()" class="mobile-filter-summary"></span>
-          <span role="status" x-show="mobileTicketCountKnown()"
-                x-text="mobileIncompleteCount() || mobileTicketList().rows.length + ' tickets'"></span>
-        </div>
       </div>
     </div>
 
     </header>
   </template>
 
+  <div x-show="isMobile && !loading && currentView === 'board' && !selectedTicket && !selectedEpic" x-cloak class="mobile-board-safe-top" aria-hidden="true"></div>
   <div x-show="!loading && currentView === 'board' && !selectedTicket && !selectedEpic && (ticketsRefreshing || ticketsLoadError || ticketSourcesFailed())" x-cloak
        class="ticket-refresh-banner shrink-0 px-4 py-2 font-mono text-[12px] text-warn border-b border-surface-700" data-mobile-sheet-background>
     <div role="status" aria-label="Ticket refresh status" :tabindex="isMobile && (ticketsLoadError || ticketSourcesFailed()) ? 0 : null">
@@ -1671,6 +1655,10 @@
   </div>
   <p x-show="!isMobile && currentView === 'board' && (selectedTicket || selectedEpic) && ticketDetailRefreshError" x-cloak
      x-text="ticketDetailRefreshError" role="alert" class="px-4 py-2 text-sm text-warn"></p>
+  <p x-show="!isMobile && currentView === 'board' && lifecycleNeedsReconciliation(selectedTicket || selectedEpic)" x-cloak class="px-4 py-2 text-sm text-warn">
+    The last request could not be verified.
+    <button type="button" class="text-accent underline" @click="lifecycleRefreshTicket(selectedTicket || selectedEpic)">Refresh ticket</button>
+  </p>
 
   <!-- This host survives every route and breakpoint. Only board/detail layers
        are exclusive; routed New, Stats, Archive and Settings are shared. -->
@@ -5457,15 +5445,82 @@
     </template>
   <!-- ============================================================= -->
   <!-- Mobile (phone-width) layer. Not built at all on desktop/tablet.-->
-  <!-- Reuses the same Alpine data + ticket operations; only the      -->
-  <!-- layout and a few view-state fields (activeColumn, detailTab,   -->
-  <!-- sheet) differ.                                                 -->
+  <!-- Shares ticket data and operations with desktop. Phone lists  -->
+  <!-- have their own projections and view state.                    -->
   <!-- ============================================================= -->
   <template x-if="isMobile">
   <div x-show="!loading && currentView === 'board'" class="mobile-board-layer">
 
-    <div data-mobile-board-background x-ref="mobileCardList" class="mobile-ticket-list">
-      <template x-if="!needsInputOnly && ticketBoardEmpty()">
+    <template x-if="currentView === 'board' && !selectedTicket && !selectedEpic">
+    <div data-mobile-board-background x-ref="mobileCardList" class="mobile-ticket-list mobile-ios-list" tabindex="-1" data-compact-scroll>
+      <template x-if="!mobileColumnKey">
+        <header class="mobile-ios-home-header">
+          <div class="mobile-ios-top">
+            <span class="running-pill mobile-running-pill" :class="{ 'is-idle': runningAgents + automationsRunningCount() === 0 }" x-text="(runningAgents + automationsRunningCount()) + ' running'"></span>
+            <button type="button" data-mobile-list-key="filters" @click="sheet = { type: 'filters' }" class="mobile-ios-icon-button" aria-label="Filters" aria-haspopup="dialog">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M7 12h10m-7 6h4"/></svg>
+            </button>
+            <button type="button" @click="mobileNavigate('new')" class="mobile-ios-icon-button mobile-ios-add" aria-label="New ticket">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14m-7-7v14"/></svg>
+            </button>
+          </div>
+          <h1 tabindex="-1" data-mobile-list-heading>Tickets</h1>
+          <input type="search" x-model="searchQuery" placeholder="Search tickets" aria-label="Search tickets" class="mobile-ticket-search"/>
+          <div class="mobile-filter-tools" x-show="mobileHomeFiltered() || mobileProjectFilter || mobileAgentFilter || sourceFilter || mobileIncompleteCount() || ticketBoardEmpty()">
+            <span x-text="mobileFilterSummary()" class="mobile-filter-summary"></span>
+            <span role="status" x-show="mobileTicketCountKnown()" x-text="mobileIncompleteCount() || mobileTicketList().rows.length + ' tickets'"></span>
+            <button type="button" x-show="needsInputOnly" @click="toggleNeedsInput(); $nextTick(() => $el.closest('header').querySelector('[data-mobile-list-heading]')?.focus({ preventScroll: true }))">Turn off Needs input filter</button>
+            <button type="button" x-show="mobileHomeFiltered() || mobileProjectFilter || mobileAgentFilter || sourceFilter" @click="mobileClearFilters()">Clear filters</button>
+          </div>
+          <div class="mobile-ios-tiles" x-show="!mobileHomeFiltered()">
+            <template x-for="tile in mobileHomeTiles()" :key="tile.key">
+              <button type="button" class="mobile-ios-tile" :data-ios-status="tile.key" :data-mobile-list-key="tile.key" @click="mobileHomeTile(tile)">
+                <span class="mobile-ios-tile-icon" aria-hidden="true" x-html="mobileListIcon(tile.key)"></span>
+                <strong x-text="mobileTicketCountKnown() ? tile.count : '–'"></strong><span x-text="tile.label"></span>
+              </button>
+            </template>
+          </div>
+        </header>
+      </template>
+      <template x-if="mobileColumnKey">
+        <div class="mobile-ios-column-header">
+          <div class="mobile-ios-column-nav" x-show="!mobileSelecting">
+            <button type="button" class="mobile-control" @click="mobileColumnBack()" data-mobile-column-back aria-label="Back to Tickets">‹ Tickets</button>
+            <div>
+              <button type="button" class="mobile-control" @click="sheet = { type: 'filters' }" aria-haspopup="dialog">Filters</button>
+              <button type="button" class="mobile-control" x-show="['open', 'human_review'].includes(mobileColumnKey) && !mobileColumnRouteError" @click="mobileStartSelection()">Select</button>
+            </div>
+          </div>
+          <template x-if="mobileSelecting">
+            <div class="mobile-ios-column-nav">
+              <button type="button" class="mobile-control" @click="mobileEndSelection()">Cancel</button>
+              <span role="status" x-text="mobileSelection.length + ' selected'"></span>
+              <button type="button" class="mobile-control" @click="mobileToggleSelectAll()" :disabled="!mobileEligibleSelection().length" x-text="mobileAllSelected() ? 'Deselect All' : 'Select All'"></button>
+            </div>
+          </template>
+          <h1 data-mobile-list-heading tabindex="-1" x-text="mobileColumnDefinition()?.label || 'Tickets'"></h1>
+          <template x-if="mobileColumnRouteError">
+            <div><p role="alert" x-text="mobileColumnRouteError"></p><button type="button" class="mobile-control" @click="retryMobileColumnRoute()">Retry list</button></div>
+          </template>
+          <template x-if="mobileColumnDefinition() && !mobileColumnRouteError">
+            <div>
+              <p class="mobile-ios-subtitle" role="status" x-text="mobileColumnCount()"></p>
+              <input type="search" :value="mobileColumnPreference()?.query || ''" @input="mobileColumnQuery($event.target.value)" placeholder="Search this list" aria-label="Search this list" class="mobile-ticket-search"/>
+              <div x-show="mobileSelecting" class="mobile-ios-projects" aria-label="Filter by project">
+                <template x-for="project in mobileSelecting ? mobileSelectionProjects() : []" :key="project.name">
+                  <button type="button" :aria-pressed="mobileProjectFilter === project.name" @click="mobileProjectFilter = project.name" x-text="project.label + ' ' + project.count"></button>
+                </template>
+              </div>
+              <div class="mobile-ios-segments-control" role="group" aria-label="Group tickets">
+                <button type="button" :aria-pressed="mobileColumnMode() === 'day'" @click="mobileColumnModeChange('day')">By day</button>
+                <button type="button" :aria-pressed="mobileColumnMode() === 'project'" @click="mobileColumnModeChange('project')">By project</button>
+              </div>
+              <p x-show="!mobileColumnRows().length" class="mobile-list-empty" role="status" x-text="mobileIncompleteCount() ? 'No matches in loaded tickets.' : 'No tickets match this list.'"></p>
+            </div>
+          </template>
+        </div>
+      </template>
+      <template x-if="!mobileColumnKey && !needsInputOnly && ticketBoardEmpty()">
         <div id="board-empty-mobile" style="border:1px solid rgba(var(--surface-700),.6);border-radius:12px;background:rgba(var(--surface-900),1);padding:18px 16px;margin-top:6px;display:flex;flex-direction:column;gap:12px;">
           <div style="font-size:15px;font-weight:600;color:rgba(var(--tx),1);">The board is empty</div>
           <p class="mobile-prose text-tx-3 m-0">A ticket is one piece of work. Kontora gives it a git worktree and runs the pipeline stages on it.</p>
@@ -5477,84 +5532,119 @@
           <button @click="copyCmd(agentSetupRequest)" class="mobile-control" x-text="copiedCmd === agentSetupRequest ? '\u2713 copied' : 'copy request'"></button>
         </div>
       </template>
-      <div x-show="needsInputOnly && !needsInputCount" class="px-4 py-2 text-sm text-tx-3">
-        <p role="status">No agents need input among tickets matching your filters.</p>
-        <button type="button" class="text-accent underline" @click="toggleNeedsInput(); $refs.mobileNeedsInputToggle.focus()">Turn off Needs input filter</button>
-      </div>
-      <p x-show="!ticketBoardEmpty() && !ticketsLoadError && !ticketSourcesFailed() && !mobileTicketList().rows.length && !mobileTicketList().epics.length && (!needsInputOnly || needsInputCount)"
-         class="mobile-list-empty">No tickets match the current filters and search.</p>
-      <template x-for="(ticket, index) in mobileTickets()" :key="ticketKey(ticket)">
-        <div class="mobile-list-item">
-        <template x-if="mobileTicketList().headings[index]">
-          <h2 class="mobile-list-heading" x-text="mobileTicketList().headings[index]"></h2>
-        </template>
-        <button type="button" @click="openMobileTicket(ticket)" :data-mobile-ticket-key="ticketKey(ticket)" class="mobile-card shrink-0"
-                :data-pipe-color="ticketPipeColor(ticket)"
-                :style="(ticket.status==='cancelled' ? 'opacity:.62;' : (ticket.status === 'open' && ticket.scheduled_at ? 'opacity:.72;' : '')) + (!ticket.kontora ? 'border-style:dashed;' : '')">
-          <p class="mobile-card-title" :style="ticket.status==='cancelled' ? 'text-decoration:line-through;text-decoration-color:rgba(var(--surface-600),.6);' : ''">
-            <template x-if="parseTitleTag(ticket).tag"><span class="title-tag" :data-pipe-color="pipelineColorByName(parseTitleTag(ticket).tag)" x-text="'[' + parseTitleTag(ticket).tag + '] '"></span></template><span x-text="parseTitleTag(ticket).rest"></span>
-          </p>
-          <div class="mobile-card-row">
-            <div class="mobile-card-context">
-              <span x-show="epicIsAgent(ticket)" class="pipe-tag">Supervisor</span>
-              <span class="pipe-tag" x-show="showPipelineBadges" x-text="mobileTagLabel(ticket)"></span>
-              <template x-if="executionActive(ticket)">
-                <span class="mobile-card-state text-st-progress">
-                  <span x-text="epicIsAgent(ticket) ? 'supervising' : ticket.stage"></span>
-                </span>
-              </template>
-              <span class="mobile-card-id" :title="ticket.id" x-text="ticket.id" x-show="isSecondary(ticket)"></span>
-              <span x-show="isSecondary(ticket)" class="mobile-technical text-accent" :title="sourceLabel(ticket)" x-text="sourceLabel(ticket)"></span>
-              <span x-show="!isSecondary(ticket) && ticket.path" x-text="ticketProjectName(ticket)"></span>
-              <template x-if="showAgentMeta && ticket.agent">
-                <span class="mobile-card-agent" :title="ticket.agent" x-text="ticket.agent"></span>
-              </template>
-              <span class="mobile-card-state" :class="ticket.status === 'paused' ? 'card-glyph-paused' : ''" x-text="mobileTicketStatus(ticket)"></span>
-              <template x-if="ticket.status === 'open' && scheduleChip(ticket)">
-                <span class="sched-chip">
-                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
-                  <span x-text="scheduleChip(ticket).abs"></span>
-                  <span x-show="scheduleChip(ticket).rel" class="sched-chip-rel" x-text="'in ' + scheduleChip(ticket).rel"></span>
-                </span>
-              </template>
-              <template x-if="needsLiveInput(ticket)">
-                <span class="waiting-chip">
-                  needs input
-                  <span x-text="waitingFor(ticket)"></span>
-                </span>
-              </template>
-            </div>
-            <template x-if="!ticket.kontora">
-              <span class="mobile-label text-warn">not init'd</span>
+      <p x-show="!mobileColumnKey && !ticketBoardEmpty() && !ticketsLoadError && !ticketSourcesFailed() && !mobileTicketList().rows.length && !mobileTicketList().epics.length"
+         class="mobile-list-empty" role="status" x-text="needsInputOnly ? 'No agents need input among tickets matching your filters.' : 'No tickets match the current filters and search.'"></p>
+      <template x-for="group in mobileListGroups()" :key="group.key">
+        <section class="mobile-ios-section">
+          <template x-if="!mobileColumnKey">
+            <header class="mobile-ios-section-header">
+              <h2 :id="'mobile-section-' + group.key" tabindex="-1" x-text="group.label"></h2>
+              <button type="button" x-show="!mobileHomeFiltered() && group.key === 'open'" data-mobile-list-key="open-select" @click="openMobileColumn('open', true, 'open-select')">Select</button>
+            </header>
+          </template>
+          <template x-if="mobileColumnKey">
+            <h2><button type="button" class="mobile-ios-fold" :aria-expanded="group.expanded" @click="mobileSetColumnGroup(group, { expanded: !group.expanded }); mobileClearGesture()">
+              <span aria-hidden="true" x-text="group.expanded ? '⌄' : '›'"></span><span x-text="group.label"></span><span class="mobile-ios-count" x-text="group.count"></span>
+            </button></h2>
+          </template>
+          <ul class="mobile-ios-inset" x-show="!mobileColumnKey || group.expanded">
+            <template x-for="ticket in group.rows" :key="ticketKey(ticket)">
+              <li class="mobile-ios-row" :data-pipe-color="ticketPipeColor(ticket)" :class="{ 'is-selected': mobileSelecting && mobileSelection.includes(ticketKey(ticket)) }"
+                  @pointerdown="mobileRowPointerDown($event, ticket)" @pointermove="mobileRowPointerMove($event)" @pointerup="mobileRowPointerUp($event)"
+                  @pointercancel="mobileClearGesture()" @click.capture="mobileSuppressRowClick($event, ticket)">
+                <div class="mobile-ios-row-line">
+                  <button type="button" @click="mobileSelecting ? mobileToggleSelected(ticket) : openMobileTicket(ticket)" :data-mobile-ticket-key="ticketKey(ticket)" class="mobile-card mobile-ios-row-open"
+                          :aria-pressed="mobileSelecting ? mobileSelection.includes(ticketKey(ticket)) : null" :disabled="mobileSelecting && !mobileSelectionAllowed(ticket)"
+                          :aria-description="mobileSelecting && mobileSelectionReason(ticket) || null">
+                    <span x-show="mobileSelecting" class="mobile-ios-selection-circle" aria-hidden="true" x-text="mobileSelection.includes(ticketKey(ticket)) ? '✓' : ''"></span>
+                    <span class="mobile-card-title" :title="ticket.title"><template x-if="parseTitleTag(ticket).tag"><span class="title-tag" :data-pipe-color="pipelineColorByName(parseTitleTag(ticket).tag)" x-text="'[' + parseTitleTag(ticket).tag + '] '"></span></template><span x-text="parseTitleTag(ticket).rest || ticket.id"></span></span>
+                    <span class="mobile-card-row mobile-ios-meta">
+                      <span class="mobile-ios-dot" aria-hidden="true"></span><span class="mobile-card-id" :title="ticket.id" x-text="ticket.id"></span>
+                      <span x-show="mobileRowMeta(ticket)" x-text="mobileRowMeta(ticket)"></span>
+                      <span class="mobile-card-state" x-show="!['open', 'in_progress'].includes(ticket.status) || (ticket.status === 'in_progress' && !executionActive(ticket))" x-text="mobileTicketStatus(ticket)"></span>
+                      <span x-show="epicIsAgent(ticket)">Supervisor</span>
+                    </span>
+                    <span x-show="mobileSelecting && mobileSelectionReason(ticket)" class="mobile-ios-selection-reason" aria-hidden="true" x-text="mobileSelecting ? mobileSelectionReason(ticket) : ''"></span>
+                    <template x-if="executionActive(ticket)">
+                      <span class="mobile-ios-stage">
+                        <span x-show="cardStageProgress(ticket)" class="mobile-ios-segments" role="img" :aria-label="cardStageProgress(ticket)?.label">
+                          <template x-for="(stage, i) in cardStageProgress(ticket) ? ticket.stages : []" :key="i"><span :class="{ 'is-complete': i < ticket.stages.indexOf(ticket.stage), 'is-current': stage === ticket.stage }"></span></template>
+                        </span>
+                        <span class="mobile-card-state" x-text="mobileStageAge(ticket)"></span>
+                      </span>
+                    </template>
+                  </button>
+                  <template x-if="!mobileSelecting && lifecycleNeedsReconciliation(ticket)">
+                    <button type="button" class="mobile-ios-row-action" @click="lifecycleRefreshTicket(ticket)" :disabled="lifecycleBusy(ticket)"><span class="mobile-ios-pill">Refresh ticket</span></button>
+                  </template>
+                  <template x-if="!mobileSelecting && lifecycleCanQueueSaved(ticket)">
+                    <button type="button" class="mobile-ios-row-action" :aria-label="'Queue ' + (ticket.title || ticket.id)" :disabled="lifecycleBusy(ticket) || !lifecycleCanQueueSaved(ticket)" @click="mobileQueueSaved(ticket)"><span class="mobile-ios-pill">Queue</span></button>
+                  </template>
+                  <template x-if="!mobileSelecting && ticket.status === 'open' && !lifecycleNeedsReconciliation(ticket) && scheduleChip(ticket)">
+                    <button type="button" class="mobile-ios-row-action" @click="openActionsSheet(ticket)" aria-haspopup="dialog"><span class="mobile-ios-pill" x-text="scheduleChip(ticket).abs"></span></button>
+                  </template>
+                  <template x-if="!mobileSelecting && ticket.status === 'open' && !ticket.kontora && ticketCanControl(ticket) && !ticket.scheduled_at">
+                    <button type="button" class="mobile-ios-row-action" @click="dispatchLifecycle(ticketKey(ticket), 'start')" :disabled="lifecycleBusy(ticket)"><span class="mobile-ios-pill">Initialize</span></button>
+                  </template>
+                  <template x-if="!mobileSelecting && ticket.status === 'human_review' && (ticketCanControl(ticket) || ticketCanClaim(ticket))">
+                    <button type="button" class="mobile-ios-row-action" :aria-label="'Actions for ' + (ticket.title || ticket.id)" @click="openActionsSheet(ticket)" aria-haspopup="dialog">More</button>
+                  </template>
+                </div>
+                <template x-if="!mobileSelecting && mobileSwipeActions(ticket).length">
+                  <div class="mobile-ios-swipes" role="group" aria-label="Review shortcuts">
+                    <template x-for="command in mobileSwipeActions(ticket)" :key="command.id">
+                      <button type="button" class="mobile-control" @click="mobileCommitSwipe(ticket, command)" x-text="command.label"></button>
+                    </template>
+                  </div>
+                </template>
+                <template x-if="!mobileSelecting && needsLiveInput(ticket)">
+                  <div class="mobile-ios-question">
+                    <div><strong>Needs input</strong><p x-text="liveQuestion(ticket)"></p></div>
+                    <button type="button" @click="mobileReply(ticket)">Reply</button>
+                  </div>
+                </template>
+              </li>
             </template>
-          </div>
-          <template x-if="cardStageProgress(ticket)">
-            <div class="card-progress" role="img" :aria-label="cardStageProgress(ticket).label" :title="cardStageProgress(ticket).label">
-              <div :style="'width:' + cardStageProgress(ticket).percent + '%'"></div>
-            </div>
-          </template>
-          <template x-if="epicCardInfo(ticket)">
-            <span class="mobile-label" :data-pipe-color="pipelineColorByName(epicCardInfo(ticket).id)" style="color:hsl(var(--pipe-h) / 0.9)" :title="epicCardInfo(ticket).title || epicCardInfo(ticket).id"
-                  x-text="'Epic: ' + epicCardInfo(ticket).done + ' of ' + epicCardInfo(ticket).total + ' done'"></span>
-          </template>
-          <template x-if="ticket.attempt > 0 && ticket.status !== 'done' && ticket.status !== 'cancelled'">
-            <span class="mobile-label text-err" x-text="'retry ' + ticket.attempt"></span>
-          </template>
-        </button>
-        </div>
+            <li x-show="!mobileColumnKey && !group.rows.length" class="mobile-ios-list-note" x-text="mobileIncompleteCount() ? 'No matches in loaded tickets.' : 'No ' + group.label.toLowerCase() + ' tickets.'"></li>
+            <li x-show="mobileColumnKey && group.count > group.size">
+              <button type="button" class="mobile-ios-list-link" @click="mobileShowMoreInGroup(group, $event)" x-text="'Show ' + Math.min(100, group.count - group.size) + ' more'"></button>
+            </li>
+            <li x-show="!mobileColumnKey && !mobileHomeFiltered() && group.key === 'open' && mobileTicketList().open.length > 4">
+              <button type="button" class="mobile-ios-list-link" data-mobile-list-key="open-all" @click="openMobileColumn('open', false, 'open-all')" x-text="'Show all ' + mobileTicketList().open.length + ' open'"></button>
+            </li>
+          </ul>
+        </section>
       </template>
-      <section x-show="mobileTicketList().epics.length" role="group" aria-label="Epics" class="mobile-epic-list">
-        <h2 class="mobile-list-heading">Epics</h2>
-        <template x-for="e in mobileTicketList().epics" :key="e.id">
-          <button type="button" @click="openEpic(e.id)" :data-mobile-ticket-key="ticketKey(e)" data-mobile-epic-opener class="mobile-control">
-            <span x-text="e.title || e.id"></span>
-            <small x-text="epicRollup(e.id).done + ' of ' + epicRollup(e.id).total + ' done'"></small>
-          </button>
-        </template>
-      </section>
-      <button type="button" x-show="mobileTickets().length < mobileTicketList().rows.length"
+      <template x-if="!mobileColumnKey && !ticketBoardEmpty()">
+        <section class="mobile-ios-section" aria-label="Lists">
+          <header class="mobile-ios-section-header"><h2>Lists</h2></header>
+          <ul class="mobile-ios-inset">
+            <template x-for="item in mobileHomeLinks()" :key="item.key">
+              <li><button type="button" class="mobile-ios-list-link" :data-ios-status="item.key" :data-mobile-list-key="item.key + '-list'" @click="mobileHomeLink(item)" :disabled="item.key === ':epics' && !item.count">
+                <span class="mobile-ios-tile-icon" aria-hidden="true" x-html="mobileListIcon(item.key)"></span>
+                <span x-text="item.label"></span><span class="mobile-ios-count" x-text="item.count ?? ''"></span><span aria-hidden="true">›</span>
+              </button></li>
+            </template>
+          </ul>
+        </section>
+      </template>
+      <template x-if="!mobileColumnKey && mobileTicketList().epics.some(epic => !mobileHomeFiltered() || !epicIsAgent(epic))">
+        <section aria-label="Epics" class="mobile-ios-section">
+          <header class="mobile-ios-section-header"><h2 id="mobile-section-epics" tabindex="-1">Epics</h2></header>
+          <ul class="mobile-ios-inset">
+            <template x-for="e in mobileTicketList().epics.filter(epic => !mobileHomeFiltered() || !epicIsAgent(epic))" :key="e.id">
+              <li><button type="button" @click="openEpic(e.id)" :data-mobile-ticket-key="ticketKey(e)" :data-mobile-list-key="':epic:' + e.id" data-mobile-epic-opener class="mobile-ios-list-link">
+                <span x-text="e.title || e.id"></span>
+                <small class="mobile-ios-count" x-text="epicRollup(e.id).done + ' of ' + epicRollup(e.id).total + ' done'"></small>
+              </button></li>
+            </template>
+          </ul>
+        </section>
+      </template>
+      <button type="button" x-show="!mobileColumnKey && mobileHomeFiltered() && mobileTickets().length < mobileTicketList().rows.length"
               @click="mobileLoadMore()" class="mobile-control text-accent">Load more</button>
     </div>
+    </template>
 
     <!-- ===== Ticket detail (full-screen overlay) ===== -->
     <template x-if="selectedEpic && currentView === 'board'">
@@ -5728,6 +5818,7 @@
                   <div id="epic-terminal-mobile" class="mobile-terminal-host"></div>
                 </div>
                 <div x-show="mobileCanCompose()" class="mobile-terminal-dock">
+                  <p x-show="mobileReplyMessage" class="mobile-ios-reply-message" role="status" x-text="mobileReplyMessage"></p>
                   <div x-show="mobileTerminalInputTarget === 'terminal'" class="mobile-terminal-keys" role="group" aria-label="Terminal keys">
                     <template x-for="key in terminalEssentialKeys()" :key="key.name">
                       <button type="button" @pointerdown.prevent @click="sendTerminalKey(key.bytes)"
@@ -5748,7 +5839,7 @@
                               placeholder="Message the agent…" class="mobile-terminal-compose"></textarea>
                     <button type="button" x-show="mobileTerminalInputTarget !== 'terminal'" @pointerdown.prevent @click="mobileBeginTerminalDirect()" class="mobile-terminal-direct">Type in terminal</button>
                     <button type="button" x-show="mobileTerminalTyping()" @pointerdown.prevent @click="submitComposeMobile()"
-                            :disabled="!terminalRW || !terminalConnected || !mobileComposeDraft.trim()" class="mobile-terminal-send">Send</button>
+                            :disabled="!terminalRW || !terminalConnected || !mobileComposeDraft.trim() || terminalGuardedComposePending" class="mobile-terminal-send">Send</button>
                   </div>
                 </div>
               </div>
@@ -5866,19 +5957,20 @@
           <span role="status" x-text="editSubmitting ? 'Saving…' : (editSaved ? 'Saved' : '')"></span>
           <button type="button" @pointerdown.prevent @click="mobileFinishDescriptionEdit()" class="mobile-input-done">Done</button>
         </div>
-        <div class="mobile-detail-route mobile-ticket-route" :class="{ 'mobile-ticket-route-imported': isSecondary(selectedTicket) }">
+        <div class="mobile-detail-route mobile-ticket-route" :class="{ 'mobile-ticket-route-imported': isSecondary(selectedTicket), 'mobile-ios-running-nav': mobileRunningOverview() }">
           <button type="button" @click="mobileDetailBack()" class="mobile-control">Back</button>
-          <div class="mobile-detail-heading">
+          <div class="mobile-detail-heading" x-show="!mobileRunningOverview() || detailTab !== 'ticket'">
             <span class="font-mono text-[11px] text-tx-3" x-text="selectedTicket?.id"></span>
             <span class="mobile-detail-title" :title="selectedTicket?.title"><span x-show="parseTitleTag(selectedTicket || {}).tag" class="title-tag" :data-pipe-color="pipelineColorByName(parseTitleTag(selectedTicket || {}).tag)" x-text="'[' + parseTitleTag(selectedTicket || {}).tag + ']'"></span><span class="mobile-detail-title-text" x-text="parseTitleTag(selectedTicket || {}).rest"></span></span>
           </div>
-          <button type="button" @click="openActionsSheet(selectedTicket)" class="mobile-control" aria-haspopup="dialog">Actions</button>
+          <button type="button" x-show="mobileRunningOverview()" class="mobile-control" @click="mobileSwitchTab('terminal')">Terminal</button>
+          <button type="button" @click="openActionsSheet(selectedTicket)" class="mobile-control" aria-haspopup="dialog" x-text="mobileRunningOverview() ? 'More' : 'Actions'"></button>
           <button type="button" x-show="isSecondary(selectedTicket)" @click="claimTicket()"
                   :disabled="!ticketCanClaim(selectedTicket) || claimSubmitting" :title="selectedTicket?.refusal_reason || 'Move into primary without starting work. Related tickets are not moved; references resolve in primary.'"
                   class="font-mono text-xs px-3 py-2 rounded bg-accent text-accent-fg disabled:opacity-50 disabled:cursor-not-allowed"
                   x-text="claimSubmitting ? 'Claiming…' : 'Claim'"></button>
-          <button type="button" @click="sheet = { type: 'navigation' }" class="mobile-icon-button" aria-label="Open navigation" aria-haspopup="dialog"><svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
-          <button type="button" @click="openAssistantSheet($event.currentTarget)" class="mobile-icon-button assistant-launch" aria-label="Assistant" :aria-description="assistantLaunchHint()" aria-haspopup="dialog"><span class="assistant-launch-state" x-show="assistantLaunchLabel()" x-text="assistantLaunchLabel()"></span><svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-3 3V11.5a10 10 0 0 1 20 0z"/></svg></button>
+          <button type="button" x-show="!mobileRunningOverview()" @click="sheet = { type: 'navigation' }" class="mobile-icon-button" aria-label="Open navigation" aria-haspopup="dialog"><svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+          <button type="button" x-show="!mobileRunningOverview()" @click="openAssistantSheet($event.currentTarget)" class="mobile-icon-button assistant-launch" aria-label="Assistant" :aria-description="assistantLaunchHint()" aria-haspopup="dialog"><span class="assistant-launch-state" x-show="assistantLaunchLabel()" x-text="assistantLaunchLabel()"></span><svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-3 3V11.5a10 10 0 0 1 20 0z"/></svg></button>
 
         </div>
         <nav class="mobile-detail-tabs flex" aria-label="Ticket panels">
@@ -5936,6 +6028,7 @@
             <div id="terminal-container-mobile" class="mobile-terminal-host"></div>
           </div>
           <div x-show="mobileCanCompose()" class="mobile-terminal-dock">
+            <p x-show="mobileReplyMessage" class="mobile-ios-reply-message" role="status" x-text="mobileReplyMessage"></p>
             <div x-show="mobileTerminalInputTarget === 'terminal'" class="mobile-terminal-keys" role="group" aria-label="Terminal keys">
               <template x-for="key in terminalEssentialKeys()" :key="key.name">
                 <button type="button" @pointerdown.prevent @click="sendTerminalKey(key.bytes)"
@@ -5956,7 +6049,7 @@
                         placeholder="Message the agent…" class="mobile-terminal-compose"></textarea>
               <button type="button" x-show="mobileTerminalInputTarget !== 'terminal'" @pointerdown.prevent @click="mobileBeginTerminalDirect()" class="mobile-terminal-direct">Type in terminal</button>
               <button type="button" x-show="mobileTerminalTyping()" @pointerdown.prevent @click="submitComposeMobile()"
-                      :disabled="!terminalRW || !terminalConnected || !mobileComposeDraft.trim()" class="mobile-terminal-send">Send</button>
+                      :disabled="!terminalRW || !terminalConnected || !mobileComposeDraft.trim() || terminalGuardedComposePending" class="mobile-terminal-send">Send</button>
             </div>
           </div>
         </div>
@@ -6094,7 +6187,31 @@
         <!-- ticket (body) -->
         <div x-show="detailTab==='ticket'" data-detail-scroll="overview" class="mobile-ticket-pane overflow-y-auto">
           <button type="button" x-show="!isSecondary(selectedTicket) && selectedTicket?.kind === 'epic'" @click="openEpic(selectedTicket.id)" class="mobile-control">Epic overview</button>
-          <div class="mobile-detail-secondary">
+          <template x-if="mobileRunningOverview() && detailTab === 'ticket'">
+            <section class="mobile-ios-running" aria-label="Running ticket overview">
+              <h1><span x-show="parseTitleTag(selectedTicket || {}).tag" class="title-tag" :data-pipe-color="pipelineColorByName(parseTitleTag(selectedTicket || {}).tag)" x-text="'[' + parseTitleTag(selectedTicket || {}).tag + ']' + ' '"></span><span x-text="parseTitleTag(selectedTicket || {}).rest"></span></h1>
+              <p class="mobile-technical" x-text="[selectedTicket.id, ticketProjectName(selectedTicket), selectedTicket.branch].filter(Boolean).join(' · ')"></p>
+              <div class="mobile-ios-running-state"><span x-text="workflowStatusLabel(selectedTicket)"></span><span x-text="[selectedTicket.agent, mobileStageAge(selectedTicket)].filter(Boolean).join(' · ')"></span></div>
+              <template x-if="needsLiveInput(selectedTicket)">
+                <div class="mobile-ios-question">
+                  <div><strong>Waiting for you</strong><small x-show="selectedTicket.waiting_since" x-text="' · ' + noteAgo(selectedTicket.waiting_since)"></small><p x-text="liveQuestion(selectedTicket)"></p></div>
+                  <button type="button" @click="mobileReply(selectedTicket)">Reply</button>
+                </div>
+              </template>
+              <h2 x-text="(isGraphTicket(selectedTicket) ? 'Workflow' : 'Pipeline') + (selectedTicket.pipeline ? ' · ' + selectedTicket.pipeline : '')"></h2>
+              <template x-if="isGraphTicket(selectedTicket)">
+                <p x-text="'Current node: ' + (selectedTicket.stage || 'Unknown')"></p>
+              </template>
+              <template x-if="!isGraphTicket(selectedTicket) && stageRibbon().length">
+                <ul class="mobile-ios-inset mobile-ios-running-stages">
+                  <template x-for="seg in stageRibbon()" :key="seg.name">
+                    <li :data-stage-state="seg.state"><span aria-hidden="true"></span><span x-text="mobileStageLabel(seg)"></span><small x-text="seg.state === 'running' ? (needsLiveInput(selectedTicket) ? 'Needs input' : mobileStageAge(selectedTicket)) : mobileStageState(seg)"></small></li>
+                  </template>
+                </ul>
+              </template>
+            </section>
+          </template>
+          <div class="mobile-detail-secondary" :class="{ 'mobile-ios-running-secondary': mobileRunningOverview() }">
             <span class="pipe-tag" :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'" x-text="selectedTicket ? mobileTagLabel(selectedTicket) : ''"></span>
             <button type="button" class="status-chip" :data-status="selectedTicket?.status" :disabled="!ticketCanControl(selectedTicket) || lifecycleBusy(selectedTicket)" @click="openMoveSheet(selectedTicket)" :aria-label="workflowStatusLabel(selectedTicket) + '. Move to status'" x-text="workflowStatusLabel(selectedTicket)"></button>
             <span x-show="selectedTicket?.agent" class="mobile-label text-tx-3" x-text="selectedTicket?.agent"></span>
@@ -6138,7 +6255,9 @@
           <template x-if="selectedTicket?.last_error">
             <div role="alert" class="mobile-prose text-err" style="border-left:3px solid rgba(var(--err),1);padding-left:12px;margin-bottom:18px;white-space:pre-wrap;overflow-wrap:anywhere;" x-text="selectedTicket.last_error"></div>
           </template>
-          <h1 class="mobile-ticket-title"><span x-show="parseTitleTag(selectedTicket || {}).tag" class="title-tag" :data-pipe-color="pipelineColorByName(parseTitleTag(selectedTicket || {}).tag)" x-text="'[' + parseTitleTag(selectedTicket || {}).tag + ']' + ' '"></span><span x-text="parseTitleTag(selectedTicket || {}).rest"></span></h1>
+          <template x-if="!mobileRunningOverview()">
+            <h1 class="mobile-ticket-title"><span x-show="parseTitleTag(selectedTicket || {}).tag" class="title-tag" :data-pipe-color="pipelineColorByName(parseTitleTag(selectedTicket || {}).tag)" x-text="'[' + parseTitleTag(selectedTicket || {}).tag + ']' + ' '"></span><span x-text="parseTitleTag(selectedTicket || {}).rest"></span></h1>
+          </template>
           <div class="mb-4" x-html="detailRelationshipsMarkup"></div>
           <div class="mb-5" x-html="detailMetadataMarkup"></div>
           <button type="button" x-show="!isSecondary(selectedTicket) && mobileHasRun(selectedTicket)" @click="copyCmd('kontora attach ' + selectedTicket?.id)"
@@ -6219,7 +6338,10 @@
       </div>
 
       <!-- action bar -->
-      <div x-show="ticketCanControl(selectedTicket) && !mobilePrimaryAction(selectedTicket).hidden" class="mobile-detail-actions">
+      <div x-show="mobileRunningOverview() && detailTab === 'ticket' && mobileTerminalPause()" class="mobile-detail-actions mobile-ios-running-actions">
+        <button type="button" @click="mobilePauseTerminal()" :disabled="lifecycleBusy(selectedTicket)" class="mobile-primary">Pause</button>
+      </div>
+      <div x-show="!mobileRunningOverview() && ticketCanControl(selectedTicket) && !mobilePrimaryAction(selectedTicket).hidden" class="mobile-detail-actions">
         <button type="button" @click="mobilePrimaryAction(selectedTicket).run()" :disabled="lifecycleBusy(selectedTicket) || mobilePrimaryAction(selectedTicket).disabled" class="mobile-primary">
           <span x-text="mobilePrimaryAction(selectedTicket).label"></span>
         </button>
@@ -6231,15 +6353,30 @@
   </main>
 
   <template x-if="isMobile">
-    <nav class="mobile-bottom-nav" data-mobile-board-background data-mobile-sheet-background aria-label="Main navigation">
-      <button type="button" @click="mobileNavigate('board')" :aria-current="currentView === 'board' ? 'page' : null" data-mobile-focus-fallback>Tickets</button>
+    <nav x-show="!mobileSelecting" class="mobile-bottom-nav" data-mobile-board-background data-mobile-sheet-background aria-label="Main navigation">
+      <button type="button" @click="mobileNavigate('board')" :aria-current="currentView === 'board' ? 'page' : null" data-mobile-focus-fallback><span aria-hidden="true" x-html="mobileListIcon('board')"></span>Tickets</button>
       <button type="button" id="assistant-mobile-trigger" @click="openAssistantSheet($event.currentTarget)" :aria-description="assistantLaunchHint()" aria-haspopup="dialog">
-        Assistant <span x-show="assistantLaunchLabel()" x-text="assistantLaunchLabel()" class="text-accent" aria-hidden="true"></span>
+        <span aria-hidden="true" x-html="mobileListIcon('input')"></span><span>Assistant <span x-show="assistantLaunchLabel()" x-text="assistantLaunchLabel()" class="text-accent" aria-hidden="true"></span></span>
       </button>
-      <button type="button" @click="mobileNavigate('settings')" :aria-current="currentView === 'settings' ? 'page' : null">Settings</button>
-      <button type="button" @click="sheet = { type: 'browse' }" aria-haspopup="dialog" :aria-current="['automations', 'stats', 'archive'].includes(currentView) ? 'page' : null">Browse</button>
+      <button type="button" @click="mobileNavigate('settings')" :aria-current="currentView === 'settings' ? 'page' : null"><span aria-hidden="true" x-html="mobileListIcon('settings')"></span>Settings</button>
+      <button type="button" @click="sheet = { type: 'browse' }" aria-haspopup="dialog" :aria-current="['automations', 'stats', 'archive'].includes(currentView) ? 'page' : null"><span aria-hidden="true" x-html="mobileListIcon('browse')"></span>Browse</button>
     </nav>
   </template>
+
+    <template x-if="isMobile && mobileSelecting && currentView === 'board'">
+      <div class="mobile-ios-selection-bar" aria-label="Selected ticket actions" data-mobile-sheet-background data-mobile-board-background>
+        <template x-if="mobileColumnKey === 'open'">
+          <div>
+            <button type="button" class="mobile-control" @click="mobileOpenBatch('queue-saved', true)" :disabled="!mobileSelection.length">Schedule</button>
+            <button type="button" class="mobile-primary" @click="mobileOpenBatch()" :disabled="!mobileSelection.length" x-text="'Queue ' + mobileSelection.length"></button>
+            <button type="button" class="mobile-control" @click="sheet = { type: 'bulk-more' }" :disabled="!mobileSelection.length" aria-haspopup="dialog">More</button>
+          </div>
+        </template>
+        <template x-if="mobileColumnKey === 'human_review'">
+          <button type="button" class="mobile-primary" @click="mobileOpenBatch('move:done')" :disabled="!mobileSelection.length" x-text="'Mark ' + mobileSelection.length + ' done'"></button>
+        </template>
+      </div>
+    </template>
 
     <!-- ===== Bottom sheet (actions / new ticket) ===== -->
     <template x-if="isMobile && sheet">
@@ -6251,7 +6388,7 @@
           <header class="mobile-sheet-header">
             <div class="mobile-sheet-heading">
               <h2 id="mobile-sheet-title" class="mobile-label text-tx-2 m-0"
-                  x-text="({ browse: 'Browse', navigation: 'Navigation', filters: 'Ticket filters', actions: 'Ticket actions', move: 'Move to', schedule: 'Start later', assistant: 'Assistant', new: 'New ticket' })[sheet.type] || 'Ticket' "></h2>
+                  x-text="({ browse: 'Browse', navigation: 'Navigation', filters: 'Ticket filters', actions: 'Ticket actions', move: 'Move to', schedule: 'Start later', assistant: 'Assistant', new: 'New ticket', 'bulk-more': 'Selected ticket actions' })[sheet.type] || (sheet.type === 'queue' ? mobileBatchLabel(sheet) : 'Ticket')"></h2>
               <button type="button" @click="assistantNewThread()" x-show="sheet.type === 'assistant' && assistantEnabled()"
                       class="mobile-assistant-new" aria-label="New chat">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg>
@@ -6265,9 +6402,12 @@
 
           <template x-if="sheet.type === 'filters'">
             <div class="mobile-ticket-filters">
-              <label for="mobile-ticket-status">Status
+              <button type="button" @click="closeSheet(); refreshTickets()" :disabled="loading || ticketsRefreshing" class="mobile-control">Refresh tickets</button>
+              <button type="button" @click="if (mobileColumnKey) mobileClearColumnFilters(); else mobileClearFilters()" class="mobile-control">Clear filters</button>
+              <button type="button" @click="toggleNeedsInput()" class="mobile-control" :aria-pressed="needsInputOnly">Needs input only</button>
+              <label for="mobile-ticket-status" x-show="!mobileColumnKey">Status
                 <select id="mobile-ticket-status" x-model="mobileStatusFilter">
-                  <option value=":attention">In progress first</option>
+                  <option value=":attention">Default</option>
                   <option value=":all">All statuses</option>
                   <template x-for="col in columns" :key="col.key"><option :value="col.key" :selected="mobileStatusFilter === col.key" x-text="col.label"></option></template>
                 </select>
@@ -6307,6 +6447,62 @@
               <button type="button" @click="closeSheet(); openAssistantSheet()">Assistant</button>
               <button type="button" x-show="selectedTicket || selectedEpic" @click="openActionsSheet(selectedTicket || selectedEpic)">Ticket actions</button>
             </nav>
+          </template>
+
+          <template x-if="sheet.type === 'bulk-more'">
+            <div class="mobile-ticket-filters">
+              <button type="button" class="mobile-action-row" @click="mobileOpenBatch('cancel')">Cancel tickets…</button>
+              <template x-for="command in mobileBulkDestinations()" :key="command.id">
+                <button type="button" class="mobile-action-row" @click="mobileOpenBatch(command.id)" x-text="command.label + '…'"></button>
+              </template>
+            </div>
+          </template>
+
+          <template x-if="sheet.type === 'queue'">
+            <div class="mobile-ios-batch" data-compact-scroll>
+              <h3>Tickets</h3>
+              <ul class="mobile-ios-inset" aria-label="Reviewed tickets">
+                <template x-for="item in sheet.items" :key="item.key">
+                  <li>
+                    <strong x-text="item.title"></strong>
+                    <small x-text="item.id + ' · ' + (item.pipeline || 'No saved pipeline')"></small>
+                    <div x-show="item.result" role="status">
+                      <span x-text="mobileBatchMessage(item)"></span>
+                      <template x-if="item.result?.resolution === 'refresh-required'">
+                        <button type="button" class="mobile-control" @click="mobileReadBatchResult(item)" :disabled="sheet.phase !== 'results'">Refresh ticket</button>
+                      </template>
+                      <template x-if="mobileBatchRetryAllowed(item)">
+                        <button type="button" class="mobile-control" @click="mobileSubmitBatch(item.key)" :disabled="sheet.phase !== 'results'" :aria-label="'Retry ' + item.title">Retry</button>
+                      </template>
+                    </div>
+                  </li>
+                </template>
+              </ul>
+              <template x-if="sheet.id === 'queue-saved' && sheet.phase === 'review'">
+                <div class="mobile-ios-batch-when">
+                  <h3>Pickup</h3>
+                  <div class="mobile-ios-segments-control" role="group" aria-label="Pickup time">
+                    <button type="button" :aria-pressed="!sheet.atTime" @click="sheet.atTime = false; scheduleError = null">Now</button>
+                    <button type="button" :aria-pressed="sheet.atTime" @click="sheet.atTime = true; scheduleError = null">At a time</button>
+                  </div>
+                  <p x-show="!sheet.atTime">Requests pickup using each ticket’s saved settings.</p>
+                  <template x-if="sheet.atTime">
+                    <div class="mobile-ios-batch-when">
+                      <p>Scheduling makes tickets due for pickup. It does not reserve a start time.</p>
+                      <template x-for="preset in mobileSchedulePresets().slice(0, 3)" :key="preset.key">
+                        <button type="button" class="mobile-control" :aria-pressed="mobileSchedulePresetSelected(preset)" @click="mobileSchedulePick(preset)" x-text="preset.label + ' · ' + preset.rel"></button>
+                      </template>
+                      <label>Pickup date and time or delay<input type="text" x-model="scheduleDraft" @input="scheduleError = null" placeholder="2099-09-01 09:00, 24h, 3d"/></label>
+                      <label>Pick date and time<input type="datetime-local" :min="scheduleMin()" @change="onMobileSchedulePicked($event.target.value)"/></label>
+                      <p x-text="mobileScheduleConsequence()"></p>
+                      <p x-show="scheduleError" role="alert" x-text="scheduleError"></p>
+                    </div>
+                  </template>
+                </div>
+              </template>
+              <button type="button" class="mobile-sheet-primary" x-show="sheet.phase === 'review'" @click="mobileSubmitBatch()" x-text="mobileBatchLabel(sheet)"></button>
+              <p x-show="sheet.phase === 'sending'" role="status">Sending requests…</p>
+            </div>
           </template>
 
           <template x-if="sheet.type === 'move' && ticketCanControl(sheet.ticket)">

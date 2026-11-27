@@ -4,7 +4,7 @@ import { expect, test } from 'playwright/test';
 import { fixtureSession, openTicket, populatedStats, ready, routeTo, settingsRaw, stamp } from './browser_fixture.mjs';
 import {
   assistantSurface, automationDetailReady, detailPanel, inViewport, openAssistantControl,
-  parityAssistantOptions, parityChild, parityEpicRecords, phoneOutputView, polishRecords, terminalGrid,
+  iosPwa, iosPwaOptions, parityAssistantOptions, parityChild, parityEpicRecords, phoneOutputView, polishRecords, terminalGrid,
 } from './browser_scenes.mjs';
 
 // Keep relative labels stable without pausing any timers or animation frames.
@@ -130,17 +130,84 @@ async function withCapturePage(context, testInfo, name, theme, options, run) {
 }
 
 async function populatedBoard(page) {
-  const phone = page.viewportSize().width < 768;
-  if (phone) {
-    const board = page.locator('.mobile-board-layer');
-    await expect(page.locator('.mobile-filter-summary')).toContainText('In progress first');
-    await expect(board.getByRole('heading', { name: /^In progress \(/ })).toBeInViewport();
-    await expect(board.getByText(/^Long identifiers must stay inside their card/)).toBeInViewport();
-    await expect(board.getByRole('heading', { name: /^Needs attention/ })).toBeInViewport();
-  } else {
-    await expect(page.getByRole('listitem', { name: /^Ticket kon-scheduled:/ })).toBeInViewport();
-    await expect(page.getByRole('listitem', { name: /^Ticket kon-done:/ })).toBeInViewport();
+  await expect(page.getByRole('listitem', { name: /^Ticket kon-scheduled:/ })).toBeInViewport();
+  await expect(page.getByRole('listitem', { name: /^Ticket kon-done:/ })).toBeInViewport();
+}
+
+const iosTicket = (fixture, id) => fixture.records.get(`primary/${id}`);
+const iosOptions = () => iosPwaOptions(fixedTime);
+const iosQueueButton = page => page.getByRole('button', { name: `Queue ${iosPwa.queue.length}`, exact: true });
+
+async function iosHome(page, fixture) {
+  const board = page.locator('.mobile-board-layer');
+  await expect(board.getByRole('heading', { name: 'Tickets', exact: true })).toBeInViewport();
+  await expect(board.getByRole('heading', { name: 'In progress', exact: true })).toBeInViewport();
+  // Measure the row buttons, not the title spans (which may ellipsize).
+  const rows = iosPwa.progress.map(id => board.getByRole('button').filter({
+    has: page.getByText(iosTicket(fixture, id).title, { exact: true }),
+  }));
+  rows.push(board.getByRole('heading', { name: 'Open', exact: true }));
+  const positions = [];
+  for (const row of rows) {
+    await expect(row).toBeInViewport({ ratio: 1 });
+    positions.push((await row.boundingBox()).y);
   }
+  assert.ok(positions.every((y, index) => index === 0 || y > positions[index - 1]), 'Active rows must precede Open, with the waiting row first');
+  await expect(board.getByRole('button', { name: 'Reply', exact: true })).toBeInViewport({ ratio: 1 });
+  const firstQueue = board.getByRole('button', { name: /^Queue\b/i }).first();
+  await expect(firstQueue).toBeInViewport({ ratio: 1 });
+  await expect(firstQueue).toBeEnabled();
+  // Hit-test for dock overlap without clicking; even a trial click can scroll.
+  assert.ok(await firstQueue.evaluate(button => {
+    const { left, top, width, height } = button.getBoundingClientRect();
+    return button.contains(document.elementFromPoint(left + width / 2, top + height / 2));
+  }), 'The first Queue button must be hit-testable at the initial fold');
+}
+
+async function iosOpenSelection(page) {
+  await page.locator('.mobile-board-layer').getByRole('button', { name: 'Select', exact: true }).click();
+  await expect(page).toHaveURL(/#\/column\/open$/);
+  await expect(page.getByRole('heading', { name: 'Open', exact: true })).toBeInViewport();
+  await page.getByRole('button', { name: /^Select all$/i }).click();
+  await expect(iosQueueButton(page)).toBeInViewport({ ratio: 1 });
+  await expect(iosQueueButton(page)).toBeEnabled();
+}
+
+async function iosQueueSheet(page, fixture) {
+  await iosOpenSelection(page);
+  await iosQueueButton(page).click();
+  const dialog = page.getByRole('dialog', { name: /^Queue 3 tickets$/i });
+  await expect(dialog).toBeInViewport({ ratio: 1 });
+  for (const id of iosPwa.queue) {
+    await expect(dialog.getByText(iosTicket(fixture, id).title, { exact: true })).toBeInViewport();
+  }
+  for (const label of ['Now', 'At a time']) {
+    await expect(dialog.getByText(label, { exact: true })).toBeInViewport();
+  }
+  await expect(dialog.getByRole('button', { name: /^Queue 3 tickets$/i })).toBeInViewport({ ratio: 1 });
+}
+
+async function iosRunningTicket(page, fixture) {
+  await openTicket(page, iosPwa.running);
+  const ticket = iosTicket(fixture, iosPwa.running);
+  const detail = page.getByRole('region', { name: 'Running ticket overview', exact: true });
+  const heading = detail.getByRole('heading', { level: 1 });
+  await expect(heading).toContainText(ticket.title);
+  await expect(heading).toBeInViewport();
+  await expect(detail.getByText(ticket.waiting_question, { exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(detail.getByRole('button', { name: 'Reply', exact: true })).toBeInViewport({ ratio: 1 });
+  expect(fixture.sockets).toEqual([]);
+}
+
+async function iosHumanReview(page, fixture) {
+  const board = page.locator('.mobile-board-layer');
+  await board.getByRole('button', { name: /\bHuman review\b/i }).first().click();
+  await expect(page).toHaveURL(/#\/column\/human_review$/);
+  await expect(board.getByRole('heading', { name: /^Human review$/i })).toBeInViewport();
+  for (const label of ['By day', 'By project']) {
+    await expect(board.getByText(label, { exact: true })).toBeInViewport();
+  }
+  await expect(board.getByText(iosTicket(fixture, iosPwa.firstReview).title, { exact: true })).toBeInViewport();
 }
 
 async function emptyBoard(page) {
@@ -388,7 +455,12 @@ async function terminalCompose(page, fixture) {
 
 const scenes = [
   { name: 'board-desktop-dark', width: 1280, theme: 'dark', options: () => ({ records: polishRecords() }), run: populatedBoard },
-  { name: 'board-mobile-dark', width: 390, theme: 'dark', options: () => ({ records: polishRecords() }), run: populatedBoard },
+  { name: 'board-mobile-dark', width: 390, height: 844, theme: 'dark', options: iosOptions, run: iosHome },
+  { name: 'board-mobile-light', width: 390, height: 844, theme: 'light', options: iosOptions, run: iosHome },
+  { name: 'open-selection-mobile-dark', width: 390, height: 844, theme: 'dark', options: iosOptions, run: iosOpenSelection },
+  { name: 'queue-sheet-mobile-dark', width: 390, height: 844, theme: 'dark', options: iosOptions, run: iosQueueSheet },
+  { name: 'running-ticket-mobile-dark', width: 390, height: 844, theme: 'dark', options: iosOptions, run: iosRunningTicket },
+  { name: 'human-review-mobile-dark', width: 390, height: 844, theme: 'dark', options: iosOptions, run: iosHumanReview },
   { name: 'board-empty-mobile-light', width: 390, theme: 'light', options: () => ({ empty: true }), run: emptyBoard },
   { name: 'ticket-panel-desktop-light', width: 1280, theme: 'light', run: ticketPanel },
   { name: 'archive-confirm-short-desktop-light', width: 1280, height: 293, theme: 'light', run: archiveConfirmation },

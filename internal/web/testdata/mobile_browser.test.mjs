@@ -10,13 +10,14 @@ import { tmpdir } from 'node:os';
 import { chromium, webkit } from 'playwright';
 import { expect } from 'playwright/test';
 import * as yaml from '../static/vendor/yaml@2.8.1/yaml.mjs';
+import { registerIOSPwaTests } from './ios_pwa_browser.mjs';
 import {
   fixtureSession, fixtures as createFixtures, unloadFixtureDocuments,
   source, sourcePath, secondSource, unavailablePath, longID, tail, stamp, liveTitle, liveBranch, liveAgent,
   supervisorID, ticket, settingsRaw, deferred, detailPath, ready, routeTo, openTicket, populatedStats,
 } from './browser_fixture.mjs';
 import {
-  assistantSurface, automationDetailReady, detailPanel, inViewport, openAssistantControl, ordinaryThreadID,
+  assistantSurface, automationDetailReady, detailPanel, inViewport, iosPwa, iosPwaOptions, openAssistantControl, ordinaryThreadID,
   parityAssistantOptions, parityChild, parityEpicRecords, phoneOutputView, polishRecords, terminalGrid, visible,
 } from './browser_scenes.mjs';
 
@@ -94,6 +95,8 @@ async function closeFixtureContext(context) {
   }
 }
 
+registerIOSPwaTests(test, withPage);
+
 // Bindings are used only to locate existing controls; tests never call mutating
 // component methods or replace application state. :visible excludes x-show's inactive UI.
 const model = (page, name) => page.locator(`[x-model="${name}"]:visible`);
@@ -109,11 +112,37 @@ async function selectPhoneStatus(page, value) {
   await phoneStatus(page).selectOption(value);
   await phoneFilters(page).getByRole('button', { name: 'Close', exact: true }).click();
 }
+const phoneRefreshButton = page => phoneFilters(page).getByRole('button', { name: 'Refresh tickets', exact: true });
+async function refreshPhoneTickets(page) {
+  await phoneFilterButton(page).click();
+  await phoneRefreshButton(page).click();
+  await expect(phoneFilters(page)).toBeHidden();
+}
 const phoneSearch = page => page.getByRole('searchbox', { name: 'Search tickets', exact: true });
+const phoneColumnSearch = page => page.getByRole('searchbox', { name: 'Search this list', exact: true });
 const phoneCount = page => page.locator('.mobile-filter-tools').getByRole('status', { includeHidden: true });
 const phoneList = page => page.locator('.mobile-ticket-list');
-const phoneRows = page => phoneList(page).locator('.mobile-card');
+const phoneRows = page => phoneList(page).locator('.mobile-card:visible');
+const phoneCardKey = key => `.mobile-card[data-mobile-ticket-key=${JSON.stringify(key)}]`;
+const phoneRow = (page, key) => phoneList(page).locator(`${phoneCardKey(key)}:visible`);
 const phoneRowTitles = page => phoneRows(page).locator('.mobile-card-title > span:last-child');
+const phoneTile = (page, key) => phoneList(page).locator(`.mobile-ios-tiles button[data-ios-status=${JSON.stringify(key)}]`);
+const phoneGroup = (page, label) => phoneList(page).getByRole('heading', { level: 2 }).getByRole('button', { name: label });
+async function phoneFoldPoint(control, x = 0.5) {
+  // Check the actual hit target without Playwright scrolling it into view.
+  await expect(control).toBeInViewport({ ratio: 1 });
+  const point = await control.evaluate((el, fraction) => {
+    const box = el.getBoundingClientRect(), list = el.closest('.mobile-ticket-list').getBoundingClientRect();
+    const x = box.left + box.width * fraction, y = box.top + box.height / 2;
+    return box.top >= list.top && box.bottom <= list.bottom && el.contains(document.elementFromPoint(x, y)) ? { x, y } : null;
+  }, x);
+  assert.ok(point, 'Control must be fully above the dock and accept a tap');
+  return point;
+}
+async function tapPhoneFold(page, control, x) {
+  const point = await phoneFoldPoint(control, x);
+  await page.touchscreen.tap(point.x, point.y);
+}
 async function noPageOverflow(page) {
   const duplicateIDs = await page.evaluate(() => {
     const seen = new Set();
@@ -1425,10 +1454,11 @@ test('Compact routed forms: New confirms Markdown import without replacing the d
 test('Compact Schedule reports a rejected save above the footer at 320×340', async t => {
   await withPage(t, 320, 'dark', async (page, fixture) => {
     const endpoint = '/api/tickets/kon-draft/schedule';
+    const rejection = 'Could not save the schedule.';
     await page.route('**' + endpoint, route => {
       assert.equal(route.request().method(), 'POST');
       fixture.expectedHTTPFailures.push(base + endpoint);
-      return route.fulfill({ status: 503, json: { error: 'Could not save the schedule. Try again.' } });
+      return route.fulfill({ status: 503, json: { error: rejection } });
     });
     await openTicket(page, 'kon-draft');
     await page.getByRole('button', { name: 'Actions', exact: true }).tap();
@@ -1441,7 +1471,7 @@ test('Compact Schedule reports a rejected save above the footer at 320×340', as
     const save = schedule.getByRole('button', { name: 'schedule', exact: true });
     await save.tap();
     const alert = schedule.getByRole('alert');
-    await expect(alert).toHaveText('Could not save the schedule. Try again.');
+    await expect(alert).toHaveText(`Result uncertain; refresh before trying again: ${rejection}`);
     await inViewport(alert);
     assert.ok(await alert.evaluate(el => {
       const r = el.getBoundingClientRect();
@@ -1785,7 +1815,7 @@ describe('mobile polish fixture evidence', () => {
           await selectPhoneStatus(page, ':all');
           await visible(page.locator('.mobile-board-layer .mobile-card-title').filter({ hasText: 'Queued ordinary ticket' }));
           await mobileCapture(page, width, theme, 'board-running-queued-paused-attention');
-          await page.locator('.mobile-board-layer button[data-pipe-color]').filter({ hasText: 'kon-queued' }).scrollIntoViewIfNeeded();
+          await phoneRow(page, 'kon-queued').scrollIntoViewIfNeeded();
           await mobileCapture(page, width, theme, 'board-queued-paused');
           await phoneRows(page).filter({ hasText: 'Long identifiers must stay inside their card' }).scrollIntoViewIfNeeded();
           await mobileCapture(page, width, theme, 'board-long-secondary-id');
@@ -1936,7 +1966,12 @@ async function polishCardGeometry(page) {
       for (const el of card.querySelectorAll('*')) {
         if (!el.getClientRects().length || getComputedStyle(el).visibility === 'hidden') continue;
         const child = el.getBoundingClientRect();
-        if (child.left < box.left - 1 || child.right > box.right + 1 || child.top < box.top - 1 || child.bottom > box.bottom + 1) {
+        const title = el.parentElement.closest('.mobile-card-title');
+        // Ellipsized titles can clip descendants whose layout rectangles extend past the title.
+        const clip = title && getComputedStyle(title).overflowX === 'hidden' ? title.getBoundingClientRect() : null;
+        const left = clip ? Math.max(child.left, clip.left) : child.left;
+        const right = clip ? Math.min(child.right, clip.right) : child.right;
+        if (left < box.left - 1 || right > box.right + 1 || child.top < box.top - 1 || child.bottom > box.bottom + 1) {
           outside.push({ card: card.querySelector('.mobile-card-id')?.textContent, tag: el.tagName, text: el.textContent.slice(0, 80) });
         }
       }
@@ -2110,18 +2145,23 @@ describe('custom execution activity', () => {
       history: [{ stage: 'plan', run: 0, started_at: stamp, completed_at: stamp }], can_edit: true });
     const parked = ticket('kon-parked', 'Parked waiting ticket', { status: 'awaiting_data', execution_active: false });
     await withPage(t, width, 'dark', async (page, fixture) => {
-      const column = () => page.locator(width < 768 ? '.mobile-board-layer' : '#col-awaiting_data');
-      if (width < 768) await selectPhoneStatus(page, 'awaiting_data');
-      const card = id => column().locator(width < 768 ? '.mobile-card' : '.kt-card').filter({ hasText: id });
+      const phone = width < 768;
+      const running = phone ? phoneList(page).locator('.mobile-running-pill') : page.locator('.running-pill:visible').first();
+      if (phone) await selectPhoneStatus(page, 'awaiting_data');
+      const card = id => phone ? phoneRow(page, id) : page.locator(`#col-awaiting_data [data-ticket-id="${id}"]`);
       await visible(card(active.id)); await visible(card(parked.id));
-      await expect(page.locator('.running-pill:visible').first()).toContainText('2');
-      if (width < 768) await expect(card(active.id).locator('.mobile-card-state')).toContainText(['code', 'Awaiting data']);
-      else {
+      if (phone) {
+        await expect(running).toHaveText('2 running');
+        await expect(card(active.id).locator('.mobile-card-state:visible')).toHaveText(['Awaiting data', /^code · /]);
+        await expect(card(parked.id).locator('.mobile-card-state:visible')).toHaveText('Awaiting data');
+      } else {
+        await expect(running).toContainText('2');
         const elapsed = await page.evaluate(record => Alpine.$data(document.body).formatDuration(record), active);
         await visible(card(active.id).getByText(elapsed, { exact: true }));
       }
-      await visible(card(active.id).locator('.card-progress'));
-      assert.equal(await card(parked.id).locator('.card-progress').count(), 0);
+      const progress = width < 768 ? '.mobile-ios-segments' : '.card-progress';
+      await visible(card(active.id).locator(progress));
+      await expect(card(parked.id).locator(progress)).toHaveCount(0);
       if (width >= 768) {
         await expect(card(active.id)).toHaveClass(/card-state-running/);
         await expect(card(parked.id)).not.toHaveClass(/card-state-running/);
@@ -2129,9 +2169,11 @@ describe('custom execution activity', () => {
       }
       await openTicket(page, active.id);
       await visible(page.getByRole('button', { name: /^pause$/i }).filter({ visible: true }));
-      if (width < 768) await detailPanel(page, 'Ticket');
-      await visible(page.locator('.status-chip[data-status="awaiting_data"]').filter({ visible: true }).first());
-      if (width < 768) await phoneOutputView(page, 'Terminal');
+      if (width < 768) {
+        const overview = mobileDetail(page).getByRole('region', { name: 'Running ticket overview', exact: true });
+        await expect(overview.getByText(/^awaiting data$/i)).toBeVisible();
+        await phoneOutputView(page, 'Terminal');
+      } else await visible(page.locator('.status-chip[data-status="awaiting_data"]').filter({ visible: true }).first());
       await expect.poll(() => fixture.sockets.filter(url => url.pathname === '/ws/terminal/kon-live').length).toBeGreaterThan(0);
       assert.equal(await page.evaluate(() => Alpine.$data(document.body).editorCanEdit()), false);
       assert.equal(await page.evaluate(() => Alpine.$data(document.body).canSetStage()), false);
@@ -2151,13 +2193,17 @@ describe('custom execution activity', () => {
       await expect(page.getByRole('button', { name: /^pause$/i }).filter({ visible: true })).toHaveCount(0);
       await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).outputTab())).toBe('activity');
       await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).terminalOpen)).toBe(false);
-      await expect(page.locator('.running-pill:visible').first()).toContainText('1');
+      if (!phone) await expect(running).toContainText('1');
       await expect.poll(() => page.evaluate(() => window.__fixtureSockets.filter(socket => new URL(socket.url).pathname === '/ws/terminal/kon-live').every(socket => socket.readyState === WebSocket.CLOSED))).toBe(true);
       await visible(page.locator('#activity-scroll').filter({ visible: true }).getByText('Fixture activity revision 0', { exact: true }));
       await backToBoard(page);
-      if (width < 768) await selectPhoneStatus(page, 'awaiting_data');
+      if (phone) {
+        await expect(running).toBeVisible();
+        await expect(running).toHaveText('1 running');
+        await selectPhoneStatus(page, 'awaiting_data');
+      }
       await visible(card(active.id)); await visible(card(parked.id));
-      assert.equal(await card(active.id).locator('.card-progress').count(), 0);
+      await expect(card(active.id).locator(progress)).toHaveCount(0);
       const sockets = fixture.sockets.length;
       await openTicket(page, parked.id);
       assert.equal(await page.evaluate(() => Alpine.$data(document.body).editorCanEdit()), true);
@@ -2231,18 +2277,17 @@ describe('mobile desktop parity', () => {
       const cost = { id: live.id, cost_usd: '0.42', tracked_runs: 3, priced_runs: 2,
         stages: [{ name: 'cost-only', cost_usd: '0.42', tracked_runs: 1, priced_runs: 1 }], runs: [] };
       await withPage(t, width, theme, async (page, fixture) => {
-        const board = page.locator('.mobile-board-layer');
-        const card = () => board.locator('.mobile-card[data-mobile-ticket-key="kon-live"]');
-        const runningColumn = () => selectPhoneStatus(page, 'in_progress');
-        await runningColumn();
-        const progress = card().locator('.card-progress');
-        assert.equal(await progress.getAttribute('aria-label'), 'Stage 2 of 3: code');
-        assert.equal(await progress.locator('div').evaluate(el => el.style.width), '50%');
-        await visible(card().getByText('retry 2', { exact: true }));
+        const card = () => phoneRow(page, 'kon-live');
+        const progress = card().getByRole('img', { name: /^Stage / });
+        await expect(progress).toHaveAttribute('aria-label', 'Stage 2 of 3: code');
+        await expect(progress.locator('span.is-complete')).toHaveCount(1);
+        await expect(progress.locator('span.is-current')).toHaveCount(1);
+        await expect(progress.locator('span')).toHaveCount(3);
         await fixedColor(card().locator('.title-tag'), 'color', `hsl(${pipePalettes[theme][1]})`);
-        await fixedColor(card().getByText('Epic: 0 of 1 done', { exact: true }), 'color', `hsl(${pipePalettes[theme][3]} / 0.9)`);
-        const supervisor = board.locator(`.mobile-card[data-mobile-ticket-key="${supervisorID}"]`);
-        assert.equal(await supervisor.locator('.card-progress').count(), 0);
+        await fixedColor(card().locator('.mobile-ios-dot'), 'backgroundColor', `hsl(${pipePalettes[theme][2]})`);
+        await expect(card().locator('.mobile-ios-meta')).toContainText(liveAgent);
+        const supervisor = phoneRow(page, supervisorID);
+        await expect(supervisor.locator('.mobile-ios-segments:visible')).toHaveCount(0);
         await polishCardGeometry(page);
         if (captureDirectory) await mobileCapture(page, width, theme, 'parity-independent-colors-progress');
         await routeTo(page, '#/settings');
@@ -2250,13 +2295,15 @@ describe('mobile desktop parity', () => {
         for (const name of ['Pipeline badges', 'Agent details']) await page.getByRole('switch', { name, exact: true }).click();
         await backToBoard(page);
         await page.reload({ waitUntil: 'domcontentloaded' }); await ready(page);
-        await runningColumn();
         for (const resizedWidth of [width, 768, 767, width]) {
           await page.setViewportSize({ width: resizedWidth, height: 900 });
           if (resizedWidth < 768) {
             await visible(card());
             assert.equal(await card().locator('.pipe-tag:visible').count(), 0);
-            assert.equal(await card().getByText(liveAgent, { exact: true }).count(), 0);
+            const metadata = card().locator('.mobile-ios-meta');
+            await expect(metadata).toContainText('Fixture repository');
+            await expect(metadata).not.toContainText(liveAgent);
+            await expect(card().locator('.mobile-ios-dot')).toBeVisible();
             await visible(progress);
             await visible(supervisor.getByText('Supervisor', { exact: true }));
           } else {
@@ -2265,17 +2312,23 @@ describe('mobile desktop parity', () => {
             assert.equal(await desktop.locator('.pipe-tag').count(), 0);
             assert.equal(await desktop.getByText(liveAgent, { exact: true }).count(), 0);
             await visible(desktop.locator('.card-progress'));
+            assert.equal(await desktop.locator('.card-progress > div').evaluate(el => el.style.width), '50%');
+            await visible(desktop.getByText('retry 2', { exact: true }));
+            await fixedColor(desktop.getByText('Epic: 0 of 1 done', { exact: true }), 'color', `hsl(${pipePalettes[theme][3]} / 0.9)`);
           }
         }
         await openTicket(page, 'kon-live');
         await detailPanel(page, 'Ticket');
         const detail = page.locator('.mobile-detail');
         const secondary = detail.locator('.mobile-detail-secondary');
-        await visible(secondary.locator('.pipe-tag'));
-        await visible(secondary.getByText(liveAgent, { exact: true }));
-        await visible(secondary.getByText(liveBranch, { exact: true }));
-        await fixedColor(detail.locator('.mobile-detail-title .title-tag'), 'color', `hsl(${pipePalettes[theme][1]})`);
-        const strip = detail.getByRole('list', { name: 'Pipeline stage progress' });
+        const overview = detail.getByRole('region', { name: 'Running ticket overview', exact: true });
+        const title = overview.getByRole('heading', { level: 1 });
+        await expect(title).toBeVisible();
+        await expect(title.locator('.title-tag')).toHaveText('[a]');
+        await expect(title.locator('span:last-child')).toHaveText('Independently colored title');
+        await expect(overview.locator('.mobile-ios-running-state')).toContainText(liveAgent);
+        await expect(overview.locator('.mobile-technical')).toContainText(liveBranch);
+        const strip = overview.locator('.mobile-ios-running-stages');
         await visible(strip);
         await phoneOutputView(page, 'Terminal');
         await expect(detail).toHaveClass(/mobile-terminal-reading/);
@@ -2289,9 +2342,9 @@ describe('mobile desktop parity', () => {
         await expect(strip).toBeHidden();
         await detail.getByRole('button', { name: 'Ticket', exact: true }).click();
         await visible(strip);
-        assert.equal(await strip.getByRole('button').count(), 0);
-        assert.equal(await strip.getByRole('listitem').count(), 5, 'configured, historical and cost-only stages remain');
-        await readableStageLabel(strip.getByRole('listitem', { name: 'test: Not started', exact: true }));
+        await expect(strip.getByRole('button')).toHaveCount(0);
+        await expect(strip.getByRole('listitem'), 'Configured, historical and cost-only stages remain').toHaveCount(5);
+        await expect(strip.getByRole('listitem').filter({ hasText: 'test' })).toContainText('Not started');
         await phoneOutputView(page, 'Stage logs');
         assert.equal(await strip.count(), 0);
         const stages = detail.getByLabel('Stages and cost estimates');
@@ -2324,9 +2377,10 @@ describe('mobile desktop parity', () => {
         }
         record.status = 'in_progress'; record.stage = 'test';
         await page.evaluate(record => window.__fixtureSSE.filter(stream => !stream.closed && stream.url === '/api/events').forEach(stream => stream.emit('ticket_updated', record)), record);
-        await backToBoard(page); await runningColumn();
+        await backToBoard(page);
         await expect(progress).toHaveAttribute('aria-label', 'Stage 3 of 3: test');
-        assert.equal(await progress.locator('div').evaluate(el => el.style.width), '83%');
+        await expect(progress.locator('span.is-complete')).toHaveCount(2);
+        await expect(progress.locator('span.is-current')).toHaveCount(1);
         await page.setViewportSize({ width: 1280, height: 900 });
         await expect(page.locator('[data-ticket-id="kon-live"] .card-progress')).toHaveAttribute('aria-label', 'Stage 3 of 3: test');
         assert.equal(await page.locator('[data-ticket-id="kon-live"] .card-progress > div').evaluate(el => el.style.width), '83%');
@@ -2340,17 +2394,22 @@ describe('mobile desktop parity', () => {
       const records = names.map((pipeline, i) => ticket('palette-' + i, '[a] Independent title', { pipeline, path: '', parent: { id: 'e' } }));
       records.push(ticket('e', 'Palette epic', { kind: 'epic', epic_mode: 'passive' }));
       await withPage(t, width, 'dark', async page => {
+        if (width < 768) await selectPhoneStatus(page, ':all');
         for (const theme of themes) {
           for (let i = 0; i < names.length; i++) {
-            const card = width < 768 ? page.locator('.mobile-card').filter({ hasText: 'palette-' + i })
-              : page.locator('[data-ticket-id="palette-' + i + '"]');
-            const badge = card.locator('.pipe-tag').filter({ visible: true }).first();
-            await visible(badge);
-            for (const [property, alpha] of [['color', ''], ['backgroundColor', ' / 0.1'], ['borderTopColor', ' / 0.26']]) {
-              await fixedColor(badge, property, `hsl(${pipePalettes[theme][i]}${alpha})`);
+            const id = 'palette-' + i;
+            const card = width < 768 ? phoneRow(page, id) : page.locator(`[data-ticket-id="${id}"]`);
+            if (width < 768) {
+              await fixedColor(card.locator('.mobile-ios-dot'), 'backgroundColor', `hsl(${pipePalettes[theme][i]})`);
+            } else {
+              const badge = card.locator('.pipe-tag').filter({ visible: true }).first();
+              await visible(badge);
+              for (const [property, alpha] of [['color', ''], ['backgroundColor', ' / 0.1'], ['borderTopColor', ' / 0.26']]) {
+                await fixedColor(badge, property, `hsl(${pipePalettes[theme][i]}${alpha})`);
+              }
+              await fixedColor(card.getByText('Epic: 0 of 7 done', { exact: true }), 'color', `hsl(${pipePalettes[theme][5]} / 0.9)`);
             }
             await fixedColor(card.locator('.title-tag'), 'color', `hsl(${pipePalettes[theme][1]})`);
-            await fixedColor(card.getByText('Epic: 0 of 7 done', { exact: true }), 'color', `hsl(${pipePalettes[theme][5]} / 0.9)`);
           }
           if (theme === 'dark') {
             if (width < 768) await phoneDestination(page, 'Browse').click();
@@ -2360,11 +2419,9 @@ describe('mobile desktop parity', () => {
           }
         }
         if (width < 768) {
-          await selectPhoneStatus(page, ':all');
-          const running = page.locator('.mobile-card').filter({ hasText: 'kon-live' });
-          await fixedColor(running.locator('.mobile-card-state.text-st-progress'), 'color', 'hsl(35 75% 38%)');
-          const paused = page.locator('.mobile-card').filter({ hasText: 'kon-paused' });
-          await fixedColor(paused.locator('.mobile-card-state'), 'color', 'hsl(23 80% 40% / 0.8)');
+          const running = phoneRow(page, 'kon-live');
+          await fixedColor(running.locator('.mobile-ios-segments .is-complete').first(), 'backgroundColor', 'hsl(35 75% 38%)');
+          await expect(phoneRow(page, 'kon-paused').locator('.mobile-card-state:visible')).toHaveText('Paused');
         }
       }, { records: [...records, ...polishRecords()], themePreference: 'system' });
     });
@@ -2376,31 +2433,33 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
     test(`polish board semantics and geometry / ${width}px / ${theme} / ${reducedMotion}`, { timeout: 45000 }, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
         const board = page.locator('.mobile-board-layer');
-        const card = id => board.locator('.mobile-card').filter({ has: page.locator('.mobile-card-id', { hasText: id }) });
-        await visible(card('kon-scheduled').locator('.sched-chip'));
+        const card = id => phoneRow(page, id);
+        const listItem = key => board.getByRole('listitem').filter({ has: page.locator(phoneCardKey(key)) });
+        const schedule = listItem('kon-scheduled').getByRole('button').and(page.locator('[aria-haspopup="dialog"]'));
+        await expect(schedule).toHaveText(/Sep/i);
+        await schedule.click();
+        await expect(page.getByRole('dialog', { name: 'Ticket actions', exact: true })).toBeVisible();
+        await closeCaptureSheet(page);
         await polishCardGeometry(page);
         await selectPhoneStatus(page, ':all');
-        for (const [id, label] of [['kon-queued', 'Queued'], ['kon-paused', /^paused$/i]]) {
-          await visible(card(id).getByText(label, { exact: true }));
+        for (const [id, label] of [['kon-queued', 'Awaiting pickup'], ['kon-paused', 'Paused']]) {
+          await expect(card(id).locator('.mobile-card-state:visible')).toHaveText(label);
         }
-        const attention = card('kon-attention').locator('.waiting-chip');
-        await visible(attention);
-        assert.match(await attention.textContent(), /needs input/i);
-        const elapsed = attention.locator('[x-text="waitingFor(ticket)"]');
-        assert.match(await elapsed.textContent(), /\d/);
-        assert.equal(await attention.locator('.waiting-dot, .pulse-dot').count(), 0, 'Attention is text, not a decorative dot');
+        const attention = listItem('kon-attention').locator('.mobile-ios-question');
+        await expect(attention.getByText('Needs input', { exact: true })).toBeVisible();
+        await expect(attention.getByRole('button', { name: 'Reply', exact: true })).toBeEnabled();
+        await expect(attention.locator('.waiting-dot, .pulse-dot')).toHaveCount(0);
         const supervisor = card(supervisorID);
         await visible(supervisor.getByText('Supervisor', { exact: true }));
-        await visible(supervisor.getByText('supervising', { exact: true }));
-        assert.equal(await supervisor.getByText('Queued', { exact: true }).count(), 0);
-        assert.equal(await supervisor.getByText('Paused', { exact: true }).count(), 0);
-        assert.equal(await supervisor.getByText('code', { exact: true }).count(), 0, 'Supervisors do not acquire pipeline progress');
-        const secondary = card(longID).filter({ hasText: 'Long identifiers must stay inside their card' });
+        await expect(supervisor.getByText(/^(Awaiting pickup|Paused)$/)).toBeHidden();
+        await expect(supervisor.locator('.mobile-ios-segments:visible')).toHaveCount(0);
+        const key = `${source}/${longID}`;
+        const secondary = card(key);
         await secondary.scrollIntoViewIfNeeded();
-        await visible(secondary.getByText(sourcePath, { exact: true }));
-        assert.equal(await secondary.locator('.mobile-card-id').textContent(), longID);
-        assert.equal(await secondary.locator('.mobile-card-id').getAttribute('title'), longID);
-        assert.ok(await secondary.evaluate(el => el.classList.contains('shrink-0') && el.hasAttribute('data-pipe-color')));
+        await expect(secondary.locator('.mobile-ios-meta')).toContainText(sourcePath);
+        await expect(secondary.locator('.mobile-card-id')).toHaveText(longID);
+        await expect(secondary.locator('.mobile-card-id')).toHaveAttribute('title', longID);
+        await expect(listItem(key)).toHaveAttribute('data-pipe-color', /.+/);
         await polishCardGeometry(page);
         await polishTypography(board);
         await polishControls(board);
@@ -2416,12 +2475,21 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
             assert.equal(await toggle.getAttribute('aria-checked'), String(enabled));
           }
           await backToBoard(page);
+          await page.setViewportSize({ width: 1280, height: 900 });
+          const desktop = page.locator('[data-ticket-id="kon-live"]');
+          await expect(desktop).toBeVisible();
+          await expect(desktop.locator('.pipe-tag:visible')).toHaveCount(enabled ? 1 : 0);
+          await expect(desktop.getByText(liveAgent, { exact: true })).toHaveCount(enabled ? 1 : 0);
+          await page.setViewportSize({ width, height: 900 });
           await selectPhoneStatus(page, ':all');
-          assert.equal(await card('kon-live').locator('[x-show="showPipelineBadges"]').isVisible(), enabled);
-          assert.equal(await card('kon-live').locator('[x-show="showPipelineBadges"]').textContent(), 'standard');
-          assert.equal(await card('kon-live').getByText(liveAgent, { exact: true }).count(), enabled ? 1 : 0);
-          await visible(card('kon-queued').getByText('Queued', { exact: true }));
-          await visible(card('kon-paused').getByText(/^paused$/i));
+          const running = card('kon-live');
+          const metadata = running.locator('.mobile-ios-meta');
+          await expect(metadata).toContainText('Fixture repository');
+          if (enabled) await expect(metadata).toContainText(liveAgent);
+          else await expect(metadata).not.toContainText(liveAgent);
+          await expect(running.locator('.mobile-ios-dot')).toBeVisible();
+          await expect(card('kon-queued').locator('.mobile-card-state:visible')).toHaveText('Awaiting pickup');
+          await expect(card('kon-paused').locator('.mobile-card-state:visible')).toHaveText('Paused');
           await polishCardGeometry(page);
         }
         assert.deepEqual(fixture.mutations, [], 'Display preferences remain browser-local');
@@ -2432,8 +2500,9 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
         await openTicket(page, 'kon-live');
         const detail = page.locator('.mobile-detail');
         const tabs = detail.locator('.mobile-detail-tabs');
-        const status = detail.locator('.mobile-detail-secondary .status-chip');
         await detailPanel(page, 'Ticket');
+        const status = detail.getByRole('region', { name: 'Running ticket overview', exact: true })
+          .locator('.mobile-ios-running-state').getByText('in progress', { exact: true });
         await visible(status);
         assert.deepEqual(await status.evaluate(el => {
           const css = getComputedStyle(el, '::before');
@@ -2896,7 +2965,7 @@ async function pendingDetail(page, folder, id = 'kon-draft', title = draftTitle(
 }
 
 async function clickDraft(page, folder) {
-  await page.locator('.mobile-board-layer').getByRole('button').filter({ hasText: draftTitle(folder) }).click();
+  await phoneRow(page, folder === 'primary' ? 'kon-draft' : `${folder}/kon-draft`).click();
 }
 
 async function settleRead(page, held, result = {}) {
@@ -2977,6 +3046,9 @@ describe('initial board and mobile detail loading', { timeout: 120000 }, () => {
       await expect(phoneCount(page)).toBeHidden();
       fixture.behavior.sourcesFailure = false;
       await retry.click();
+      await expect(page.locator('#board-empty-mobile')).toBeVisible();
+      await expect(retry).toBeHidden();
+      await phoneSearch(page).fill('no matches');
       await expect(phoneCount(page)).toHaveText('0 tickets');
       await expect(phoneCount(page)).toBeVisible();
     }, { ...loadingOptions, empty: true, pendingSnapshot: 'primary',
@@ -3146,8 +3218,7 @@ describe('initial board and mobile detail loading', { timeout: 120000 }, () => {
   test('pending detail hides body and logs while preserving a fitted terminal host', async t => {
     await withPage(t, 390, 'dark', async (page, fixture) => {
       const held = fixture.holdDetail('primary', 'kon-live');
-      await selectPhoneStatus(page, 'in_progress');
-      await page.locator('.mobile-board-layer').getByRole('button').filter({ hasText: liveTitle }).click();
+      await phoneRow(page, 'kon-live').click();
       await held.started;
       const detail = mobileDetail(page);
       await pendingDetail(page, 'primary', 'kon-live', liveTitle);
@@ -3156,7 +3227,7 @@ describe('initial board and mobile detail loading', { timeout: 120000 }, () => {
       await page.waitForFunction(() => Alpine.$data(document.body).logViewContent?.includes('fixture log revision 0'));
       await expect(detail.getByText('kon-live code fixture log revision 0', { exact: true })).toBeHidden();
       await detail.getByRole('button', { name: 'Ticket', exact: true }).click();
-      await expect(detail.locator('h1')).toBeHidden();
+      await expect(detail.locator('h1:visible')).toHaveCount(0);
       await expect(detail.getByText('No ticket description.', { exact: true })).toBeHidden();
       await detail.getByRole('button', { name: 'Output', exact: true }).click();
       await detail.getByRole('combobox', { name: 'Output view', exact: true, includeHidden: true }).selectOption('terminal', { force: true });
@@ -4111,22 +4182,54 @@ describe('desktop stage ribbon browser regressions', () => {
   });
 });
 
-test('small phone can tap the first attention row without scrolling', async t => {
-  await withPage(t, 320, 'dark', async page => {
-    const row = phoneRows(page).first();
-    await expect(row).toContainText('First attention ticket');
+test('small phone review tile, group fold and first row accept taps without scrolling', async t => {
+  await withPage(t, 320, 'dark', async (page, fixture) => {
+    await expect(phoneRow(page, 'kon-attention')).toHaveCount(0);
+    await tapPhoneFold(page, phoneTile(page, 'human_review'));
+    await expect(page).toHaveURL(/#\/column\/human_review$/);
+    await expect(phoneColumnSearch(page)).toBeVisible();
+    const group = phoneGroup(page, /^Today\b/);
+    const row = phoneRow(page, 'kon-attention');
+    await expect(group).toHaveAttribute('aria-expanded', 'true');
+    await tapPhoneFold(page, group, 0.97);
+    await expect(group).toHaveAttribute('aria-expanded', 'false');
+    await expect(row).toBeHidden();
+    await tapPhoneFold(page, group, 0.03);
+    await expect(group).toHaveAttribute('aria-expanded', 'true');
     assert.equal(await phoneList(page).evaluate(el => el.scrollTop), 0);
-    await expect(row).toBeInViewport({ ratio: 1 });
-    assert.ok(await row.evaluate(el => {
-      const r = el.getBoundingClientRect();
-      const limit = el.closest('.mobile-ticket-list').getBoundingClientRect();
-      return r.top >= limit.top && r.bottom <= limit.bottom &&
-        el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
-    }));
-    await row.tap();
-    await page.waitForURL('**/#/t/kon-attention');
-    await expect(mobileDetail(page).getByRole('status').filter({ hasText: 'Loading ticket…' })).toBeHidden();
-  }, { height: 568, hasTouch: true, onlyRecords: true, records: [ticket('kon-attention', 'First attention ticket', { status: 'human_review' })] });
+    await tapPhoneFold(page, row);
+    await expect(page).toHaveURL(/#\/t\/kon-attention$/);
+    await expect(mobileDetail(page).getByRole('heading', { name: 'First attention ticket', exact: true })).toBeVisible();
+    await expect(loadingStatus(page)).toBeHidden();
+    assert.deepEqual(fixture.mutations, []);
+  }, { height: 568, hasTouch: true, onlyRecords: true, beforeNavigation: page => page.clock.setFixedTime(new Date(stamp)),
+    records: [ticket('kon-attention', 'First attention ticket', { status: 'human_review', finished_at: stamp })] });
+});
+
+test('phone home shows the first Open queue control above the fold with four progress rows', async t => {
+  await withPage(t, 390, 'dark', async (page, fixture) => {
+    const list = phoneList(page);
+    const open = list.getByRole('heading', { name: 'Open', exact: true });
+    const queue = list.getByRole('button', { name: /^Queue\b/ }).first();
+    const positions = [];
+    for (const item of [...iosPwa.progress.map(id => phoneRow(page, id)), open, queue]) {
+      await expect(item).toBeInViewport({ ratio: 1 });
+      positions.push((await item.boundingBox()).y);
+    }
+    assert.ok(positions.every((y, i) => i === 0 || y > positions[i - 1]), 'Progress, Open heading, and Queue keep their vertical order');
+    await expect(queue).toBeEnabled();
+    await phoneFoldPoint(queue);
+    assert.equal(await list.evaluate(el => el.scrollTop), 0);
+    const path = `/api/tickets/${iosPwa.running}`;
+    const hydrated = ['chain', 'changes'].map(resource => page.waitForResponse(base + `${path}/${resource}`));
+    await tapPhoneFold(page, phoneRow(page, iosPwa.running));
+    await expect(page).toHaveURL(new RegExp(`#/t/${iosPwa.running}$`));
+    await Promise.all(hydrated.map(async pending => (await pending).finished()));
+    await expect(mobileDetail(page).getByRole('button', { name: 'Ticket', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    assert.deepEqual(fixture.sockets, [], 'Opening a live row does not attach a terminal');
+    assert.deepEqual(fixture.mutations, []);
+  }, { ...iosPwaOptions(new Date(stamp)), height: 844, hasTouch: true,
+    beforeNavigation: page => page.clock.setFixedTime(new Date(stamp)) });
 });
 
 test('phone Activity gets half the viewport with long ticket metadata', async t => {
@@ -4182,7 +4285,6 @@ describe('phone ticket navigation and recovery', () => {
       const titles = phoneRowTitles(page);
       await expect(titles.filter({ hasText: 'Primary draft' })).toBeVisible();
       fixture.records.get('primary/kon-draft').title = 'Updated primary draft';
-      const refresh = page.getByRole('button', { name: 'Refresh tickets', exact: true });
       const primaryFailure = page.getByText('Could not load tickets from the primary folder (/fixtures/primary).', { exact: true });
       const loadedAt = await page.evaluate(value => new Date(value).toLocaleString(), stamp);
       const stale = page.getByText('Last successful primary refresh: ' + loadedAt, { exact: true });
@@ -4190,10 +4292,12 @@ describe('phone ticket navigation and recovery', () => {
       const requests = () => fixture.requests.filter(r => r === 'GET /api/tickets').length;
       const before = requests();
       const failed = fixture.holdSnapshot();
-      await refresh.click();
+      await refreshPhoneTickets(page);
       await expect.poll(() => failed.claimed).toBe(true);
-      await expect(refresh).toBeDisabled();
       await expect(page.getByText('Refreshing tickets…', { exact: true })).toBeVisible();
+      await phoneFilterButton(page).click();
+      await expect(phoneRefreshButton(page)).toBeDisabled();
+      await closeCaptureSheet(page);
       await settleRead(page, failed, { failure: 'http', error: 'Fixture board snapshot unavailable' });
       await expect(primaryFailure).toBeVisible();
       await expect(stale).toBeVisible();
@@ -4276,8 +4380,7 @@ describe('phone ticket navigation and recovery', () => {
   test('phone Actions directs the user to Tickets when a cached ticket folder is unavailable', async t => {
     await withPage(t, 390, 'dark', async (page, fixture) => {
       const failed = fixture.holdSnapshot(source);
-      const refresh = page.getByRole('button', { name: 'Refresh tickets', exact: true });
-      await refresh.click();
+      await refreshPhoneTickets(page);
       await failed.started;
       await settleRead(page, failed, { failure: 'http' });
       const retry = page.getByRole('button', { name: 'Retry', exact: true });
@@ -4291,7 +4394,7 @@ describe('phone ticket navigation and recovery', () => {
       await expect(error).toBeVisible();
       await detail.getByRole('button', { name: 'Back', exact: true }).click();
       await expect(retry).toBeVisible();
-      await refresh.click();
+      await refreshPhoneTickets(page);
       await expect(retry).toBeHidden();
     }, loadingOptions);
   });
@@ -4303,8 +4406,10 @@ describe('phone ticket navigation and recovery', () => {
     await withPage(t, 390, 'dark', async (page, fixture) => {
       const back = mobileDetail(page).getByRole('button', { name: 'Back', exact: true });
       const description = mobileDetail(page).locator('#mobile-secondary-description');
-      const row = phoneRows(page).filter({ hasText: 'Secondary namesake' });
+      const row = phoneRow(page, `${source}/kon-draft`);
       const list = phoneList(page);
+      const showOpen = list.getByRole('button', { name: /^Show all \d+ open$/i });
+      const column = /#\/column\/open$/;
       const scroll = () => list.evaluate(el => el.scrollTop);
       const entries = () => page.evaluate(() => history.length);
       await expect(description).toHaveValue('Secondary-only description.\n');
@@ -4313,7 +4418,10 @@ describe('phone ticket navigation and recovery', () => {
       await page.waitForURL('**/#/');
       await expect(mobileDetail(page)).toBeHidden();
       assert.equal(await entries(), directLength, 'Direct-entry Back replaces the detail URL');
-      await selectPhoneStatus(page, 'open');
+      await showOpen.click();
+      await expect(page).toHaveURL(column);
+      await expect(phoneColumnSearch(page)).toBeVisible();
+      assert.equal(await entries(), directLength + 1, 'Opening the column pushes one list entry');
       await row.scrollIntoViewIfNeeded();
       await row.focus();
       const offset = await scroll();
@@ -4322,17 +4430,23 @@ describe('phone ticket navigation and recovery', () => {
       await page.waitForURL(url => url.hash === route);
       await expect(description).toBeVisible();
       await expect(back).toBeFocused();
-      assert.equal(await entries(), directLength + 1, 'Opening a row pushes one detail entry');
+      assert.equal(await entries(), directLength + 2, 'Opening a row pushes one detail entry');
       await back.click();
-      await page.waitForURL('**/#/');
+      await expect(page).toHaveURL(column);
       await expect(row).toBeFocused();
-      await expect(phoneFilterSummary(page)).toContainText('Open');
+      await expect(phoneColumnSearch(page)).toBeVisible();
       assert.equal(await scroll(), offset, 'Back must not reset the list or scroll it during focus restoration');
-      assert.equal(await entries(), directLength + 1, 'In-app Back traverses instead of adding a board entry');
+      assert.equal(await entries(), directLength + 2, 'In-app Back traverses instead of adding a board entry');
       await page.goForward();
       await page.waitForURL(url => url.hash === route);
       await expect(description).toHaveValue('Secondary-only description.\n');
       await expect(back).toBeFocused();
+      await page.goBack();
+      await expect(row).toBeFocused();
+      await list.getByRole('button', { name: 'Back to Tickets', exact: true }).click();
+      await expect(page).toHaveURL(/#\/$/);
+      await expect(showOpen).toBeFocused();
+      assert.equal(await entries(), directLength + 2);
       assert.deepEqual(fixture.mutations, []);
     }, { hash: route, records, ...loadingOptions });
   });
@@ -4354,7 +4468,7 @@ describe('phone ticket navigation and recovery', () => {
 
   test('phone epic Back restores focus to the Epics list opener', async t => {
     await withPage(t, 390, 'dark', async page => {
-      const rail = phoneList(page).getByRole('group', { name: 'Epics', exact: true });
+      const rail = phoneList(page).getByRole('region', { name: 'Epics', exact: true });
       const opener = rail.locator(`[data-mobile-ticket-key="${supervisorID}"]`);
       await expect(phoneList(page).locator(`.mobile-card[data-mobile-ticket-key="${supervisorID}"]`)).toBeVisible();
       await opener.scrollIntoViewIfNeeded();
@@ -4393,41 +4507,78 @@ describe('phone ticket navigation and recovery', () => {
     });
   });
 
-  test('phone In progress first puts running tickets above a full page of reviews', async t => {
+  test('phone home previews progress and four Open tickets; long review windows survive history traversal', async t => {
     const records = [
-      ticket('kon-review', 'Waiting for human review', { status: 'human_review' }),
+      ticket('kon-old-review', 'Older review', { status: 'human_review', finished_at: '2020-01-01T12:00:00Z' }),
       ticket('kon-waiting', 'Waiting for agent input', { status: 'in_progress', waiting_for_input: true }),
       ticket('kon-running', 'Running without input', { status: 'in_progress' }),
-      ticket('kon-draft', 'Ordinary backlog ticket'),
-      ...Array.from({ length: 102 }, (_, i) => ticket(`kon-window-${i}`, `Review fixture ${i}`, { status: 'human_review' })),
+      ...Array.from({ length: 6 }, (_, i) => ticket(`kon-open-${i}`, `Open fixture ${i}`)),
+      ...Array.from({ length: 103 }, (_, i) => ticket(`kon-window-${i}`, `Review fixture ${String(i).padStart(3, '0')}`,
+        { status: 'human_review', finished_at: stamp })),
     ];
     await withPage(t, 390, 'dark', async (page, fixture) => {
       const list = phoneList(page), rows = phoneRows(page);
-      const more = list.getByRole('button', { name: 'Load more', exact: true });
-      await expect(phoneFilterSummary(page)).toContainText('In progress first');
-      const headings = list.getByRole('heading');
-      await expect(headings).toHaveText(['In progress (1)', 'Needs attention (104)']);
-      await expect(phoneRowTitles(page).first()).toHaveText('Running without input');
-      await expect(phoneRowTitles(page).nth(1)).toHaveText('Waiting for agent input');
-      await expect(more).toBeVisible();
-
+      const scroll = () => list.evaluate(el => el.scrollTop);
+      const homeTitles = ['Waiting for agent input', 'Running without input', ...Array.from({ length: 4 }, (_, i) => `Open fixture ${i}`)];
+      await expect(phoneRowTitles(page)).toHaveText(homeTitles);
+      await expect(list.getByRole('button', { name: 'Show all 6 open', exact: true })).toBeVisible();
+      const review = phoneTile(page, 'human_review');
+      await expect(review).toContainText('104');
       await phoneSearch(page).fill('Running without input');
-      await expect(headings).toHaveText(['In progress (1)']);
       await expect(phoneRowTitles(page)).toHaveText(['Running without input']);
       await phoneSearch(page).clear();
-      await selectPhoneStatus(page, 'human_review');
+      await expect(phoneRowTitles(page)).toHaveText(homeTitles);
+
+      await review.click();
+      await expect(page).toHaveURL(/#\/column\/human_review$/);
+      await expect(list.getByRole('status').filter({ hasText: /^104 tickets · Oldest/ })).toBeVisible();
+      const search = phoneColumnSearch(page);
+      const today = phoneGroup(page, /^Today\b/), older = phoneGroup(page, /^Older\b/);
+      const more = list.getByRole('button', { name: 'Show 3 more', exact: true });
+      await expect(today).toHaveAttribute('aria-expanded', 'true');
+      await expect(older).toHaveAttribute('aria-expanded', 'false');
       await expect(rows).toHaveCount(100);
-      await more.click();
+      await more.focus();
+      await more.press('Enter');
       await expect(rows).toHaveCount(103);
       await expect(more).toBeHidden();
-      await expect.poll(() => list.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+      await expect(rows.nth(100)).toBeFocused();
+      await expect.poll(scroll).toBeGreaterThan(0);
+      await older.click();
+      await expect(older).toHaveAttribute('aria-expanded', 'true');
+      await expect(rows).toHaveCount(104);
+      await expect(phoneRow(page, 'kon-old-review')).toBeVisible();
+      await search.fill('Review fixture');
+      await expect(older).toBeHidden();
+      await expect.poll(scroll).toBe(0);
+      const row = phoneRow(page, 'kon-window-102');
+      await row.scrollIntoViewIfNeeded();
+      const offset = await scroll();
+      assert.ok(offset > 0);
+      await row.click();
+      await expect(page).toHaveURL(/#\/t\/kon-window-102$/);
+      await page.goBack();
+      await expect(page).toHaveURL(/#\/column\/human_review$/);
+      await expect(search).toHaveValue('Review fixture');
+      await expect(rows).toHaveCount(103);
+      await expect(row).toBeFocused();
+      assert.equal(await scroll(), offset);
+      await page.goForward();
+      await expect(page).toHaveURL(/#\/t\/kon-window-102$/);
+      await expect(mobileDetail(page).locator('.mobile-ticket-title')).toContainText('Review fixture 102');
+      await page.goBack();
+      await expect(row).toBeFocused();
+      await list.getByRole('button', { name: 'Back to Tickets', exact: true }).click();
+      await expect(page).toHaveURL(/#\/$/);
+      await expect(review).toBeFocused();
+      await expect(phoneRowTitles(page)).toHaveText(homeTitles);
+
       await selectPhoneStatus(page, ':all');
       await expect(rows).toHaveCount(100);
-      await expect(headings).toHaveCount(0);
-      await expect.poll(() => list.evaluate(el => el.scrollTop)).toBe(0);
-      await expect(more).toBeVisible();
+      await expect.poll(scroll).toBe(0);
+      await expect(list.getByRole('button', { name: 'Load more', exact: true })).toBeVisible();
       assert.deepEqual(fixture.mutations, []);
-    }, { onlyRecords: true, records });
+    }, { onlyRecords: true, records, beforeNavigation: page => page.clock.setFixedTime(new Date(stamp)) });
   });
 });
 
@@ -4435,22 +4586,26 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
   for (const width of [320, 390]) for (const theme of themes) {
     test(`board chrome and status navigation ${width}px / ${theme}`, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
-        await t.test('running count shares the app row without shrinking actions', async () => {
-          const bar = page.locator('.mobile-app-bar');
+        await t.test('running count shares the home header without shrinking actions', async () => {
+          const bar = phoneList(page).locator('.mobile-ios-top');
           const bounds = await bar.boundingBox();
-          const mark = await bar.locator('.mobile-wordmark').boundingBox();
-          const pill = await bar.locator('.mobile-running-pill').boundingBox();
-          assert.ok(pill.y >= mark.y && pill.y + pill.height <= mark.y + mark.height + 1, 'Running count stays within the wordmark block');
+          const pill = bar.locator('.mobile-running-pill');
           const running = [...fixture.records.values()].filter(ticket => ticket.source === 'primary' && ticket.status === 'in_progress').length;
-          assert.equal(await bar.locator('.mobile-running-pill').getAttribute('aria-label'), `${running} running`);
-          for (const name of ['Refresh tickets', 'New ticket']) {
+          await expect(pill).toHaveText(`${running} running`);
+          const pillBox = await pill.boundingBox();
+          let end = pillBox.x + pillBox.width;
+          for (const name of ['Filters', 'New ticket']) {
             const control = bar.getByRole('button', { name, exact: true });
             await inViewport(control);
             const box = await control.boundingBox();
-            assert.ok(box.height >= 44);
-            assert.ok(mark.x + mark.width <= box.x && box.y >= bounds.y && box.y + box.height <= bounds.y + bounds.height + 1,
-              'Wordmark, count and actions fit in the same row without overlap');
+            assert.ok(box.width >= 44 && box.height >= 44);
+            assert.ok(end <= box.x && box.y >= bounds.y && box.y + box.height <= bounds.y + bounds.height + 1,
+              'Count and actions fit in the same row without overlap');
+            end = box.x + box.width;
           }
+          await phoneFilterButton(page).click();
+          await inViewport(phoneRefreshButton(page));
+          await closeCaptureSheet(page);
           await expect(phoneNav(page).getByRole('button')).toHaveCount(4);
           await expect(phoneDestination(page, 'Tickets')).toHaveAttribute('aria-current', 'page');
           for (const name of ['Tickets', 'Assistant', 'Settings', 'Browse']) {
@@ -4470,6 +4625,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await ready(page);
           const picker = phoneStatus(page), titles = phoneRowTitles(page);
           await phoneFilterButton(page).click();
+          await expect(phoneFilters(page).getByRole('button', { name: 'Close', exact: true })).toBeFocused();
           await expect(picker).toHaveValue(':attention');
           await picker.focus();
           await picker.selectOption(status);
@@ -4506,7 +4662,8 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
             await page.reload({ waitUntil: 'domcontentloaded' });
             await ready(page);
             // Only entries taller than the 44px touch minimum, in a list that
-            // overflows, can lose height.
+            // overflows, can lose height. Home only previews the first four Open tickets.
+            await selectPhoneStatus(page, ':all');
             const board = await clipped('.mobile-ticket-list', '.mobile-card');
             assert.ok(board.overflows && board.count > keys.length && board.shortest > 44, JSON.stringify(board));
             assert.deepEqual(board.clipped, []);
@@ -4558,7 +4715,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
   for (const theme of themes) {
     test(`phone compose paste and cancellation / ${theme}`, async t => {
       await withPage(t, 390, theme, async (page, fixture) => {
-        await openTicket(page, 'kon-live');
+        await openTerminalSubject(page, 'kon-live');
         const surface = mobileTerminalSurface(page), compose = mobileComposer(page);
         fixture.behavior.bracketedPaste = true;
         await page.clock.install();
@@ -4883,7 +5040,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
   for (const width of [320, 390, 402]) for (const theme of themes) {
     test(`terminal visible geometry ${width}px / ${theme}`, { timeout: 60000 }, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
-        await openTicket(page, 'kon-live');
+        await openTerminalSubject(page, 'kon-live');
         await visible(page.locator('#terminal-container-mobile .xterm'));
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         assert.ok(await page.locator('#terminal-container-mobile').evaluate(el => el.clientWidth > 0 && el.clientWidth < innerWidth));
@@ -4893,14 +5050,14 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           assert.equal(await page.evaluate(() => innerHeight), 900, 'Only the visual viewport shrinks');
           await terminalRows(page, height, height === 900 ? 0 : 12);
           const status = page.locator('.mobile-detail .mobile-terminal-status');
-          assert.equal(await page.locator('.mobile-detail-actions').isVisible(), false);
+          await expect(page.locator('.mobile-detail-actions:visible')).toHaveCount(0);
           await page.evaluate(() => { window.__fixtureHoldOpen = true; });
           await mobileTerminalSurface(page).locator('.mobile-reading-bar').getByRole('button', { name: 'Back', exact: true }).focus();
           await page.getByRole('button', { name: 'Type in terminal', exact: true }).filter({ visible: true }).click();
           await page.waitForFunction(() => window.__fixturePendingOpens.length > 0);
           await mobileTerminalLayout(page, true, height, height === 900 ? 0 : 12);
           assert.equal(await status.textContent(), 'Connecting…');
-          assert.equal(await page.locator('.mobile-detail-actions').isVisible(), false);
+          await expect(page.locator('.mobile-detail-actions:visible')).toHaveCount(0);
           assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el.readOnly), true);
           const inputs = fixture.messages.filter(message => message.type === 'input').length;
           const keys = page.locator('.mobile-detail .mobile-terminal-keys');
@@ -4973,7 +5130,10 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await phoneOutputView(page, 'Stage logs');
         assert.equal(await detail.locator('.mobile-detail-title [x-text="parseTitleTag(selectedTicket || {}).rest"]').textContent(), liveTitle);
         await detail.getByRole('button', { name: 'Ticket', exact: true }).click();
-        assert.equal(await detail.locator('h1 [x-text="parseTitleTag(selectedTicket || {}).rest"]').textContent(), liveTitle);
+        const title = detail.getByRole('region', { name: 'Running ticket overview', exact: true })
+          .getByRole('heading', { level: 1 }).locator('span:last-child');
+        await expect(title).toBeVisible();
+        await expect(title).toHaveText(liveTitle);
         await visible(detail.locator('.mobile-detail-secondary').getByText(liveAgent, { exact: true }));
         await visible(detail.locator('.mobile-detail-secondary').getByText(liveBranch, { exact: true }));
         const copy = detail.getByRole('button', { name: 'Copy attach command', exact: true });
@@ -5092,7 +5252,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await inViewport(detail.getByRole('button', { name: 'copy id', exact: true }));
           assert.ok(await header.evaluate(el => el.scrollWidth <= el.clientWidth + 1), 'Archive controls must wrap instead of scrolling sideways');
           await noPageOverflow(page);
-          await openTicket(page, 'kon-live');
+          await openTerminalSubject(page, 'kon-live');
           await visible(page.locator('#terminal-session:visible .xterm, #terminal-container-mobile:visible .xterm'));
           assert.equal(await page.evaluate(() => Alpine.$data(document.body)._archiveDetailId), null);
           assert.equal(new URL(page.url()).hash, '#/t/kon-live');
@@ -5171,10 +5331,11 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await t.test('combined board card selection keeps namesakes distinct', async () => {
           await backToBoard(page);
           assert.equal(await page.getByRole('combobox', { name: 'Filter by ticket folder', exact: true }).count(), 0);
-          const namesake = width < 768 ? page.getByRole('button').filter({ hasText: 'Secondary namesake', visible: true })
+          if (width < 768) await phoneSearch(page).fill('kon-draft'); // Both namesakes, even past the four-card Open preview.
+          const namesake = width < 768 ? phoneRow(page, `${source}/kon-draft`)
             : page.locator('[data-ticket-id="secondary/kon-draft"]:visible');
           await visible(namesake);
-          const primary = width < 768 ? page.getByRole('button').filter({ hasText: 'Primary draft', visible: true })
+          const primary = width < 768 ? phoneRow(page, 'kon-draft')
             : page.locator('[data-ticket-id="kon-draft"]:visible');
           await visible(primary);
           await namesake.click();
@@ -5645,6 +5806,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await page.waitForURL('**/' + destination);
           assert.equal(new URL(page.url()).hash, destination);
           if (destination.includes('kon-live')) {
+            await phoneOutputView(page, 'Terminal');
             await visible(page.locator('#terminal-container-mobile .xterm'));
             assert.equal(await page.locator('.xterm:visible').count(), 1);
           }
@@ -6737,7 +6899,7 @@ describe('focused phone description save lifecycle', { concurrency: 2 }, () => {
           await visible(surface.locator('.mobile-ticket-route'));
           await visible(surface.locator('.mobile-detail-secondary'));
           await visible(surface.locator('.mobile-detail-tabs'));
-          await visible(surface.locator('.mobile-detail-actions'));
+          await expect(surface.locator('.mobile-detail-actions:visible')).toHaveCount(1);
           await expect.poll(() => fixture.descriptionWrites.length).toBeGreaterThanOrEqual(4);
           await page.waitForFunction(() => !Alpine.$data(document.body).editSubmitting);
           await surface.getByRole('button', { name: 'Edit description', exact: true }).click();
@@ -7811,49 +7973,70 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
   for (const [width, theme] of [[320, 'light'], [390, 'dark'], [1440, 'dark']]) test(`Live questions clear on a ticket event and on list refresh / ${width}px`, async t => {
     const wait = { execution_active: true, waiting_for_input: true, waiting_question: 'Which fixture should I use?' };
     await withPage(t, width, theme, async (page, fixture) => {
-      const toggle = page.getByRole('button', { name: /^Needs input \d$/, exact: true });
       const phone = width < 768;
-      if (phone) await expect(phoneFilterSummary(page)).toContainText('In progress first');
-      await expect(toggle).toHaveText(/Needs input 2/);
+      const toggle = phone ? phoneTile(page, 'input') : page.getByRole('button', { name: /^Needs input \d$/, exact: true });
       const query = phone ? phoneSearch(page) : page.getByRole('textbox', { name: 'Filter tickets' });
-      await query.fill('Question worker');
-      await expect(toggle).toHaveText(/Needs input 1/);
-      if (phone) await toggle.tap(); else { await toggle.focus(); await page.keyboard.press('Space'); }
-      await expect(toggle).toHaveAttribute('aria-pressed', 'true');
-      if (phone) await expect(phoneFilterSummary(page)).toContainText('In progress first');
-      const card = phone ? page.getByText('Question worker', { exact: true }).filter({ visible: true })
-        : page.locator('[data-ticket-id="kon-question"]');
+      if (phone) {
+        await expect(toggle).toHaveAccessibleName('2 Needs input');
+        await toggle.tap();
+        await expect(phoneFilterSummary(page)).toContainText('Default · Needs input');
+        await expect(phoneRowTitles(page)).toHaveCount(2);
+        await query.fill('Question worker');
+        await expect(phoneRowTitles(page)).toHaveText(['Question worker']);
+      } else {
+        await expect(toggle).toHaveText(/Needs input 2/);
+        await query.fill('Question worker');
+        await expect(toggle).toHaveText(/Needs input 1/);
+        await toggle.focus();
+        await page.keyboard.press('Space');
+        await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+      }
+      const card = phone ? phoneRow(page, 'kon-question') : page.locator('[data-ticket-id="kon-question"]');
       await card.click();
       await page.waitForURL('**/#/t/kon-question');
       if (phone) await detailPanel(page, 'Output');
-      await visible(page.getByText(wait.waiting_question, { exact: true }).filter({ visible: true }));
+      const question = (phone ? mobileDetail(page) : page).getByText(wait.waiting_question, { exact: true }).filter({ visible: true });
+      await expect(question).toBeVisible();
       const record = fixture.records.get('primary/kon-question');
       delete record.waiting_for_input;
       delete record.waiting_question;
       await parityTicketEvent(page, fixture, 'kon-question');
-      await expect(page.getByText(wait.waiting_question, { exact: true }).filter({ visible: true })).toHaveCount(0);
+      await expect(question).toHaveCount(0);
       assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedTicket?.id), 'kon-question');
       Object.assign(record, wait);
       await parityTicketEvent(page, fixture, 'kon-question');
-      await visible(page.getByText(wait.waiting_question, { exact: true }).filter({ visible: true }));
+      await expect(question).toBeVisible();
       delete record.waiting_for_input;
       delete record.waiting_question;
-      await page.evaluate(() => Alpine.$data(document.body).fetchTasks());
-      await expect(page.getByText(wait.waiting_question, { exact: true }).filter({ visible: true })).toHaveCount(0);
-      await backToBoard(page);
-      await expect(toggle).toHaveText(/Needs input 0/);
-      if (phone) await expect(phoneFilterSummary(page)).toContainText('In progress first');
+      if (phone) {
+        await backToBoard(page);
+        await expect(card).toBeVisible();
+        await refreshPhoneTickets(page);
+      } else {
+        await page.evaluate(() => Alpine.$data(document.body).fetchTasks());
+        await expect(question).toHaveCount(0);
+        await backToBoard(page);
+        await expect(toggle).toHaveText(/Needs input 0/);
+      }
       await expect(page.getByText('No agents need input among tickets matching your filters.', { exact: true })).toBeVisible();
-      const exit = page.getByRole('button', { name: 'Turn off Needs input filter', exact: true });
-      await exit.focus();
-      await page.keyboard.press('Enter');
-      await expect(exit).toBeHidden();
-      await expect(toggle).toBeFocused();
-      await expect(toggle).toHaveAttribute('aria-pressed', 'false');
-      if (phone) await expect(phoneFilterSummary(page)).toContainText('In progress first');
-      await expect(query).toHaveValue('Question worker');
-      await query.fill('');
-      await expect(toggle).toHaveText(/Needs input 1/);
+      if (phone) {
+        await expect(card).toBeHidden();
+        await expect(query).toHaveValue('Question worker');
+        await expect(phoneFilterSummary(page)).toContainText('Default · Needs input');
+        await phoneList(page).getByRole('button', { name: 'Clear filters', exact: true }).click();
+        await expect(query).toHaveValue('');
+        await expect(toggle).toHaveAccessibleName('1 Needs input');
+      } else {
+        const exit = page.getByRole('button', { name: 'Turn off Needs input filter', exact: true });
+        await exit.focus();
+        await page.keyboard.press('Enter');
+        await expect(exit).toBeHidden();
+        await expect(toggle).toBeFocused();
+        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+        await expect(query).toHaveValue('Question worker');
+        await query.fill('');
+        await expect(toggle).toHaveText(/Needs input 1/);
+      }
       await noPageOverflow(page);
       assert.deepEqual(fixture.mutations, []);
     }, { onlyRecords: true, hasTouch: width < 768, config: { custom_statuses: ['waiting_external'] }, records: [
@@ -7870,15 +8053,16 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       const titles = phoneRowTitles(page);
       await toggle.click();
       await page.setViewportSize({ width: 390, height: 900 });
-      await expect(phoneFilterSummary(page)).toContainText('In progress first');
-      await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+      await expect(phoneFilterSummary(page)).toHaveText('Default · Needs input');
       await expect(titles).toHaveText(['Resize question worker']);
       await page.setViewportSize({ width: 900, height: 900 });
       await expect(phoneFilterSummary(page)).toBeHidden();
+      await expect(toggle).toHaveAttribute('aria-pressed', 'true');
       await toggle.click();
-      await page.setViewportSize({ width: 390, height: 900 });
-      await expect(phoneFilterSummary(page)).toContainText('In progress first');
       await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+      await page.setViewportSize({ width: 390, height: 900 });
+      await expect(phoneFilterSummary(page)).toBeHidden();
+      await expect(phoneTile(page, 'input')).toHaveAccessibleName('1 Needs input');
       await expect(titles).toHaveCount(2);
       await expect(titles.first()).toHaveText('Resize question worker');
     }, { onlyRecords: true, records: [
@@ -10109,8 +10293,9 @@ describe('mobile management and Assistant real-control parity', { concurrency: 2
       await expect(phoneRowTitles(page)).toHaveCount(3);
       await expect(phoneRowTitles(page)).toContainText(['Alpha open', 'Alpha supervisor', 'Alpha done']);
       await expect(summary).toContainText('All statuses · Project: Project One · Agent: one');
-      const epics = phoneList(page).getByRole('group', { name: 'Epics', exact: true });
-      await expect(epics.getByRole('button', { name: /Alpha supervisor/ })).toBeVisible();
+      const epics = phoneList(page).getByRole('region', { name: 'Epics', exact: true });
+      await expect(epics.getByRole('button', { name: /Alpha supervisor/ })).toBeHidden();
+      await expect(phoneRow(page, 'kon-supervisor')).toBeVisible();
       await search.fill('Unmatched query');
       await expect(epics).toBeHidden();
       await expect(phoneList(page).getByText('No tickets match the current filters and search.')).toBeVisible();
@@ -10118,9 +10303,78 @@ describe('mobile management and Assistant real-control parity', { concurrency: 2
     }, { height: 568, hasTouch: true, onlyRecords: true, records, config: { projects, agents: ['one', 'two'] } });
   });
 
+  test('phone column intersects route, list query, project and agent filters', async t => {
+    const projects = [{ name: 'Catalog API', path: '/fixtures/catalog' }, { name: 'Catalog API SDK', path: '/fixtures/sdk' }];
+    const review = (id, title, extra) => ticket(id, title, { status: 'human_review', finished_at: stamp,
+      path: projects[0].path, agent: 'pi', ...extra });
+    const records = [review('kon-match', 'Check cursor'),
+      review('kon-match', 'Check cursor in SDK', { source, path: projects[1].path }),
+      review('kon-agent-prefix', 'Check cursor with pi-dev', { agent: 'pi-dev' }),
+      review('kon-text', 'Check offsets'), review('kon-done', 'Check cursor done', { status: 'done' })];
+    await withPage(t, 390, 'light', async (page, fixture) => {
+      const search = phoneColumnSearch(page), filters = phoneFilters(page);
+      const project = filters.getByRole('combobox', { name: 'Project', exact: true });
+      const agent = filters.getByRole('combobox', { name: 'Agent', exact: true });
+      const close = filters.getByRole('button', { name: 'Close', exact: true });
+      const goReview = phoneTile(page, 'human_review');
+      await goReview.tap();
+      await expect(page).toHaveURL(/#\/column\/human_review$/);
+      await expect(phoneRows(page)).toHaveCount(4);
+      await search.fill('cursor');
+      await expect(phoneRows(page)).toHaveCount(3);
+      await expect(phoneRow(page, `${source}/kon-match`)).toBeVisible();
+      await phoneFilterButton(page).tap();
+      await expect(phoneStatus(page)).toBeHidden();
+      await project.selectOption('Catalog API');
+      await agent.selectOption('pi');
+      await close.tap();
+      await expect(search).toHaveValue('cursor');
+      await expect(phoneRowTitles(page)).toHaveText(['Check cursor']);
+      await expect(phoneRow(page, 'kon-match')).toBeVisible();
+      await expect(phoneRow(page, 'kon-done')).toBeHidden();
+
+      await search.fill('cursor project:="Catalog API SDK"');
+      await expect(phoneList(page).getByText('No tickets match this list.', { exact: true })).toBeVisible();
+      await expect(phoneRows(page)).toHaveCount(0);
+      await phoneFilterButton(page).tap();
+      await project.selectOption('');
+      await expect(agent).toHaveValue('pi');
+      await close.tap();
+      await expect(search).toHaveValue('cursor project:="Catalog API SDK"');
+      await expect(phoneRowTitles(page)).toHaveText(['Check cursor in SDK']);
+      await expect(phoneRow(page, `${source}/kon-match`)).toBeVisible();
+
+      const back = phoneList(page).getByRole('button', { name: 'Back to Tickets', exact: true });
+      await back.tap();
+      await expect(page).toHaveURL(/#\/$/);
+      const lists = phoneList(page).getByRole('region', { name: 'Lists', exact: true });
+      await lists.getByRole('button', { name: /^Done\b/ }).tap();
+      await expect(page).toHaveURL(/#\/column\/done$/);
+      await expect(search).toHaveValue('');
+      await expect(phoneRowTitles(page)).toHaveText(['Check cursor done']);
+      await back.tap();
+      await goReview.tap();
+      await expect(search).toHaveValue('cursor project:="Catalog API SDK"');
+      await expect(phoneRowTitles(page)).toHaveText(['Check cursor in SDK']);
+
+      await phoneFilterButton(page).tap();
+      await filters.getByRole('button', { name: 'Clear filters', exact: true }).tap();
+      await expect(project).toHaveValue('');
+      await expect(agent).toHaveValue('');
+      await close.tap();
+      await expect(search).toHaveValue('');
+      await expect(phoneRows(page)).toHaveCount(4);
+      await expect(page).toHaveURL(/#\/column\/human_review$/);
+      await expect(phoneRow(page, 'kon-done')).toBeHidden();
+      await noPageOverflow(page);
+      assert.deepEqual(fixture.mutations, []);
+    }, { height: 568, hasTouch: true, onlyRecords: true, records, config: { projects, agents: ['pi', 'pi-dev'] },
+      beforeNavigation: page => page.clock.setFixedTime(new Date(stamp)) });
+  });
+
   test('phone New reuses the upload chooser', async t => {
     await withPage(t, 320, 'light', async (page, fixture) => {
-      await page.locator('.mobile-app-bar').getByRole('button', { name: 'New ticket' }).tap();
+      await phoneList(page).locator('.mobile-ios-home-header').getByRole('button', { name: 'New ticket', exact: true }).tap();
       const [chooser] = await Promise.all([
         page.waitForEvent('filechooser'),
         page.locator('#new-view').getByRole('button', { name: 'Import tickets from .md', exact: true }).tap(),

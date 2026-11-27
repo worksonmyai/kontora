@@ -1,6 +1,6 @@
 # UI screenshot tests
 
-The visual suite compares 16 Chromium screenshots with reviewed PNGs. It serves
+The visual suite compares Chromium screenshots with reviewed PNGs. It serves
 embedded web assets on loopback and uses synthetic tickets, settings, Assistant
 threads, statistics, and terminal output. It does not start a Kontora daemon or
 call a model. The existing Chromium and WebKit behavior tests run separately.
@@ -25,6 +25,15 @@ A check fails if a PNG is missing. It never creates or updates an expected PNG.
 Keep the default color threshold and zero allowed differing pixels. If an
 unchanged scene fluctuates, identify the changing input before changing the
 comparison settings.
+
+## iOS PWA scenes
+
+The populated Tickets home is captured at 390 × 844 in dark and light mode.
+At this fold, the fixture shows four progress rows, including a waiting ticket,
+and the first Queue control must be hit-testable without scrolling. The Open
+selection, Queue sheet, running ticket, and Human review scenes use the same
+isolated phone dataset and viewport in dark mode. Staging interacts with the UI
+without confirming any write. The desktop board still uses its original seed.
 
 ## Review candidates
 

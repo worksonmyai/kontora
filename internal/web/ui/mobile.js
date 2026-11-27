@@ -8,7 +8,11 @@ export function kontoraMobile() {
   let sheetFocus = null;
   let descriptionSequence = 0;
   let listProjection;
-  let listPosition;
+  let columnProjection;
+  let listRestoreSequence = 0;
+  let restoringList = false;
+  let rowGesture = null;
+  let consumedClick = null;
   const listPageSize = 100;
   let terminalFocusSequence = 0;
 
@@ -18,9 +22,13 @@ export function kontoraMobile() {
     mobileProjectFilter: '',
     mobileAgentFilter: '',
     _mobileWindowSize: listPageSize,
+    mobileColumnPreferences: {},
+    mobileSelecting: false,
+    mobileSelection: [],
+    mobileRevealedRow: null,
 
     mobileFilterLabel() {
-      if (this.mobileStatusFilter === ':attention') return 'In progress first';
+      if (this.mobileStatusFilter === ':attention') return 'Default';
       return this.columns.find(col => col.key === this.mobileStatusFilter)?.label || 'All statuses';
     },
 
@@ -54,34 +62,284 @@ export function kontoraMobile() {
         this.searchQuery, this.sourceFilter, this.needsInputOnly]);
     },
 
-    mobileTicketList() {
-      const filter = this.mobileStatusFilter;
-      const board = this._board;
-      const facets = this.mobileWindowKey();
-      if (listProjection?.board === board && listProjection.facets === facets) return listProjection;
+    mobileMatchedRows(text, { column = '', ignoreProject = false } = {}) {
+      const query = this.parseFilterQuery(text);
       const exact = value => value ? [{ value: value.toLowerCase(), exact: true }] : [];
-      const query = { project: exact(this.mobileProjectFilter), agent: exact(this.mobileAgentFilter), epic: [], text: '' };
-      const inProgress = [], attention = [], remaining = [];
-      const cols = this.columns.filter(col => col.key === filter);
-      for (const col of cols.length ? cols : this.columns) {
-        for (const ticket of this.boardTickets(col.key)) {
-          if (!this.ticketMatchesQuery(ticket, query)) continue;
-          if (filter === ':attention' && (this.needsLiveInput(ticket) || ticket.status === 'human_review')) attention.push(ticket);
-          else if (filter === ':attention' && this.executionActive(ticket)) inProgress.push(ticket);
-          else remaining.push(ticket);
-        }
+      const facets = { project: exact(ignoreProject ? '' : this.mobileProjectFilter), agent: exact(this.mobileAgentFilter), epic: [], text: '' };
+      const statuses = this.columns.find(col => col.key === column)?.statuses;
+      const matched = new Map();
+      for (const ticket of this.allBoardTickets()) {
+        if (statuses && !statuses.includes(ticket.status)) continue;
+        if (this.sourceFilter && (ticket.source || 'primary') !== this.sourceFilter) continue;
+        if (this.needsInputOnly && !this.needsLiveInput(ticket)) continue;
+        if (!this.ticketMatchesQuery(ticket, query) || !this.ticketMatchesQuery(ticket, facets)) continue;
+        matched.set(this.ticketKey(ticket), ticket);
       }
-      const headings = {};
-      if (inProgress.length) headings[0] = `In progress (${inProgress.length})`;
-      if (attention.length) headings[inProgress.length] = `Needs attention (${attention.length})`;
-      const otherStart = inProgress.length + attention.length;
-      if (otherStart && remaining.length) headings[otherStart] = 'Other tickets';
-      const search = this.parseFilterQuery(this.searchQuery);
-      const epics = this.needsInputOnly || (this.sourceFilter && this.sourceFilter !== 'primary') ? [] : this.epics.filter(epic =>
-        (!cols.length || cols.some(col => col.statuses.includes(epic.status))) &&
-        this.ticketMatchesQuery(epic, search) && this.ticketMatchesQuery(epic, query));
-      listProjection = { board, facets, rows: inProgress.concat(attention, remaining), headings, epics };
+      return [...matched.values()];
+    },
+
+    mobileInProgressRows(rows) {
+      const statuses = new Set(this.columns.find(col => col.key === 'in_progress')?.statuses || []);
+      const ranked = [];
+      for (const ticket of rows) {
+        const active = !this.isSecondary(ticket) && this.executionActive(ticket);
+        if (!statuses.has(ticket.status) && !active) continue;
+        const rank = this.needsLiveInput(ticket) ? 0 : active ? 1
+          : ticket.status === 'paused' ? 2 : ticket.status === 'todo' ? 3 : 4;
+        ranked.push({ ticket, rank, started: rank < 2 ? (Date.parse(ticket.started_at) || 0) : 0 });
+      }
+      return ranked.sort((a, b) => a.rank - b.rank || b.started - a.started ||
+        this.ticketKey(a.ticket).localeCompare(this.ticketKey(b.ticket))).map(row => row.ticket);
+    },
+
+    mobileHomeFiltered() {
+      return !!this.searchQuery.trim() || this.mobileStatusFilter !== ':attention' || this.needsInputOnly;
+    },
+
+    mobileClearFilters() {
+      this.searchQuery = '';
+      this.mobileStatusFilter = ':attention';
+      this.mobileProjectFilter = '';
+      this.mobileAgentFilter = '';
+      this.sourceFilter = '';
+      if (this.needsInputOnly) this.toggleNeedsInput();
+      else this.recomputeBoard();
+    },
+
+    mobileTicketList() {
+      const board = this._board;
+      const columns = this.columns;
+      const facets = this.mobileWindowKey();
+      if (listProjection?.board === board && listProjection.columns === columns && listProjection.facets === facets) return listProjection;
+      const matched = this.mobileMatchedRows(this.searchQuery, { column: this.mobileStatusFilter });
+      const epics = matched.filter(ticket => !this.isSecondary(ticket) && ticket.kind === 'epic');
+      const ordinary = matched.filter(ticket => this.isSecondary(ticket) || ticket.kind !== 'epic' || this.epicIsAgent(ticket));
+      const progress = this.mobileInProgressRows(ordinary);
+      const byColumn = new Map(columns.map(col => [col.key, []]));
+      const columnByStatus = new Map(columns.flatMap(col => col.statuses.map(status => [status, col.key])));
+      for (const ticket of ordinary) byColumn.get(columnByStatus.get(ticket.status))?.push(ticket);
+      for (const col of columns) this._sortColumn(byColumn.get(col.key), col.statuses);
+      const open = byColumn.get('open') || [];
+      const waiting = progress.filter(ticket => this.needsLiveInput(ticket));
+      const results = columns.map(col => ({ ...col, rows: byColumn.get(col.key) })).filter(col => col.rows.length);
+      listProjection = { board, columns, facets, progress, open, waiting, byColumn, results, rows: results.flatMap(col => col.rows), epics };
       return listProjection;
+    },
+
+    mobileBoardChanged() {
+      if (listProjection) this.mobileTicketList();
+      this.mobilePruneSelection();
+    },
+
+    mobileHomeGroups() {
+      const projection = this.mobileTicketList();
+      if (!this.mobileHomeFiltered()) return [
+        { key: 'in_progress', label: 'In progress', rows: projection.progress },
+        { key: 'open', label: 'Open', rows: projection.open.slice(0, 4) },
+      ];
+      let remaining = this._mobileWindowKey === this.mobileWindowKey() ? this._mobileWindowSize : listPageSize;
+      return projection.results.flatMap(group => {
+        const rows = group.rows.slice(0, remaining);
+        remaining -= rows.length;
+        return rows.length ? [{ ...group, rows }] : [];
+      });
+    },
+
+    mobileListGroups() {
+      if (this.mobileColumnKey) return this.mobileColumnGroups();
+      return this.ticketBoardEmpty() ? [] : this.mobileHomeGroups();
+    },
+
+    mobileColumnDefinition() {
+      return this.columns.find(col => col.key === this.mobileColumnKey);
+    },
+
+    mobileColumnPreference() {
+      return Object.hasOwn(this.mobileColumnPreferences, this.mobileColumnKey) ? this.mobileColumnPreferences[this.mobileColumnKey] : null;
+    },
+
+    mobileSetColumnPreference(patch) {
+      this.mobileColumnPreferences = { ...this.mobileColumnPreferences,
+        [this.mobileColumnKey]: { ...this.mobileColumnPreference(), ...patch } };
+    },
+
+    mobileColumnQuery(value) {
+      this.mobileSetColumnPreference({ query: value });
+      this.mobileListFilterChanged();
+    },
+
+    mobileColumnMode() {
+      return this.mobileColumnPreference()?.mode || 'day';
+    },
+
+    mobileColumnModeChange(mode) {
+      if (mode === this.mobileColumnMode()) return;
+      const position = this.mobileCaptureList();
+      this.mobileSetColumnPreference({ mode });
+      if (position) this.mobileRestoreList({ ...position, filter: this.mobileListSignature() }, false);
+    },
+
+    mobileClearColumnFilters() {
+      this.mobileColumnQuery('');
+      this.mobileProjectFilter = '';
+      this.mobileAgentFilter = '';
+      this.sourceFilter = '';
+      if (this.needsInputOnly) this.toggleNeedsInput();
+      else this.recomputeBoard();
+    },
+
+    mobileColumnRows() {
+      const key = this.mobileColumnKey;
+      const col = this.mobileColumnDefinition();
+      const query = this.mobileColumnPreference()?.query || '';
+      const signature = this.mobileListSignature();
+      const board = this._board;
+      if (columnProjection?.board === board && columnProjection.col === col && columnProjection.signature === signature) return columnProjection.rows;
+      const rows = col ? this.mobileMatchedRows(query, { column: key })
+        .filter(ticket => this.isSecondary(ticket) || ticket.kind !== 'epic' || this.epicIsAgent(ticket)) : [];
+      if (col) this._sortColumn(rows, col.statuses);
+      columnProjection = { board, col, signature, rows };
+      return rows;
+    },
+
+    mobileColumnTime(ticket) {
+      return this.mobileColumnKey === 'human_review' ? (Date.parse(this.reviewFinishedAt(ticket)) || 0) :
+        (Date.parse(ticket.finished_at) || Date.parse(ticket.updated_at) || Date.parse(ticket.created_at) || 0);
+    },
+
+    mobileColumnCount() {
+      const rows = this.mobileColumnRows();
+      const incomplete = this.ticketsLoadError || this.ticketSourcesFailed();
+      const oldest = this.mobileColumnKey === 'human_review' && rows.reduce((min, ticket) => {
+        const time = this.mobileColumnTime(ticket);
+        return time > 0 ? Math.min(time, min) : min;
+      }, Infinity);
+      return `${rows.length} ${rows.length === 1 ? 'ticket' : 'tickets'}${incomplete ? ' in loaded tickets' : ''}` +
+        (oldest && Number.isFinite(oldest) ? ' · Oldest ' + this.noteAgo(new Date(oldest).toISOString()) : '');
+    },
+
+    mobileColumnGroups() {
+      if (!this.mobileColumnDefinition() || this.mobileColumnRouteError) return [];
+      const mode = this.mobileColumnMode();
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const offset = days => new Date(now.getFullYear(), now.getMonth(), now.getDate() - days).getTime();
+      const groups = new Map();
+      for (const ticket of this.mobileColumnRows()) {
+        const time = this.mobileColumnTime(ticket);
+        const project = this.ticketProjectName(ticket);
+        let key, label, order;
+        if (mode === 'project') {
+          key = 'project:' + (project || ''); label = project || 'No project'; order = 0;
+        } else if (!time) {
+          key = 'undated'; label = 'Undated'; order = -1;
+        } else if (time >= today) {
+          key = 'today'; label = 'Today'; order = today;
+        } else if (time >= offset(1)) {
+          key = 'yesterday'; label = 'Yesterday'; order = offset(1);
+        } else if (time >= offset(6)) {
+          key = 'week'; label = '2–6 days ago'; order = offset(6);
+        } else if (this.mobileColumnKey === 'done') {
+          const date = new Date(time);
+          order = new Date(date.getFullYear(), date.getMonth(), 1).getTime();
+          key = 'month:' + order;
+          label = date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+        } else {
+          key = 'older'; label = 'Older'; order = 0;
+        }
+        if (!groups.has(key)) groups.set(key, { key, label, order, rows: [] });
+        groups.get(key).rows.push(ticket);
+      }
+      return [...groups.values()].sort((a, b) => b.order - a.order || a.label.localeCompare(b.label)).map((group, index) => {
+        const state = this.mobileColumnPreference()?.groups?.[mode]?.[group.key];
+        const expanded = state?.expanded ?? index === 0;
+        const size = state?.size || listPageSize;
+        return { ...group, key: mode + '/' + group.key, groupKey: group.key, expanded,
+          count: group.rows.length, size, rows: expanded ? group.rows.slice(0, size) : [] };
+      });
+    },
+
+    mobileSetColumnGroup(group, patch) {
+      const mode = this.mobileColumnMode();
+      const groups = this.mobileColumnPreference()?.groups || {};
+      this.mobileSetColumnPreference({ groups: { ...groups,
+        [mode]: { ...groups[mode], [group.groupKey]: { expanded: group.expanded, size: group.size, ...patch } } } });
+    },
+
+    mobileShowMoreInGroup(group, event) {
+      const list = event.currentTarget.closest('ul');
+      const next = group.rows.length;
+      this.mobileSetColumnGroup(group, { size: group.size + listPageSize });
+      if (event.detail === 0) this.$nextTick(() => {
+        const added = [...list.querySelectorAll('[data-mobile-ticket-key]')].slice(next);
+        (added.find(focusAvailable) || list.previousElementSibling?.querySelector('button'))?.focus();
+      });
+    },
+
+    mobileHomeLinks() {
+      const { byColumn, epics } = this.mobileTicketList();
+      return this.columns.filter(col => this.mobileHomeFiltered() || !['in_progress', 'open'].includes(col.key))
+        .sort((a, b) => Number(!['human_review', 'done', 'cancelled'].includes(a.key)) - Number(!['human_review', 'done', 'cancelled'].includes(b.key)))
+        .map(col => ({ key: col.key, label: col.label, count: byColumn.get(col.key)?.length || 0 }))
+        .concat({ key: ':epics', label: 'Epics', count: epics.length }, { key: ':archive', label: 'Archive' });
+    },
+
+    mobileHomeLink(item) {
+      if (item.key === ':epics') return this.mobileJumpTo('epics');
+      if (item.key === ':archive') return this.mobileNavigate('archive');
+      return this.openMobileColumn(item.key, false, item.key + '-list');
+    },
+
+    mobileListIcon(key) {
+      const paths = {
+        in_progress: '<path d="m9 5 10 7-10 7z"/>',
+        input: '<path d="M20 11a8 8 0 0 1-8 8H5l1.3-3.5A8 8 0 1 1 20 11Z"/>',
+        open: '<circle cx="12" cy="12" r="6"/>',
+        human_review: '<path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="2"/>',
+        done: '<path d="m5 12 4 4 10-10"/>',
+        cancelled: '<path d="m6 6 12 12M18 6 6 18"/>',
+        ':epics': '<rect x="4" y="8" width="16" height="12" rx="3"/><path d="M8 4h8"/>',
+        ':archive': '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v11h14V9M10 13h4"/>',
+        board: '<rect x="3" y="4" width="7" height="16" rx="2"/><rect x="14" y="4" width="7" height="10" rx="2"/>',
+        settings: '<path d="M3 7h5m4 0h9M3 17h10m4 0h4"/><circle cx="10" cy="7" r="2"/><circle cx="15" cy="17" r="2"/>',
+        browse: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+      };
+      const icon = Object.hasOwn(paths, key) ? paths[key] : paths.open;
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon}</svg>`;
+    },
+
+    mobileHomeTiles() {
+      const { progress, waiting, open, byColumn } = this.mobileTicketList();
+      return [
+        { key: 'in_progress', label: 'In progress', count: progress.length },
+        { key: 'input', label: 'Needs input', count: waiting.length },
+        { key: 'open', label: 'Open', count: open.length },
+        { key: 'human_review', label: 'Human review', count: byColumn.get('human_review')?.length || 0 },
+      ];
+    },
+
+    mobileHomeTile(tile) {
+      if (tile.key === 'human_review') return this.openMobileColumn(tile.key, false, tile.key);
+      if (tile.key === 'input') {
+        const { waiting } = this.mobileTicketList();
+        if (waiting.length === 1) return this.openMobileTicket(waiting[0]);
+        return this.toggleNeedsInput();
+      }
+      this.mobileJumpTo(tile.key);
+    },
+
+    mobileJumpTo(key) {
+      const heading = this.$refs.mobileCardList?.querySelector('#mobile-section-' + key);
+      heading?.scrollIntoView({ block: 'start' });
+      heading?.focus({ preventScroll: true });
+    },
+
+    mobileRowMeta(ticket) {
+      return [this.ticketProjectName(ticket), this.showAgentMeta && ticket.agent, this.isSecondary(ticket) && this.sourceLabel(ticket)].filter(Boolean).join(' · ');
+    },
+
+    mobileStageAge(ticket) {
+      return [ticket?.stage, ticket?.started_at && this.noteAgo(ticket.started_at)].filter(Boolean).join(' · ');
     },
 
     mobileTickets() {
@@ -98,41 +356,341 @@ export function kontoraMobile() {
     mobileListFilterChanged() {
       this._mobileWindowKey = '';
       if (this.$refs?.mobileCardList) this.$refs.mobileCardList.scrollTop = 0;
+      this.mobileClearGesture();
+      this.mobilePruneSelection();
+    },
+
+    mobileListSignature() {
+      return this.mobileColumnKey ? JSON.stringify([this.mobileColumnKey, this.mobileColumnPreference()?.query || '',
+        this.mobileColumnMode(), this.mobileProjectFilter, this.mobileAgentFilter, this.sourceFilter, this.needsInputOnly]) : this.mobileWindowKey();
     },
 
     mobileAcceptDetail(ticket, kind = 'ticket') {
-      if (!this.isMobile) return;
+      if (this.isMobile) this.acceptMobileDetailRoute(ticket, kind);
+    },
+
+    mobileVisibleListControl(el, bounds) {
+      if (!focusAvailable(el)) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.bottom > bounds.top && rect.top < bounds.bottom && rect.right > bounds.left && rect.left < bounds.right;
+    },
+
+    mobileCaptureList(focusKey) {
       const list = this.$refs?.mobileCardList;
-      if (list) listPosition = { filter: this.mobileWindowKey(), top: list.scrollTop, key: this.ticketKey(ticket), kind };
-      this.acceptMobileDetailRoute();
+      if (!list) return null;
+      const bounds = list.getBoundingClientRect();
+      const rows = [...list.querySelectorAll('[data-mobile-ticket-key]')];
+      const anchor = rows.find(el => this.mobileVisibleListControl(el, bounds));
+      const active = document.activeElement;
+      return { filter: this.mobileListSignature(), top: list.scrollTop,
+        anchor: anchor?.dataset.mobileListKey || anchor?.dataset.mobileTicketKey, offset: anchor ? anchor.getBoundingClientRect().top - bounds.top : 0,
+        opener: (list.contains(active) && active.dataset.mobileListKey) || focusKey || (list.contains(active) && active.dataset.mobileTicketKey) || '' };
     },
 
     restoreMobileList() {
-      const position = listPosition;
-      if (!position || !this.isMobile || this.currentView !== 'board') return false;
+      return restoringList;
+    },
+
+    mobileRestoreList(position, focus = true) {
+      if (!this.isMobile) return;
+      const sequence = ++listRestoreSequence;
+      const column = this.mobileColumnKey;
+      restoringList = true;
+      // An SSE update can invalidate the opener before the pending board render.
+      if (this._boardDirty) this.flushTicketUpdates();
       this.$nextTick(() => {
-        if (this._appDestroyed || listPosition !== position || !this.isMobile || this.currentView !== 'board' ||
+        if (sequence !== listRestoreSequence) return;
+        restoringList = false;
+        if (this._appDestroyed || !this.isMobile || this.currentView !== 'board' || this.mobileColumnKey !== column ||
             this.selectedTicket || this.selectedEpic || blockingInteraction(this)) return;
-        listPosition = null;
         const list = this.$refs?.mobileCardList;
         if (!list) return;
-        if (position.filter === this.mobileWindowKey()) list.scrollTop = position.top;
         const bounds = list.getBoundingClientRect();
-        const selector = position.kind === 'epic' ? '[data-mobile-epic-opener]' : '.mobile-card[data-mobile-ticket-key]';
-        const opener = [...list.querySelectorAll(selector)].find(el => {
-          if (el.dataset.mobileTicketKey !== position.key || !focusAvailable(el)) return false;
-          const rect = el.getBoundingClientRect();
-          return rect.bottom > bounds.top && rect.top < bounds.bottom && rect.right > bounds.left && rect.left < bounds.right;
-        });
-        const target = opener || this.$refs.mobileRefresh;
-        if (focusAvailable(target)) target.focus({ preventScroll: true });
-        else document.querySelector('[data-mobile-focus-fallback]')?.focus({ preventScroll: true });
+        const rows = [...list.querySelectorAll('[data-mobile-ticket-key]')];
+        if (!position || position.filter !== this.mobileListSignature()) list.scrollTop = 0;
+        else {
+          const anchor = rows.find(el => (el.dataset.mobileListKey || el.dataset.mobileTicketKey) === position.anchor && focusAvailable(el));
+          list.scrollTop = anchor ? list.scrollTop + anchor.getBoundingClientRect().top - bounds.top - position.offset : position.top;
+        }
+        if (!focus) return;
+        const controls = rows.concat([...list.querySelectorAll('[data-mobile-list-key]')]);
+        const opener = position?.opener && controls.find(el => (el.dataset.mobileListKey || el.dataset.mobileTicketKey) === position.opener &&
+          this.mobileVisibleListControl(el, bounds));
+        const heading = list.querySelector('[data-mobile-list-heading]');
+        const fallback = [heading, list.querySelector('[data-mobile-column-back]')]
+          .find(el => this.mobileVisibleListControl(el, bounds)) ||
+          [...list.querySelectorAll('button, input, select')].find(el => this.mobileVisibleListControl(el, bounds));
+        (opener || fallback || list).focus({ preventScroll: true });
       });
-      return true;
+    },
+
+    mobileClearGesture() {
+      rowGesture = null;
+      this.mobileRevealedRow = null;
+    },
+
+    mobileRowPointerDown(event, ticket) {
+      rowGesture = null;
+      consumedClick = null;
+      if (this.mobileSelecting || this.sheet || event.isPrimary === false || event.button !== 0 ||
+          event.clientX < 24 || event.clientX > window.innerWidth - 24 || !event.target.closest('.mobile-ios-row-open') ||
+          this.lifecycleBusy(ticket)) return;
+      const key = this.ticketKey(ticket);
+      const queue = this.lifecycleCanQueueSaved(key) && this.lifecycleCommand(key, 'queue-saved');
+      const review = this.mobileReviewCommands(key);
+      if (!queue && !review.length) return;
+      if (this.mobileRevealedRow?.key !== key) this.mobileRevealedRow = null;
+      rowGesture = { key, queue, review, pointer: event.pointerId, row: event.currentTarget, x: event.clientX, y: event.clientY, locked: false };
+    },
+
+    mobileRowPointerMove(event) {
+      const gesture = rowGesture;
+      if (!gesture || gesture.pointer !== event.pointerId || gesture.row !== event.currentTarget || gesture.locked) return;
+      const dx = Math.abs(event.clientX - gesture.x);
+      const dy = Math.abs(event.clientY - gesture.y);
+      if (dy >= 12 && dy >= dx) rowGesture = null;
+      else if (dx >= 12 && dx > dy * 1.35) {
+        gesture.locked = true;
+        gesture.row.setPointerCapture?.(gesture.pointer);
+      }
+    },
+
+    mobileGestureCommandCurrent(key, command) {
+      if (!command) return false;
+      const ticket = this.lifecycleResolve(key);
+      return !!ticket && !this.lifecycleBusy(key) && command.expected === this._lifecycleState(ticket) && this._lifecycleAllowed(ticket, command);
+    },
+
+    mobileRowPointerUp(event) {
+      const gesture = rowGesture;
+      if (!gesture || gesture.pointer !== event.pointerId || gesture.row !== event.currentTarget) return;
+      rowGesture = null;
+      if (!gesture.locked || !gesture.row.isConnected || this.sheet || this.mobileSelecting) return;
+      consumedClick = { key: gesture.key, expires: Date.now() + 500 };
+      const dx = event.clientX - gesture.x;
+      if (dx >= 76 && this.mobileGestureCommandCurrent(gesture.key, gesture.queue)) {
+        this.mobileQueueSaved(gesture.key);
+      } else if (dx <= -36) {
+        const commands = gesture.review.filter(command => this.mobileGestureCommandCurrent(gesture.key, command));
+        const done = commands.find(command => command.id === 'move:done');
+        if (dx <= -150 && done) this.dispatchLifecycle(gesture.key, done);
+        else if (commands.length) this.mobileRevealedRow = { key: gesture.key, commands };
+      }
+    },
+
+    mobileSuppressRowClick(event, ticket) {
+      if (!event.detail || consumedClick?.key !== this.ticketKey(ticket) || consumedClick.expires < Date.now()) return;
+      consumedClick = null;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    },
+
+    mobileSwipeActions(ticket) {
+      const key = this.ticketKey(ticket);
+      if (this.mobileRevealedRow?.key !== key) return [];
+      return this.mobileRevealedRow.commands.filter(command => this.mobileGestureCommandCurrent(key, command));
+    },
+
+    mobileCommitSwipe(ticket, command) {
+      const key = this.ticketKey(ticket);
+      this.mobileClearGesture();
+      if (this.mobileGestureCommandCurrent(key, command)) return this.dispatchLifecycle(key, command);
+    },
+
+    mobileResetListInteraction() {
+      this.mobileSelecting = false;
+      this.mobileSelection = [];
+      this.mobileClearGesture();
+      this.closeSheet(false);
+    },
+
+    async mobileQueueSaved(ticket) {
+      if (!this.lifecycleCanQueueSaved(ticket)) return;
+      const key = this.ticketKey(ticket);
+      return this.dispatchLifecycle(key, this.lifecycleCommand(key, 'queue-saved'));
+    },
+
+    mobileReviewCommands(subject) {
+      const ticket = this.lifecycleResolve(subject);
+      if (ticket?.status !== 'human_review' || ticket.kontora !== true || this.executionActive(ticket) ||
+          !this.ticketCanControl(ticket) || (ticket.kind === 'epic' && !this.epicIsAgent(ticket))) return [];
+      const commands = this.lifecycleActions(ticket).filter(command => command.id === 'retry');
+      const done = this.lifecycleDestinations(ticket).find(command => command.id === 'move:done');
+      if (done) commands.push({ ...done, label: 'Mark done' });
+      return commands.filter(command => this._lifecycleAllowed(ticket, command));
+    },
+
+    mobileSelectionAllowed(ticket) {
+      if (this.mobileColumnKey === 'open') return this._lifecycleCanQueueSaved(ticket);
+      return this.mobileColumnKey === 'human_review' && ticket.status === 'human_review' && ticket.kontora === true &&
+        !this.executionActive(ticket) && this._lifecycleAllowed(ticket, { kind: 'move', status: 'done' });
+    },
+
+    mobileSelectionReason(ticket) {
+      if (this.mobileSelectionAllowed(ticket)) return '';
+      if (this.isSecondary(ticket)) return 'From another ticket folder';
+      if (!this.ticketCanControl(ticket)) return 'Ticket actions unavailable';
+      if (this.lifecycleNeedsReconciliation(ticket)) return 'Refresh ticket first';
+      if (ticket.scheduled_at) return 'Already scheduled';
+      if (!ticket.kontora) return 'Not initialized';
+      if (this.executionActive(ticket)) return 'Agent running';
+      return 'Unavailable for selection';
+    },
+
+    mobileEligibleSelection() {
+      if (!this.mobileSelecting) return [];
+      return this.mobileColumnRows().filter(ticket => this.mobileSelectionAllowed(ticket)).map(ticket => this.ticketKey(ticket));
+    },
+
+    mobileStartSelection() {
+      if (!['open', 'human_review'].includes(this.mobileColumnKey)) return;
+      this.mobileClearGesture();
+      this.mobileSelection = [];
+      this.mobileSelecting = true;
+    },
+
+    mobileEndSelection() {
+      this.mobileSelecting = false;
+      this.mobileSelection = [];
+    },
+
+    mobilePruneSelection() {
+      if (!this.mobileSelecting || !this.mobileSelection.length) return;
+      const eligible = new Set(this.mobileEligibleSelection());
+      this.mobileSelection = this.mobileSelection.filter(key => eligible.has(key));
+    },
+
+    mobileAllSelected(eligible = this.mobileEligibleSelection()) {
+      return eligible.length > 0 && eligible.length === this.mobileSelection.length;
+    },
+
+    mobileToggleSelectAll() {
+      const eligible = this.mobileEligibleSelection();
+      this.mobileSelection = this.mobileAllSelected(eligible) ? [] : eligible;
+    },
+
+    mobileToggleSelected(ticket) {
+      if (!this.mobileSelectionAllowed(ticket)) return;
+      const key = this.ticketKey(ticket);
+      this.mobileSelection = this.mobileSelection.includes(key) ? this.mobileSelection.filter(selected => selected !== key) : [...this.mobileSelection, key];
+    },
+
+    mobileSelectionProjects() {
+      const rows = this.mobileMatchedRows(this.mobileColumnPreference()?.query || '', { column: this.mobileColumnKey, ignoreProject: true })
+        .filter(ticket => this.isSecondary(ticket) || ticket.kind !== 'epic' || this.epicIsAgent(ticket));
+      const counts = new Map();
+      for (const ticket of rows) {
+        const name = this.ticketProjectName(ticket);
+        if (name) counts.set(name, (counts.get(name) || 0) + 1);
+      }
+      return [{ name: '', label: 'All', count: rows.length }, ...[...counts].sort(([a], [b]) => a.localeCompare(b))
+        .map(([name, count]) => ({ name, label: name, count }))];
+    },
+
+    mobileBulkDestinations() {
+      const [first, ...rest] = this.mobileSelection;
+      if (!first) return [];
+      return this.lifecycleDestinations(first).filter(command => !['todo', 'cancelled', 'paused'].includes(command.status) &&
+        rest.every(key => this.lifecycleDestinations(key).some(destination => destination.id === command.id)));
+    },
+
+    mobileOpenBatch(id = 'queue-saved', atTime = false) {
+      this.mobilePruneSelection();
+      if (!this.mobileSelection.length) return;
+      this.mobileClearGesture();
+      this.scheduleDraft = '';
+      this.scheduleError = null;
+      const items = this.mobileSelection.map(key => {
+        const ticket = this.lifecycleResolve(key);
+        return { key, id: ticket.id, title: ticket.title || ticket.id, pipeline: ticket.pipeline,
+          command: this.lifecycleCommand(key, id), result: null };
+      });
+      const count = this.mobileBatchTicketCount(items);
+      const title = id === 'queue-saved' ? 'Queue ' + count :
+        id === 'cancel' ? 'Cancel ' + count :
+          id === 'move:done' ? 'Mark ' + items.length + ' done' : (items[0].command?.label || 'Move tickets');
+      this.sheet = { type: 'queue', id, atTime, title, items, phase: 'review' };
+    },
+
+    mobileBatchTicketCount(items) {
+      return items.length + (items.length === 1 ? ' ticket' : ' tickets');
+    },
+
+    mobileBatchLabel(batch) {
+      return batch.id === 'queue-saved' && batch.atTime ? 'Schedule ' + this.mobileBatchTicketCount(batch.items) : batch.title;
+    },
+
+    mobileBatchScheduleExpired(item) {
+      return item.command.id === 'schedule' && Date.parse(item.command.body.scheduled_at) <= Date.now();
+    },
+
+    mobileBatchCanRetryCommand(item) {
+      if (!item.result || ['success', 'cancelled', 'expired'].includes(item.result.outcome) ||
+          (item.result.resolution && item.result.resolution !== 'retryable')) return false;
+      const ticket = this.lifecycleResolve(item.key);
+      return ticket && item.command.expected === this._lifecycleState(ticket) && this._lifecycleAllowed(ticket, item.command);
+    },
+
+    mobileBatchRetryAllowed(item) {
+      return this.mobileBatchCanRetryCommand(item) && !this.mobileBatchScheduleExpired(item);
+    },
+
+    mobileBatchMessage(item) {
+      const result = item.result;
+      if (!result) return '';
+      if (result.outcome === 'success') return 'Request accepted';
+      if (result.resolution === 'refresh-required') return result.error;
+      if (result.resolution === 'review-required') return result.error + ' Check the current ticket before making another request.';
+      if (result.outcome === 'expired' || this.mobileBatchScheduleExpired(item)) return 'The pickup time passed. Choose a new time.';
+      return result.error;
+    },
+
+    async mobileSubmitBatch(retryKey = '') {
+      const batch = this.sheet;
+      if (batch?.type !== 'queue' || batch.phase !== (retryKey ? 'results' : 'review')) return;
+      let items = batch.items;
+      if (retryKey) {
+        items = items.filter(item => item.key === retryKey && this.mobileBatchCanRetryCommand(item));
+        if (!items.length) return;
+      } else if (batch.id === 'queue-saved' && batch.atTime) {
+        const parsed = this.mobileScheduleParsed();
+        if (!parsed.iso || Date.parse(parsed.iso) <= Date.now()) {
+          this.scheduleError = parsed.error || 'The pickup time passed. Choose a new time.';
+          return;
+        }
+        for (const item of items) {
+          item.command = this.lifecycleCommand(item.key, { id: 'schedule', expected: item.command.expected,
+            body: { scheduled_at: parsed.iso } });
+        }
+      }
+      batch.phase = 'sending';
+      const isOwner = () => this.isMobile && this.sheet === batch;
+      try {
+        for (const item of items) {
+          if (!isOwner()) return;
+          const result = await this.dispatchLifecycle(item.key, item.command, { isOwner, suppressToast: true });
+          if (!isOwner()) return;
+          item.result = result;
+        }
+        if (batch.items.every(item => item.result?.outcome === 'success')) {
+          this.closeSheet();
+          this.mobileEndSelection();
+        }
+      } finally { batch.phase = 'results'; }
+    },
+
+    async mobileReadBatchResult(item) {
+      const batch = this.sheet;
+      if (batch?.type !== 'queue' || batch.phase !== 'results' || item.result?.resolution !== 'refresh-required') return;
+      batch.phase = 'refreshing';
+      try {
+        const resolution = await this.lifecycleReconcile(item.key, item.result.reconciliationId);
+        if (this.sheet === batch) item.result = { ...item.result, resolution };
+      } finally { batch.phase = 'results'; }
     },
 
     mobileTicketStatus(ticket) {
-      if (ticket.status === 'todo') return 'Queued';
+      if (ticket.status === 'todo') return 'Awaiting pickup';
       if (ticket.status === 'human_review') return 'Human review';
       if (ticket.status === 'paused') return 'Paused';
       return this.columns.find(col => col.key === ticket.status)?.label || this.statusLabel(ticket.status);
@@ -163,7 +721,7 @@ export function kontoraMobile() {
           if (lifecycle === owner && !this._appDestroyed) this._updateMobileViewport();
         });
       };
-      listen(window, 'resize', update);
+      listen(window, 'resize', () => { this.mobileClearGesture(); update(); });
       const viewport = window.visualViewport;
       listen(viewport, 'resize', update);
       listen(viewport, 'scroll', update);
@@ -176,7 +734,10 @@ export function kontoraMobile() {
       listen(document, 'focusout', e => this._mobileTerminalFocusout(e), true);
       if (this.$watch) {
         const unwatch = this.$watch('sheet', () => {
-          if (lifecycle === owner && !this._appDestroyed) this._syncMobileSheet();
+          if (lifecycle === owner && !this._appDestroyed) {
+            if (this.sheet) this.mobileClearGesture();
+            this._syncMobileSheet();
+          }
         });
         if (typeof unwatch === 'function') owner.watches.push(unwatch);
         for (const key of ['searchQuery', 'mobileStatusFilter', 'mobileProjectFilter', 'mobileAgentFilter', 'needsInputOnly', 'sourceFilter']) {
@@ -292,6 +853,9 @@ export function kontoraMobile() {
     },
 
     mobileBreakpointChanged() {
+      listProjection = null;
+      columnProjection = null;
+      this.mobileResetListInteraction();
       this.mobileResetTerminalInput();
       ++descriptionSequence;
       this.flushEditSave();
@@ -623,6 +1187,92 @@ export function kontoraMobile() {
 
     mobileTerminalInputTarget: null,
     mobileComposeDrafts: {},
+    mobileReplyIntents: Object.create(null),
+    mobileReplyMessages: Object.create(null),
+
+    get mobileReplyMessage() {
+      return this.mobileReplyMessages[this.outputSubjectKey()] || '';
+    },
+
+    mobileRunningOverview() {
+      return !this.detailLoading && !!this.selectedTicket && !this.isSecondary(this.selectedTicket) &&
+        this.selectedTicket.kind !== 'epic' && this.executionActive(this.selectedTicket);
+    },
+
+    mobileQuestionIdentity(ticket) {
+      if (!this.needsLiveInput(ticket)) return null;
+      return JSON.stringify([this.ticketKey(ticket), ticket.invocation_id || '', ticket.stage || '', ticket.attempt || 0,
+        ticket.started_at || '', ticket.waiting_since || '', ticket.waiting_tool || '', ticket.waiting_question || '']);
+    },
+
+    async mobileReply(ticket) {
+      const question = this.mobileQuestionIdentity(ticket);
+      if (!question) return false;
+      const ticketKey = this.ticketKey(ticket);
+      const epic = this.epicIsAgent(ticket);
+      let navigation = this._navigationSeq;
+      if (ticketKey !== this.ticketKey(this.outputSubject())) {
+        navigation = ++this._navigationSeq;
+        if (epic) await this.openEpic(ticket.id, navigation);
+        else await this.openMobileTicket(ticket, navigation);
+      }
+      if (navigation !== this._navigationSeq || this._appDestroyed || !this.isMobile || this.currentView !== 'board' ||
+          this.ticketKey(this.outputSubject()) !== ticketKey || this.detailLoading) return false;
+      const key = this.outputSubjectKey();
+      if (this.mobileQuestionIdentity(this.outputSubject()) !== question) {
+        this.showToast('The question changed. Check the ticket before replying.');
+        return false;
+      }
+      const detail = this._ticketDetailSeq;
+      if (this.mobileReplyIntents[key]?.sending) return false;
+      this.mobileReplyIntents[key] = { key, question, navigation, detail, partial: false, sending: false };
+      this.mobileReplyMessages[key] = '';
+      if (epic) this.epicSwitchTab('session');
+      else this.mobileSwitchTab('terminal');
+      await this.$nextTick();
+      let frames = 0;
+      const focus = () => {
+        if (navigation !== this._navigationSeq || detail !== this._ticketDetailSeq || key !== this.outputSubjectKey() ||
+            this.mobileQuestionIdentity(this.outputSubject()) !== question || !this.mobileCanCompose() || blockingInteraction(this)) return;
+        // Switching panels removes the Reply button and its Alpine scope.
+        const composer = document.getElementById(epic ? 'mobile-epic-terminal-compose' : 'mobile-terminal-compose');
+        if (focusAvailable(composer)) composer.focus({ preventScroll: true });
+        if (document.activeElement !== composer && ++frames < 8) requestAnimationFrame(focus);
+      };
+      focus();
+      return true;
+    },
+
+    async mobileSendReply(intent) {
+      if (intent.sending || intent.partial) return false;
+      const { key } = intent;
+      const draft = this.mobileComposeDraft;
+      const isCurrent = () => this.mobileReplyIntents[key] === intent && this.mobileCanCompose() &&
+        this.mobileTerminalInputTarget === 'composer' && this.outputSubjectKey() === key &&
+        this._navigationSeq === intent.navigation && this._ticketDetailSeq === intent.detail &&
+        this.mobileQuestionIdentity(this.outputSubject()) === intent.question;
+      intent.sending = true;
+      try {
+        const result = await this.sendGuardedTerminalCompose(draft, { subjectKey: key, isCurrent });
+        if (this._appDestroyed) return result === 'sent';
+        if (result === 'partial') {
+          intent.partial = true;
+          this.mobileReplyMessages[key] = 'Enter wasn’t sent. Your draft was kept. Check Terminal before opening Reply again.';
+        } else if (result === 'blocked') {
+          this.mobileReplyMessages[key] = 'Reply not sent. Check the current question before opening Reply again.';
+        } else if (result === 'multiline-unavailable') {
+          this.mobileReplyMessages[key] = 'No reply was sent. Use a single line or enter your reply directly in Terminal.';
+        } else if (result === 'sent') {
+          if (this.mobileComposeDrafts[key] === draft) {
+            this.mobileComposeDrafts[key] = '';
+            delete this.mobileReplyIntents[key];
+          }
+          this.mobileReplyMessages[key] = 'Sent to terminal';
+          this.$nextTick(() => this._mobileResizeComposers());
+        }
+        return result === 'sent';
+      } finally { intent.sending = false; }
+    },
 
     mobileCanCompose() {
       return !this._appDestroyed && this.isMobile && this.currentView === 'board' && this.terminalWanted();
@@ -639,7 +1289,13 @@ export function kontoraMobile() {
 
     set mobileComposeDraft(value) {
       const key = this.outputSubjectKey();
-      if (key) this.mobileComposeDrafts[key] = value;
+      if (!key) return;
+      this.mobileComposeDrafts[key] = value;
+      const intent = this.mobileReplyIntents[key];
+      if (!value && intent && !intent.partial && !intent.sending) {
+        delete this.mobileReplyIntents[key];
+        this.mobileReplyMessages[key] = '';
+      }
     },
 
     mobileBeginTerminalCompose(el) {
@@ -713,8 +1369,12 @@ export function kontoraMobile() {
     },
 
     submitComposeMobile() {
-      if (!this.mobileCanCompose() || this.terminalSubjectKey !== this.outputSubjectKey() ||
+      const key = this.outputSubjectKey();
+      const intent = this.mobileReplyIntents[key];
+      if (intent) return this.mobileSendReply(intent);
+      if (!this.mobileCanCompose() || this.terminalSubjectKey !== key ||
           !this.sendTerminalCompose(this.mobileComposeDraft)) return false;
+      this.mobileReplyMessages[key] = '';
       this.mobileComposeDraft = '';
       this.$nextTick(() => this._mobileResizeComposers());
       return true;
@@ -855,11 +1515,18 @@ export function kontoraMobile() {
         if (!command) return;
         add(command.label, ['cancel', 'delete'].includes(command.kind) ? 'danger' : 'default', () => this.dispatchLifecycle(key, command));
       };
-      if (this.sameTicket(t, this.selectedTicket || this.selectedEpic)) add('Refresh ticket', 'default', () => this.reloadTicketDetail());
+      const refreshRequired = this.lifecycleNeedsReconciliation(key);
+      if (refreshRequired) add('Refresh ticket', 'default', () => this.lifecycleRefreshTicket(key));
+      else if (this.sameTicket(t, this.selectedTicket || this.selectedEpic)) add('Refresh ticket', 'default', () => this.reloadTicketDetail());
+      if (this.sameTicket(t, this.selectedTicket) && this.mobileRunningOverview()) {
+        add('Navigation', 'default', () => { this.sheet = { type: 'navigation' }; });
+        add('Assistant', 'default', () => this.openAssistantSheet());
+      }
       if (t.kind === 'epic' && !this.sameTicket(t, this.selectedEpic) && !this.isSecondary(t)) add('Epic overview', 'default', () => this.openEpic(t.id));
       const current = this.lifecycleResolve(key) || t;
-      if (this.ticketCanControl(current)) {
-        this.lifecycleActions(key).forEach(addCommand);
+      if (this.ticketCanControl(current) && !refreshRequired) {
+        this.lifecycleActions(key).forEach(command => addCommand(current.scheduled_at && command.id === 'start' && this.needsInitModal(current)
+          ? { ...command, label: 'Review pickup settings…' } : command));
         if (this.lifecycleDestinations(key).length) add('Move to', 'default', () => this.openMoveSheet(t));
         for (const id of ['cancel', 'skip', 'review', 'annotate', 'archive', 'delete']) {
           const command = this.lifecycleCommand(key, id);

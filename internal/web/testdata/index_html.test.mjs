@@ -1309,6 +1309,9 @@ test('history subscriptions survive stream and subject reuse, and dispose with t
   state._disconnectStream();
   assert.ok(subscriptions.every(row => !row.disposed));
   await state.selectTicket({ id: 'tst-002', status: 'in_progress' });
+  assert.equal(state.detailTab, 'ticket');
+  assert.equal(ctx.termState.ws, null);
+  state.mobileSwitchTab('terminal');
   await flushMicrotasks();
   assert.equal(ctx.termState.term, term);
   assert.equal(ctx.termState.historyDisposables.length, subscriptions.length);
@@ -4253,56 +4256,43 @@ test("index.html shares routed pages and builds board layers exclusively", () =>
   }
 });
 
-function mobileCardsHTML(html = fs.readFileSync(htmlPath, 'utf8')) {
-  const loop = 'x-for="(ticket, index) in mobileTickets()" :key="ticketKey(ticket)"';
+function mobileRowsHTML(html = fs.readFileSync(htmlPath, 'utf8')) {
+  const loop = '<template x-for="ticket in group.rows" :key="ticketKey(ticket)">';
   const start = html.indexOf(loop);
-  const end = html.indexOf('<!-- ===== Ticket detail', start);
-  assert.ok(start >= 0 && end > start, 'mobile cards use a source-qualified key');
-  return html.slice(start, end);
+  const end = html.indexOf('</li>', start);
+  assert.ok(start >= 0 && end > start, 'mobile rows use a source-qualified key');
+  return html.slice(start, end + '</li>'.length);
 }
 
-test("mobile cards keep their content and state hooks without decorative indicators", () => {
-  const cards = mobileCardsHTML();
-  const card = cards.match(/<button\b[^>]*@click="openMobileTicket\(ticket\)"[^>]*>/)?.[0];
-  assert.ok(card);
-  assert.match(card, /class="[^"]*\bshrink-0\b/);
-  assert.match(card, /:data-pipe-color="ticketPipeColor\(ticket\)"/);
-  assert.match(card, /:data-mobile-ticket-key="ticketKey\(ticket\)"/);
-  for (const name of ['mobile-card-row', 'mobile-card-context', 'mobile-card-id']) {
-    assert.match(cards, new RegExp(`class="[^"]*\\b${name}\\b`));
-  }
-  const title = cards.match(/<p\b[^>]*class="mobile-card-title"[^>]*>([\s\S]*?)<\/p>/)?.[1];
-  assert.ok(title, 'mobile title has separate tag and text spans');
-  assert.match(title, /<template x-if="parseTitleTag\(ticket\)\.tag">[\s\S]*?<span\b[^>]*class="title-tag"/);
+test('mobile rows keep their identity, content, and action hooks', () => {
+  const row = mobileRowsHTML();
+  const opener = row.match(/<button\b[^>]*@click="mobileSelecting \? mobileToggleSelected\(ticket\) : openMobileTicket\(ticket\)"[^>]*>/)?.[0];
+  assert.ok(opener);
+  assert.match(row, /<li class="mobile-ios-row" :data-pipe-color="ticketPipeColor\(ticket\)"/);
+  assert.match(opener, /:data-mobile-ticket-key="ticketKey\(ticket\)"/);
+  assert.match(opener, /:aria-pressed="mobileSelecting \? mobileSelection.includes\(ticketKey\(ticket\)\) : null"/);
+  assert.match(opener, /:disabled="mobileSelecting && !mobileSelectionAllowed\(ticket\)"/);
+  assert.match(row, /class="mobile-card-row mobile-ios-meta"/);
+  const title = row.slice(row.indexOf('<span class="mobile-card-title"'), row.indexOf('<span class="mobile-card-row'));
+  assert.match(title, /<template x-if="parseTitleTag\(ticket\)\.tag">\s*<span class="title-tag"/);
   assert.match(title, /:data-pipe-color="pipelineColorByName\(parseTitleTag\(ticket\)\.tag\)"/);
   assert.match(title, /x-text="'\[' \+ parseTitleTag\(ticket\)\.tag \+ '\] '"/);
-  assert.match(title, /<span\b[^>]*x-text="parseTitleTag\(ticket\)\.rest"/);
+  assert.match(title, /<span\b[^>]*x-text="parseTitleTag\(ticket\)\.rest \|\| ticket\.id"/);
   assert.doesNotMatch(title, /x-html=|x-text="ticket\.title"/);
-  assert.match(cards, /x-show="showPipelineBadges"/);
-  for (const expression of ['ticket.id', 'ticketProjectName(ticket)', 'sourceLabel(ticket)']) {
-    assert.ok(cards.includes(`x-text="${expression}"`), expression);
-  }
-  assert.match(cards, /x-if="!ticket\.kontora"/);
-  assert.match(cards, /not init'd/);
-  assert.match(cards, /ticket\.status\s*===\s*'cancelled'[\s\S]*?text-decoration:line-through/);
-  assert.match(cards, /ticket\.status\s*===\s*'open' && ticket\.scheduled_at/);
-  assert.match(cards, /scheduleChip\(ticket\)\.abs/);
-  assert.match(cards, /scheduleChip\(ticket\)\.rel/);
-  assert.match(cards, /epicIsAgent\(ticket\) \? 'supervising' : ticket\.stage/);
-  assert.match(cards, /epicCardInfo\(ticket\)\.done/);
-  assert.ok(cards.indexOf('mobile-card-title') < cards.indexOf('mobile-card-row'));
-  assert.doesNotMatch(cards, /border-left:|pulse-dot|waiting-dot/);
+  assert.match(row, /class="mobile-card-id"[^>]*x-text="ticket\.id"/);
+  assert.match(row, /x-text="mobileRowMeta\(ticket\)"/);
+  assert.match(row, /class="mobile-ios-selection-reason"[^>]*x-text="mobileSelecting \? mobileSelectionReason\(ticket\)/);
+  assert.doesNotMatch(row, /pulse-dot|waiting-dot/);
 });
 
-test("mobile cards use the shared progress helper behind a conditional template", () => {
-  const cards = mobileCardsHTML();
-  const progress = [...cards.matchAll(/<template x-if="([^"]+)">([\s\S]*?)<\/template>/g)]
-    .find(([, , body]) => /class="card-progress"/.test(body));
-  assert.ok(progress, 'excluded tickets must not mount a progress bar');
-  assert.equal(progress[1], 'cardStageProgress(ticket)');
-  assert.match(progress[2], /:aria-label="cardStageProgress\(ticket\)\.label"/);
-  assert.match(progress[2], /:style="[^"]*cardStageProgress\(ticket\)\.percent[^"]*%[^"]*"/);
-  assert.doesNotMatch(progress[2], /indexOf\(|Math\.round\(/);
+test('mobile rows show accessible per-stage progress only for eligible active runs', () => {
+  const row = mobileRowsHTML();
+  const stage = row.match(/<template x-if="executionActive\(ticket\)">\s*<span class="mobile-ios-stage">([\s\S]*?)<\/template>\s*<\/button>/)?.[1];
+  assert.ok(stage, 'inactive rows do not mount stage progress');
+  assert.match(stage, /x-show="cardStageProgress\(ticket\)" class="mobile-ios-segments" role="img" :aria-label="cardStageProgress\(ticket\)\?\.label"/);
+  assert.match(stage, /x-for="\(stage, i\) in cardStageProgress\(ticket\) \? ticket\.stages : \[\]"/);
+  assert.match(stage, /'is-complete': i < ticket\.stages.indexOf\(ticket\.stage\), 'is-current': stage === ticket\.stage/);
+  assert.match(stage, /x-text="mobileStageAge\(ticket\)"/);
 });
 
 test("mobile sheets retain their dialog heading and actions without repeated titles or dots", () => {
@@ -4349,7 +4339,7 @@ test('both phone terminals use mounted native inline composers without a Compose
     const dock = html.slice(html.indexOf(field), html.indexOf(field) + 1500);
     assert.match(dock, /@click="mobileBeginTerminalDirect\(\)"[^>]*>Type in terminal<\/button>/);
     assert.match(dock, /@pointerdown.prevent @click="submitComposeMobile\(\)"/);
-    assert.match(dock, /:disabled="!terminalRW \|\| !terminalConnected \|\| !mobileComposeDraft.trim\(\)"/);
+    assert.match(dock, /:disabled="!terminalRW \|\| !terminalConnected \|\| !mobileComposeDraft.trim\(\) \|\| terminalGuardedComposePending"/);
   }
   assert.equal([...html.matchAll(/@pointerdown.prevent @click="sendTerminalKey\(key.bytes\)"/g)].length, 4);
   assert.equal([...html.matchAll(/x-for="key in terminalEssentialKeys\(\)"/g)].length, 2);
@@ -4543,8 +4533,9 @@ test("index.html gates both empty-board panels on ticketBoardEmpty", () => {
   assert.ok(boardView.includes('id="board-empty-desktop"'), "desktop panel sits under the !loading board view");
   const mobileView = elementAt(html, html.indexOf('class="mobile-board-layer"'));
   assert.match(mobileView, /^<div x-show="!loading && currentView === 'board'"/);
-  assert.match(mobileView, /<template x-if="!needsInputOnly && ticketBoardEmpty\(\)">\s*<div id="board-empty-mobile"/);
-  assert.match(mobileView, /x-show="!ticketBoardEmpty\(\) && !ticketsLoadError && !ticketSourcesFailed\(\) && !mobileTicketList\(\)\.rows\.length && !mobileTicketList\(\)\.epics\.length && \(!needsInputOnly \|\| needsInputCount\)"/);
+  assert.match(mobileView, /<template x-if="!mobileColumnKey && !needsInputOnly && ticketBoardEmpty\(\)">\s*<div id="board-empty-mobile"/);
+  assert.match(mobileView, /x-show="!mobileColumnKey && !ticketBoardEmpty\(\) && !ticketsLoadError && !ticketSourcesFailed\(\) && !mobileTicketList\(\)\.rows\.length && !mobileTicketList\(\)\.epics\.length"/);
+  assert.match(mobileView, /x-text="needsInputOnly \? 'No agents need input among tickets matching your filters\.' : 'No tickets match the current filters and search\.'"/);
 });
 
 test("ticketBoardEmpty requires a successful load and no raw tickets, regardless of search", () => {
@@ -9900,56 +9891,183 @@ test('phone status picker offers the grouped view, all statuses, and the current
   const picker = html.match(/<select\b[^>]*\bx-model="mobileStatusFilter"[^>]*>[\s\S]*?<\/select>/)?.[0];
   assert.ok(picker, 'phone board has a status picker');
   assert.doesNotMatch(picker, /:disabled=/, 'status remains editable during search');
-  assert.match(picker, /<option value=":attention">In progress first<\/option>/);
+  assert.match(picker, /<option value=":attention">Default<\/option>/);
   assert.match(picker, /<option value=":all">All statuses<\/option>/);
   assert.match(picker, /<template x-for="col in columns" :key="col.key">\s*<option :value="col.key" :selected="mobileStatusFilter === col.key" x-text="col.label">/);
 });
 
-test('phone list groups active runs before attention and other tickets and respects filters', () => {
+function mobileGroupKeys(state) {
+  return Array.from(state.mobileListGroups(), group =>
+    [group.key, Array.from(group.rows, ticket => state.ticketKey(ticket))]);
+}
+
+test('phone home projects prioritized runs, a four-ticket Open preview, and list counts', () => {
   const state = loadKontoraState();
-  const waiting = { id: 'waiting', title: 'Needs an answer', status: 'in_progress', kontora: true, waiting_for_input: true };
+  const waiting = { id: 'waiting', title: 'Needs an answer', status: 'in_progress', kontora: true,
+    waiting_for_input: true, started_at: '2026-05-01T00:00:00Z' };
   state.configCache = { custom_statuses: ['awaiting_data'] };
   state.tickets = [
-    { id: 'same', title: 'Shared name', status: 'open' },
-    waiting,
+    ...Array.from({ length: 5 }, (_, i) => ({ id: `open-${i + 1}`, title: 'Draft', status: 'open',
+      created_at: `2026-05-0${i + 1}T12:00:00Z` })),
     { ...waiting, id: 'paused', status: 'paused' },
     { id: 'idle', title: 'Run stopped', status: 'in_progress', execution_active: false },
-    { id: 'active', title: 'Running with a custom status', status: 'awaiting_data', execution_active: true },
-    { id: 'review', title: 'Shared name in review', status: 'human_review' },
+    { id: 'active-old', title: 'Older run', status: 'in_progress', started_at: '2026-05-02T00:00:00Z' },
+    { id: 'active-new', title: 'Custom-status run', status: 'awaiting_data', execution_active: true, started_at: '2026-05-03T00:00:00Z' },
+    waiting,
+    { id: 'todo', title: 'Awaiting pickup', status: 'todo' },
+    { id: 'review', title: 'Awaiting review', status: 'human_review' },
+    { id: 'done', title: 'Completed', status: 'done' },
+    { id: 'passive', kind: 'epic', title: 'Passive epic', status: 'open' },
   ];
-  state.secondaryTickets = [{ id: 'same', source: 'team', title: 'Shared name', status: 'done' }];
-  const keys = () => Array.from(state.mobileTickets(), t => state.ticketKey(t));
-  const headings = () => vmValue(state.mobileTicketList().headings);
   state.recomputeBoard();
-  assert.equal(state.mobileFilterLabel(), 'In progress first');
-  assert.deepEqual(headings(), { 0: 'In progress (1)', 1: 'Needs attention (2)', 3: 'Other tickets' });
-  assert.deepEqual(keys(), ['active', 'waiting', 'review', 'same', 'idle', 'paused', 'team/same']);
+  assert.equal(state.mobileHomeFiltered(), false);
+  assert.equal(state.mobileFilterLabel(), 'Default');
+  assert.deepEqual(mobileGroupKeys(state), [
+    ['in_progress', ['waiting', 'active-new', 'active-old', 'paused', 'todo', 'idle']],
+    ['open', ['open-5', 'open-4', 'open-3', 'open-2']],
+  ]);
+  assert.deepEqual(Object.fromEntries(state.mobileHomeTiles().map(({ key, count }) => [key, count])),
+    { in_progress: 6, input: 1, open: 5, human_review: 1 });
+  assert.deepEqual(Object.fromEntries(state.mobileHomeLinks().map(({ key, count }) => [key, count])),
+    { human_review: 1, done: 1, cancelled: 0, awaiting_data: 1, ':epics': 1, ':archive': undefined });
+  assert.deepEqual(Array.from(state.mobileTicketList().epics, epic => epic.id), ['passive']);
+  assert.deepEqual(Array.from(state.mobileTicketList().waiting, ticket => ticket.id), ['waiting']);
 
+  state.searchQuery = '   ';
+  assert.equal(state.mobileHomeFiltered(), false, 'whitespace does not replace the home projection');
+  assert.equal(state.mobileListGroups()[1].rows.length, 4);
   state.mobileStatusFilter = ':all';
-  assert.deepEqual(headings(), {});
-  assert.deepEqual(keys(), ['same', 'waiting', 'idle', 'paused', 'review', 'active', 'team/same']);
-  state.mobileStatusFilter = 'done';
-  assert.equal(state.mobileFilterLabel(), 'Done');
-  assert.deepEqual(keys(), ['team/same']);
+  assert.equal(state.mobileHomeFiltered(), true, 'All statuses switches from home to grouped results');
+  assert.deepEqual(Array.from(state.mobileListGroups()[0].rows, ticket => ticket.id),
+    ['open-5', 'open-4', 'open-3', 'open-2', 'open-1']);
+});
 
+test('phone search groups by status and intersects Project, Agent, status, and source filters', () => {
+  const state = loadKontoraState();
+  const match = { id: 'same', title: 'Shared name', status: 'open', path: '/work/backend', agent: 'claude' };
+  state.configCache = { projects: [{ name: 'Repo', path: match.path }, { name: 'Repo-tools', path: '/work/tools' }] };
+  state.ticketSources = [{ id: 'team', path: '/shared/tickets', available: true }];
+  state.tickets = [
+    match,
+    { ...match, id: 'review', status: 'human_review' },
+    { ...match, id: 'wrong-project', status: 'in_progress', path: '/work/tools' },
+    { ...match, id: 'wrong-agent', status: 'cancelled', agent: 'claude-alt' },
+    { ...match, id: 'wrong-text', title: 'Unrelated', status: 'done' },
+  ];
+  state.secondaryTickets = [{ ...match, source: 'team', status: 'done' }];
   state.searchQuery = 'Shared name';
   state.recomputeBoard();
-  assert.equal(state.mobileFilterLabel(), 'Done');
-  assert.deepEqual(keys(), ['team/same']);
-  assert.equal(state.mobileStatusFilter, 'done', 'search does not rewrite the selection');
-  state.mobileStatusFilter = ':attention';
-  assert.deepEqual(headings(), { 0: 'Needs attention (1)', 1: 'Other tickets' });
-  assert.deepEqual(keys(), ['review', 'same', 'team/same'], 'namesakes remain distinct across folders');
-  state.mobileStatusFilter = 'done';
-  state.sourceFilter = 'team';
-  state.recomputeBoard();
-  assert.deepEqual(keys(), ['team/same'], 'search still respects the selected folder');
+  assert.equal(state.mobileHomeFiltered(), true);
+  assert.deepEqual(mobileGroupKeys(state), [
+    ['open', ['same']], ['in_progress', ['wrong-project']], ['human_review', ['review']],
+    ['done', ['team/same']], ['cancelled', ['wrong-agent']],
+  ]);
+  state.mobileProjectFilter = 'Repo';
+  assert.deepEqual(mobileGroupKeys(state), [
+    ['open', ['same']], ['human_review', ['review']], ['done', ['team/same']], ['cancelled', ['wrong-agent']],
+  ]);
+  state.mobileAgentFilter = 'claude';
+  assert.deepEqual(mobileGroupKeys(state), [
+    ['open', ['same']], ['human_review', ['review']], ['done', ['team/same']],
+  ], 'both namesakes survive the exact facet intersection');
+  assert.equal(state.mobileRowMeta(match), 'Repo · claude');
+  assert.equal(state.mobileRowMeta(state.secondaryTickets[0]), 'Repo · claude · /shared/tickets');
 
-  state.sourceFilter = '';
-  state.searchQuery = '   ';
-  state.recomputeBoard();
+  state.mobileStatusFilter = 'done';
   assert.equal(state.mobileFilterLabel(), 'Done');
-  assert.deepEqual(keys(), ['team/same']);
+  assert.deepEqual(mobileGroupKeys(state), [['done', ['team/same']]]);
+  state.sourceFilter = 'primary';
+  assert.deepEqual(mobileGroupKeys(state), [], 'source filtering does not substitute the local namesake');
+  state.sourceFilter = 'team';
+  state.searchQuery = 'name';
+  assert.equal(state.mobileStatusFilter, 'done', 'search does not rewrite the selected status');
+  assert.deepEqual(mobileGroupKeys(state), [['done', ['team/same']]]);
+});
+
+test('phone Open selection excludes ineligible rows and prunes filtered or changed tickets', () => {
+  const state = loadKontoraState();
+  const draft = { id: 'same', title: 'Draft', status: 'open', kontora: true, path: '/work/repo' };
+  const keep = { ...draft, id: 'keep', title: 'Keep' };
+  state.mobileColumnKey = 'open';
+  state.tickets = [draft, keep, { ...draft, id: 'other-project', path: '/work/tools' },
+    { ...draft, id: 'scheduled', scheduled_at: '2026-05-03T00:00:00Z' },
+    { ...draft, id: 'unmanaged', kontora: false }];
+  state.secondaryTickets = [{ ...draft, source: 'team' }];
+  state.recomputeBoard();
+  assert.equal(state.mobileSelectionReason(state.secondaryTickets[0]), 'From another ticket folder');
+  assert.equal(state.mobileSelectionReason(state.tickets[3]), 'Already scheduled');
+  assert.equal(state.mobileSelectionReason(state.tickets[4]), 'Not initialized');
+
+  state.mobileStartSelection();
+  state.mobileToggleSelected(state.secondaryTickets[0]);
+  assert.deepEqual([...state.mobileSelection], []);
+  state.mobileToggleSelectAll();
+  assert.deepEqual([...state.mobileSelection], ['other-project', 'same', 'keep']);
+  assert.equal(state.mobileAllSelected(), true);
+  state.mobileProjectFilter = 'repo';
+  state.mobileListFilterChanged();
+  assert.deepEqual([...state.mobileSelection], ['same', 'keep']);
+
+  state.applyTicketUpdate({ ...draft, status: 'todo' });
+  state.recomputeBoard();
+  state.mobileOpenBatch();
+  assert.deepEqual([...state.mobileSelection], ['keep']);
+  assert.deepEqual(Array.from(state.sheet.items, item => [item.key, item.command.id]), [['keep', 'queue-saved']]);
+});
+
+test('phone review selection uses the shared lifecycle rules without resolving each board row again', () => {
+  const state = loadKontoraState();
+  const supervisor = { id: 'supervisor', title: 'Review supervisor', kind: 'epic', epic_execution: 'agent',
+    status: 'human_review', kontora: true };
+  const paused = { ...supervisor, id: 'passive', epic_execution: 'passive' };
+  state.mobileColumnKey = 'human_review';
+  state.tickets = [supervisor, paused];
+  state.recomputeBoard();
+  assert.deepEqual(Array.from(state.mobileReviewCommands(supervisor), command => command.id), ['retry', 'move:done']);
+  assert.deepEqual(Array.from(state.mobileReviewCommands(paused)), []);
+  state.lifecycleResolve = () => { throw new Error('select all must use the loaded board rows'); };
+  state.mobileStartSelection();
+  state.mobileToggleSelectAll();
+  assert.deepEqual([...state.mobileSelection], ['supervisor']);
+});
+
+test('phone row swipe ignores vertical drags and rechecks the ticket before queuing', () => {
+  const state = loadKontoraState({ window: { innerWidth: 390 } });
+  const draft = { id: 'swipe', status: 'open', kontora: true };
+  state.tickets = [draft];
+  const captured = [];
+  const row = { isConnected: true, setPointerCapture: id => captured.push(id) };
+  const pointer = (clientX, clientY) => ({ clientX, clientY, pointerId: 1, button: 0, currentTarget: row,
+    target: { closest: name => name === '.mobile-ios-row-open' } });
+  const queued = [];
+  state.mobileQueueSaved = key => queued.push(key);
+
+  state.mobileRowPointerDown(pointer(100, 100), draft);
+  state.mobileRowPointerMove(pointer(105, 130));
+  state.mobileRowPointerUp(pointer(200, 130));
+  assert.deepEqual(captured, [], 'vertical movement stays scrollable');
+  assert.deepEqual(queued, []);
+
+  state.mobileRowPointerDown(pointer(100, 100), draft);
+  state.mobileRowPointerMove(pointer(120, 100));
+  state.tickets = [{ ...draft, status: 'todo' }];
+  state.mobileRowPointerUp(pointer(200, 100));
+  assert.deepEqual(captured, [1]);
+  assert.deepEqual(queued, [], 'the swipe cannot queue a ticket that changed while being dragged');
+
+  state.tickets = [draft];
+  state.mobileRowPointerDown(pointer(100, 100), draft);
+  state.mobileRowPointerMove(pointer(120, 100));
+  state.mobileRowPointerUp(pointer(200, 100));
+  assert.deepEqual(queued, ['swipe']);
+  const suppressed = [];
+  const click = detail => ({ detail, preventDefault: () => suppressed.push('prevent'), stopImmediatePropagation: () => suppressed.push('stop') });
+  state.mobileSuppressRowClick(click(0), draft);
+  state.mobileSuppressRowClick(click(1), { ...draft, source: 'team' });
+  assert.deepEqual(suppressed, [], 'keyboard and namesake clicks still work');
+  state.mobileSuppressRowClick(click(1), draft);
+  state.mobileSuppressRowClick(click(1), draft);
+  assert.deepEqual(suppressed, ['prevent', 'stop'], 'only the swipe-generated click is consumed');
 });
 
 for (const geometry of [
@@ -9988,7 +10106,8 @@ for (const visualViewport of [false, true]) {
     assert.ok(dom.document.listeners.every(l => l.options === true));
     assert.equal(dom.viewport?.listeners.length || 0, visualViewport ? 2 : 0);
     const watchKeys = ['currentView', 'mobileAgentFilter', 'mobileProjectFilter', 'mobileStatusFilter', 'needsInputOnly', 'searchQuery', 'selectedEpic', 'selectedTicket', 'sheet', 'sourceFilter'];
-    assert.deepEqual([...watches.keys()].sort(), watchKeys);
+    assert.deepEqual([...watches.keys()].filter(key => key !== '_board').sort(), watchKeys);
+    const registeredWatches = watches.size;
     assert.equal(state.isMobile, true);
     dom.window.innerHeight = 400;
     if (dom.viewport) { dom.viewport.height = 200; dom.viewport.width = 100; }
@@ -10014,7 +10133,7 @@ for (const visualViewport of [false, true]) {
     assert.equal(dom.window.listeners.length, 0);
     assert.equal(dom.document.listeners.length, 0);
     assert.equal(dom.viewport?.listeners.length || 0, 0);
-    assert.equal(unwatched, watchKeys.length);
+    assert.equal(unwatched, registeredWatches);
     assert.equal(watches.size, 0);
     assert.equal(dom.style.getPropertyValue('--mobile-vv-top'), '7px');
     assert.equal(dom.style.getPropertyPriority('--mobile-vv-top'), 'important');
@@ -12080,7 +12199,8 @@ for (const row of [
   { name: 'summary phone', mobile: true, status: 'done', summary: 'Result' },
   { name: 'completed desktop', mobile: false, status: 'done', activity: 1 },
   { name: 'summary desktop', mobile: false, status: 'done', summary: 'Result', activity: 1 },
-  { name: 'running phone', mobile: true, status: 'in_progress', terminal: 1 },
+  { name: 'running phone', mobile: true, status: 'in_progress', pane: 'ticket' },
+  { name: 'running desktop', mobile: false, status: 'in_progress', pane: 'terminal', terminal: 1 },
   { name: 'open phone', mobile: true, status: 'open', history: [] },
   { name: 'secondary phone', mobile: true, status: 'done', source: 'team' },
   { name: 'imported phone', mobile: true, status: 'done', history: [{ stage: 'code', imported: true }] },
@@ -12107,6 +12227,7 @@ for (const row of [
     assert.equal(requests.filter(url => /\/activity(?:\?|$)/.test(url)).length, row.activity || 0);
     assert.equal(requests.filter(url => /\/logs(?:\?|$)/.test(url)).length, row.logs || 0);
     assert.equal(terminals, row.terminal || 0);
+    if (row.pane) assert.equal(state.detailTab, row.pane);
     state.closeDetail(false);
   });
 }
@@ -16495,21 +16616,26 @@ test("recomputeBoard tallies waiting tickets and the favicon ranks them over run
   assert.equal(ctx.document.title, "(1 running) kontora");
 });
 
-test("index.html badges a waiting ticket in the detail header and both mobile layers", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
+test('index.html shows waiting badges in detail and a reply action in phone rows', () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const mobileStart = html.indexOf('class="mobile-board-layer"');
+  const desktop = html.slice(0, mobileStart);
+  assert.match(desktop, /x-show="needsLiveInput\(selectedTicket\)" class="waiting-chip"/);
+  assert.match(desktop, /x-show="needsLiveInput\(selectedEpic\)" class="waiting-chip"/);
+  assert.equal(desktop.match(/class="waiting-chip"/g).length, 2);
+  for (const subject of ['selectedTicket', 'selectedEpic']) {
+    assert.match(desktop, new RegExp(`x-text="waitingFor\\(${subject}\\)"`));
+  }
+  assert.match(desktop, /\.waiting-chip \{[^}]*--st-review/s);
 
-  // Desktop detail header: beside the status chip in the identity block.
-  assert.match(html, /x-show="needsLiveInput\(selectedTicket\)" class="waiting-chip"/);
-  assert.match(html, /x-if="needsLiveInput\(ticket\)"/);
-  assert.match(html, /x-if="needsLiveInput\(selectedTicket\)"/);
-  assert.match(html, /mobilePanel\(\) === 'output' && needsLiveInput\(selectedTicket\)/);
-  // Three ticket badges with elapsed time, plus both embedded epic headers.
-  assert.equal(html.match(/class="waiting-chip"/g).length, 5);
-  assert.equal(html.match(/waitingFor\((selectedTicket|ticket)\)/g).length, 3);
-  // The chip reuses the review hue and, on desktop, the shared pulse animation.
-  assert.match(html, /\.waiting-chip \{[^}]*--st-review/s);
-  const mobile = html.slice(html.indexOf('class="mobile-board-layer"'));
-  for (const subject of ['ticket', 'selectedTicket', 'selectedEpic']) {
+  const row = mobileRowsHTML(html);
+  assert.match(row, /<template x-if="!mobileSelecting && needsLiveInput\(ticket\)">\s*<div class="mobile-ios-question">/);
+  assert.match(row, /<strong>Needs input<\/strong><p x-text="liveQuestion\(ticket\)">/);
+  assert.match(row, /@click="mobileReply\(ticket\)">Reply<\/button>/);
+  const mobile = html.slice(mobileStart);
+  assert.match(mobile, /x-if="needsLiveInput\(selectedTicket\)"/);
+  assert.match(mobile, /mobilePanel\(\) === 'output' && needsLiveInput\(selectedTicket\)/);
+  for (const subject of ['selectedTicket', 'selectedEpic']) {
     const badge = [...mobile.matchAll(/<span\b[^>]*class="waiting-chip"[^>]*>([\s\S]*?)<\/span>\s*<\/span>/g)]
       .find(([, content]) => content.includes(`waitingFor(${subject})`));
     assert.ok(badge, subject + ' retains an attention badge');
@@ -20587,15 +20713,15 @@ for (const [status, label] of [['in_progress', 'supervising'], ['todo', 'Todo'],
   });
 }
 
-test('phone cards label worker and supervisor statuses even when metadata is hidden', () => {
+test('phone rows label worker and supervisor statuses even when metadata preferences are off', () => {
   const { state, epic } = epicSupervisorUI();
-  const cards = mobileCardsHTML();
-  assert.match(cards, /<span class="mobile-card-state" :class="ticket.status === 'paused' \? 'card-glyph-paused' : ''" x-text="mobileTicketStatus\(ticket\)"><\/span>/);
-  assert.match(cards, /<template x-if="executionActive\(ticket\)">\s*<span class="mobile-card-state text-st-progress">\s*<span x-text="epicIsAgent\(ticket\) \? 'supervising' : ticket\.stage"/);
+  const row = mobileRowsHTML();
+  assert.match(row, /<span class="mobile-card-state" x-show="[^"]+ticket\.status[^"]*" x-text="mobileTicketStatus\(ticket\)"><\/span>/);
+  assert.match(row, /<span x-show="epicIsAgent\(ticket\)">Supervisor<\/span>/);
   state.showPipelineBadges = false;
   state.showAgentMeta = false;
   for (const kind of ['ticket', 'epic']) {
-    for (const [status, label] of [['todo', 'Queued'], ['paused', 'Paused'], ['human_review', 'Human review']]) {
+    for (const [status, label] of [['todo', 'Awaiting pickup'], ['paused', 'Paused'], ['human_review', 'Human review']]) {
       assert.equal(state.mobileTicketStatus({ ...epic, kind, status }), label);
     }
   }
@@ -22325,8 +22451,9 @@ for (const destination of [
       if (destination.ticketId) {
         assert.equal(state.selectedTicket.id, destination.ticketId);
         assert.equal(state.isSecondary(state.selectedTicket), !!destination.source);
-        if (!destination.source) assert.ok(opened > 0, 'running output attaches after Board activation');
+        assert.equal(state.detailTab, 'ticket');
       }
+      assert.equal(opened, 0, 'fresh phone details leave the terminal disconnected');
       if (destination.epicId) assert.equal(state.selectedEpic.id, destination.epicId);
     });
   }
@@ -22372,8 +22499,16 @@ for (const mobile of [false, true]) {
     await flushMicrotasks();
     assert.deepEqual(writes, ['#/t/route-next']);
     assert.equal(state.selectedTicket.id, next.id);
-    assert.ok(opened.length > 0);
-    assert.ok(opened.every(id => id === next.id));
+    if (mobile) {
+      assert.equal(state.detailTab, 'ticket');
+      assert.deepEqual(opened, []);
+      state.mobileSwitchTab('terminal');
+      assert.deepEqual(opened, [next.id]);
+      assert.deepEqual(writes, ['#/t/route-next']);
+    } else {
+      assert.ok(opened.length > 0);
+      assert.ok(opened.every(id => id === next.id));
+    }
   });
 }
 

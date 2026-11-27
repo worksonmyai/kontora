@@ -1129,6 +1129,7 @@ export function kontoraBoard() {
         total += board[col.key].length;
       });
       this._board = board;
+      this.mobileBoardChanged();
       this._boardTotal = total;
       this.needsInputCount = needsInputCount;
       this._statusCounts = counts;
@@ -1143,9 +1144,8 @@ export function kontoraBoard() {
       this.renderBoard();
     },
 
-    // O(1) lookup of a column's cached list. The board header count and the
-    // mobile board still read this reactively; the desktop card list is rendered
-    // from it imperatively by renderColumn/renderBoard.
+    // Desktop header counts read the cached column list reactively.
+    // `renderColumn` and `renderBoard` use it to render cards.
     boardTickets(key) {
       return this._board[key] || [];
     },

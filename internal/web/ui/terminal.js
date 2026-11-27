@@ -33,6 +33,24 @@ export const termState = {
   mobile: false,
 };
 
+// xterm's paste() and input() emit onData synchronously. Only that listener
+// can confirm a frame was queued on the intended socket.
+let guardedTerminalInput = null;
+const pendingComposeEnters = new WeakMap();
+function queueGuardedTerminalInput(term, ws, current, emit, bracketedPaste = null) {
+  if (!current()) return 'blocked';
+  const attempt = { term, ws, current, bracketedPaste, result: 'blocked' };
+  guardedTerminalInput = attempt;
+  try {
+    emit();
+  } catch (e) {
+    // xterm can fail before emitting. The actual socket write decides the result.
+  } finally {
+    guardedTerminalInput = null;
+  }
+  return attempt.result;
+}
+
 // A terminal can outlive its socket. Keep new resets behind any write already
 // inside xterm, and discard queued frames from streams that no longer own it.
 const terminalWrites = new WeakMap();
@@ -107,6 +125,7 @@ export function kontoraTerminal() {
     terminalConnected: false,
     terminalError: null,
     terminalSubjectKey: null,
+    terminalGuardedComposePending: false,
     terminalBufferType: null,
     terminalHasHistory: false,
     terminalHistoryReviewing: false,
@@ -300,18 +319,61 @@ export function kontoraTerminal() {
       termState.term?.input(bytes);
     },
 
+    _cleanTerminalCompose(text) {
+      return text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
+    },
+
     sendTerminalCompose(text) {
-      if (!this.terminalRW || !this.terminalConnected || !termState.term || !termState.ws) return false;
-      var clean = text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
+      if (this.terminalGuardedComposePending || !this.terminalRW || !this.terminalConnected || !termState.term || !termState.ws) return false;
+      var clean = this._cleanTerminalCompose(text);
       if (!clean.trim()) return false;
       var term = termState.term;
       var ws = termState.ws;
       term.paste(clean);
+      pendingComposeEnters.set(ws, (pendingComposeEnters.get(ws) || 0) + 1);
       setTimeout(() => {
-        // A mode toggle keeps the Terminal but replaces its socket.
-        if (termState.term === term && termState.ws === ws) this.sendTerminalKey('\r');
+        try {
+          // A mode toggle keeps the Terminal but replaces its socket.
+          if (termState.term === term && termState.ws === ws) this.sendTerminalKey('\r');
+        } finally {
+          var remaining = pendingComposeEnters.get(ws) - 1;
+          if (remaining) pendingComposeEnters.set(ws, remaining);
+          else pendingComposeEnters.delete(ws);
+        }
       }, 150);
       return true;
+    },
+
+    // isCurrent is a synchronous predicate for the observed question and reply
+    // owner. Results describe local queueing, not agent receipt. The caller
+    // owns the draft and must keep it unless the result is 'sent'.
+    async sendGuardedTerminalCompose(text, { subjectKey, isCurrent } = {}) {
+      const { term, ws, streamSeq } = termState;
+      if (this.terminalGuardedComposePending || pendingComposeEnters.has(ws)) return 'busy';
+      const clean = this._cleanTerminalCompose(text.replace(/\r\n?/g, '\n'));
+      if (!clean.trim() || !term || !ws || !subjectKey || typeof isCurrent !== 'function') return 'blocked';
+      const terminalSeq = this._terminalSeq;
+      const detailSeq = this._ticketDetailSeq;
+      const navigation = this._navigationSeq;
+      const current = () => !this._appDestroyed && this.terminalOpen && this.terminalWanted()
+        && this._terminalSeq === terminalSeq && this._ticketDetailSeq === detailSeq && this._navigationSeq === navigation
+        && this.terminalSubjectKey === subjectKey && this.outputSubjectKey() === subjectKey
+        && termState.term === term && termState.ws === ws && termState.streamSeq === streamSeq
+        && this.terminalRW && this.terminalConnected && ws.readyState === WebSocket.OPEN && isCurrent() === true;
+
+      // Validate the emitted frame: xterm can suppress brackets even in bracketed mode,
+      // and its unbracketed paste contains CRs that can submit before the Enter guard.
+      const bracketedPaste = /[\n\u2028\u2029]/.test(clean)
+        ? '\x1b[200~' + clean.replace(/\n/g, '\r') + '\x1b[201~' : null;
+      this.terminalGuardedComposePending = true;
+      try {
+        const pasted = queueGuardedTerminalInput(term, ws, current, () => term.paste(clean), bracketedPaste);
+        if (pasted !== 'queued') return pasted;
+        await new Promise(resolve => setTimeout(resolve, 150));
+        return queueGuardedTerminalInput(term, ws, current, () => term.input('\r')) === 'queued' ? 'sent' : 'partial';
+      } finally {
+        this.terminalGuardedComposePending = false;
+      }
     },
 
     outputSubject() {
@@ -635,9 +697,23 @@ export function kontoraTerminal() {
       ws.onerror = disconnected;
       if (rw) {
         termState.inputDisposable = term.onData(function(data) {
-          if (current() && self.terminalRW && self.terminalConnected && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'input', data: data }));
+          if (!current() || !self.terminalRW || !self.terminalConnected || ws.readyState !== WebSocket.OPEN) return;
+          const frame = JSON.stringify({ type: 'input', data: data });
+          const attempt = guardedTerminalInput;
+          if (!attempt) {
+            ws.send(frame);
+            return;
           }
+          if (attempt.term !== term || attempt.ws !== ws || attempt.result !== 'blocked'
+            || self.outputSubjectKey() !== subjectKey || !attempt.current()) return;
+          if (attempt.bracketedPaste !== null && data !== attempt.bracketedPaste) {
+            attempt.result = 'multiline-unavailable';
+            return;
+          }
+          try {
+            ws.send(frame);
+            attempt.result = 'queued';
+          } catch (e) {}
         });
       }
     },

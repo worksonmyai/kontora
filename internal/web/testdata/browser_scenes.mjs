@@ -23,6 +23,65 @@ export const polishRecords = () => [
       pipeline: 'pipeline-' + 'long-metadata-'.repeat(8) }),
 ];
 
+export const iosPwa = {
+  running: 'ios-104',
+  progress: ['ios-104', 'ios-105', 'ios-103', 'ios-102'],
+  queue: ['ios-111', 'ios-112', 'ios-113'],
+  firstReview: 'ios-121',
+};
+
+// The redesign scenes never inherit the desktop seed (not even its namesakes).
+export function iosPwaOptions(now) {
+  const since = minutes => new Date(+now - minutes * 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const web = { name: 'Storefront', path: '/fixtures/storefront', pipeline: 'standard', agent: 'pi' };
+  const api = { name: 'Catalog API', path: '/fixtures/catalog-api', pipeline: 'fix', agent: 'claude' };
+  const docs = { name: 'Docs', path: '/fixtures/docs', pipeline: 'docs', agent: 'pi' };
+  const pipelines = [
+    { name: 'standard', stages: ['plan', 'implement', 'verify', 'review'] },
+    { name: 'fix', stages: ['plan', 'implement', 'verify'] },
+    { name: 'docs', stages: ['draft', 'review'] },
+  ];
+  const row = (id, title, project, extra = {}) => {
+    const { path, agent, pipeline } = project;
+    const { stages } = pipelines.find(p => p.name === pipeline);
+    return ticket(id, title, { path, agent, pipeline, stages, stage: stages[0],
+      created_at: since(60), updated_at: since(60), ...extra });
+  };
+  const review = (id, title, project, minutes) => row(id, title, project, {
+    status: 'human_review', finished_at: since(minutes), updated_at: since(minutes), created_at: since(minutes + 120),
+  });
+  return { onlyRecords: true, config: {
+    projects: [web, api, docs], pipelines: pipelines.map(p => p.name), pipeline_infos: pipelines,
+    agents: ['pi', 'claude'], agent_infos: [{ name: 'pi', binary: 'pi' }, { name: 'claude', binary: 'claude' }],
+    stages: [...new Set(pipelines.flatMap(p => p.stages))], custom_statuses: ['blocked'],
+  }, records: [
+    row(iosPwa.running, 'Add cursor pagination to catalog search', api, {
+      status: 'in_progress', stage: 'implement', branch: 'fixture/catalog-cursor', started_at: since(11),
+      invocation_id: 'ios-fixture-invocation', attempt: 1, can_edit: false, waiting_for_input: true,
+      waiting_since: since(3), waiting_tool: 'question',
+      waiting_question: 'Should the API keep offset pagination for older clients, or switch every client to cursors now?',
+      history: [{ stage: 'plan', run: 0, agent: api.agent, started_at: since(16), completed_at: since(11), exit_code: 0 }],
+    }),
+    row('ios-105', 'Improve checkout validation', web, { status: 'in_progress', stage: 'verify', started_at: since(6), can_edit: false }),
+    row('ios-103', 'Update the migration guide', docs, { status: 'paused' }),
+    row('ios-102', 'Record request latency metrics', api, { status: 'todo' }),
+    row('ios-111', 'Cache product thumbnails', web, { updated_at: since(28) }),
+    row('ios-112', 'Add test data for returns', api, { updated_at: since(32), pipeline: '' }),
+    row('ios-113', 'Document the release checklist', docs, { updated_at: since(38) }),
+    row('ios-114', 'Verify scheduled index rollout', api, { updated_at: since(43), scheduled_at: since(-660) }),
+    row('ios-115', 'Triage partner feedback', web, { updated_at: since(50), kontora: false }),
+    review(iosPwa.firstReview, 'Check the accessible checkout flow', web, 18),
+    review('ios-122', 'Review error handling changes', api, 53),
+    review('ios-123', 'Check the onboarding guide', docs, 95),
+    review('ios-124', 'Verify currency formatting', web, 1_440),
+    review('ios-125', 'Review audit events', api, 1_650),
+    review('ios-126', 'Verify the changelog', docs, 3 * 1_440),
+    row('ios-130', 'Remove the legacy coupon field', web, { status: 'done' }),
+    row('ios-131', 'Prototype an alternate webhook', api, { status: 'cancelled' }),
+    row('ios-132', 'Confirm regional settings', docs, { status: 'blocked' }),
+  ] };
+}
+
 export async function detailPanel(page, name) {
   const phone = page.viewportSize().width < 768;
   const label = name === 'Changes' ? /^Committed changes(?:\s+\d+)?$/ : phone ? name : ({ Ticket: 'ticket', Notes: 'notes', Output: 'activity' })[name];

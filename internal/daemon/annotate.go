@@ -337,6 +337,14 @@ func (d *Daemon) parkForAnnotation(id string) error {
 	return nil
 }
 
+func readPendingAnnotations(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	return strings.TrimSpace(string(data)), err
+}
+
 // runAnnotationRun hands the agent the reviewer's annotations and the ticket
 // file, and asks it to rewrite the ticket. It does not evaluate the pipeline, so
 // the run cannot advance the ticket or repeat the stage's work; on success the
@@ -348,10 +356,9 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 	// act on, and kept so that the rendered prompt can be checked against them
 	// below. The prompt itself reads the file through {{ plannotatorAnnotations }}.
 	annotationsFile := annotationsPath(config.ExpandTilde(cfg.Plannotator.ReviewsDir), ticketID)
-	pendingBytes, readErr := os.ReadFile(annotationsFile)
-	pending := strings.TrimSpace(string(pendingBytes))
+	pending, readErr := readPendingAnnotations(annotationsFile)
 	switch {
-	case readErr != nil && !os.IsNotExist(readErr):
+	case readErr != nil:
 		// The file is there but cannot be read. Running the agent would render an
 		// empty set of notes, and its clean exit would then delete the file and
 		// clear the marker as if they had been applied.

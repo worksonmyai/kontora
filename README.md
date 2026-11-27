@@ -22,7 +22,7 @@ Each ticket gets a branch and a separate checkout, called a Git worktree. Use on
 <details>
 <summary>Live agent terminal</summary>
 <br>
-<img alt="Read-only session for the running request logging ticket. The request logging test passed, and the agent is checking the log fields before review." src="docs/dark-tmux.png">
+<img alt="Watching the live session for the request logging ticket. The request logging test passed, and the agent is checking the log fields before review." src="docs/dark-tmux.png">
 </details>
 
 ## Install

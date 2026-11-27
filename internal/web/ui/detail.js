@@ -97,10 +97,10 @@ export function kontoraDetail() {
       this.notifyDraft = null;
       this.notifyError = null;
       this.resetChanges();
+      this.detailMenuOpen = false;
+      if (this.runConfirmOpen) this.closeRunConfirm(false);
       this.collapsedStages = {};
-      this.relExpanded = {};
       this.chain = null;
-      this.chainCollapsed = false;
       this.chainError = null;
       this.childrenCollapsed = false;
       this.childrenExpanded = false;
@@ -177,8 +177,8 @@ export function kontoraDetail() {
         this.writeHash();
         return;
       }
-      // The ladder is derived from every ticket file on disk, so it cannot be
-      // read off the board and has to be fetched for each ticket opened.
+      // The dependency chain includes tickets the board omits, so fetch it
+      // separately for each ticket opened.
       if (this.selectedTicket?.id) {
         this.fetchChain(this.selectedTicket.id);
       }
@@ -186,7 +186,7 @@ export function kontoraDetail() {
       const restored = explicitPane || await this.restoreDetailView();
       if (!mine()) return;
       // The changed-files sidebar needs the branch comparison on other tabs too.
-      // Restoring Committed changes already starts that read.
+      // Restoring Changes already starts that read.
       if (this.canCompareChanges() && !(restored && this.detailMode() === 'diff')) {
         this.fetchChanges(this.selectedTicket.id);
       }
@@ -536,10 +536,8 @@ export function kontoraDetail() {
       return (this.currentTicketCost()?.runs || []).find(function (cost) { return cost.history_index === historyIndex; }) || null;
     },
 
-    // The chain behind the ladder. Guarded on the selected ticket the way
-    // fetchChanges is, and on a sequence number as well: the SSE path refetches
-    // the same ticket, so the id alone cannot tell two in-flight requests apart
-    // and an older response could land last.
+    // Guard the dependency chain by selection and request sequence: SSE can
+    // start another read for the same ticket before the older response lands.
     async fetchChain(id) {
       if (this.isSecondary(this.selectedTicket)) return;
       var seq = ++this._chainSeq;
@@ -622,6 +620,7 @@ export function kontoraDetail() {
       this.closeTerminal();
       this.terminalRW = false;
       this.detailMenuOpen = false;
+      if (this.runConfirmOpen) this.closeRunConfirm(false);
       this.deleteModal = false;
       this.editing = false;
       this.editingBody = false;
@@ -643,9 +642,7 @@ export function kontoraDetail() {
       this._resetTicketCost();
       this.resetChanges();
       this.collapsedStages = {};
-      this.relExpanded = {};
       this.chain = null;
-      this.chainCollapsed = false;
       this.chainError = null;
       this.childrenCollapsed = false;
       this.childrenExpanded = false;
@@ -1212,16 +1209,6 @@ export function kontoraDetail() {
       navigator.clipboard.writeText(cmd);
       this.copiedCmd = cmd;
       setTimeout(() => { this.copiedCmd = null; }, 1200);
-    },
-
-    // One button, one endpoint. Only the word changes: retry reads right for a
-    // ticket that stopped mid-pipeline, restart for one that already finished.
-    // Both queue the stage the ticket currently sits on; neither rewinds it.
-    retryLabel() {
-      if (this.workflowWaiting?.(this.selectedTicket) && this.selectedTicket.graph_execution.wait.disarmed) return 'rearm wait';
-      const restart = ['done', 'cancelled'].includes(this.selectedTicket?.status);
-      if (this.actionLoading === 'retry') return restart ? 'restarting...' : 'retrying...';
-      return restart ? 'restart' : 'retry';
     },
 
     async action(type) {
@@ -2005,7 +1992,7 @@ export function kontoraDetail() {
     },
 
     statusLabel(status) {
-      return status === 'todo' ? 'Todo' : (status || '').replace(/_/g, ' ');
+      return status === 'todo' ? 'queued' : (status || '').replace(/_/g, ' ');
     },
 
     // Duration between two timestamps, for history rows ("38m", "1h 4m", "45s").
@@ -2017,19 +2004,6 @@ export function kontoraDetail() {
       var mins = Math.floor(secs / 60);
       if (mins < 60) return mins + 'm';
       return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
-    },
-
-    // "⌁ attach tmux session": running tickets jump to the live terminal,
-    // otherwise the attach command is copied.
-    attachTerminal() {
-      if (!this.selectedTicket) return;
-      if (this.executionActive(this.selectedTicket)) {
-        this.logViewContent = null;
-        this.logViewStage = null;
-        this.switchTab('session');
-      } else {
-        this.copyCmd('kontora attach ' + this.selectedTicket.id);
-      }
     },
 
     // Follow (autoscroll) toggle for the log pane. The live terminal already

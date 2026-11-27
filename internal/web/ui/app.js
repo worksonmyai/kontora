@@ -204,18 +204,12 @@ export function kontoraApp() {
     notifySaving: false,
     notifySaved: false,
     notifyError: null,
-    // Relation rows the user expanded past the first RELATION_CAP chips, keyed
-    // by row. Cleared with the ticket, so opening another one starts collapsed.
-    relExpanded: {},
-    // The dependency chain behind the ladder, fetched per ticket and cleared
-    // with it.
     chain: null,
-    chainCollapsed: false,
     chainError: null,
     // Bumped per chain fetch, so a response from an older one is dropped.
     _chainSeq: 0,
     // Sub-ticket tree folded shut, and the tree expanded past CHILDREN_CAP.
-    // Both are cleared with the ticket, like relExpanded.
+    // Both are cleared when the ticket changes.
     childrenCollapsed: false,
     childrenExpanded: false,
     deleteSubmitting: false,
@@ -276,41 +270,47 @@ export function kontoraApp() {
     _parsedQuerySrc: null,
 
     _builtinColumns: [
-      { key: 'open', statuses: ['open'], dropStatus: 'open', label: 'Open', color: 'bg-accent', tint: 'var(--st-open)', tip: 'Open tickets do not run. Request pickup for a managed draft, or initialize an imported ticket.', emptyText: 'Create a ticket to get started',
+      { key: 'open', statuses: ['open'], dropStatus: 'open', label: 'Open', color: 'bg-accent', tint: 'var(--st-open)', tip: 'Scheduled drafts can move to Queued when due. Other drafts wait for Run or Queue.', emptyText: 'Create a ticket to get started',
         emptyIcon: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 18v-6"/>' },
-      { key: 'in_progress', statuses: ['todo', 'in_progress', 'paused'], dropStatus: 'todo', label: 'In Progress', color: 'bg-ok', tint: 'var(--st-progress)', tip: 'Todo, running, or paused tickets. Todo does not confirm queue admission.', emptyText: 'No active tickets',
+      { key: 'in_progress', statuses: ['todo', 'in_progress', 'paused'], dropStatus: 'todo', label: 'In progress', color: 'bg-ok', tint: 'var(--st-progress)', tip: 'Queued, running or paused tickets. Queued does not guarantee automatic pickup.', emptyText: 'No active tickets',
         emptyIcon: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>' },
-      { key: 'human_review', statuses: ['human_review'], dropStatus: 'human_review', label: 'Human Review', color: 'bg-review', tint: 'var(--st-review)', tip: 'Waiting for a human to look at the result.', emptyText: 'No tickets waiting for review',
+      { key: 'human_review', statuses: ['human_review'], dropStatus: 'human_review', label: 'Human review', color: 'bg-review', tint: 'var(--st-review)', tip: 'Waiting for review. Age uses the recorded finish time, or the last update or creation time if no finish was recorded.', emptyText: 'No tickets waiting for review',
         emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
-      { key: 'done', statuses: ['done'], dropStatus: 'done', label: 'Done', color: 'bg-ok', tint: 'var(--st-done)', tip: 'Ticket completed successfully.', emptyText: 'No completed tickets yet',
+      { key: 'done', statuses: ['done'], dropStatus: 'done', label: 'Done', color: 'bg-ok', tint: 'var(--st-done)', tip: 'Finished tickets.', emptyText: 'No completed tickets yet',
         emptyIcon: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>' },
-      { key: 'cancelled', statuses: ['cancelled'], dropStatus: 'cancelled', label: 'Cancelled', color: 'bg-surface-600', tint: 'var(--st-cancel)', tip: 'Stopped manually. Drag to In Progress to run it again.', emptyText: 'No cancelled tickets',
+      { key: 'cancelled', statuses: ['cancelled'], dropStatus: 'cancelled', label: 'Cancelled', color: 'bg-surface-600', tint: 'var(--st-cancel)', tip: 'Stopped manually. Drag to In progress to run it again.', emptyText: 'No cancelled tickets',
         emptyIcon: '<path d="m15 9-6 6"/><path d="m9 9 6 6"/><circle cx="12" cy="12" r="10"/>' },
     ],
 
     // In-flight sort order: in_progress > paused > todo. Used inside the IN PROGRESS column.
     _inflightRank: { in_progress: 0, paused: 1, todo: 2 },
 
-    // Commands and configured destinations are owned by lifecycle.js. Keep
-    // presentation-only filtering here; no surface defines its own endpoints.
-
-    // Endpoints already covered by the bespoke tooltip-bearing buttons in the
-    // detail panel (Pause for in_progress, retry/restart for the parked
-    // statuses), so the validMoves list rendered there doesn't duplicate them.
-    _detailCoveredMoves: {
-      in_progress: ['pause'],
-      paused: ['retry'],
-      done: ['retry'],
-      cancelled: ['retry'],
+    // The desktop header shows one contextual action; lifecycle.js owns the commands.
+    detailPrimaryAction(ticket) {
+      if (!this.ticketCanControl(ticket) || ticket.status === 'archived') return null;
+      if (this.epicCanStart(ticket)) return { id: 'start', label: 'Start epic…', accent: true };
+      if (ticket.kind === 'epic' && !this.epicIsAgent(ticket)) return null;
+      if (this.executionActive(ticket)) return { id: 'pause', label: this.epicIsAgent(ticket) ? 'Pause supervisor' : 'Pause' };
+      if (ticket.kontora && ticket.status === 'todo') return { id: 'move:open', label: 'Unqueue' };
+      if (!ticket.kontora || ticket.status === 'open') return { id: 'run', label: 'Run…', accent: true };
+      if (ticket.status === 'human_review') return { id: 'review', label: 'Review diff in Plannotator' };
+      if (this._lifecycleActionID(ticket) === 'retry') {
+        return { id: 'retry', label: this.lifecycleCommand(ticket, 'retry').label };
+      }
+      return null;
     },
 
-    // Shared commands shown as action buttons in the detail panel sidebar.
-    detailMoves(ticket) {
+    detailMenuActions(ticket) {
       if (!this.ticketCanControl(ticket)) return [];
-      if (this.epicCanStart(ticket)) return [this.lifecycleCommand(ticket, 'start')];
-      if (ticket.kind === 'epic' && !this.epicIsAgent(ticket)) return [];
-      var covered = this._detailCoveredMoves[this.executionActive(ticket) ? 'in_progress' : ticket.status] || [];
-      return this.ticketMoves(ticket).filter(mv => !covered.includes(mv.endpoint));
+      const primary = this.detailPrimaryAction(ticket)?.id;
+      const items = [];
+      if (this.canSkipStage(ticket)) items.push({ id: 'skip', label: 'Skip stage' });
+      if (primary !== 'retry' && ticket.kontora && this._lifecycleActionID(ticket) === 'retry') {
+        items.push({ id: 'retry', label: this.lifecycleCommand(ticket, 'retry').label });
+      }
+      if (primary === 'move:open') items.push({ id: 'start', label: 'Run now' });
+      if (this.canAnnotateTicket(ticket)) items.push({ id: 'annotate', label: 'Annotate in Plannotator' });
+      return items;
     },
 
     _knownCustomStatuses: {
@@ -390,13 +390,6 @@ export function kontoraApp() {
       var d = new Date(dateStr);
       var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
       return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
-    },
-
-    // Review-card label for a finish time: "finished 2h ago", "finished just now".
-    finishedAgo(dateStr) {
-      var ago = this.timeAgo(dateStr);
-      if (!ago) return '';
-      return ago === 'just now' ? 'finished just now' : 'finished ' + ago + ' ago';
     },
 
     timeAgo(dateStr) {

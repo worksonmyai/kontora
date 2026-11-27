@@ -400,7 +400,7 @@ export function kontoraTerminal() {
       var t = this.outputSubject();
       if (!t) return 'This epic has no supervisor.';
       if (this.executionActive(t)) return 'Waiting for the supervisor output...';
-      if (t.status === 'todo') return 'Supervisor is Todo. Output will appear if it starts.';
+      if (t.status === 'todo') return 'Supervisor is queued. Output appears when it starts.';
       if (t.last_error && !(t.history || []).length) return 'Supervisor failed before recording a run.';
       if ((t.history || []).length) return 'No live session. Choose a recorded run above.';
       return 'Supervisor has not recorded a run yet.';

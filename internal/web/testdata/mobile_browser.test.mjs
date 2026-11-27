@@ -170,6 +170,23 @@ async function backToBoard(page) {
   }
 }
 
+async function desktopCardAction(page, id, name) {
+  const card = page.locator(`[data-ticket-id=${JSON.stringify(id)}]`);
+  await card.getByRole('button', { name: 'More actions', exact: true }).click();
+  return card.locator('.card-menu').getByText(name, { exact: true });
+}
+
+async function openTicketStartForm(page, id) {
+  if (page.viewportSize().width < 768) {
+    await openTicket(page, id);
+    await mobileDetail(page).getByRole('button', { name: 'Run…', exact: true }).click();
+  } else {
+    // The card still opens the start form for a managed draft; the header previews saved settings.
+    await backToBoard(page);
+    await (await desktopCardAction(page, id, 'Run…')).click();
+  }
+}
+
 // Settings assertions use real DOM controls; component reads below only observe
 // state or resolve the catalogue's identity, never perform application actions.
 const settingsView = page => page.locator('#settings-view');
@@ -1755,19 +1772,19 @@ describe('API-backed Automations', { concurrency: 2 }, () => {
         assert.equal(fixture.runReceipts.size, 1); const posts = fixture.mutations.filter(m => m.path.endsWith('/run'));
         assert.equal(posts.length, 2); assert.deepEqual(posts[0].body, posts[1].body);
         assert.ok(fixture.sockets.some(url => url.pathname === '/ws/automations/auto-review/30'));
-        await automationButton(page, 'read-only').click(); await visible(automationButton(page, 'read-write'));
+        await automationButton(page, 'Watching · take over').click(); await visible(automationButton(page, 'In control · hand back'));
         await expect(page.locator('.mobile-terminal-typing:visible, .mobile-editor-focus:visible, .mobile-terminal-dock:visible')).toHaveCount(0);
         assert.equal(await page.evaluate(() => Alpine.$data(document.body).mobileTerminalInputTarget), null);
-        await automationButton(page, 'read-write').click(); await visible(automationButton(page, 'read-only'));
-        await automationButton(page, '⇣ follow').click();
-        await automationButton(page, 'read-only').click();
+        await automationButton(page, 'In control · hand back').click(); await visible(automationButton(page, 'Watching · take over'));
+        await automationButton(page, 'Follow output').click();
+        await automationButton(page, 'Watching · take over').click();
         const running = fixture.definitions.get('auto-review');
         const replacement = { ...running.current_run, n: 31, invocation_id: 'fixture-sse-replacement' };
         fixture.runs.unshift(replacement); fixture.definitions.set(running.id, { ...running, current_run: replacement });
         await emitAutomationEvent(page);
         await page.waitForFunction(() => { const app = Alpine.$data(document.body); return app.terminalSubjectKey === 'automation:auto-review:31' && app.terminalConnected; });
         assert.ok(fixture.sockets.some(url => url.pathname === '/ws/automations/auto-review/31'));
-        await visible(automationButton(page, 'read-only'));
+        await visible(automationButton(page, 'Watching · take over'));
         await automationButton(page, width < 768 ? 'stop' : '✕ stop run').click();
         await page.waitForFunction(() => !Alpine.$data(document.body).automationsRow()?.running);
         assert.equal(fixture.definitions.get('auto-review').last_run.result, 'stopped by user');
@@ -2079,7 +2096,7 @@ describe('custom execution activity', () => {
       await expect(page.locator('.running-pill:visible').first()).toContainText('2');
       assert.equal(fixture.records.get('primary/kon-live').execution_active, true);
       await openTicket(page, active.id);
-      await visible(page.getByRole('button', { name: 'pause', exact: true }).filter({ visible: true }));
+      await visible(page.getByRole('button', { name: 'Pause', exact: true }));
       assert.equal(await page.evaluate(() => Alpine.$data(document.body).editorCanEdit()), false);
       assert.deepEqual(fixture.mutations, [], 'Rejected moves do not change server state');
     }, { config: { custom_statuses: ['awaiting_data', 'parked'] }, records: [active] });
@@ -2159,7 +2176,7 @@ describe('custom execution activity', () => {
         const elapsed = await page.evaluate(record => Alpine.$data(document.body).formatDuration(record), active);
         await visible(card(active.id).getByText(elapsed, { exact: true }));
       }
-      const progress = width < 768 ? '.mobile-ios-segments' : '.card-progress';
+      const progress = width < 768 ? '.mobile-ios-segments' : '.card-stage-track';
       await visible(card(active.id).locator(progress));
       await expect(card(parked.id).locator(progress)).toHaveCount(0);
       if (width >= 768) {
@@ -2309,10 +2326,12 @@ describe('mobile desktop parity', () => {
           } else {
             const desktop = page.locator('[data-ticket-id="kon-live"]');
             await visible(desktop);
-            assert.equal(await desktop.locator('.pipe-tag').count(), 0);
-            assert.equal(await desktop.getByText(liveAgent, { exact: true }).count(), 0);
-            await visible(desktop.locator('.card-progress'));
-            assert.equal(await desktop.locator('.card-progress > div').evaluate(el => el.style.width), '50%');
+            await expect(desktop.locator('.card-pipe')).toHaveCount(0);
+            await expect(desktop.getByText(liveAgent, { exact: true })).toHaveCount(0);
+            const track = desktop.getByRole('img', { name: 'Stage 2 of 3: code', exact: true });
+            await visible(track);
+            assert.deepEqual(await track.locator('.card-seg').evaluateAll(segments => segments.map(seg => seg.dataset.state)),
+              ['done', 'current', 'next']);
             await visible(desktop.getByText('retry 2', { exact: true }));
             await fixedColor(desktop.getByText('Epic: 0 of 1 done', { exact: true }), 'color', `hsl(${pipePalettes[theme][3]} / 0.9)`);
           }
@@ -2382,8 +2401,10 @@ describe('mobile desktop parity', () => {
         await expect(progress.locator('span.is-complete')).toHaveCount(2);
         await expect(progress.locator('span.is-current')).toHaveCount(1);
         await page.setViewportSize({ width: 1280, height: 900 });
-        await expect(page.locator('[data-ticket-id="kon-live"] .card-progress')).toHaveAttribute('aria-label', 'Stage 3 of 3: test');
-        assert.equal(await page.locator('[data-ticket-id="kon-live"] .card-progress > div').evaluate(el => el.style.width), '83%');
+        const track = page.locator('[data-ticket-id="kon-live"]').getByRole('img', { name: 'Stage 3 of 3: test', exact: true });
+        await visible(track);
+        assert.deepEqual(await track.locator('.card-seg').evaluateAll(segments => segments.map(seg => seg.dataset.state)),
+          ['done', 'done', 'current']);
         assert.deepEqual(fixture.mutations, []);
       }, { records: [live, ticket('c', 'Parent epic', { kind: 'epic', epic_mode: 'passive' })], costs: { 'kon-live': cost } });
     });
@@ -2401,15 +2422,19 @@ describe('mobile desktop parity', () => {
             const card = width < 768 ? phoneRow(page, id) : page.locator(`[data-ticket-id="${id}"]`);
             if (width < 768) {
               await fixedColor(card.locator('.mobile-ios-dot'), 'backgroundColor', `hsl(${pipePalettes[theme][i]})`);
+              await fixedColor(card.locator('.title-tag'), 'color', `hsl(${pipePalettes[theme][1]})`);
             } else {
-              const badge = card.locator('.pipe-tag').filter({ visible: true }).first();
-              await visible(badge);
-              for (const [property, alpha] of [['color', ''], ['backgroundColor', ' / 0.1'], ['borderTopColor', ' / 0.26']]) {
-                await fixedColor(badge, property, `hsl(${pipePalettes[theme][i]}${alpha})`);
-              }
+              const pipeline = card.locator('.card-pipe');
+              if (names[i]) {
+                await expect(pipeline).toHaveText(names[i]);
+                await fixedColor(pipeline, 'color', `hsl(${pipePalettes[theme][i]})`);
+              } else await expect(pipeline).toHaveCount(0);
+              const project = card.locator('.card-row1 > span:first-child');
+              await expect(project).toHaveText('a');
+              await fixedColor(project.locator('[data-pipe-color]'), 'backgroundColor', `hsl(${pipePalettes[theme][1]})`);
+              await expect(card.locator('.card-title')).toHaveText('Independent title');
               await fixedColor(card.getByText('Epic: 0 of 7 done', { exact: true }), 'color', `hsl(${pipePalettes[theme][5]} / 0.9)`);
             }
-            await fixedColor(card.locator('.title-tag'), 'color', `hsl(${pipePalettes[theme][1]})`);
           }
           if (theme === 'dark') {
             if (width < 768) await phoneDestination(page, 'Browse').click();
@@ -2442,7 +2467,7 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
         await closeCaptureSheet(page);
         await polishCardGeometry(page);
         await selectPhoneStatus(page, ':all');
-        for (const [id, label] of [['kon-queued', 'Awaiting pickup'], ['kon-paused', 'Paused']]) {
+        for (const [id, label] of [['kon-queued', 'Queued'], ['kon-paused', 'Paused']]) {
           await expect(card(id).locator('.mobile-card-state:visible')).toHaveText(label);
         }
         const attention = listItem('kon-attention').locator('.mobile-ios-question');
@@ -2451,7 +2476,7 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
         await expect(attention.locator('.waiting-dot, .pulse-dot')).toHaveCount(0);
         const supervisor = card(supervisorID);
         await visible(supervisor.getByText('Supervisor', { exact: true }));
-        await expect(supervisor.getByText(/^(Awaiting pickup|Paused)$/)).toBeHidden();
+        await expect(supervisor.getByText(/^(Queued|Paused)$/)).toBeHidden();
         await expect(supervisor.locator('.mobile-ios-segments:visible')).toHaveCount(0);
         const key = `${source}/${longID}`;
         const secondary = card(key);
@@ -2478,7 +2503,7 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
           await page.setViewportSize({ width: 1280, height: 900 });
           const desktop = page.locator('[data-ticket-id="kon-live"]');
           await expect(desktop).toBeVisible();
-          await expect(desktop.locator('.pipe-tag:visible')).toHaveCount(enabled ? 1 : 0);
+          await expect(desktop.locator('.card-pipe:visible')).toHaveCount(enabled ? 1 : 0);
           await expect(desktop.getByText(liveAgent, { exact: true })).toHaveCount(enabled ? 1 : 0);
           await page.setViewportSize({ width, height: 900 });
           await selectPhoneStatus(page, ':all');
@@ -2488,7 +2513,7 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
           if (enabled) await expect(metadata).toContainText(liveAgent);
           else await expect(metadata).not.toContainText(liveAgent);
           await expect(running.locator('.mobile-ios-dot')).toBeVisible();
-          await expect(card('kon-queued').locator('.mobile-card-state:visible')).toHaveText('Awaiting pickup');
+          await expect(card('kon-queued').locator('.mobile-card-state:visible')).toHaveText('Queued');
           await expect(card('kon-paused').locator('.mobile-card-state:visible')).toHaveText('Paused');
           await polishCardGeometry(page);
         }
@@ -2509,8 +2534,8 @@ describe('mobile polish presentation', { concurrency: 2 }, () => {
           return { content: css.content, animation: css.animationName };
         }), { content: 'none', animation: 'none' }, 'Running metadata has no decorative status pulse');
         await polishMotion(page, reducedMotion);
-        assert.deepEqual(await tabs.getByRole('button').filter({ visible: true }).allTextContents(), ['Ticket', 'Notes', 'Output', 'Committed changes']);
-        for (const label of ['Ticket', 'Notes', 'Output', 'Committed changes']) {
+        assert.deepEqual(await tabs.getByRole('button').filter({ visible: true }).allTextContents(), ['Ticket', 'Notes', 'Output', 'Changes']);
+        for (const label of ['Ticket', 'Notes', 'Output', 'Changes']) {
           const tab = tabs.getByRole('button', { name: label, exact: true });
           await tab.scrollIntoViewIfNeeded(); await tab.click();
           await inViewport(tab);
@@ -3812,7 +3837,7 @@ describe('desktop stage ribbon browser regressions', () => {
       const card = ribbonCard(page, long);
       await expect(card).toContainText('$12.34');
       const later = desktopRibbon(page).getByRole('button', { name: 'Later stages' });
-      const activity = page.locator('[data-ticket-tabs]').getByRole('button', { name: 'activity', exact: true });
+      const activity = page.locator('[data-ticket-tabs]').getByRole('button', { name: 'Activity', exact: true });
       const clip = await ribbonViewport(page).boundingBox();
       await expect(later).toBeHidden();
       await ribbonTabBackTo(page, card);
@@ -4460,7 +4485,7 @@ describe('phone ticket navigation and recovery', () => {
         await expect(identity.getByText('kon-draft', { exact: true })).toBeVisible();
         await expect(identity.getByText('Secondary namesake', { exact: true })).toBeVisible();
         assert.ok((await identity.boundingBox()).width >= 120);
-        await expect(route.getByRole('button', { name: 'Claim', exact: true })).toBeVisible();
+        await expect(route.getByRole('button', { name: 'Move here', exact: true })).toBeVisible();
         await noPageOverflow(page);
       }
     }, { hash: `#/s/${source}/t/kon-draft`, height: 568, hasTouch: true, ...loadingOptions });
@@ -4885,7 +4910,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
     test(`activity breakpoint roundtrip / ${theme}`, async t => {
       await withPage(t, 1280, theme, async page => {
         await openTicket(page, 'kon-live');
-        await page.getByRole('button', { name: 'activity', exact: true }).filter({ visible: true }).click();
+        await page.getByRole('button', { name: 'Activity', exact: true }).click();
         await visible(page.locator('#activity-scroll').getByText('Fixture activity revision 0', { exact: true }));
         await page.setViewportSize({ width: 390, height: 900 });
         await page.waitForFunction(() => Alpine.$data(document.body).isMobile && Alpine.$data(document.body).detailTab === 'activity');
@@ -5000,7 +5025,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       await withPage(t, width, 'dark', async (page, fixture) => {
         await openTerminalSubject(page, 'kon-live');
         await terminalGridFits(page, fixture);
-        await page.getByRole('button', { name: width < 768 ? 'Type in terminal' : 'read-only', exact: true })
+        await page.getByRole('button', { name: width < 768 ? 'Type in terminal' : 'Watching · take over', exact: true })
           .filter({ visible: true }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).terminalRW && Alpine.$data(document.body).terminalConnected);
         await terminalGridFits(page, fixture);
@@ -5176,19 +5201,19 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await t.test('long identifiers keep ticket actions reachable', async () => {
           await openTicket(page, longID);
           await noPageOverflow(page);
-          const queue = page.getByRole('button', { name: /^Request pickup$/i }).filter({ visible: true });
-          await inViewport(queue);
+          const run = page.getByRole('button', { name: 'Run…', exact: true }).filter({ visible: true });
+          await inViewport(run);
           if (width < 768) {
             await mobileDetail(page).getByRole('button', { name: 'Actions', exact: true }).click();
-            await page.getByRole('dialog', { name: 'Ticket actions' }).getByRole('button', { name: 'Move to', exact: true }).click();
-            const moves = page.getByRole('dialog', { name: 'Move to', exact: true });
-            const cancel = moves.getByRole('button', { name: 'Move to Cancelled', exact: true });
+            await page.getByRole('dialog', { name: 'Ticket actions' }).getByRole('button', { name: 'Set status', exact: true }).click();
+            const moves = page.getByRole('dialog', { name: 'Set status', exact: true });
+            const cancel = moves.getByRole('button', { name: 'Cancelled', exact: true });
             await cancel.scrollIntoViewIfNeeded(); await inViewport(cancel);
             await moves.getByRole('button', { name: 'Close', exact: true }).click();
           } else {
-            const move = page.getByRole('combobox', { name: 'Move to status', exact: true }).filter({ visible: true });
+            const move = page.getByRole('combobox', { name: 'Set status', exact: true });
             await inViewport(move);
-            await expect(move.locator('option[value="cancelled"]')).toHaveText('Move to Cancelled');
+            await expect(move.locator('option[value="cancelled"]')).toHaveText('Cancelled');
           }
           const more = width < 768 ? page.getByRole('button', { name: 'Actions', exact: true })
             : page.getByRole('banner').getByRole('button', { name: 'More actions', exact: true });
@@ -5198,13 +5223,13 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
             await visible(page.getByRole('dialog', { name: 'Ticket actions' }));
             await page.keyboard.press('Escape');
           } else {
-            await visible(page.getByRole('button', { name: 'delete file', exact: true }));
+            await visible(page.getByRole('menu').getByRole('menuitem', { name: 'Delete ticket…', exact: true }));
             await more.click();
           }
           await page.setViewportSize({ width, height: 420 });
           await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--mobile-vv-height') === '420px');
-          await inViewport(queue);
-          if (width >= 768) await inViewport(page.getByRole('combobox', { name: 'Move to status', exact: true }).filter({ visible: true }));
+          await inViewport(run);
+          if (width >= 768) await inViewport(page.getByRole('combobox', { name: 'Set status', exact: true }));
           await inViewport(more);
           await noPageOverflow(page);
         });
@@ -5395,10 +5420,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await noPageOverflow(page);
         });
         await t.test('init dialog owns focus and Escape closes it', async () => {
-          await backToBoard(page);
-          await openTicket(page, 'kon-draft');
-          const queue = page.getByRole('button', { name: /^(request pickup|initialize|start)$/i }).filter({ visible: true }).first();
-          await queue.click();
+          await openTicketStartForm(page, 'kon-draft');
           const dialog = page.getByRole('dialog', { name: /Primary draft$/ });
           await visible(dialog);
           await inViewport(dialog);
@@ -5436,7 +5458,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
             await terminalGridFits(page, fixture);
             await inViewport(terminal);
             if (width >= 768 && repeat === 0) {
-              await page.getByRole('button', { name: 'read-only', exact: true }).filter({ visible: true }).click();
+              await page.getByRole('button', { name: 'Watching · take over', exact: true }).click();
               await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected &&
                 new URL(window.termState.ws.url).searchParams.get('rw') === '1');
               await terminalGridFits(page, fixture);
@@ -5453,8 +5475,8 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
               assert.notEqual(decoration.frameShadow, 'none');
               assert.deepEqual(decoration.framePadding, ['14px', '18px']);
               assert.equal(decoration.frameBorder, '1px');
-              await page.getByRole('button', { name: 'activity', exact: true }).filter({ visible: true }).click();
-              await page.getByRole('button', { name: 'session', exact: true }).filter({ visible: true }).click();
+              await page.getByRole('button', { name: id === supervisorID ? 'activity' : 'Activity', exact: true }).click();
+              await page.getByRole('button', { name: id === supervisorID ? 'session' : 'Session', exact: true }).click();
               await terminalGridFits(page, fixture);
             }
             await backToBoard(page);
@@ -5502,7 +5524,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await openTicket(page, id);
         await ready(page);
         if (phone) await phoneOutputView(page, 'Stage logs');
-        else await page.getByRole('button', { name: 'activity', exact: true }).filter({ visible: true }).click();
+        else await page.getByRole('button', { name: 'Activity', exact: true }).click();
         if (phone) await page.getByLabel('Stages and cost estimates').getByRole('button', { name: /^plan:/ }).click();
         const output = revision => page.getByText(phone
           ? `${id} plan fixture log revision ${revision}` : `Fixture activity revision ${revision}`, { exact: true }).filter({ visible: true });
@@ -5527,7 +5549,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         // A previously visited ticket now restores its local panel. Select the
         // live session explicitly before testing terminal reconnection on Back.
         if (phone) await phoneOutputView(page, 'Terminal');
-        else await page.getByRole('button', { name: 'session', exact: true }).filter({ visible: true }).click();
+        else await page.getByRole('button', { name: 'Session', exact: true }).click();
         const terminal = page.locator('#terminal-session:visible, #terminal-container-mobile:visible');
         await visible(terminal.locator('.xterm'));
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
@@ -6094,7 +6116,7 @@ describe('mobile terminal reading and history', { concurrency: 2 }, () => {
           await navigation.getByRole('button', { name: 'Ticket actions', exact: true }).click();
           const actions = page.getByRole('dialog', { name: 'Ticket actions', exact: true });
           await expect(actions.getByRole('button', { name: 'Refresh ticket', exact: true })).toBeVisible();
-          for (const name of ['Pause', 'Move to', 'Delete']) await expect(actions.getByRole('button', { name, exact: true })).toBeHidden();
+          for (const name of ['Pause', 'Set status', 'Delete ticket…']) await expect(actions.getByRole('button', { name, exact: true })).toBeHidden();
           await page.keyboard.press('Escape');
           assert.equal(fixture.messages.filter(message => message.type === 'input').length, 0);
           assert.equal(fixture.mutations.length, 0);
@@ -6974,20 +6996,21 @@ describe('focused phone description save lifecycle', { concurrency: 2 }, () => {
 
 for (const width of [390, 1280]) test(`standalone draft pickup after reload / ${width}px`, async t => {
   // Creation sends `none`; the daemon persists and returns a blank pipeline.
-  const draft = ticket('kon-standalone', 'Standalone draft', { pipeline: '', stage: '', stages: [], notify: [], ready: false });
+  const draft = ticket('kon-standalone', 'Standalone draft', {
+    pipeline: '', stage: '', stages: [], notify: [], ready: false, blockers: ['kon-blocker'],
+  });
   await withPage(t, width, 'dark', async (page, fixture) => {
     await page.reload({ waitUntil: 'domcontentloaded' });
     await ready(page);
-    await openTicket(page, draft.id);
     fixture.behavior.pickupBlocked = new Set([draft.id]);
-    await page.getByRole('button', { name: /^request pickup$/i }).filter({ visible: true }).first().click();
+    await openTicketStartForm(page, draft.id);
     const dialog = page.getByRole('dialog', { name: draft.title });
     await expect(dialog.locator('#init-pipeline')).toHaveValue('none');
-    await expect(dialog.locator('.status-chip[data-status="todo"]')).toHaveText('Todo');
-    await expect(dialog.getByText('This requests pickup. Unresolved dependencies can keep the ticket out of the queue.')).toBeVisible();
-    await dialog.getByRole('button', { name: 'start ticket', exact: true }).click();
+    await expect(dialog.locator('.status-chip[data-status="todo"]')).toHaveText('Queued');
+    await expect(dialog.getByText('Saves these settings and requests a run. Unresolved dependencies can block pickup.', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Set up and run', exact: true }).click();
     await expect(dialog).toBeHidden();
-    await expect(page.getByText(`${draft.id}: Pickup requested`, { exact: true })).toBeVisible();
+    await expect(page.getByText(`${draft.id}: Queued`, { exact: true })).toBeVisible();
     assert.equal(fixture.mutations.at(-1).body.pipeline, 'none');
     assert.equal(fixture.mutations.at(-1).ticket.status, 'todo');
     assert.deepEqual(fixture.enqueued, []);
@@ -6996,8 +7019,7 @@ for (const width of [390, 1280]) test(`standalone draft pickup after reload / ${
 
 describe('start-dialog notification availability', { concurrency: 2 }, () => {
   async function openStartDialog(page) {
-    await openTicket(page, 'kon-draft');
-    await page.getByRole('button', { name: /^(request pickup|initialize|start)$/i }).filter({ visible: true }).first().click();
+    await openTicketStartForm(page, 'kon-draft');
     const dialog = page.getByRole('dialog', { name: /Primary draft$/ });
     await visible(dialog);
     return dialog;
@@ -7045,7 +7067,7 @@ describe('start-dialog notification availability', { concurrency: 2 }, () => {
     assert.equal(settingsWrites(fixture).length, priorSettingsWrites);
     const [response] = await Promise.all([
       page.waitForResponse(r => r.url() === base + '/api/tickets/kon-draft/init' && r.request().method() === 'POST'),
-      dialog.getByRole('button', { name: 'start ticket', exact: true }).click(),
+      dialog.getByRole('button', { name: 'Set up and run', exact: true }).click(),
     ]);
     assert.equal(response.status(), 200);
     await dialog.waitFor({ state: 'hidden' });
@@ -7081,7 +7103,7 @@ describe('start-dialog notification availability', { concurrency: 2 }, () => {
         release();
         await page.evaluate(() => window.__openingStart);
         await expect.poll(() => choices(page)).toEqual({ notify: ['done'], notify_channels: [] });
-        await dialog.getByRole('button', { name: 'start ticket', exact: true }).click();
+        await dialog.getByRole('button', { name: 'Set up and run', exact: true }).click();
         await visible(dialog.getByText('Choose a notification channel, configure an inherited route, or turn notifications off.', { exact: true }));
         assert.equal(fixture.mutations.length, 0);
         await dialog.getByRole('radio', { name: 'off', exact: true }).click();
@@ -7098,6 +7120,7 @@ describe('start-dialog notification availability', { concurrency: 2 }, () => {
       await visible(dialog.locator('.notify-chip[data-status="awaiting_data"]'));
       await page.keyboard.press('Escape');
       await expect(dialog).toBeHidden();
+      await openTicket(page, 'kon-draft');
       const metadata = await openDetailNotifications(page);
       await metadata.getByRole('button', { name: 'Custom', exact: true }).click();
       await expect(metadata.locator('.notify-chip[data-status="none"]')).toHaveCount(0);
@@ -7257,7 +7280,7 @@ describe('start-dialog notification availability', { concurrency: 2 }, () => {
       await noChannelGuidance(dialog);
       await expect(dialog.getByRole('radio', { name: 'when it needs me', exact: true })).toHaveAttribute('aria-checked', 'true');
       await expect(dialog.getByRole('radio', { name: 'off', exact: true })).toHaveAttribute('aria-checked', 'false');
-      await dialog.getByRole('button', { name: 'start ticket', exact: true }).click();
+      await dialog.getByRole('button', { name: 'Set up and run', exact: true }).click();
       await visible(dialog.getByText('Choose a notification channel, configure an inherited route, or turn notifications off.', { exact: true }));
       assert.deepEqual(fixture.mutations, []);
       assert.equal(fixture.requests.includes('POST /api/tickets/kon-draft/init'), false);
@@ -7305,7 +7328,7 @@ describe('start-dialog notification availability', { concurrency: 2 }, () => {
         await noChannelGuidance(dialog);
         const off = dialog.getByRole('radio', { name: 'off', exact: true });
         assert.equal(await off.getAttribute('aria-checked'), 'true');
-        const submit = dialog.getByRole('button', { name: 'start ticket', exact: true });
+        const submit = dialog.getByRole('button', { name: 'Set up and run', exact: true });
         assert.equal(await submit.isDisabled(), false);
         await inViewport(submit);
         await noPageOverflow(page);
@@ -7348,7 +7371,7 @@ describe('start-dialog notification availability', { concurrency: 2 }, () => {
       const needs = group.getByRole('radio', { name: 'when it needs me', exact: true });
       await needs.click();
       assert.deepEqual(await choices(page), { notify: ['paused', 'human_review', 'waiting'], notify_channels: [] });
-      const submit = dialog.getByRole('button', { name: 'start ticket', exact: true });
+      const submit = dialog.getByRole('button', { name: 'Set up and run', exact: true });
       assert.equal(await submit.isDisabled(), false);
       await submit.click();
       const error = dialog.getByText('Choose a notification channel, configure an inherited route, or turn notifications off.', { exact: true });
@@ -7375,7 +7398,7 @@ describe('start-dialog notification availability', { concurrency: 2 }, () => {
       await unavailableControls(dialog, true);
       assert.equal(await followsDefaults(page), true);
       assert.deepEqual(await choices(page), { notify: [], notify_channels: [] });
-      await dialog.getByRole('button', { name: 'start ticket', exact: true }).click();
+      await dialog.getByRole('button', { name: 'Set up and run', exact: true }).click();
       await visible(dialog.getByText('Waiting for notification configuration. Close and reopen this dialog if loading does not finish.', { exact: true }));
       assert.deepEqual(fixture.mutations, []);
       assert.equal(fixture.requests.includes('POST /api/tickets/kon-draft/init'), false);
@@ -7401,7 +7424,7 @@ describe('start-dialog notification availability', { concurrency: 2 }, () => {
         assert.match(await help.innerText(), /loading/i);
         assert.equal(await help.getByRole('link').isVisible(), false);
         assert.deepEqual(await choices(page), initial);
-        await dialog.getByRole('button', { name: 'start ticket', exact: true }).click();
+        await dialog.getByRole('button', { name: 'Set up and run', exact: true }).click();
         await visible(dialog.getByText('Waiting for notification configuration. Close and reopen this dialog if loading does not finish.', { exact: true }));
         assert.deepEqual(fixture.mutations, []);
         assert.equal(fixture.requests.includes('POST /api/tickets/kon-draft/init'), false);
@@ -7409,7 +7432,7 @@ describe('start-dialog notification availability', { concurrency: 2 }, () => {
           fixture.releaseConfig();
         } else {
           fixture.behavior.configFailure = false;
-          await dialog.getByRole('button', { name: 'cancel', exact: true }).click();
+          await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
           dialog = await openStartDialog(page);
         }
         await page.waitForFunction(() => {
@@ -7521,7 +7544,7 @@ for (const [width, entry] of [[390, 'Changes tab'], [1280, 'sidebar overflow']])
     await withPage(t, width, 'light', async (page, fixture) => {
       if (entry === 'sidebar overflow') {
         await page.getByRole('listitem', { name: `Ticket kon-export: ${title}`, exact: true }).click();
-        const more = page.getByRole('button', { name: '1 more file in Committed changes', exact: true });
+        const more = page.getByRole('button', { name: '1 more file in Changes', exact: true });
         await expect(more).toBeVisible();
         await expect(page.getByText('docs/export.md', { exact: true }).filter({ visible: true })).toHaveCount(0);
         await more.click();
@@ -7529,7 +7552,7 @@ for (const [width, entry] of [[390, 'Changes tab'], [1280, 'sidebar overflow']])
         await openTicket(page, 'kon-export');
         await detailPanel(page, 'Changes');
       }
-      const changes = page.getByRole('region', { name: 'Committed changes', exact: true });
+      const changes = page.getByRole('region', { name: 'Changes', exact: true });
       await expect(changes.getByText(`vs ${baseRef}`, { exact: true })).toBeVisible();
       await expect(changes.getByRole('heading', { name: 'Commits', exact: true })).toBeVisible();
       for (const { sha, subject } of commits) {
@@ -7564,8 +7587,9 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
     const branch = 'fixture/sidebar-details', log = '/fixtures/logs/sidebar-details.jsonl';
     await withPage(t, width, theme, async (page, fixture) => {
       await openTicket(page, 'kon-draft');
-      await page.locator('[data-ticket-detail]').getByRole('button', { name: tab, exact: true }).click();
-      const rail = page.locator('.ticket-detail-rail');
+      await detailPanel(page, tab[0].toUpperCase() + tab.slice(1));
+      const detail = page.locator('[data-ticket-detail]');
+      const rail = detail.locator('.ticket-detail-rail');
       const copyID = rail.getByRole('button', { name: 'Copy ticket ID', exact: true });
       await copyID.click();
       assert.equal(await page.evaluate(() => window.__fixtureCopied), 'kon-draft');
@@ -7578,22 +7602,26 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       }
       await expect(rail).toContainText('/fixtures/repository-with-a-long-name');
       await expect(rail).toContainText('main');
-      await expect(rail).toContainText('fixture-agent');
+      await expect(detail.getByText(`fixture-agent · ${branch}`, { exact: true })).toBeVisible();
       if (captureDirectory) await mobileCapture(page, width, theme, `desktop-sidebar-${tab}`);
-      await rail.getByRole('button', { name: 'kon-blocker', exact: true }).click();
+      await expect(rail.getByText('waits for', { exact: true })).toBeVisible();
+      await rail.getByRole('button', { name: 'kon-blocker · paused', exact: true }).click();
       await expect.poll(() => new URL(page.url()).hash).toBe('#/t/kon-blocker');
       assert.deepEqual(fixture.mutations, []);
       await noPageOverflow(page);
     }, { ticket: { status, history: coreHistory(), branch, base_branch: 'main', last_log: log,
       deps: [{ id: 'kon-blocker', title: 'Sidebar blocker', status: 'paused', source: 'primary' }] },
-      records: [ticket('kon-blocker', 'Sidebar blocker', { status: 'paused' })] });
+      records: [ticket('kon-blocker', 'Sidebar blocker', { status: 'paused' })],
+      chains: { 'kon-draft': { verdict: 'blocked', nodes: [
+        { id: 'kon-blocker', status: 'paused', source: 'primary', direction: 'upstream', holds_chain: true },
+      ] } } });
   });
 
   for (const [status, stage] of [['open', ''], ['todo', 'plan']]) {
-    test(`desktop sidebar stage and schedule actions / ${status}`, async t => {
+    test(`desktop ticket stage and sidebar schedule actions / ${status}`, async t => {
       await withPage(t, 1280, 'dark', async (page, fixture) => {
         const record = fixture.records.get('primary/kon-draft');
-        const targetStage = stage ? 'code' : 'plan';
+        const targetStage = 'code';
         await page.route('**/api/tickets/kon-draft/set-stage', async route => {
           const body = route.request().postDataJSON();
           assert.equal(route.request().method(), 'POST');
@@ -7617,18 +7645,20 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
           await route.fulfill({ contentType: 'application/json', body: JSON.stringify(record) });
         });
         await openTicket(page, 'kon-draft');
-        await page.locator('[data-ticket-detail]').getByRole('button', { name: 'summary', exact: true }).click();
-        const rail = page.locator('[data-ticket-details]');
-        await rail.getByRole('button', { name: 'Change stage', exact: true }).click();
-        const select = rail.getByRole('combobox', { name: 'Stage', exact: true });
+        await detailPanel(page, 'Ticket');
+        const settings = page.getByRole('region', { name: 'Run settings', exact: true });
+        const select = settings.getByRole('combobox', { name: 'Start at stage', exact: true });
         await expect(select).toHaveValue(stage);
+        await expect(select.getByRole('option', { name: 'plan (first)', exact: true })).toHaveAttribute('value', stage ? 'plan' : '');
         await select.selectOption(targetStage);
         await expect.poll(() => fixture.mutations.length).toBe(1);
+        await detailPanel(page, 'Summary');
+        const rail = page.locator('[data-ticket-details]');
         await rail.getByRole('button', { name: 'Edit scheduled start', exact: true }).click();
         await rail.getByLabel('Scheduled start', { exact: true }).fill('2099-10-01T10:00');
-        await rail.getByRole('button', { name: 'save', exact: true }).click();
+        await rail.getByRole('button', { name: 'Save', exact: true }).click();
         await expect.poll(() => record.scheduled_at).toBe('2099-10-01T10:00:00Z');
-        await rail.getByRole('button', { name: 'clear', exact: true }).click();
+        await rail.getByRole('button', { name: 'Clear', exact: true }).click();
         await expect.poll(() => record.scheduled_at).toBeUndefined();
         assert.deepEqual(fixture.mutations.map(m => m.path), [
           '/api/tickets/kon-draft/set-stage', '/api/tickets/kon-draft/schedule', '/api/tickets/kon-draft/schedule',
@@ -7637,14 +7667,14 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
         assert.deepEqual(fixture.enqueued, []);
         await rail.getByRole('button', { name: 'Edit scheduled start', exact: true }).click();
         await rail.getByLabel('Scheduled start', { exact: true }).fill('2099-10-01T10:00');
-        await rail.getByRole('button', { name: 'save', exact: true }).click();
+        await rail.getByRole('button', { name: 'Save', exact: true }).click();
         await expect.poll(() => record.scheduled_at).toBe('2099-10-01T10:00:00Z');
-        await rail.getByRole('button', { name: 'run now', exact: true }).click();
-        const dialog = page.getByRole('dialog').filter({ visible: true });
+        await page.getByRole('banner').getByRole('button', { name: 'Run…', exact: true }).click();
+        const dialog = page.getByRole('dialog', { name: /Primary draft$/ });
         await expect(dialog).toBeVisible();
         assert.deepEqual(fixture.enqueued, []);
-        await dialog.getByRole('button', { name: 'start ticket', exact: true }).click();
-        await expect(page.getByText('kon-draft: Pickup requested', { exact: true })).toBeVisible();
+        await dialog.getByRole('button', { name: 'Set up and run', exact: true }).click();
+        await expect(page.getByText('kon-draft: Run requested', { exact: true })).toBeVisible();
         assert.deepEqual(fixture.enqueued, [{ id: 'kon-draft', action: 'init' }]);
         assert.equal(fixture.mutations.at(-1).path, '/api/tickets/kon-draft/init');
         assert.equal(record.scheduled_at, undefined);
@@ -7724,7 +7754,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
     for (const theme of themes) await withPage(t, width, theme, async page => {
       const board = page.locator('#board-cols');
       await expect(board.locator('.kt-card')).toHaveCount(records.length);
-      for (const [column, label] of [['open', 'Open'], ['in_progress', 'In Progress'], ['human_review', 'Human Review'], ['done', 'Done']]) {
+      for (const [column, label] of [['open', 'Open'], ['in_progress', 'In progress'], ['human_review', 'Human review'], ['done', 'Done']]) {
         const header = board.locator(`.col-head[data-status="${column}"]`);
         await expect(header.locator('.col-head-label')).toHaveText(label);
         await inViewport(header);
@@ -7732,19 +7762,20 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       for (const { id: ticketID, status, path } of records) {
         const column = status === 'todo' ? 'in_progress' : status;
         const card = board.locator(`#col-${column} [data-ticket-id="${ticketID}"]`);
-        await expect(card.locator('.title-tag')).toHaveText(`[${path.split('/').at(-1)}]`);
+        await expect(card.locator('.card-row1')).toContainText(path.split('/').at(-1));
         await inViewport(card);
         await expect(card).toBeInViewport({ ratio: 0.99 });
       }
       await expect(board.locator(`[data-ticket-id="${live}"]`)).toHaveClass(/card-state-running/);
-      await inViewport(board.getByRole('button', { name: 'Expand Cancelled column' }));
+      await inViewport(board.getByRole('group', { name: 'Hidden statuses', exact: true })
+        .getByRole('button', { name: 'Expand Cancelled column', exact: true }));
       await capture(page, theme, 'readme-board');
     }, { ...options, height: 520 });
 
     await withPage(t, width, 'dark', async page => {
       await openTicket(page, id);
       const detail = page.locator('[data-ticket-detail]');
-      await detail.getByRole('button', { name: 'summary', exact: true }).click();
+      await detail.getByRole('button', { name: 'Summary', exact: true }).click();
       const final = detail.locator('.final-card');
       await expect(final).toContainText(outcome);
       await inViewport(final);
@@ -7761,8 +7792,8 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
     await withPage(t, width, 'dark', async (page, fixture) => {
       await openTicket(page, live);
       const detail = page.locator('[data-ticket-detail]');
-      await detail.getByRole('button', { name: 'session', exact: true }).click();
-      const readOnly = detail.getByRole('button', { name: 'read-only', exact: true });
+      await detail.getByRole('button', { name: 'Session', exact: true }).click();
+      const readOnly = detail.getByRole('button', { name: 'Watching · take over', exact: true });
       const waitForTranscript = async () => {
         await page.waitForFunction(lines => {
           const term = window.termState.term;
@@ -7818,7 +7849,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
 
   for (const width of [390, 1280]) test(`kon91cx dependencies missing cycle and guarded source navigation / ${width}px`, async t => {
     const refs = [
-      { id: 'kon-blocker', title: 'Readable blocker title', status: 'paused', source: 'primary' },
+      { id: 'kon-blocker', title: 'Readable blocker title', status: 'open', source: 'primary' },
       { id: 'kon-missing', source: 'primary' }, // TicketRef omits title/status when unresolved.
     ];
     const archived = { id: 'kon-archived', title: 'Archived fixture', status: 'archived', source: 'primary' };
@@ -7828,15 +7859,21 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       await visible(page.getByText('Dependency cycle', { exact: true }).filter({ visible: true }));
       await expect(page.locator('[data-detail-relationships]:visible')).toContainText('kon-cycle → kon-blocker → kon-cycle');
       await openTicket(page, 'kon-draft'); await detailPanel(page, 'Ticket');
-      const relations = page.locator('[data-detail-relationships]:visible');
-      const dependency = relations.getByRole('button').filter({ hasText: 'Readable blocker title' });
-      await visible(dependency.first());
-      await expect(dependency.last()).toContainText('kon-blocker');
-      await expect(dependency.last()).toContainText(/paused/i);
-      const missing = relations.getByRole('button').filter({ hasText: 'kon-missing' }).first();
-      await expect(missing).toBeDisabled(); await expect(missing).toContainText(/Missing reference/i);
+      const relations = page.getByRole('region', { name: 'Depends on', exact: true });
+      await expect(relations.getByRole('heading', { name: 'Depends on', exact: true })).toBeVisible();
+      await expect(relations.getByText('0 of 2 done', { exact: true })).toBeVisible();
+      await expect(relations.getByText('Waits for', { exact: true })).toBeVisible();
+      const dependency = relations.getByRole('button', { name: /^Readable blocker title\b/ });
+      await expect(dependency).toBeEnabled();
+      await expect(dependency).toContainText('kon-blocker');
+      await expect(dependency).toContainText(/open/i);
+      await expect(dependency).not.toContainText('not started');
+      await expect(relations.getByRole('button', { name: 'Run kon-blocker…', exact: true })).toBeEnabled();
+      const missing = relations.getByRole('button', { name: 'kon-missing · unresolved', exact: true });
+      await expect(missing).toBeVisible();
+      await expect(missing).toBeDisabled();
       // References use guarded routing: archived goes to Archive, never primary Board.
-      const archivedControl = relations.getByRole('button').filter({ hasText: 'Archived fixture' });
+      const archivedControl = relations.getByRole('button', { name: archived.id, exact: true });
       await t.test('archived primary uses guarded Archive route', async () => {
         await archivedControl.click();
         await expect.poll(() => new URL(page.url()).hash).toBe('#/archive/t/kon-archived');
@@ -7847,7 +7884,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       await t.test('secondary reference never substitutes primary namesake', async () => {
         await openTicket(page, 'kon-draft'); await detailPanel(page, 'Ticket');
         const primaryReads = fixture.requests.filter(r => r === 'GET /api/tickets/kon-draft').length;
-        await relations.getByRole('button').filter({ hasText: 'Secondary namesake' }).click();
+        await relations.getByRole('button', { name: secondary.id, exact: true }).click();
         await expect.poll(() => new URL(page.url()).hash).toBe('#/s/secondary/t/kon-draft');
         await ready(page);
         assert.equal(fixture.requests.filter(r => r === 'GET /api/tickets/kon-draft').length, primaryReads);
@@ -7856,7 +7893,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       });
       await noPageOverflow(page);
     }, { ticket: { deps: refs, links: [archived, secondary] },
-      records: [ticket('kon-blocker', 'Readable blocker title', { status: 'paused' }), ticket('kon-cycle', 'Cycle fixture', { deps: [refs[0]] })],
+      records: [ticket('kon-blocker', 'Readable blocker title'), ticket('kon-cycle', 'Cycle fixture', { deps: [refs[0]] })],
       chains: { 'kon-draft': { id: 'kon-draft', verdict: 'blocked', total: 3, done: 0, position: 2, path_length: 2, goal: 'kon-draft', cycle: [],
         nodes: [{ ...refs[0], direction: 'upstream', depth: 0, holds_chain: true, waits_on: { open: 0, total: 0 } },
           { ...refs[1], missing: true, direction: 'upstream', depth: 0, waits_on: { open: 0, total: 0 } },
@@ -7878,7 +7915,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
         fixture.behavior.descriptionFailure = fail ? 'Latest draft save refused' : null;
         await editor.fill('Latest targeted draft.');
         await page.locator('.mobile-editor-bar').getByRole('button', { name: 'Done', exact: true }).click();
-        await page.getByRole('button', { name: 'Retry stage', exact: true }).filter({ visible: true }).click();
+        await page.getByRole('button', { name: 'Run again from code', exact: true }).filter({ visible: true }).click();
         assert.ok(!fixture.requests.includes('POST /api/tickets/kon-draft/retry'));
         first.resolve();
         await expect.poll(() => fixture.descriptionWrites.length).toBe(2);
@@ -7954,7 +7991,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
       ]) {
         await openTicket(page, id);
         await detailPanel(page, 'Changes');
-        const panel = page.getByRole('region', { name: 'Committed changes', exact: true });
+        const panel = page.getByRole('region', { name: 'Changes', exact: true });
         await expect(panel.getByRole('heading', { name: 'Review the worktree' })).toBeVisible();
         await expect(panel.getByText(expected, { exact: true })).toBeVisible();
         await expect(panel.getByText('git diff HEAD', { exact: true })).toHaveCount(id === 'kon-empty-review' ? 1 : 0);
@@ -7984,9 +8021,9 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
         await query.fill('Question worker');
         await expect(phoneRowTitles(page)).toHaveText(['Question worker']);
       } else {
-        await expect(toggle).toHaveText(/Needs input 2/);
+        await expect(toggle).toHaveText('Needs input 2');
         await query.fill('Question worker');
-        await expect(toggle).toHaveText(/Needs input 1/);
+        await expect(toggle).toHaveText('Needs input 1');
         await toggle.focus();
         await page.keyboard.press('Space');
         await expect(toggle).toHaveAttribute('aria-pressed', 'true');
@@ -8016,7 +8053,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
         await page.evaluate(() => Alpine.$data(document.body).fetchTasks());
         await expect(question).toHaveCount(0);
         await backToBoard(page);
-        await expect(toggle).toHaveText(/Needs input 0/);
+        await expect(toggle).toHaveText('Needs input 0');
       }
       await expect(page.getByText('No agents need input among tickets matching your filters.', { exact: true })).toBeVisible();
       if (phone) {
@@ -8035,7 +8072,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
         await expect(toggle).toHaveAttribute('aria-pressed', 'false');
         await expect(query).toHaveValue('Question worker');
         await query.fill('');
-        await expect(toggle).toHaveText(/Needs input 1/);
+        await expect(toggle).toHaveText('Needs input 1');
       }
       await noPageOverflow(page);
       assert.deepEqual(fixture.mutations, []);
@@ -8126,20 +8163,23 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
     ] });
   });
 
-  for (const width of [390, 1280]) test(`kon91cx idle Todo Queue releases controls for prototype-named IDs / ${width}px`, async t => {
+  for (const width of [390, 1280]) test(`kon91cx idle Queued Run releases controls for prototype-named IDs / ${width}px`, async t => {
     const ids = ['kon-draft', 'constructor', 'toString', '__proto__'];
     await withPage(t, width, 'dark', async (page, fixture) => {
+      const phone = width < 768;
       for (const id of ids) {
         fixture.behavior.pickupBlocked = new Set([id]);
-        await openTicket(page, id);
-        const queue = page.getByRole('button', { name: /^Request pickup$/i }).filter({ visible: true });
-        await expect(queue).toBeEnabled();
+        if (phone) await openTicket(page, id);
         for (let attempt = 0; attempt < 2; attempt++) {
+          const run = phone ? mobileDetail(page).getByRole('button', { name: 'Run', exact: true })
+            : await desktopCardAction(page, id, 'Run');
+          await expect(run).toBeEnabled();
           const requests = fixture.pickupRequests.length;
-          await queue.click();
+          await run.click();
           await expect.poll(() => fixture.pickupRequests.length).toBe(requests + 1);
-          await expect(page.getByText(`${id}: Pickup requested`, { exact: true })).toBeVisible();
-          await expect(queue).toBeEnabled();
+          await expect(page.getByText(`${id}: Run requested`, { exact: true })).toBeVisible();
+          await expect.poll(() => page.evaluate(id => Alpine.$data(document.body).lifecycleBusy(id), id)).toBe(false);
+          if (phone) await expect(run).toBeEnabled();
           assert.deepEqual(fixture.pickupRequests.at(-1), { id, action: 'run' });
           assert.deepEqual(fixture.enqueued, []);
           assert.equal(fixture.records.get(`primary/${id}`).status, 'todo');
@@ -8191,9 +8231,9 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
         await openTicket(page, 'kon-draft');
         if (width < 768) {
           await mobileDetail(page).getByRole('button', { name: 'Actions', exact: true }).click();
-          await page.getByRole('dialog', { name: 'Ticket actions' }).getByRole('button', { name: 'Move to', exact: true }).click();
-          await page.getByRole('button', { name: /^Move to Open$/i }).filter({ visible: true }).click();
-        } else await page.getByRole('combobox', { name: 'Move to status', exact: true }).selectOption('open');
+          await page.getByRole('dialog', { name: 'Ticket actions' }).getByRole('button', { name: 'Set status', exact: true }).click();
+          await page.getByRole('dialog', { name: 'Set status', exact: true }).getByRole('button', { name: 'Open', exact: true }).click();
+        } else await page.getByRole('combobox', { name: 'Set status', exact: true }).selectOption('open');
         await expect.poll(() => fixture.records.get('primary/kon-draft').status).toBe('open');
         await expect.poll(() => page.evaluate(() => Alpine.$data(document.body).lifecycleBusy('kon-draft'))).toBe(false);
         assert.deepEqual(fixture.mutations.map(({ method, path, body }) => ({ method, path, body })),
@@ -8395,7 +8435,7 @@ describe('kon91cx core detail workflows', { concurrency: 2 }, () => {
   for (const theme of themes) test(`kon91cx responsive panel and run equivalence / ${theme}`,  { timeout: 60000 }, async t => {
     await withPage(t, 390, theme, async (page, fixture) => {
       await openTicket(page, 'kon-evidence');
-      await expect(page.locator('.mobile-detail-tabs').getByRole('button')).toHaveText(['Ticket', 'Notes', 'Output', 'Committed changes']);
+      await expect(page.locator('.mobile-detail-tabs').getByRole('button')).toHaveText(['Ticket', 'Notes', 'Output', 'Changes']);
       for (const panel of ['Notes', 'Changes', 'Output']) {
         await detailPanel(page, panel);
         if (panel === 'Output') await page.getByRole('combobox', { name: 'Run', exact: true }).filter({ visible: true }).selectOption('code#1');
@@ -9303,15 +9343,15 @@ test('review-dialog canceling palette navigation from dirty Settings restores th
   });
 });
 
-for (const [action, title] of [['archive…', 'Archive kon-done'], ['delete file', 'Delete ticket file']]) {
+for (const [action, title] of [['Archive…', 'Archive kon-done'], ['Delete ticket…', 'Delete ticket']]) {
   test(`review-dialog canceling desktop ${title} returns focus to More Actions`, async t => {
     await withPage(t, 1280, 'light', async (page, fixture) => {
       await openTicket(page, 'kon-done');
       const trigger = page.getByRole('banner').getByRole('button', { name: 'More actions', exact: true });
       await trigger.press('Enter');
-      const item = page.getByRole('menu').getByRole('button', { name: action, exact: true });
+      const item = page.getByRole('menu').getByRole('menuitem', { name: action, exact: true });
       await item.press('Enter');
-      const cancel = page.getByRole('dialog', { name: title, exact: true }).getByRole('button', { name: 'cancel', exact: true });
+      const cancel = page.getByRole('dialog', { name: title, exact: true }).getByRole('button', { name: /^cancel$/i });
       await expect(cancel).toBeFocused();
       await cancel.press('Enter');
       await expect(trigger).toHaveAttribute('aria-expanded', 'false');
@@ -9338,16 +9378,16 @@ for (const layer of ['init', 'delete']) test(`review-dialog body file drop is bl
     const kebab = page.locator('[data-ticket-id="kon-draft"] .card-menu-btn');
     if (layer === 'init') {
       await kebab.click();
-      const initialize = page.locator('[data-ticket-id="kon-draft"] .card-menu [data-act="init"]');
-      await expect(initialize).toBeVisible();
+      const setUp = page.locator('[data-ticket-id="kon-draft"] .card-menu').getByRole('button', { name: 'Set up and run…', exact: true });
+      await expect(setUp).toBeVisible();
       // A drag that was already showing the overlay cannot survive the dialog opening.
       await dispatchTicketFileDrag(page, ['dragenter'], 'blocked.md');
       await expect(overlay).toBeVisible();
-      await initialize.press('Enter');
+      await setUp.press('Enter');
     } else {
       await openTicket(page, 'kon-draft');
       await page.getByRole('banner').getByRole('button', { name: 'More actions', exact: true }).click();
-      await page.getByRole('menu').getByRole('button', { name: 'delete file', exact: true }).click();
+      await page.getByRole('menu').getByRole('menuitem', { name: 'Delete ticket…', exact: true }).click();
     }
     const dialog = page.locator(`[data-dialog-layer="${layer}"] [role="dialog"]`);
     await expect(dialog).toBeVisible();
@@ -9595,8 +9635,8 @@ test('Automation compact list is inert under detail and exposes history and live
     await inViewport(terminal);
     assert.ok((await terminal.boundingBox()).height >= 120);
     assert.ok(fixture.sockets.some(url => url.pathname === '/ws/automations/auto-review/30'));
-    await inViewport(detail.getByRole('button', { name: 'read-only', exact: true }));
-    await inViewport(detail.getByRole('button', { name: '⇣ follow', exact: true }));
+    await inViewport(detail.getByRole('button', { name: 'Watching · take over', exact: true }));
+    await inViewport(detail.getByRole('button', { name: 'Follow output', exact: true }));
     await noPageOverflow(page);
     await back.tap();
     await page.waitForURL('**/#/automations');
@@ -9833,7 +9873,7 @@ test('audit32-layout short stacked epic scrolls from its identity to Sub-tickets
 for (const theme of ['light', 'dark']) test(`audit32-notes meaningful metadata meets 4.5:1 contrast in ${theme}`, async t => {
   await withPage(t, 1280, theme, async page => {
     await openTicket(page, 'kon-live');
-    await page.getByRole('button', { name: 'notes', exact: true }).filter({ visible: true }).click();
+    await detailPanel(page, 'Notes');
     const notes = audit32Notes(page);
     await expect(notes.locator('.detail-note-byline')).toBeVisible();
     await expect(notes.locator('.note-dot').first()).toBeVisible();
@@ -10084,7 +10124,7 @@ describe('mobile management and Assistant real-control parity', { concurrency: 2
       assert.ok(fixture.records.has('primary/kon-candidate'), 'Unparent must not delete the ticket');
       await parityTicketEvent(page, fixture, 'kon-candidate');
       await expect(parityChild(page, 'kon-candidate')).toHaveCount(0);
-      const move = (await parityChildActions(page, 'kon-open-a')).getByRole('combobox', { name: 'Move child to status', exact: true });
+      const move = (await parityChildActions(page, 'kon-open-a')).getByRole('combobox', { name: 'Set child status', exact: true });
       await move.selectOption('move:cancelled');
       await expect.poll(() => fixture.records.get('primary/kon-open-a').status).toBe('cancelled');
       assert.equal(fixture.records.get('primary/kon-open-a').stage, 'code');
@@ -10730,4 +10770,299 @@ test('review Assistant Tab from request details resumes at the approval dock', a
     await page.keyboard.press('Shift+Tab');
     await expect(modal.getByRole('button', { name: /inspect_missing/ })).toBeFocused();
   }, reviewAssistantOptions());
+});
+
+for (const outcome of ['run', 'queue', 'blocker']) test(`desktop Run confirmation: ${outcome}`, async t => {
+  const id = 'kon-draft';
+  const blocker = ticket('kon-blocker', 'Open dependency');
+  const finished = ticket('kon-reviewed', 'Reviewed dependency', { status: 'human_review' });
+  const blocked = outcome !== 'run';
+  const deps = blocked ? [blocker, finished].map(({ id, title, source, status }) => ({ id, title, source, status })) : [];
+  const branch = 'fixture/add-exa';
+  const repo = '/fixtures/astra-l';
+  const buttonLabel = blocked ? 'Queue' : 'Run';
+  const runPath = `/api/tickets/${outcome === 'blocker' ? blocker.id : id}/run`;
+  await withPage(t, 1280, 'dark', async (page, fixture) => {
+    await openTicket(page, id);
+    const trigger = page.getByRole('button', { name: 'Run…', exact: true });
+    const dialog = page.getByRole('dialog', { name: `Run ${id}`, exact: true });
+    const primary = dialog.getByRole('button', { name: buttonLabel, exact: true });
+    const status = page.getByRole('combobox', { name: 'Set status', exact: true });
+    await expect(status.locator('option').first()).toHaveText('Set status…');
+    const header = page.getByRole('banner');
+    await header.getByRole('button', { name: 'More actions', exact: true }).click();
+    const menu = header.getByRole('menu');
+    await expect(menu.getByRole('menuitem', { name: 'Copy ID', exact: true })).toBeVisible();
+    await expect(menu.getByRole('menuitem', { name: /^(Move to|Set status to)/ })).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    if (blocked) {
+      const depends = page.getByRole('region', { name: 'Depends on', exact: true });
+      await expect(depends.getByText('1 of 2 done', { exact: true })).toBeVisible();
+      await expect(depends.getByText('Waits for', { exact: true })).toBeVisible();
+      await expect(depends.getByRole('button', { name: finished.id, exact: true })).toBeVisible();
+    }
+    await trigger.click();
+    await expect(dialog).toBeVisible();
+    await expect(primary).toBeFocused();
+    for (const text of ['plan', 'code', 'push-pr', 'fixture-agent', branch, repo]) {
+      await expect(dialog.getByText(text, { exact: true })).toBeVisible();
+    }
+    const waits = dialog.getByText('Waits for ' + blocker.id, { exact: true });
+    if (blocked) await expect(waits).toBeVisible();
+    else await expect(waits).toBeHidden();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    await expect(trigger).toBeFocused();
+    await trigger.click();
+    await page.getByRole('heading', { name: 'Add Exa', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    assert.ok(!fixture.requests.includes('POST ' + runPath));
+    await trigger.click();
+    await (outcome === 'blocker' ? dialog.getByRole('button', { name: 'Run kon-blocker first', exact: true }) : primary).click();
+    const toast = outcome === 'blocker' ? 'kon-blocker: Run requested' : outcome === 'queue' ? 'kon-draft: Queued' : 'kon-draft: Run requested';
+    await expect(page.getByText(toast, { exact: true })).toBeVisible();
+    assert.equal(fixture.requests.filter(r => r === 'POST ' + runPath).length, 1);
+    await expect(dialog).toBeHidden();
+    await expect(page.locator('[x-show="initModal"]:visible')).toHaveCount(0);
+    assert.ok(!fixture.requests.some(r => r.startsWith('POST ') && r.endsWith('/init')));
+    if (outcome === 'queue') await expect(page.getByText('Queued. Waiting for kon-blocker')).toBeVisible();
+  }, { ticket: { title: '[astra-l] Add Exa', path: repo, branch, stages: ['plan', 'code', 'push-pr'], deps,
+    blockers: blocked ? [blocker.id] : [], ready: !blocked }, records: [blocker, finished],
+    chains: blocked ? { [id]: { id, verdict: 'blocked', nodes: [{ ...deps[0], direction: 'upstream', holds_chain: true }] } } : {} });
+});
+
+for (const [label, ticketFields] of [
+  ['an imported ticket', { kontora: false }],
+  ['a scheduled ticket', { scheduled_at: '2099-01-01T10:00:00Z' }],
+]) test(`desktop Run opens the start form for ${label}`, async t => {
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    await openTicket(page, 'kon-draft');
+    await page.getByRole('button', { name: 'Run…', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Run kon-draft', exact: true })).toBeHidden();
+    await expect(page.getByRole('dialog').getByRole('button', { name: 'Set up and run', exact: true })).toBeVisible();
+    assert.ok(!fixture.requests.includes('POST /api/tickets/kon-draft/run'));
+  }, { ticket: ticketFields });
+});
+
+test('desktop Unqueue moves a queued ticket to Open', async t => {
+  await withPage(t, 1280, 'dark', async (page, fixture) => {
+    await openTicket(page, 'kon-draft');
+    await expect(page.locator('.status-chip[data-status="todo"]:visible')).toHaveText('queued');
+    await expect(page.getByText('Queued. Waiting for kon-blocker')).toBeVisible();
+    await page.getByRole('button', { name: 'Unqueue', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Run…', exact: true })).toBeEnabled();
+    assert.deepEqual(fixture.mutations.find(m => m.path === '/api/tickets/kon-draft/move')?.body, { status: 'open' });
+    assert.equal(fixture.records.get('primary/kon-draft').status, 'open');
+  }, { ticket: { status: 'todo', blockers: ['kon-blocker'], ready: false } });
+});
+
+test('desktop Run confirmation ignores repeated Enter until the next deliberate press', async t => {
+  await withPage(t, 1280, 'dark', async (page, fixture) => {
+    await openTicket(page, 'kon-draft');
+    const trigger = page.getByRole('button', { name: 'Run…', exact: true });
+    const dialog = page.getByRole('dialog', { name: 'Run kon-draft', exact: true });
+    await trigger.focus();
+    await page.keyboard.down('Enter');
+    await expect(dialog.getByRole('button', { name: 'Run', exact: true })).toBeFocused();
+    let reviewed = false;
+    try {
+      const initialReads = fixture.requests.filter(r => r === 'GET /api/tickets/kon-draft').length;
+      await page.keyboard.down('Enter');
+      await page.keyboard.up('Enter');
+      await expect(dialog.getByRole('button', { name: 'Run', exact: true })).toBeEnabled();
+      assert.equal(fixture.requests.filter(r => r === 'GET /api/tickets/kon-draft').length, initialReads);
+      assert.ok(!fixture.requests.includes('POST /api/tickets/kon-draft/run'));
+      reviewed = true;
+    } finally { if (!reviewed) await page.keyboard.up('Enter'); }
+    await page.keyboard.press('Enter');
+    await expect.poll(() => fixture.requests.filter(r => r === 'POST /api/tickets/kon-draft/run').length).toBe(1);
+  });
+});
+
+test('desktop Run confirmation waits for a Branch save before showing the preview', async t => {
+  await withPage(t, 1280, 'dark', async (page, fixture) => {
+    await openTicket(page, 'kon-draft');
+    const settings = page.getByRole('region', { name: 'Run settings', exact: true });
+    await settings.getByText('Details', { exact: true }).click();
+    const branch = settings.getByRole('textbox', { name: 'Branch', exact: true });
+    await expect(branch).toBeVisible();
+    const held = deferred();
+    fixture.behavior.editWait = held.promise;
+    try {
+      await branch.fill('after-save');
+      await page.getByRole('button', { name: 'Run…', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Run kon-draft', exact: true });
+      await expect(dialog.getByRole('status')).toHaveText('Reading saved run settings…');
+      await expect(dialog.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
+      held.resolve();
+      await expect(dialog.getByText('after-save', { exact: true })).toBeVisible();
+      await expect(dialog.getByText('before-save', { exact: true })).toBeHidden();
+      await dialog.getByRole('button', { name: 'Run', exact: true }).click();
+      await expect.poll(() => fixture.requests.includes('POST /api/tickets/kon-draft/run')).toBe(true);
+    } finally { held.resolve(); }
+  }, { ticket: { branch: 'before-save' } });
+});
+
+test('desktop Run confirmation reports when the saved Branch no longer matches the preview', async t => {
+  await withPage(t, 1280, 'dark', async (page, fixture) => {
+    await openTicket(page, 'kon-draft');
+    await page.getByRole('button', { name: 'Run…', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Run kon-draft', exact: true });
+    await expect(dialog.getByText('reviewed-branch', { exact: true })).toBeVisible();
+    fixture.records.get('primary/kon-draft').branch = 'new-branch';
+    await dialog.getByRole('button', { name: 'Run', exact: true }).click();
+    await expect(dialog.getByRole('alert')).toContainText('This ticket changed.');
+    await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+    assert.ok(!fixture.requests.includes('POST /api/tickets/kon-draft/run'));
+  }, { ticket: { branch: 'reviewed-branch' } });
+});
+
+test('desktop Run confirmation names a removed pipeline and allows a saved stage to be corrected', async t => {
+  await withPage(t, 1280, 'dark', async (page, fixture) => {
+    await openTicket(page, 'kon-draft');
+    const dialog = page.getByRole('dialog', { name: 'Run kon-draft', exact: true });
+    await page.getByRole('button', { name: 'Run…', exact: true }).click();
+    await expect(dialog.getByRole('alert')).toContainText('Unknown pipeline');
+    await expect(dialog.getByText('Single run, no stages', { exact: true })).toBeHidden();
+    await expect(dialog.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    const stage = page.getByRole('combobox', { name: 'Start at stage', exact: true });
+    await expect(stage).toHaveValue('removed-stage');
+    await stage.selectOption('code');
+    await expect.poll(() => fixture.mutations.find(m => m.path.endsWith('/set-stage'))?.body).toEqual({ stage: 'code' });
+    assert.ok(!fixture.requests.includes('POST /api/tickets/kon-draft/run'));
+  }, { ticket: { stage: 'removed-stage', stages: ['code'], run_preview: { error: 'Unknown pipeline "removed".' } } });
+});
+
+test('desktop Run confirmation wraps a long blocker and setup Cancel returns focus', async t => {
+  const blocker = ticket(longID, 'Imported prerequisite', { kontora: false });
+  const deps = [{ id: longID, title: blocker.title, status: blocker.status }];
+  await withPage(t, 768, 'dark', async page => {
+    await openTicket(page, 'kon-draft');
+    const trigger = page.getByRole('button', { name: 'Run…', exact: true });
+    const depends = page.getByRole('region', { name: 'Depends on', exact: true });
+    await inViewport(depends.getByRole('button', { name: `Run ${longID}…`, exact: true }));
+    await trigger.click();
+    const dialog = page.getByRole('dialog', { name: 'Run kon-draft', exact: true });
+    await expect(dialog.getByRole('button', { name: 'Queue', exact: true })).toBeFocused();
+    await inViewport(dialog.getByRole('button', { name: 'Cancel', exact: true }));
+    await inViewport(dialog.getByRole('button', { name: `Run ${longID} first`, exact: true }));
+    await dialog.getByRole('button', { name: `Run ${longID} first`, exact: true }).press('Enter');
+    const setup = page.locator('[data-dialog-layer="init"]');
+    await expect(setup).toBeVisible();
+    await setup.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(trigger).toBeFocused();
+  }, { ticket: { deps, blockers: [longID] }, records: [blocker],
+    chains: { 'kon-draft': { id: 'kon-draft', verdict: 'blocked', nodes: [{ ...deps[0], direction: 'upstream', holds_chain: true }] } } });
+});
+
+test('desktop queued detail can request Run now without unqueueing', async t => {
+  await withPage(t, 1280, 'dark', async (page, fixture) => {
+    await openTicket(page, 'kon-draft');
+    await expect(page.getByText('Queued.', { exact: true })).toBeVisible();
+    await page.getByRole('banner').getByRole('button', { name: 'More actions', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Run now', exact: true }).click();
+    await expect.poll(() => fixture.requests.includes('POST /api/tickets/kon-draft/run')).toBe(true);
+    assert.ok(!fixture.requests.includes('POST /api/tickets/kon-draft/move'));
+  }, { ticket: { status: 'todo', ready: true } });
+});
+
+test('phone Ticket tab links to its parent from a deep link', async t => {
+  const parent = ticket('kon-parent', 'Parent fixture');
+  await withPage(t, 390, 'light', async page => {
+    await routeTo(page, '#/t/kon-draft');
+    await mobileDetail(page).getByRole('button', { name: parent.id, exact: true }).tap();
+    await expect(mobileDetail(page).getByRole('heading', { name: parent.title, exact: true })).toBeVisible();
+    await ready(page);
+  }, { hasTouch: true, ticket: { parent: { id: parent.id, title: parent.title, status: parent.status } }, records: [parent] });
+});
+
+test('desktop board header controls are 30px and slash focuses the filter', async t => {
+  await withPage(t, 1800, 'dark', async page => {
+    const header = page.locator('.desktop-header:visible');
+    const filter = header.getByRole('textbox', { name: 'Filter tickets', exact: true });
+    await expect(filter).toBeVisible();
+    assert.equal((await header.boundingBox()).height, 52);
+    for (const name of ['Open command palette', /^Needs input \d+$/, /^\d+ running$/, 'Assistant', 'Cycle theme', 'Upload', 'New ticket']) {
+      const button = header.getByRole('button', { name, exact: typeof name === 'string' });
+      await expect(button).toBeVisible();
+      assert.equal((await button.boundingBox()).height, 30, String(name));
+    }
+    assert.equal((await filter.boundingBox()).height, 30);
+    await page.keyboard.press('/');
+    await expect(filter).toBeFocused();
+    await page.keyboard.press('/');
+    await expect(filter).toHaveValue('/');
+    for (const width of [1280, 1100, 1024, 768]) {
+      await page.setViewportSize({ width, height: 1018 });
+      await inViewport(header.getByRole('button', { name: 'New ticket', exact: true }));
+      await inViewport(filter);
+      await noPageOverflow(page);
+    }
+  }, { height: 1018 });
+});
+
+for (const action of ['save & leave', 'discard changes']) test(`desktop running pill reveals In progress after dirty Settings: ${action}`, async t => {
+  await withPage(t, 1280, 'light', async page => {
+    const expanded = page.locator('.col-head[data-status="in_progress"]');
+    await expanded.getByRole('button', { name: 'Column options', exact: true }).click();
+    await expanded.getByRole('button', { name: 'Collapse column', exact: true }).click();
+    await routeTo(page, '#/settings/general');
+    await settingsSection(page, 'environment');
+    await page.getByRole('textbox', { name: 'FIXTURE_MODE value', exact: true }).fill('changed');
+    await page.locator('.desktop-header').getByRole('button', { name: /^\d+ running$/ }).click();
+    await page.getByRole('dialog', { name: 'Leave settings?' }).getByRole('button', { name: action, exact: true }).click();
+    await expect(expanded).toBeVisible();
+    await inViewport(expanded);
+  }, { rawConfig: settingsRaw });
+});
+
+test('phone Lists and filters distinguish unknown statuses', async t => {
+  await withPage(t, 390, 'dark', async page => {
+    const lists = page.getByRole('region', { name: 'Lists', exact: true });
+    await expect(lists.getByRole('button', { name: /Unknown status \(firmware\)/ })).toBeVisible();
+    await expect(lists.getByRole('button', { name: /Unknown status \(investigating\)/ })).toBeVisible();
+    await page.getByRole('button', { name: 'Filters', exact: true }).click();
+    const filter = page.getByRole('combobox', { name: 'Status', exact: true });
+    await expect(filter.getByRole('option', { name: 'Unknown status (firmware)', exact: true })).toHaveCount(1);
+    await expect(filter.getByRole('option', { name: 'Unknown status (investigating)', exact: true })).toHaveCount(1);
+    await filter.selectOption('firmware');
+    await expect(filter).toHaveValue('firmware');
+  }, { records: [ticket('kon-firmware', 'Firmware fixture', { source, status: 'firmware' }),
+    ticket('kon-investigating', 'Investigating fixture', { source, status: 'investigating' })] });
+});
+
+test('desktop running pill shows In progress and hidden statuses expand', async t => {
+  await withPage(t, 1800, 'light', async page => {
+    const rail = page.getByRole('group', { name: 'Hidden statuses', exact: true });
+    const cancelled = rail.getByRole('button', { name: 'Expand Cancelled column', exact: true });
+    const unknown = rail.getByRole('button', { name: 'Expand Unknown status (tombstone) column', exact: true });
+    const expanded = key => page.locator(`.col-head[data-status="${key}"]`);
+    for (const key of ['in_progress', 'tombstone', 'open']) {
+      await expanded(key).getByRole('button', { name: 'Column options', exact: true }).click();
+      await expanded(key).getByRole('button', { name: 'Collapse column', exact: true }).click();
+    }
+    await expect(cancelled).toBeVisible();
+    await expect(unknown).toBeVisible();
+    await page.setViewportSize({ width: 850, height: 900 });
+    await unknown.scrollIntoViewIfNeeded();
+    await cancelled.press('Enter');
+    await expect(expanded('cancelled')).toBeFocused();
+    await inViewport(expanded('cancelled'));
+    await expect(cancelled).toBeHidden();
+    const open = rail.getByRole('button', { name: 'Expand Open column', exact: true });
+    await open.scrollIntoViewIfNeeded();
+    await open.press('Space');
+    await expect(expanded('open')).toBeFocused();
+    await inViewport(expanded('open'));
+    await page.setViewportSize({ width: 1800, height: 900 });
+    await openTicket(page, 'kon-draft');
+    await page.locator('.desktop-header').getByRole('button', { name: /^\d+ running$/ }).click();
+    await expect(expanded('in_progress')).toBeVisible();
+    await expect(rail.getByRole('button', { name: 'Expand In progress column' })).toBeHidden();
+    await expect(page.locator('#col-in_progress [data-ticket-id="kon-live"]')).toHaveCount(1);
+    await unknown.click();
+    await expect(expanded('tombstone')).toBeVisible();
+    await expect(page.locator('#col-tombstone .kt-card')).toHaveCount(1);
+  }, { records: [ticket('kon-extra', 'Unknown status fixture', { status: 'tombstone', source, can_control: false })] });
 });

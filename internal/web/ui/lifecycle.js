@@ -1,19 +1,19 @@
 // Semantic ticket commands. Transport adapters retain their existing workflows;
 // this mixin owns subject identity, conflict ownership and draft acknowledgement.
 const MOVE_STATUSES = ['open', 'todo', 'paused', 'human_review', 'done', 'cancelled'];
-const labels = { open: 'Open', todo: 'Todo', paused: 'Paused', human_review: 'Human Review', done: 'Done', cancelled: 'Cancelled' };
+const labels = { open: 'Open', todo: 'Queued', paused: 'Paused', human_review: 'Human review', done: 'Done', cancelled: 'Cancelled' };
 const commands = {
-  start: { endpoint: 'run', label: 'Request pickup' },
+  start: { endpoint: 'run', label: 'Run…' },
   'queue-saved': { endpoint: 'run', label: 'Queue' },
-  retry: { endpoint: 'retry', label: 'Retry stage' },
+  retry: { endpoint: 'retry', label: 'Run again' },
   pause: { endpoint: 'pause', label: 'Pause' },
   cancel: { endpoint: 'move', status: 'cancelled', label: 'Cancel' },
   skip: { endpoint: 'skip', label: 'Skip stage' },
-  archive: { endpoint: 'archive', label: 'Archive' },
-  delete: { endpoint: '', label: 'Delete ticket' },
-  annotate: { endpoint: 'plannotator-annotate', label: 'Annotate on daemon host' },
-  review: { endpoint: 'plannotator-review', label: 'Review on daemon host' },
-  initialize: { endpoint: 'init', label: 'Initialize' },
+  archive: { endpoint: 'archive', label: 'Archive…' },
+  delete: { endpoint: '', label: 'Delete ticket…' },
+  annotate: { endpoint: 'plannotator-annotate', label: 'Annotate in Plannotator' },
+  review: { endpoint: 'plannotator-review', label: 'Review diff in Plannotator' },
+  initialize: { endpoint: 'init', label: 'Set up and run…' },
   schedule: { endpoint: 'schedule', label: 'Schedule ticket' },
   'workflow-restart': { endpoint: 'workflow-restart', label: 'Restart workflow' },
   'copy-id': { label: 'Copy ticket ID' },
@@ -94,13 +94,17 @@ export function kontoraLifecycle() {
       let value;
       if (id.startsWith('move:')) {
         const status = id.slice(5);
-        value = { id, kind: 'move', endpoint: 'move', status, label: 'Move to ' + (labels[status] || status.replaceAll('_', ' ')) };
+        // Pickers name the destination; standalone commands name the action.
+        const statusLabel = Object.hasOwn(labels, status) ? labels[status] : status.charAt(0).toUpperCase() + status.slice(1).replaceAll('_', ' ');
+        value = { id, kind: 'move', endpoint: 'move', status, statusLabel, label: 'Set status to ' + statusLabel };
       } else if (id.startsWith('set-stage:')) {
         value = { id, kind: 'set-stage', endpoint: 'set-stage', stage: id.slice(10), label: 'Set stage' };
       } else if (commands[id]) {
         value = { ...commands[id], id, kind: id };
-        if (id === 'retry' && ['done', 'cancelled'].includes(ticket?.status)) value.label = 'Run again';
-        if (id === 'start' && ticket?.kind === 'epic') value.label = 'Start epic';
+        if (id === 'retry' && this.workflowWaiting?.(ticket) && ticket.graph_execution.wait.disarmed) value.label = 'Rearm wait';
+        else if (id === 'retry' && ticket?.stage) value.label = 'Run again from ' + ticket.stage;
+        if (id === 'start' && ticket?.kind === 'epic') value.label = 'Start epic…';
+        else if (id === 'start' && ticket && !this.needsInitModal(ticket)) value.label = 'Run';
       } else return null;
       // Capture the schedule payload with the descriptor, not a reference to a
       // live form. Queue always runs from the daemon's saved settings, bodyless.
@@ -211,7 +215,7 @@ export function kontoraLifecycle() {
 
     // The caller owns the batch and its result ledger. isOwner is synchronous;
     // losing it cancels unsent work, but never aborts or re-labels an in-flight write.
-    async dispatchLifecycle(subject, request, { isOwner, suppressToast = false } = {}) {
+    async dispatchLifecycle(subject, request, { isOwner, suppressToast = false, validateBeforeWrite } = {}) {
       const navigation = this._navigationSeq;
       const key = this.ticketKey(subject);
       const command = this.lifecycleCommand(subject, request);
@@ -265,7 +269,14 @@ export function kontoraLifecycle() {
           return result('save-failed', error);
         }
         ticket = this.lifecycleResolve(key);
-        if (!ticket || command.expected !== this._lifecycleState(ticket) || !this._lifecycleAllowed(ticket, command)) return result('obsolete');
+        const current = () => ticket && command.expected === this._lifecycleState(ticket) && this._lifecycleAllowed(ticket, command);
+        if (!current()) return result('obsolete');
+        if (validateBeforeWrite) {
+          if (!await validateBeforeWrite(ticket)) return result('obsolete');
+          if (!owned()) return result('cancelled');
+          ticket = this.lifecycleResolve(key);
+          if (navigation !== this._navigationSeq || !current()) return result('obsolete');
+        }
         const expired = scheduleError();
         if (expired) return invalidSchedule(expired);
         const starts = command.kind === 'start' || command.kind === 'retry' ||
@@ -321,7 +332,7 @@ export function kontoraLifecycle() {
         }
         if (outcome?.outcome === 'success' && !suppressToast && !this._appDestroyed) {
           if (['start', 'queue-saved'].includes(command.kind) || (command.kind === 'initialize' && ticket.kind !== 'epic')) {
-            this.showToast(ticket.id + ': Pickup requested');
+            this.showToast(ticket.id + ': ' + (ticket.blockers?.length ? 'Queued' : 'Run requested'));
           } else if (command.kind === 'retry') {
             const message = this.workflowWaiting?.(ticket) ? 'Wait re-arm requested' : 'Retry requested';
             this.showToast(ticket.id + ': ' + message);

@@ -29,6 +29,7 @@ import { kontoraNotes } from './notes.js';
 import { kontoraNotify } from './notify.js';
 import { kontoraPalette } from './palette.js';
 import { kontoraRelations } from './relations.js';
+import { kontoraRunConfirm } from './run_confirm.js';
 import { kontoraSettings } from './settings.js';
 import { statsDerive, kontoraStats } from './stats.js';
 import { kontoraTerminal, termState } from './terminal.js';
@@ -76,6 +77,7 @@ function kontora() {
     kontoraNotes(),
     kontoraNotify(),
     kontoraRelations(),
+    kontoraRunConfirm(),
     kontoraActivity(),
     kontoraMobile(),
     kontoraSettings(),

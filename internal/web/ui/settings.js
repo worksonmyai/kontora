@@ -1671,6 +1671,7 @@ export function kontoraSettings() {
     },
 
     _resumeSettingsDestination(target) {
+      if (target?.view === 'board' && target.revealColumn) return this._navigateBoardReveal(target);
       return typeof target === 'object' && target ? this.navigateDestination(target) : this.gotoView(target || 'board');
     },
 

@@ -84,7 +84,7 @@ export function iosPwaOptions(now) {
 
 export async function detailPanel(page, name) {
   const phone = page.viewportSize().width < 768;
-  const label = name === 'Changes' ? /^Committed changes(?:\s+\d+)?$/ : phone ? name : ({ Ticket: 'ticket', Notes: 'notes', Output: 'activity' })[name];
+  const label = name === 'Changes' ? /^Changes(?:\s+\d+)?$/ : !phone && name === 'Output' ? 'Activity' : name;
   await page.getByRole('button', { name: label, exact: true }).filter({ visible: true }).first().click();
 }
 export async function phoneOutputView(page, view) {

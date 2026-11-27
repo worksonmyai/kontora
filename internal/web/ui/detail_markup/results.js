@@ -13,8 +13,8 @@ export const DETAIL_RUN_EVIDENCE = `
 </section>`;
 
 export const DETAIL_CHANGES = `
-<section class="detail-changes detail-shared flex flex-col gap-4" aria-label="Committed changes">
-  <div class="flex flex-wrap items-center gap-3"><h2 class="side-label">Committed changes</h2><span x-show="canCompareChanges() && ticketChanges?.base" class="text-xs text-tx-3" x-text="'vs ' + ticketChanges?.base"></span><button type="button" x-show="canCompareChanges()" :disabled="ticketChangesLoading" @click="fetchChanges(selectedTicket.id)" class="ml-auto text-xs text-accent">Refresh changes</button></div>
+<section class="detail-changes detail-shared flex flex-col gap-4" aria-label="Changes">
+  <div class="flex flex-wrap items-center gap-3"><h2 class="side-label">Changes</h2><span x-show="canCompareChanges() && ticketChanges?.base" class="text-xs text-tx-3" x-text="'vs ' + ticketChanges?.base"></span><button type="button" x-show="canCompareChanges()" :disabled="ticketChangesLoading" @click="fetchChanges(selectedTicket.id)" class="ml-auto text-xs text-accent">Refresh changes</button></div>
   <p x-show="isSecondary(selectedTicket)" class="text-xs text-tx-3">Changes are available for primary tickets only.</p>
   <p x-show="selectedTicket && !isSecondary(selectedTicket) && !selectedTicket.branch" class="text-sm text-tx-3">This ticket has no branch yet.</p>
   <p x-show="!isSecondary(selectedTicket) && selectedTicket?.branch && !selectedTicket.path" class="text-sm text-tx-3">Cannot compare commits: no repository path is stored for this ticket.</p>

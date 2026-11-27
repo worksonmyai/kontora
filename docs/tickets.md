@@ -34,16 +34,17 @@ The whole body, including notes and later sections, remains available to stage p
 ## Claim from a secondary folder
 
 Configured [secondary folders](configuration.md#secondary-ticket-folders) appear on
-the dashboard beside primary tickets. Source labels distinguish tickets with the
+the web board beside primary tickets. Source labels distinguish tickets with the
 same ID. Secondary tickets support description, execution settings, notes, reactions,
 summary, and folder-local relationship edits in every status. They cannot run,
 change status or stage, schedule, initialize, archive, restore, delete, or open an
 agent-backed review through this daemon. Another daemon that owns the source as
 primary can still react to edits.
 
-Claim moves one ticket and its reaction sidecar into primary storage under the same
-ID. The browser saves the editor first. If saving fails, Claim stops and retains the
-draft. Claim requires the revision the browser reviewed and refuses:
+Open a secondary ticket and select **Move here** to move it and its reaction sidecar
+into this daemon’s tickets folder under the same ID. The browser saves the editor
+first. If saving fails, the move stops and the draft is kept. The move requires the
+revision the browser reviewed and refuses:
 
 - Active execution, including custom running statuses, stale `in_progress`, invocation markers, or pending annotations.
 - Managed tickets or controlled source boards.
@@ -51,13 +52,13 @@ draft. Claim requires the revision the browser reviewed and refuses:
 - Destination ticket, reaction, log, or reserved execution identities.
 - Changes to the source since the reviewed revision.
 
-A stale `claimed_by` alone does not prevent Claim. Claim sets the destination to
-`open` and clears runtime, scheduling, archive, and current error/log fields.
-It preserves enrollment, custom fields, relationships, summaries, notes, and history.
-Claim never starts an agent. A passive epic resumes normal derived-status handling
-in primary storage.
+A stale `claimed_by` alone does not prevent the move. The destination is set to
+`open`, and runtime, scheduling, archive, and current error/log fields are cleared.
+Enrollment, custom fields, relationships, summaries, notes, and history are kept.
+**Move here** never starts an agent. A passive epic resumes normal derived-status
+handling in primary storage.
 
-Claim does not move dependencies, links, parents, or children. Links, parents, and
+The move does not transfer dependencies, links, parents, or children. Links, parents, and
 children remain folder-local. Primary dependencies can resolve a unique match in a
 configured secondary folder. The confirmation warns about missing references and primary namesakes.
 Imported history retains its summaries and timestamps, but does not use primary logs
@@ -71,7 +72,7 @@ the transfer location for investigation. Do not remove these backups before reso
 the conflict.
 
 All local writers must use an updated Kontora binary for coordination. Older binaries,
-arbitrary editors, and independently synced machines can bypass the locks. Claim
+arbitrary editors, and independently synced machines can bypass the locks. The move
 checks stored markers, not remote process health; manually clearing runtime markers
 can defeat that protection.
 
@@ -102,7 +103,7 @@ Set these fields when creating a ticket, manually or with `kontora new`. Both `k
 
 #### Relations
 
-`deps`, `links` and `parent` name other tickets. Kontora reads them and shows each id as a link to that ticket, with a hover card giving its title and status. The details rail lists every relation as its own row. The ones you navigate by are also on the ticket tab itself: `deps`, `links` and the derived `blocks` on a strip at the top, one line unless a ticket carries too many ids to fit, and `parent` as a crumb in the app header, between `board` and the open ticket's id.
+`deps`, `links` and `parent` name other tickets. On the **Ticket** tab, **Depends on** shows what the ticket is waiting for and how many direct dependencies are done. **Related** shows `links`, and **Unblocks** shows the derived `blocks`. Select a known ticket to open it. On desktop the parent appears in the breadcrumb between **Board** and the open ticket’s ID.
 
 `deps` and `links` are written by [`kontora dep`, `kontora undep`, `kontora link` and `kontora unlink`](cli.md#relations). `parent` is written by `kontora new` with a parent flag, by the epic page, or by hand. Only `deps` controls scheduling, through [dependency-aware scheduling](#dependency-aware-scheduling). `parent` supplies epic context and can select a creation or initialization default; it does not set execution order.
 
@@ -112,7 +113,7 @@ links: [kon-c3d4, kon-e5f6]
 parent: kon-9zzz
 ```
 
-Both the flow form above and a block sequence are read. An id with no ticket file behind it stays on screen as plain text: the frontmatter still points at it, and there is nothing to open.
+Both the flow form above and a block sequence are read. The relationship block marks a missing ticket ID as **not found**. The frontmatter still points to that ID, but there is nothing to open.
 
 Two more relations are derived on read rather than stored, because each edge is written on the other ticket alone. `blocks` is the reverse of `deps`: the tickets whose `deps` name this one. `children` is the reverse of `parent`: the tickets whose `parent` names this one. They are read by scanning every ticket file, so both cover tickets the board hides.
 
@@ -158,12 +159,13 @@ Pipeline precedence at creation or initialization is:
 Kontora stores the resolved pipeline in the ticket, not a live link to a default.
 Existing assignments are not migrated after config changes, reparenting or detail-path
 edits. Operators must retarget them explicitly. `none` stores a blank, not a
-separate opt-out flag. When you request pickup for a managed web draft with no
-stored pipeline, the form selects **none (single run, no stages)** so it stays
-standalone. You can select the inherited default instead. Unmanaged tickets with
-no stored pipeline still default to inheritance, and direct initialization
-requests can fill a blank unless they pass `none`. Agent resolution stays
-independent of the pipeline opt-out.
+separate opt-out flag. The desktop ticket page’s **Run…** confirmation uses the
+managed draft’s saved settings. If you open the full setup form instead, for
+example with **Run…** from the card menu, a managed draft with no stored pipeline
+preselects **none (single run, no stages)** so it stays standalone. You can select
+the inherited default instead. Unmanaged tickets with no stored pipeline still
+default to inheritance, and direct initialization requests can fill a blank unless
+they pass `none`. Agent resolution stays independent of the pipeline opt-out.
 
 `epic_child` in API responses is an ephemeral membership snapshot for previews.
 It is not frontmatter or authoritative default resolution. Browser inheritance omits
@@ -176,7 +178,7 @@ The daemon rewrites a passive epic's status whenever its children change. Archiv
 
 A passive epic's brief stays editable in every status. Manual status changes, pause, retry, skip and schedule are refused. Archiving stops status derivation; restoring resumes it.
 
-To activate a supervisor, use `kontora run EPIC_ID`, the dashboard's Run action, or explicit `kontora init EPIC_ID --status todo`. Activation writes `epic_execution: agent` and queues the epic. Creating an epic, editing its brief or changing its children does not activate it. The epic and every child must name the same Git repository. Linked worktrees and symlink paths to that repository are allowed. Passive epics can group different repositories until activation.
+Open the epic from the Board sidebar and select **start epic**, or select **Start epic…** on its ticket page. Submit the setup form with **Start epic**. From the CLI, use `kontora run EPIC_ID` or `kontora init EPIC_ID --status todo`. Activation writes `epic_execution: agent` and queues the epic. Creating an epic, editing its brief or changing its children does not activate it. The epic and every child must name the same Git repository. Linked worktrees and symlink paths to that repository are allowed. Passive epics can group different repositories until activation.
 
 The supervisor runs standalone, without a pipeline, using an ordinary coding agent
 in the epic's own branch and worktree. It reads the brief and children, creates open children, starts selected work, monitors progress and integrates child results. Children keep their own pipelines, branches, worktrees and commits. Display order does not set execution order.
@@ -339,9 +341,9 @@ They do not use the `waiting` subscription. Same-status changes and every wake a
 
 Three things that would otherwise make a ticket quiet with no explanation are warned about when the daemon reads it, at startup and on every later edit, and then ignored: a status in `notify` that nothing reaches, a channel name nothing answers to, and a `notify:` list that resolves to no channel at all. A malformed `notify:` value makes the whole ticket unparseable, the same as a malformed `deps:`.
 
-Both fields are editable from the dashboard. The start-ticket modal uses `notify me`; the details rail uses `notify`. The row has three presets: off, when it needs me (`[paused, human_review, waiting]`), and when it is finished (`[human_review, done]`). The full status set is behind `custom`.
+Both fields are editable from the web UI. The setup form uses **notify me**; the **Details** disclosure on the **Ticket** tab uses **Notify**. The row has three presets: off, when it needs me (`[paused, human_review, waiting]`), and when it is finished (`[human_review, done]`). The full status set is behind `custom`.
 
-Start ticket and Start epic preselect the saved choice or the effective project/global default.
+The forms submitted with **Set up and run** or **Start epic** preselect the saved choice or the effective project/global default.
 Untouched forms follow path and config changes, then omit `notify` so the backend resolves current defaults.
 Saved or user-selected choices stay selected and submit an explicit array, including `[]` for Off.
 Changing only channels does not select Off or stop the form from following status defaults.
@@ -352,13 +354,13 @@ Add a channel under [`notifications.channels`](configuration.md#notifications), 
 Choosing Off stores `notify: []`. With no configured channels, it also removes obsolete channel overrides.
 With configured channels, Off keeps the ticket's channel choices. Channel changes reload without a restart.
 
-The row states one inherited channel instead of asking for it. If no inherited route exists, the channel picker appears. The dashboard refuses to save or start until the ticket has a route, is silenced, or turns notifications off. The rail row opens only where the API accepts a frontmatter edit. A running ticket shows its setting but cannot change it because the agent owns the file.
+The row states one inherited channel instead of asking for it. If no inherited route exists, the channel picker appears. The dashboard refuses to save or start until the ticket has a route, is silenced, or turns notifications off. The row in **Details** is editable only where the API accepts a frontmatter edit. A running ticket shows its setting but cannot change it because the agent owns the file.
 
 The API accepts `notify` and `notify_channels` on creation, initialization, and update.
 Omitted `notify` follows defaults at creation; initialization preserves a saved choice or resolves defaults when unset.
 On update, omission leaves statuses unchanged. `notify: []` always stores Off and remains an empty array in ticket responses.
 For `notify_channels`, omission preserves the override and `[]` removes it.
-Channel-only rail edits leave unset statuses unset.
+Changing only channels in **Details** leaves unset statuses unset.
 
 The CLI flags take comma-separated lists.
 On creation or update, `--notify ""` or `--notify none` stores `notify: []`.
@@ -374,9 +376,9 @@ There is no reset-to-default action in the dashboard. Remove the stored `notify`
 
 #### Create from the web board
 
-**Save draft** creates an Open ticket without requesting pickup. Choose a configured project or enter a repository path on the daemon host. On the saved draft, select **Request pickup**, review the run settings, then select **start ticket**. To request pickup at creation even when automatic pickup is off, choose **Queue** and select **Create and queue**. A pickup request does not guarantee a queue slot or a running agent.
+**Save draft** creates an Open ticket without running it. Choose a configured project or enter a repository path on the daemon host. On the desktop ticket page, select **Run…** to review the saved settings, then select **Run** or **Queue** if blocked. Imported and scheduled tickets open the setup form instead; submit it with **Set up and run**. To queue at creation even when automatic pickup is off, choose **Queued** and select **Create and queue**. Queuing does not mean an agent is already running.
 
-Choose **Schedule for later** to schedule a ticket. Switching back to **No schedule** clears the time and restores your Draft or Queue choice.
+Choose **Schedule for later** to schedule a ticket. Switching back to **No schedule** clears the time and restores your **Draft (Open)** or **Queued** selection.
 
 #### Scheduled pickup
 
@@ -391,12 +393,12 @@ Write it with [`kontora schedule`](cli.md#kontora-schedule-ticket_id), with `kon
 
 Enter a date and local time (`2099-09-01 09:00`) or a delay (`90m`, `24h`, `3d`, `2w`). The CLI also accepts RFC 3339 instants such as `2099-09-01T09:00:00+02:00`. A date without a time is not enough. The new-ticket page requires a future time when you submit. If you type a delay there, the preview shows the delay rather than a fixed timestamp: the browser measures it from submission.
 
-The timestamp is a one-time trigger, not a status. A scheduled ticket sits in the Open column and stays out of the ready queue until its deadline, and its card shows the time it starts in your own zone.
+A scheduled ticket stays in Open until it is due. Its card shows the pickup time in your time zone. The schedule does not reserve an agent or guarantee a start time.
 
 At or after that instant the daemon writes `status: todo` and removes `scheduled_at` in one save, then hands the ticket to the ordinary pickup rules. It does not bypass them:
 
-- With [`auto_pick_up: false`](configuration.md#top-level-fields) the ticket becomes `todo` and waits there for an explicit `kontora run`.
-- An unresolved dependency keeps it out of the queue, and [dependency-aware scheduling](#dependency-aware-scheduling) queues it once the dependency closes.
+- With [`auto_pick_up: false`](configuration.md#top-level-fields), request a run with **Run now** in the ticket menu or with `kontora run`.
+- With automatic pickup on, [dependency-aware scheduling](#dependency-aware-scheduling) queues the ticket when all its dependencies are resolved.
 
 The daemon rebuilds its wake-ups from the ticket files at startup, so a schedule survives a restart. One whose deadline passed while the daemon was down is promoted on the first pass after the initial scan.
 

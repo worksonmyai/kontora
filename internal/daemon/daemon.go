@@ -1709,24 +1709,14 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		return
 	}
 
-	definition, ok := cfg.Pipelines[t.Pipeline]
-	pipelineCfg := definition.Legacy
-	if !ok {
-		// A config reload can drop a pipeline out from under a todo ticket.
-		// Pause it with a reason so it does not sit in todo unexplained.
-		log.Error("unknown pipeline", "pipeline", t.Pipeline)
-		d.pauseExecution(taskCtx, t, filePath, fmt.Sprintf("unknown pipeline %q", t.Pipeline))
+	definition := cfg.Pipelines[t.Pipeline]
+	stageName, builtinRework, err := legacyPickupStage(cfg, t, definition.Legacy)
+	if err != nil {
+		log.Error("resolve pipeline", "err", err)
+		d.pauseExecution(taskCtx, t, filePath, err.Error())
 		return
 	}
-
-	// Out-of-band rework stage: when built-in rework handling is enabled and
-	// the ticket is parked in the rework stage (set by StartPlannotatorReview)
-	// and the user's pipeline doesn't declare it as a step, run it via the
-	// dedicated path so we can route back to status=review after the agent
-	// exits. A user-defined rework stage is left alone.
-	if cfg.ReworkIsBuiltin &&
-		t.Stage == config.ReworkStageName &&
-		!stageInPipeline(pipelineCfg, config.ReworkStageName) {
+	if builtinRework {
 		d.runReworkStage(ctx, taskCtx, cfg, log, ticketID, t, filePath)
 		return
 	}
@@ -1740,18 +1730,12 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		return
 	}
 
-	stageName := t.Stage
-	var agentName string
-	for _, step := range pipelineCfg {
-		if step.Stage == stageName {
-			agentName = step.Agent
-			break
-		}
+	resolved, err := definition.Resolve(stageName, t.Agent)
+	if err != nil {
+		d.pauseExecution(taskCtx, t, filePath, err.Error())
+		return
 	}
-	if t.Agent != "" {
-		agentName = t.Agent
-	}
-
+	agentName := resolved.Agent
 	agentCfg, agentOK := cfg.Agents[agentName]
 	if !agentOK {
 		log.Error("unknown agent", "agent", agentName)
@@ -1825,7 +1809,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		effort:       run.Effort,
 		sessionKind:  run.SessionKind,
 		sessionRef:   run.SessionRef,
-		pipelineCfg:  pipelineCfg,
+		pipelineCfg:  definition.Legacy,
 		repoPath:     repoPath,
 		wtPath:       wtPath,
 		branch:       branch,
@@ -1837,11 +1821,15 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 // a prompt or a timeout under this name.
 const simpleStageName = "default"
 
-func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Config, log *slog.Logger, ticketID string, t *ticket.Ticket, filePath string) {
-	agentName := cfg.DefaultAgent
+func simpleTicketAgent(cfg *config.Config, t *ticket.Ticket) string {
 	if t.Agent != "" {
-		agentName = t.Agent
+		return t.Agent
 	}
+	return cfg.DefaultAgent
+}
+
+func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Config, log *slog.Logger, ticketID string, t *ticket.Ticket, filePath string) {
+	agentName := simpleTicketAgent(cfg, t)
 	agentCfg, ok := cfg.Agents[agentName]
 	if !ok {
 		log.Error("unknown agent", "agent", agentName)

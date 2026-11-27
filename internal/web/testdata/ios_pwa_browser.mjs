@@ -25,7 +25,7 @@ export function registerIOSPwaTests(test, withPage) {
     data.records.push(ticket('ios-import', 'Imported task', { source, status: 'open', updated_at: now.toISOString() }));
     await withPage(t, 390, 'dark', async (page, fixture) => {
       await row(page, 'ios-112').getByRole('button', { name: /^Queue / }).click();
-      await expect(opener(page, 'ios-112')).toContainText('Awaiting pickup');
+      await expect(opener(page, 'ios-112')).toContainText('Queued');
       assert.equal(new URL(page.url()).hash, '#/');
       assert.deepEqual(requestPaths(fixture, 'run'), ['/api/tickets/ios-112/run']);
       assert.deepEqual(fixture.mutations[0].body, {});
@@ -47,7 +47,7 @@ export function registerIOSPwaTests(test, withPage) {
         await page.evaluate(ticket => window.__fixtureSSE.at(-1).dispatchEvent(new MessageEvent('ticket_updated', { data: JSON.stringify(ticket) })), running);
         await expect(opener(page, key).locator('.mobile-ios-stage')).toBeVisible();
         ack.resolve();
-        await expect(page.getByRole('status').filter({ hasText: 'Pickup requested' })).toBeVisible();
+        await expect(page.getByRole('status').filter({ hasText: 'Run requested' })).toBeVisible();
         await expect(opener(page, key).locator('.mobile-ios-stage')).toBeVisible();
         assert.deepEqual(requestPaths(fixture, 'run'), [`/api/tickets/${key}/run`]);
       } finally { ack.resolve(); }
@@ -150,7 +150,7 @@ export function registerIOSPwaTests(test, withPage) {
   test('iOS PWA Home search leaves independently searchable lists reachable', async t => {
     await withPage(t, 390, 'dark', async page => {
       const homeSearch = page.getByRole('searchbox', { name: 'Search tickets' });
-      const link = page.getByRole('region', { name: 'Lists' }).getByRole('button', { name: /^Human Review 0$/ });
+      const link = page.getByRole('region', { name: 'Lists' }).getByRole('button', { name: /^Human review 0$/ });
       await homeSearch.fill('no tickets match this search');
       await link.click();
       await expect(page).toHaveURL(/#\/column\/human_review$/);
@@ -220,7 +220,7 @@ export function registerIOSPwaTests(test, withPage) {
         await expect(dialog).toBeHidden();
         const key = fixture.mutations[0].before.id;
         ack.resolve();
-        await expect(opener(page, key)).toContainText('Awaiting pickup');
+        await expect(opener(page, key)).toContainText('Queued');
         assert.equal(requestPaths(fixture, 'run').length, 1);
       } finally { ack.resolve(); }
     }, options());
@@ -252,7 +252,7 @@ export function registerIOSPwaTests(test, withPage) {
       if (new URL(page.url()).hash !== '#/column/human_review') await page.goBack();
       await drag(page, subject, -75, 0);
       const revealed = row(page, iosPwa.firstReview).getByRole('group', { name: 'Review shortcuts' });
-      await expect(revealed.getByRole('button')).toHaveText(['Retry stage', 'Mark done']);
+      await expect(revealed.getByRole('button')).toHaveText(['Run again from plan', 'Mark done']);
       assert.equal(new URL(page.url()).hash, '#/column/human_review');
       assert.equal(fixture.mutations.length, 0);
     }, data);
@@ -262,7 +262,7 @@ export function registerIOSPwaTests(test, withPage) {
     await withPage(t, 390, 'dark', async (page, fixture) => {
       const key = 'ios-112';
       await drag(page, opener(page, key), 100, 0);
-      await expect(opener(page, key)).toContainText('Awaiting pickup');
+      await expect(opener(page, key)).toContainText('Queued');
       assert.equal(new URL(page.url()).hash, '#/');
       assert.deepEqual(requestPaths(fixture, 'run'), [`/api/tickets/${key}/run`]);
     }, options());

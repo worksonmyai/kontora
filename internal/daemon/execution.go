@@ -153,13 +153,30 @@ func (d *Daemon) prepareExecution(ctx context.Context, snapshot *ticket.Ticket, 
 	return d.executionCurrent(ctx, snapshot, filePath)
 }
 
+// legacyPickupStage is called only for non-empty, non-graph pipeline names.
+func legacyPickupStage(cfg *config.Config, t *ticket.Ticket, stages config.Pipeline) (stage string, builtinRework bool, err error) {
+	if len(stages) == 0 {
+		return "", false, fmt.Errorf("unknown pipeline %q", t.Pipeline)
+	}
+	stage = t.Stage
+	if stage == "" {
+		stage = stages[0].Stage
+	}
+	// A configured rework step is an ordinary step. A ticket parked by
+	// Plannotator can also run the built-in stage outside the pipeline.
+	builtinRework = cfg.ReworkIsBuiltin && stage == config.ReworkStageName && !stageInPipeline(stages, stage)
+	return stage, builtinRework, nil
+}
+
+var errWorkflowDefinitionChanged = errors.New("workflow definition changed; inspect the saved execution before restarting")
+
 func (d *Daemon) initializeExecution(cfg *config.Config, t *ticket.Ticket, now time.Time) error {
-	definition, exists := cfg.Pipelines[t.Pipeline]
+	definition := cfg.Pipelines[t.Pipeline]
 	if t.GraphState != nil && !definition.IsGraph() {
-		return errors.New("workflow definition changed; inspect the saved execution before restarting")
+		return errWorkflowDefinitionChanged
 	}
 	runningStatus := ticket.StatusInProgress
-	if exists && definition.IsGraph() {
+	if definition.IsGraph() {
 		if err := d.initializeWorkflow(cfg, t, definition.Graph); err != nil {
 			return err
 		}
@@ -170,25 +187,16 @@ func (d *Daemon) initializeExecution(cfg *config.Config, t *ticket.Ticket, now t
 			_ = t.SetField("completed_at", nil)
 		}
 	}
-	if t.AnnotationReturnStatus == "" && !t.IsAgentEpic() && t.Pipeline != "" {
-		definition, exists := cfg.Pipelines[t.Pipeline]
-		stages := definition.Legacy
-		if definition.IsGraph() {
-			if err := t.SetRunningStatus(runningStatus); err != nil {
-				return err
-			}
-			_ = t.SetField("started_at", now.Format(time.RFC3339Nano))
-			return t.SetField("claimed_by", d.instanceName)
-		}
-		if !exists || len(stages) == 0 {
-			return fmt.Errorf("unknown pipeline %q", t.Pipeline)
+	if t.AnnotationReturnStatus == "" && !t.IsAgentEpic() && t.Pipeline != "" && !definition.IsGraph() {
+		stage, builtinRework, err := legacyPickupStage(cfg, t, definition.Legacy)
+		if err != nil {
+			return err
 		}
 		if t.Stage == "" {
-			_ = t.SetField("stage", stages[0].Stage)
+			_ = t.SetField("stage", stage)
 		}
-		builtinRework := cfg.ReworkIsBuiltin && t.Stage == config.ReworkStageName && !stageInPipeline(stages, t.Stage)
 		if !builtinRework {
-			action, err := pipeline.Evaluate(t, stages, pipeline.Event{Kind: pipeline.EventPickedUp, Timestamp: now})
+			action, err := pipeline.Evaluate(t, definition.Legacy, pipeline.Event{Kind: pipeline.EventPickedUp, Timestamp: now})
 			if err != nil {
 				return err
 			}

@@ -224,7 +224,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
   let mintedNotes = 0, createdThreads = 0;
   const terminalMarkers = new Map();
   const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, activityEvents: null, bracketedPaste: false,
-    descriptionWait: null, descriptionFailure: null, holdResizes: false,
+    descriptionWait: null, descriptionFailure: null, editWait: null, holdResizes: false,
     epicWait: null, epicFailure: null, assistantMessageFailure: null, assistantGateWait: null,
     changesWait: null, changesFailure: null, lifecycleWait: null, lifecycleFailure: null,
     // Keys are exact request paths. Refusals persist; post-write failures are consumed once.
@@ -758,7 +758,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
       }
       return json(route, snapshot);
     }
-    const match = path.match(/^\/api(?:\/sources\/([^/]+))?\/tickets\/([^/]+)(?:\/(cost|chain|changes|logs|activity|move|pause|retry|init|run|schedule))?$/);
+    const match = path.match(/^\/api(?:\/sources\/([^/]+))?\/tickets\/([^/]+)(?:\/(cost|chain|changes|logs|activity|move|pause|retry|init|run|schedule|set-stage))?$/);
     if (match) {
       const folder = match[1] ? decodeURIComponent(match[1]) : 'primary';
       const id = decodeURIComponent(match[2]), action = match[3];
@@ -768,10 +768,18 @@ export function fixtures({ base, assets, engine }, options = {}) {
         return json(route, { error: 'Ticket not found' }, 404);
       }
       assert.ok(record, `Unknown source-qualified ticket: ${folder}/${id}`);
-      if (method === 'GET' && !action) return readResponse(route, path, record.archived_at ? { ...record, status: 'archived', archived_from: record.status } : record);
+      if (method === 'GET' && !action) {
+        const detail = record.archived_at ? { ...record, status: 'archived', archived_from: record.status } : { ...record };
+        if (record.source === 'primary' && record.status === 'open' && record.kontora && !record.scheduled_at) {
+          detail.run_preview ??= { stages: (record.stages || []).slice(Math.max(0, record.stages?.indexOf(record.stage) ?? 0)),
+            agent: record.agent, branch: record.branch || record.auto_branch, repo: record.path };
+        }
+        return readResponse(route, path, detail);
+      }
       if (method === 'PUT' && !action) {
         const body = request.postDataJSON();
         assert.ok(!('body' in body), 'Description edits must not replace the protected tail');
+        if (behavior.editWait) await behavior.editWait;
         if (record.can_edit === false) {
           expectedHTTPFailures.push(base + path);
           return json(route, { error: 'Fixture ticket is read-only' }, 403);
@@ -838,7 +846,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
           }
         }
       }
-      if (method === 'POST' && ['move', 'pause', 'retry', 'init', 'run', 'schedule'].includes(action)) {
+      if (method === 'POST' && ['move', 'pause', 'retry', 'init', 'run', 'schedule', 'set-stage'].includes(action)) {
         const body = request.postData() ? request.postDataJSON() : {};
         if (behavior.lifecycleWait) await behavior.lifecycleWait;
         const refuse = (message, status = 400) => {
@@ -870,6 +878,11 @@ export function fixtures({ base, assets, engine }, options = {}) {
             record.scheduled_at = new Date(at).toISOString().replace(/\.\d{3}Z$/, 'Z');
             record.status = 'open';
           }
+        } else if (action === 'set-stage') {
+          assert.deepEqual(Object.keys(body), ['stage']);
+          if (active(record) || !record.stages?.includes(body.stage)) return refuse('Invalid stage change');
+          record.stage = body.stage;
+          record.attempt = 0;
         } else if (action === 'move') {
           assert.deepEqual(Object.keys(body), ['status'], 'A move is not an execution settings update');
           if (!['open', 'todo', 'paused', 'human_review', 'done', 'cancelled', ...config.custom_statuses].includes(body.status)) return refuse('Invalid status');

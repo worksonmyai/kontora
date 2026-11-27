@@ -1,8 +1,8 @@
 // Constant presentation only. The existing editor/notification queues own saves.
 export const DETAIL_METADATA = `
-<section class="detail-metadata detail-shared" data-detail-metadata aria-label="Ticket details">
+<section class="detail-metadata detail-shared" data-detail-metadata aria-label="Run settings">
   <div class="flex items-center gap-3 mb-3">
-    <h2 class="side-label">Ticket details</h2>
+    <h2 class="side-label">Run settings</h2>
     <button type="button" x-show="!detailLoading && !editing && editorCanEdit(selectedTicket)" :disabled="lifecycleBusy(selectedTicket) || editorClaimLocked()" @click="startEditing()" class="text-xs text-accent">Edit details</button>
     <span role="status" class="text-xs text-tx-3" x-text="!editing || !editorCanEdit(selectedTicket) ? '' : editSubmitting ? 'Saving…' : editSaved ? 'Saved' : ''"></span>
   </div>
@@ -23,14 +23,18 @@ export const DETAIL_METADATA = `
         <template x-if="editing && editorCanEdit(selectedTicket)"><div x-data="{ pickerHost: 'edit' }" x-html="agentPickerControl"></div></template>
         <span x-show="!editing || !editorCanEdit(selectedTicket)" class="detail-value" x-text="selectedTicket?.agent || 'Default (inherited)'"></span>
       </div>
-      <label class="detail-field"><span>Stage</span>
-        <template x-if="ticketCanControl(selectedTicket) && canSetStage()">
-          <select aria-label="Stage" :value="selectedTicket?.stage || ''" @change="setStage($event.target.value)">
-            <option value="" :selected="!selectedTicket?.stage">Set stage…</option>
-            <template x-for="s in selectedTicket?.stages || []" :key="s"><option :value="s" :selected="s === selectedTicket?.stage" x-text="s"></option></template>
+      <label class="detail-field"><span x-text="['open', 'todo'].includes(selectedTicket?.status) ? 'Start at stage' : 'Stage'"></span>
+        <template x-if="canSetStage() && selectedTicket?.stages?.length">
+          <select @change="setStage($event.target.value)" x-effect="const stage = selectedTicket.stage || ''; $nextTick(() => { $el.value = stage; })">
+            <template x-if="selectedTicket.stage && !selectedTicket.stages.includes(selectedTicket.stage)">
+              <option :value="selectedTicket.stage" selected disabled x-text="selectedTicket.stage + ' (saved)'"></option>
+            </template>
+            <template x-for="(s, i) in selectedTicket.stages" :key="s">
+              <option :value="i === 0 && !selectedTicket.stage ? '' : s" :selected="s === displayStage()" x-text="i === 0 ? s + ' (first)' : s"></option>
+            </template>
           </select>
         </template>
-        <span x-show="!(ticketCanControl(selectedTicket) && canSetStage())" class="detail-value" x-text="displayStage() || '—'"></span>
+        <span x-show="!canSetStage() || !selectedTicket?.stages?.length" class="detail-value" x-text="displayStage() || '—'"></span>
         <span x-show="executionActive(selectedTicket)" class="text-xs text-tx-3">Pause and wait for the agent to stop before changing stages.</span>
       </label>
     </div>
@@ -63,7 +67,7 @@ export const DETAIL_METADATA = `
         </div>
         <div class="detail-field"><span>ID</span><button type="button" class="detail-value text-left" @click="copyTicketId(selectedTicket?.id)" x-text="copiedId ? '✓ copied' : selectedTicket?.id"></button></div>
         <div class="detail-field"><span>Created</span><span class="detail-value" x-text="formatAbsDate(selectedTicket?.created_at)"></span></div>
-        <div class="detail-field" x-show="selectedTicket?.scheduled_at || canSchedule(selectedTicket)"><span>Starts</span>
+        <div class="detail-field" x-show="selectedTicket?.scheduled_at || canSchedule(selectedTicket)"><span>Schedule</span>
           <button type="button" class="detail-value text-left" :disabled="!canSchedule(selectedTicket)" @click="isMobile ? openScheduleSheet(selectedTicket) : openScheduleEditor()" x-text="scheduleLabel(selectedTicket) || 'Not scheduled'"></button>
           <template x-if="!isMobile && canSchedule(selectedTicket) && scheduleEditing"><div class="flex flex-wrap gap-2"><input type="datetime-local" aria-label="Scheduled start" x-model="scheduleDraft" :min="scheduleMin()"><button type="button" :disabled="scheduleSubmitting" @click="submitSchedule()">Save</button><button type="button" @click="closeScheduleEditor()">Cancel</button></div></template>
           <button type="button" x-show="selectedTicket?.scheduled_at && canSchedule(selectedTicket)" :disabled="scheduleSubmitting" @click="clearTicketSchedule()" class="text-xs text-accent">Clear schedule</button>

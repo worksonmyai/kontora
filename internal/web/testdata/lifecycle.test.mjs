@@ -28,9 +28,32 @@ test('destinations are configured, not inferred from observed board columns', ()
   const a = app();
   a.tickets.push({ id: 'unknown', status: 'alien', execution_active: true });
   const destinations = a.lifecycleDestinations('a');
-  assert.deepEqual(destinations.map(d => d.status), ['open', 'todo', 'human_review', 'done', 'cancelled', 'waiting_external']);
+  assert.deepEqual(destinations.map(d => [d.status, d.statusLabel, d.label]), [
+    ['open', 'Open', 'Set status to Open'],
+    ['todo', 'Queued', 'Set status to Queued'],
+    ['human_review', 'Human review', 'Set status to Human review'],
+    ['done', 'Done', 'Set status to Done'],
+    ['cancelled', 'Cancelled', 'Set status to Cancelled'],
+    ['waiting_external', 'Waiting external', 'Set status to Waiting external'],
+  ]);
   assert.equal(destinations.find(d => d.status === 'open').id, 'move:open');
   assert.equal(a.lifecycleDestinations({ source: 'secondary', id: 'a' }).length, 0);
+});
+
+test('lifecycle labels distinguish immediate runs, setup, and the retry stage', () => {
+  for (const [fields, needsSetup, id, label] of [
+    [{ status: 'todo' }, false, 'start', 'Run'],
+    [{ status: 'open' }, true, 'start', 'Run…'],
+    [{ kind: 'epic' }, true, 'start', 'Start epic…'],
+    [{ stage: 'review' }, false, 'retry', 'Run again from review'],
+    [{ stage: 'approval', graph_execution: { wait: { id: 'wait-1', disarmed: true } } }, false, 'retry', 'Rearm wait'],
+    [{ stage: '' }, false, 'retry', 'Run again'],
+    [{ kontora: false }, true, 'initialize', 'Set up and run…'],
+  ]) {
+    const a = app({ needsInitModal: () => needsSetup });
+    Object.assign(a.tickets[0], fields);
+    assert.equal(a.lifecycleCommand('a', id).label, label);
+  }
 });
 
 test('Paused destinations require running execution or workflow wait authority', async () => {
@@ -343,7 +366,7 @@ test('Queue requests pickup with saved settings and does not open init or overwr
     });
     assert.equal(fetch.mock.callCount(), 1);
     assert.equal(a.tickets[0].status, newerSSE ? 'in_progress' : 'todo');
-    assert.equal(a.toast, 'a: Pickup requested');
+    assert.equal(a.toast, 'a: Run requested');
     fetch.mock.restore();
   }
 });
@@ -733,8 +756,9 @@ test('semantic command transport table preserves distinct endpoints', async () =
 const wait = disarmed => ({ status: 'paused', graph_execution: { wait: { id: 'wait-1', disarmed } } });
 const idleTodo = { status: 'todo', execution_active: false, ready: false };
 for (const [name, command, before, outcome, update, feedback] of [
-  ['pickup', 'start', { status: 'todo' }, 'success', idleTodo, 'Pickup requested'],
-  ['draft pickup', 'initialize', { status: 'open' }, 'success', idleTodo, 'Pickup requested'],
+  ['run', 'start', { status: 'todo' }, 'success', idleTodo, 'Run requested'],
+  ['set up and run', 'initialize', { status: 'open' }, 'success', idleTodo, 'Run requested'],
+  ['blocked run', 'queue-saved', { status: 'open', blockers: ['b'] }, 'success', idleTodo, 'Queued'],
   ['ordinary retry', 'retry', { status: 'paused' }, 'success', idleTodo, 'Retry requested'],
   ['armed wait', 'retry', wait(false), 'refused'],
   ['disarmed wait', 'retry', wait(true), 'success', wait(false), 'Wait re-arm requested'],
@@ -755,7 +779,7 @@ for (const [name, command, before, outcome, update, feedback] of [
 });
 
 for (const [command, before, update, feedback] of [
-  ['start', { status: 'todo' }, idleTodo, 'Pickup requested'],
+  ['start', { status: 'todo' }, idleTodo, 'Run requested'],
   ['retry', { status: 'paused' }, idleTodo, 'Retry requested'],
   ['retry', wait(true), wait(false), 'Wait re-arm requested'],
 ]) test(`command palette preserves ${feedback} acknowledgement`, async t => {
@@ -767,12 +791,24 @@ for (const [command, before, update, feedback] of [
   assert.deepEqual(messages, [`a: ${feedback}`]);
 });
 
-test('the scheduled palette shortcut explains that pickup clears the schedule on success', () => {
+test('the palette names setup and status actions and acknowledges a status change', async () => {
+  const a = app({ ...kontoraPalette(), _moveTaskTransport: async () => ({ outcome: 'success' }) });
+  const t = a.tickets[0];
+  t.kontora = false;
+  assert.equal(a.paletteMoves(t).find(command => command.id === 'start').label, 'Set up and run…');
+  t.kontora = true;
+  const move = a.paletteMoves(t).find(command => command.id === 'move:human_review');
+  assert.equal(move.label, 'Set status to Human review');
+  await a._paletteRunAction(a._paletteActionRow(t, move));
+  assert.equal(a.toast, 'a: Status set to Human review');
+});
+
+test('the scheduled palette shortcut explains that a run clears the schedule on success', () => {
   const a = app(kontoraPalette());
   const ticket = a.tickets[0];
   Object.assign(ticket, { status: 'open', scheduled_at: '2099-01-01T00:00:00Z' });
   const row = a._paletteScheduleAlsoRows(ticket).find(row => row.kind === 'schedulerun');
-  assert.equal(row.title, 'Request pickup now');
+  assert.equal(row.title, 'Run now…');
   assert.equal(row.sub, 'On success, clears the schedule even if the ticket can’t join the queue.');
   assert.equal(row.command.id, 'start');
 });

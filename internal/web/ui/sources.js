@@ -294,17 +294,17 @@ export function kontoraSources() {
         if (!this.sameTicket(this.selectedTicket, ticket) || !this.ticketCanClaim(this.selectedTicket)) return false;
         var current = this.selectedTicket;
         if (this.editing && state && this.descriptionText(current) !== state.ack.description) {
-          this.error = 'The source description changed. Reopen the ticket before Claim.';
+          this.error = 'The source description changed. Reopen the ticket before moving it here.';
           return false;
         }
         var warnings = (current.claim_warnings || []).map(w => typeof w === 'string' ? w : JSON.stringify(w));
-        if (!window.confirm('Claim ' + current.id + ' into primary without starting work? Related tickets are not moved; references resolve in primary.' + (warnings.length ? '\n\n' + warnings.join('\n') : ''))) return false;
+        if (!window.confirm('Move ' + current.id + ' here? This moves the ticket file into this daemon’s tickets folder without starting work. Related tickets stay where they are; references are looked up from this folder.' + (warnings.length ? '\n\n' + warnings.join('\n') : ''))) return false;
         var res = await fetch(this.ticketURL(current, '/claim'), {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: current.revision }),
         });
         var full = await res.json();
-        if (!res.ok) throw new Error(full.error || 'Claim failed');
-        if (this.isSecondary(full) || full.id !== ticket.id) throw new Error('Invalid claim response');
+        if (!res.ok) throw new Error(full.error || 'Could not move the ticket here');
+        if (this.isSecondary(full) || full.id !== ticket.id) throw new Error('Unexpected response when moving the ticket here');
         this.deleteSecondaryTicket(ticket, false);
         delete this._editorSaves[key];
         this.applyTicketUpdate(full);

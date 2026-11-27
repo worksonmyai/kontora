@@ -690,7 +690,7 @@ export function kontoraMobile() {
     },
 
     mobileTicketStatus(ticket) {
-      if (ticket.status === 'todo') return 'Awaiting pickup';
+      if (ticket.status === 'todo') return 'Queued';
       if (ticket.status === 'human_review') return 'Human review';
       if (ticket.status === 'paused') return 'Paused';
       return this.columns.find(col => col.key === ticket.status)?.label || this.statusLabel(ticket.status);
@@ -715,6 +715,7 @@ export function kontoraMobile() {
         // Use the layout viewport, never the keyboard/pinch-zoom viewport, for
         // the board breakpoint.
         this.isMobile = window.innerWidth < 768;
+        if (this.isMobile && this.runConfirmOpen) this.closeRunConfirm(false);
         if (owner.frame !== null) return;
         owner.frame = requestAnimationFrame(() => {
           owner.frame = null;
@@ -1447,7 +1448,7 @@ export function kontoraMobile() {
     mobileScheduleConsequence() {
       var parsed = this.mobileScheduleParsed();
       if (!parsed.iso) return '';
-      return 'Sent as ' + isoWithOffset(parsed.at) + '. Stays open until then; pickup still needs auto_pick_up and resolved dependencies.';
+      return 'Sent as ' + isoWithOffset(parsed.at) + '. Moves to Queued when due. Automatic pickup must be on for the schedule to request a run.';
     },
 
     // The current schedule as the sheet header states it: "starts Fri 09:00,
@@ -1525,9 +1526,8 @@ export function kontoraMobile() {
       if (t.kind === 'epic' && !this.sameTicket(t, this.selectedEpic) && !this.isSecondary(t)) add('Epic overview', 'default', () => this.openEpic(t.id));
       const current = this.lifecycleResolve(key) || t;
       if (this.ticketCanControl(current) && !refreshRequired) {
-        this.lifecycleActions(key).forEach(command => addCommand(current.scheduled_at && command.id === 'start' && this.needsInitModal(current)
-          ? { ...command, label: 'Review pickup settings…' } : command));
-        if (this.lifecycleDestinations(key).length) add('Move to', 'default', () => this.openMoveSheet(t));
+        this.lifecycleActions(key).forEach(addCommand);
+        if (this.lifecycleDestinations(key).length) add('Set status', 'default', () => this.openMoveSheet(t));
         for (const id of ['cancel', 'skip', 'review', 'annotate', 'archive', 'delete']) {
           const command = this.lifecycleCommand(key, id);
           if (this._lifecycleAllowed(this.lifecycleResolve(key), command)) addCommand(command);
@@ -1536,7 +1536,7 @@ export function kontoraMobile() {
           add(t.scheduled_at ? 'Reschedule…' : 'Schedule…', 'default', () => this.openScheduleSheet(t));
           if (t.scheduled_at) add('Clear schedule', 'default', () => this.clearScheduleMobile(t));
         }
-      } else if (this.ticketCanClaim(t)) add('Claim into primary', 'primary', () => this.claimTicket(t));
+      } else if (this.ticketCanClaim(t)) add('Move here', 'primary', () => this.claimTicket(t));
       if (t.branch) add('Copy branch', 'default', () => this.copyBranch(t.branch));
       addCommand(this.lifecycleCommand(key, 'copy-id'));
       addCommand(this.lifecycleCommand(key, 'copy-link'));

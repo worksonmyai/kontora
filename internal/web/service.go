@@ -661,6 +661,8 @@ type TicketInfo struct {
 	WaitingTool     string     `json:"waiting_tool,omitempty"`
 	WaitingQuestion string     `json:"waiting_question,omitempty"`
 
+	// GetTicket includes RunPreview for managed, unscheduled drafts other than epics.
+	RunPreview      *RunPreview          `json:"run_preview,omitempty"`
 	GraphDefinition *GraphDefinitionInfo `json:"graph_definition,omitempty"`
 	GraphExecution  *GraphExecutionInfo  `json:"graph_execution,omitempty"`
 	Stages          []string             `json:"stages,omitempty"`
@@ -717,6 +719,18 @@ type TicketInfo struct {
 	Kind          string   `json:"kind,omitempty"`
 	EpicExecution string   `json:"epic_execution,omitempty"`
 	ChildOrder    []string `json:"child_order,omitempty"`
+}
+
+// RunPreview describes saved settings, not scheduler admission. Stages is the
+// configured suffix for a legacy pipeline or the next node for a graph.
+// Agent is omitted when the first action does not use one.
+type RunPreview struct {
+	Stages []string `json:"stages"`
+	Agent  string   `json:"agent,omitempty"`
+	Branch string   `json:"branch"`
+	Repo   string   `json:"repo"`
+	Error  string   `json:"error,omitempty"`
+	Kind   string   `json:"kind,omitempty"`
 }
 
 // IsRunning also accepts legacy daemon responses without execution_active.

@@ -51,22 +51,17 @@ export function kontoraPalette() {
       return this._paletteStatusWords[status] || this.statusLabel(status);
     },
 
-    // Past tense for the confirmation toast, keyed by validMoves label.
+    // Past tense for the confirmation toast, keyed by command label.
     _paletteVerbs: {
-      'Move to open': 'moved to open', 'Pause': 'paused',
-      'Send to review': 'sent to review', 'Mark done': 'marked done',
-      'Cancel': 'cancelled', 'Resume': 'resumed', 'Approve': 'approved',
-      'Send back': 'sent back', 'Reopen': 'reopened', 'Initialize': 'initialized',
+      'Pause': 'paused', 'Cancel': 'cancelled', 'Set up and run…': 'set up',
     },
 
-    // validMoves for a ticket, with Initialize prepended for an unmanaged one.
-    // moveTicketVia already routes a start of an unmanaged ticket to the init
-    // modal, so Initialize is that same call under an explicit label.
+    // Starting an unmanaged ticket opens the setup form.
     paletteMoves(t) {
       if (!this.ticketCanControl(t)) return [];
       if (!t) return [];
       return this.ticketMoves(t).map(command => !t.kontora && command.id === 'start'
-        ? { ...command, label: 'Initialize' } : command);
+        ? { ...command, label: 'Set up and run…' } : command);
     },
 
     // The board filter, token grammar included, plus stage and agent as free
@@ -230,8 +225,7 @@ export function kontoraPalette() {
       return chip.abs + (chip.rel ? ' · in ' + chip.rel : '');
     },
 
-    // Clear and request pickup now: the two ways a schedule ends. Only for a ticket that
-    // has one — there is nothing to clear otherwise.
+    // Clear the schedule, or run now. Neither shortcut applies without a schedule.
     _paletteScheduleAlsoRows(t) {
       var clear = this._paletteCmdRow({
         id: 'schedclear:' + t.id, kind: 'scheduleclear', ticketId: t.id, glyph: '✕',
@@ -241,7 +235,7 @@ export function kontoraPalette() {
       clear.glyphClass = 'text-surface-600';
       var run = this._paletteCmdRow({
         id: 'schedrun:' + t.id, kind: 'schedulerun', ticketId: t.id, glyph: '▸',
-        title: 'Request pickup now',
+        title: 'Run now…',
       });
       run.command = this.lifecycleCommand(t, 'start');
       run.sub = 'On success, clears the schedule even if the ticket can’t join the queue.';
@@ -660,8 +654,12 @@ export function kontoraPalette() {
       var t = this.lifecycleResolve(row.ticketId);
       this.closePalette();
       const result = await this.dispatchLifecycle(row.ticketId, row.move);
-      // Lifecycle already acknowledges pickup and distinguishes retry from re-arming a wait.
+      // Lifecycle already acknowledges runs and distinguishes retry from re-arming a wait.
       if (result.outcome !== 'success' || ['start', 'retry'].includes(row.move.id)) return;
+      if (row.move.kind === 'move') {
+        this.showToast(t.id + ': Status set to ' + row.move.statusLabel);
+        return;
+      }
       var verb = this._paletteVerbs[row.move.label];
       this.showToast(t.id + ' ' + (typeof verb === 'string' ? verb : row.move.label.toLowerCase()));
     },

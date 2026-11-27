@@ -25,6 +25,7 @@ const AGENT_PICKER_CONTROL = `
           :class="agentPickerTriggerClass(pickerHost)">
     <span class="w-[5px] h-[5px] rounded-full shrink-0" :style="agentPickerDotStyle(agentPickerValue(pickerHost), pickerHost)"></span>
     <span :id="agentPickerValueID(pickerHost)" class="flex-1 min-w-0 truncate" :class="agentPickerValue(pickerHost) ? 'text-tx' : 'text-tx-3'" x-text="agentPickerLabel(pickerHost)"></span>
+    <span x-show="pickerHost === 'edit' && agentRunningCount(agentPickerValue(pickerHost)) > 0" class="font-mono text-[10.5px] text-tx-log whitespace-nowrap shrink-0" x-text="pickerHost === 'edit' ? agentRunningCount(agentPickerValue(pickerHost)) + ' running' : ''"></span>
     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" class="text-surface-600 shrink-0" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
   </button>
 
@@ -286,7 +287,7 @@ export function kontoraAgentPicker() {
 
     agentPickerHostLabel(host) {
       if (!AGENT_PICKER_HOSTS.includes(host)) return 'ticket';
-      return ({ init: 'start ticket', create: 'new ticket', edit: 'ticket edit', 'mobile-create': 'new ticket', automations: 'automation', 'settings-default': 'default agent', 'settings-assistant': 'assistant' })[host];
+      return ({ init: 'set up and run', create: 'new ticket', edit: 'ticket edit', 'mobile-create': 'new ticket', automations: 'automation', 'settings-default': 'default agent', 'settings-assistant': 'assistant' })[host];
     },
 
     agentPickerValue(host) {

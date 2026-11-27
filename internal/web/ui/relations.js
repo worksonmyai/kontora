@@ -1,15 +1,7 @@
-// Relation chips one rail row shows before it has to be expanded. A ticket in
-// the corpus carries up to 33 links, and the rail is 308px wide.
-var RELATION_CAP = 8;
-// Sub-tickets the tree shows before it has to be expanded. Higher than
-// RELATION_CAP because the tree has the full 960px column, not a 308px rail.
+// Sub-tickets the tree shows before it has to be expanded.
 var CHILDREN_CAP = 12;
-// Pixels the ladder steps right per depth layer, which is what makes the
-// staircase read as one direction.
-var CHAIN_DEPTH_STEP = 16;
-// Segments the chain header draws. It is one line beside the summary, and the
-// payload carries up to 200 nodes.
-var CHAIN_METER_CAP = 24;
+// Statuses that release dependents; mirrors internal/ticket/dependencies.go.
+const RESOLVED_DEP_STATUSES = new Set(['human_review', 'done', 'cancelled', 'archived', 'closed']);
 
 // The relation rail and the sub-ticket tree.
 export function kontoraRelations() {
@@ -32,9 +24,7 @@ export function kontoraRelations() {
       return null;
     },
 
-    // The frontmatter relations, in the order the rail lists them: the ticket
-    // above this one, what it waits on, what waits on it, then the symmetric
-    // set. Rows with nothing in them are dropped rather than shown empty.
+    // Lookup order for resolving ticket IDs in prose.
     relationRows() {
       var t = this.selectedTicket;
       if (!t) return [];
@@ -46,122 +36,33 @@ export function kontoraRelations() {
       ].filter(function (r) { return r.refs.length > 0; });
     },
 
-    // What one row shows: the first RELATION_CAP refs until the row is
-    // expanded. A ticket can carry 30-odd links, and the rail is 308px wide.
-    relationRefs(row) {
-      if (this.relExpanded[row.key]) return row.refs;
-      return row.refs.slice(0, RELATION_CAP);
-    },
-
-    relationHidden(row) {
-      return this.relExpanded[row.key] ? 0 : Math.max(0, row.refs.length - RELATION_CAP);
-    },
-
-    // The status hue as a background, for the 5px dots the ladder, the crumb and
-    // the tree draw. relationChipClass paints text; a dot has no text of its
-    // own, so it takes the same class and fills from currentColor.
+    // A dot shares the status text hue by filling from currentColor.
     relationDotClass(ref) {
       return this.relationHueClass(ref) + ' bg-current';
     },
 
-    // The status hue as text, with none of the chip's box. The rail's unblocks
-    // row draws bare ids in it, so it reads apart from the row of chips above.
     relationHueClass(ref) {
       var mark = this._paletteStatusMarks[ref && ref.status];
       return mark ? mark.cls : 'text-surface-600';
     },
 
-    // ---- the chain ladder ----------------------------------------------------
-
-    // One ladder row per chain node, in the order the daemon sorted them: roots
-    // to goal, depth never going backwards.
-    //
-    // `last` closes the connector run, and a run is the block of rows sharing a
-    // depth, because that is what shares a gutter: the next depth's gutter sits
-    // a step to the right, so a stem carried past a run would drop into space.
-    chainRows() {
-      var self = this;
-      var nodes = (this.chain && this.chain.nodes) || [];
-      return nodes.map(function (n, i) {
-        var next = nodes[i + 1];
-        return Object.assign({}, n, {
-          is_self: n.direction === 'self',
-          last: !next || next.depth !== n.depth,
-          indent: n.depth * CHAIN_DEPTH_STEP,
-          meta: self._chainMeta(n),
-        });
-      });
-    },
-
-    // A ladder row's own class. A row for an id no ticket file answers is not
-    // a link, so it takes the dashed treatment the rail's chips take rather
-    // than the pointer and the hover the other rows get.
-    chainRowClass(row) {
-      if (row.is_self) return 'bg-accent/[.09]';
-      if (row.missing) return 'ent-ticket-gone';
-      return 'cursor-pointer hover:bg-surface-850/40';
-    },
-
-    // The meta cell: what this row waits on, counting deps outside the chain.
-    // A node with no deps says nothing rather than "waits on 0 of 0".
-    _chainMeta(n) {
-      if (n.missing) return 'not in the tickets dir';
-      if (!n.waits_on || !n.waits_on.total) return '';
-      if (n.waits_on.open > 0) return 'waits on ' + n.waits_on.open + ' of ' + n.waits_on.total;
-      return 'deps clear';
-    },
-
-    // The header and one-liner copy, in one place so the collapsed line, the
-    // expanded header and the rail row cannot drift apart.
-    chainSummary() {
-      var c = this.chain;
-      if (!c) return { total: 0, done: 0, position: 0, pathLength: 0, place: '', text: '', state: '', releases: '' };
-      var place = c.path_length > 0 ? this._chainOrdinal(c.position) + ' of ' + c.path_length : '';
+    // Direct dependencies, and the upstream chain holder (which may be indirect).
+    dependsOn() {
+      var deps = this.selectedTicket?.deps || [];
+      var holder = this.upstreamHolder();
       return {
-        total: c.total,
-        done: c.done,
-        position: c.position,
-        pathLength: c.path_length,
-        place: place,
-        text: c.total + (c.total === 1 ? ' ticket' : ' tickets') + ' · ' + c.done + ' done',
-        state: this._chainState(),
-        releases: this._chainReleases(),
+        total: deps.length,
+        done: deps.filter(ref => RESOLVED_DEP_STATUSES.has(ref.status)).length,
+        holder,
+        others: holder ? deps.filter(ref => !this.sameTicket(ref, holder)) : deps,
       };
     },
 
-    _chainOrdinal(n) {
-      var suffix = 'th';
-      // 11th to 13th break the last-digit rule.
-      if (n % 100 < 11 || n % 100 > 13) suffix = { 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th';
-      return n + suffix;
-    },
-
-    // Only an upstream holder is holding this ticket up. A holder on the
-    // downstream side means everything before the ticket is resolved and the
-    // rest of the chain is waiting on the ticket, not the other way round.
-    _chainState() {
-      if (this.chainVerdict() === 'cycle') return 'dependency cycle';
-      var holder = this.chainHolder();
-      if (!holder) return 'chain cleared';
-      if (holder.direction === 'upstream') return 'waiting on ' + holder.id;
-      return 'nothing blocking';
-    },
-
-    // What finishing this ticket lets go. Past tense once the ticket itself no
-    // longer blocks, so a done ticket is not told what it is about to release.
-    _chainReleases() {
-      var goal = this.chainGoal();
-      if (!goal || goal.direction === 'self') return '';
-      var me = this._chainSelfNode();
-      return 'finishing this ' + (me && me.resolved ? 'unblocked ' : 'unblocks ') + goal.id;
-    },
-
-    // What finishing the ticket releases first: its direct dependents, read off
-    // the chain so their status is the chain's, and named by the frontmatter
-    // edge rather than by depth, which a second path can also reach.
-    chainUnblocks() {
-      var direct = (this.selectedTicket?.blocks || []).map(function (r) { return r.id; });
-      return ((this.chain && this.chain.nodes) || []).filter(function (n) { return direct.includes(n.id); });
+    relatedRefs() {
+      var deps = this.selectedTicket?.deps || [];
+      var holder = this.dependsOn().holder;
+      return (this.selectedTicket?.links || []).filter(ref =>
+        !deps.some(dep => this.sameTicket(dep, ref)) && !this.sameTicket(holder, ref));
     },
 
     chainVerdict() {
@@ -174,49 +75,30 @@ export function kontoraRelations() {
       return ((this.chain && this.chain.nodes) || []).find(function (n) { return n.holds_chain; }) || null;
     },
 
-    chainGoal() {
-      var c = this.chain;
-      if (!c || !c.goal) return null;
-      return (c.nodes || []).find(function (n) { return n.id === c.goal; }) || null;
+    upstreamHolder() {
+      if (!this.selectedTicket || this.isSecondary(this.selectedTicket)) return null;
+      const holder = this.chainHolder();
+      return holder?.direction === 'upstream' ? holder : null;
     },
 
-    _chainSelfNode() {
-      return ((this.chain && this.chain.nodes) || []).find(function (n) { return n.direction === 'self'; }) || null;
-    },
-
-    // One segment per node, in ladder order. Capped: the header is one line, and
-    // 200 segments at 18px would run off it. The summary carries the true count.
-    chainMeter() {
-      var self = this;
-      return ((this.chain && this.chain.nodes) || []).slice(0, CHAIN_METER_CAP).map(function (n) {
-        return { id: n.id, cls: self.relationDotClass(n) };
-      });
-    },
-
-    // Which status the pill offers to leave, and the move that leaves it. Only
-    // these two: a running holder needs no push, and every other status has no
-    // move that starts work.
-    _chainResumeEndpoints: { paused: 'retry', open: 'run' },
-
-    // The move the resume pill would post, or null when there is nothing to
-    // offer. It reads ticketMoves rather than naming an endpoint of its own, so a
-    // move the daemon would refuse is never on screen.
     chainResumeMove() {
-      var holder = this.chainHolder();
+      var holder = this.upstreamHolder();
       if (!holder || holder.missing || this.isSecondary(holder)) return null;
-      var want = this._chainResumeEndpoints[holder.status];
-      if (!want) return null;
-      var mv = this.ticketMoves(holder).find(function (m) { return m.endpoint === want; });
-      if (!mv) return null;
-      return { id: holder.id, endpoint: mv.endpoint, label: mv.label.toLowerCase() };
+      var endpoint = holder.status === 'open' ? 'run' : holder.status === 'paused' ? 'retry' : '';
+      if (!endpoint) return null;
+      // Chain nodes are relation refs, not lifecycle subjects with permissions.
+      // Recheck the live ticket rather than acting on a stale chain response.
+      var ticket = this.lifecycleResolve(holder);
+      if (ticket?.status !== holder.status) return null;
+      var command = this.lifecycleFromEndpoint(holder, endpoint);
+      if (!this._lifecycleAllowed(ticket, command)) return null;
+      return { id: holder.id, ref: holder, endpoint, label: command.label === 'Rearm wait'
+        ? 'Rearm wait for ' + holder.id : 'Run ' + holder.id + (endpoint === 'run' ? '…' : ' again') };
     },
 
-    // Re-derived at click time rather than read off the rendered pill: the SSE
-    // stream can have moved the holder on since the row was drawn.
-    async resumeChainHolder() {
-      var mv = this.chainResumeMove();
-      if (!mv) return;
-      await this.moveTicketVia(mv.id, mv.endpoint, null);
+    resumeChainHolder() {
+      var move = this.chainResumeMove();
+      if (move) return this.moveTicketVia(this.ticketKey(move.ref), move.endpoint);
     },
 
     // Sub-tickets, capped like a relation row. `last` drives the connector: the
@@ -296,7 +178,7 @@ export function kontoraRelations() {
     // the tickets dir. It stays on screen, because the frontmatter still points
     // at it, but it is not a link.
     relationKnown(ref) {
-      return !!(ref && ref.status);
+      return !!ref?.status && !ref.missing;
     },
 
     relationChipClass(ref) {
@@ -321,7 +203,7 @@ export function kontoraRelations() {
         // A title that is a tag and nothing else leaves no title. The card is
         // suppressed on an empty one, taking the status and the hint with it.
         title: pt.rest || (ref && ref.id) || '',
-        body: known ? this.paletteStatusLabel(ref.status) : 'not in the tickets dir',
+        body: known ? this.paletteStatusLabel(ref.status) : 'not found',
         hint: known ? 'click to open' : '',
       };
     },

@@ -733,20 +733,28 @@ export function kontoraActivity() {
         stages.push(name);
       }
       const graph = !!(t.graph_definition || t.graph_execution);
+      const active = this.executionActive(t);
+      const cost = this.currentTicketCost();
       if (!graph) (t.stages || []).forEach(add);
       (t.history || []).forEach(function (h) { add(h.stage); });
       if (graph) {
         if ((t.graph_definition?.nodes || []).some(n => n.id === t.stage && ['agent', 'check'].includes(n.type))) add(t.stage);
-      } else (this.currentTicketCost()?.stages || []).forEach(function (cost) { add(cost.name); });
+      } else (cost?.stages || []).forEach(function (stageCost) { add(stageCost.name); });
 
+      const previewStart = !this.isMobile && !active && !t.graph_execution &&
+        ['open', 'todo'].includes(t.status) && !t.history?.length && !(cost?.tracked_runs > 0) &&
+        !(cost?.stages || []).some(s => s.tracked_runs > 0);
+      const startStage = previewStart ? this.displayStage() : '';
       var pipelineStages = graph ? [] : t.stages || [];
-      var currentIdx = pipelineStages.indexOf(t.stage);
+      // Choosing a start stage on a fresh draft doesn't complete earlier stages.
+      var currentIdx = previewStart ? -1 : pipelineStages.indexOf(t.stage);
       return stages.map(function (name) {
         var i = pipelineStages.indexOf(name);
         var a = agg[name] || { seconds: 0, runs: 0, last: null };
         var cost = self.ticketStageCost(name);
-        var running = self.executionActive(t) && name === t.stage;
+        var running = active && name === t.stage;
         var done = !running && (a.runs > 0 || (!graph && (t.status === 'done' || (cost && cost.tracked_runs > 0) || (i >= 0 && currentIdx >= 0 && i < currentIdx))));
+        const startsHere = !running && !done && name === startStage;
         var seconds = a.seconds;
         if (running && t.started_at) {
           var live = Math.floor((self.now - new Date(t.started_at)) / 1000);
@@ -758,7 +766,8 @@ export function kontoraActivity() {
           run: a.last ? a.last.run : 0,
           seconds: seconds,
           state: running ? 'running' : (done ? 'done' : 'queued'),
-          meta: running || done ? self.formatSeconds(seconds) : 'not started',
+          meta: running || done ? self.formatSeconds(seconds) : (startsHere ? 'starts here' : 'not started'),
+          startsHere,
           cost: cost,
         };
       });
@@ -831,6 +840,9 @@ export function kontoraActivity() {
         var wall = this.ticketWall();
         if (wall) out.push({ k: 'wall', v: wall });
         if (tokens) out.push({ k: 'tokens', v: tokens });
+      }
+      if (!out.length && !t.history?.length && this.stageRibbon().length) {
+        out.push({ k: 'runs', v: 'none yet', muted: true });
       }
       return out;
     },

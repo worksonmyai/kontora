@@ -68,9 +68,9 @@ Open http://127.0.0.1:8080 for the board. A different configured port changes th
 
 ## Create a draft, then run it
 
-On the web board, select **New ticket**. Choose a configured project or enter a repository path. **Save draft** keeps the ticket Open without requesting pickup. On the saved draft, select **Request pickup**, review the run settings, then select **start ticket**.
+On the web board, select **New ticket**. Choose a configured project or enter a repository path. **Save draft** keeps the ticket Open without starting it. On desktop, open the draft and select **Run…** to review the saved run settings. Select **Run** to start, or **Queue** if a dependency still blocks it. On a phone, use **Queue** on the draft’s board row to run with its saved settings.
 
-To request pickup at creation, choose **Queue** and click **Create and queue**. This requests pickup even when automatic pickup is off. A scheduled ticket stays Open until its scheduled time, then moves to Todo and follows the automatic pickup setting.
+To queue work at creation on desktop, choose **Queued** and select **Create and queue**. This works even when automatic pickup is off. A scheduled ticket stays Open until its scheduled time, then becomes Queued and follows the automatic pickup setting.
 
 To create a draft from the command line, enter your repository's main checkout in another terminal:
 
@@ -118,7 +118,7 @@ On failure, read the error and logs before retrying. With automatic pickup enabl
 
 On success, the starter pipelines stop in `human_review`. Read the ticket notes for review findings or a plan. `human_review` does not mean approval and can release dependent tickets. Do not use a `plan-only` ticket as a dependency that must wait for implementation or human approval.
 
-For a primary ticket in Human Review, open **Committed changes** and look under **Review the worktree** for the repository and branch. If either is missing, the panel says which one. From the command line, use `kontora view TICKET_ID` to look up the repository and branch.
+For a primary ticket in Human review, open **Changes** and look under **Review the worktree** for the repository and branch. If either is missing, the panel says which one. From the command line, use `kontora view TICKET_ID` to look up the repository and branch.
 
 On the daemon host, run `git worktree list` from the stored repository. Find the ticket's branch and enter that worktree's directory.
 
@@ -134,7 +134,7 @@ git ls-files --others --exclude-standard
 
 Read the listed untracked files directly and run any remaining checks in the worktree. A single `git diff HEAD` can hide a staged change that an unstaged change reverses.
 
-**Committed changes** and `kontora changes` show only committed branch changes. An empty committed comparison does not mean the worktree is clean.
+**Changes** and `kontora changes` show only committed branch changes. An empty committed comparison does not mean the worktree is clean.
 
 Kontora does not automatically merge the branch. Commit and integrate the changes using your repository's normal process. Push or open a pull request only when you intend to publish.
 

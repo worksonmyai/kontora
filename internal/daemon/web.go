@@ -63,13 +63,24 @@ func (d *Daemon) ListTickets(opts web.ListTicketsOptions) []web.TicketInfo {
 // GetTicket returns detailed info for a single ticket, including the body.
 func (d *Daemon) GetTicket(id string) (web.TicketInfo, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	ts, ok := d.tickets[id]
 	if !ok {
+		d.mu.Unlock()
 		return web.TicketInfo{}, web.ErrTicketNotFound
 	}
-	return d.buildTicketInfo(d.config(), ts, true), nil
+	cfg := d.config()
+	info := d.buildTicketInfo(cfg, ts, true)
+	var snapshot *ticket.Ticket
+	if t := ts.ticket; t.Kontora && t.Kind != ticket.KindEpic && t.Status == ticket.StatusOpen && t.ScheduledAt == "" {
+		snapshot = t.Clone()
+	}
+	path := ts.filePath
+	d.mu.Unlock()
+
+	if snapshot != nil {
+		info.RunPreview = d.buildRunPreview(cfg, snapshot, path)
+	}
+	return info, nil
 }
 
 // CreateTicket creates a new ticket file and registers it in the daemon.

@@ -34,7 +34,7 @@ func TestDialogsJS(t *testing.T) {
 
 func TestSettingsJS(t *testing.T) {
 	bundle := writeBundle(t)
-	for _, name := range []string{"settings.test.mjs", "settings_picker.test.mjs", "settings_routes.test.mjs", "automations.test.mjs", "graph.test.mjs", "wait_projection.test.mjs", "review_15_deployment_checkout_regression.test.mjs", "detail_view.test.mjs", "lifecycle.test.mjs", "terminal.test.mjs", "evidence_data.test.mjs", "epic_management.test.mjs", "creation_navigation.test.mjs", "assistant_presentation.test.mjs", "prose_preferences.test.mjs", "assistant_ownership.test.mjs", "schedule_validation.test.mjs"} {
+	for _, name := range []string{"settings.test.mjs", "settings_picker.test.mjs", "settings_routes.test.mjs", "automations.test.mjs", "graph.test.mjs", "wait_projection.test.mjs", "review_15_deployment_checkout_regression.test.mjs", "detail_view.test.mjs", "lifecycle.test.mjs", "run_confirm.test.mjs", "board_review.test.mjs", "dependency_refresh.test.mjs", "terminal.test.mjs", "evidence_data.test.mjs", "epic_management.test.mjs", "creation_navigation.test.mjs", "assistant_presentation.test.mjs", "prose_preferences.test.mjs", "assistant_ownership.test.mjs", "schedule_validation.test.mjs"} {
 		t.Run(name, func(t *testing.T) {
 			cmd := nodeTest(t, name)
 			cmd.Env = append(os.Environ(), "KONTORA_BUNDLE="+bundle)

@@ -18,8 +18,8 @@
   <link rel="preload" as="font" type="font/woff2" href="/vendor/fonts/jetbrains-mono-latin.woff2" crossorigin>
   <!-- All deferred, so none of them block the parser. Order matters and Alpine
        must stay last: deferred scripts run in document order, and Alpine's CDN
-       build calls Alpine.start() as it loads, which walks the board's x-init
-       and calls initSortable. Sortable has to be defined by then. -->
+       build calls Alpine.start() as it loads, which mounts the board's
+       Sortable owners. Sortable has to be defined by then. -->
   <script defer src="/vendor/sortablejs@1.15.6/Sortable.min.js"></script>
   <script defer src="/vendor/marked@15.0.7/marked.min.js"></script>
   <script defer src="/vendor/dompurify@3.3.2/purify.min.js"></script>
@@ -313,14 +313,22 @@
     [data-theme='light'] [data-pipe-color="mauve"]  { --pipe-h: 261 60% 48%; }
     [data-theme='light'] [data-pipe-color="none"]   { --pipe-h: 240 10% 35%; }
 
-    /* Column header: status-colored name + count over a tinted 2px rule (1c). */
+    .hidden-rail { width:36px; flex:none; height:100%; display:flex; flex-direction:column; background:rgba(var(--surface-rail),1); border:1px solid rgba(var(--surface-700),1); border-radius:9px; overflow:hidden auto; }
+    .hidden-rail-item { position:relative; flex:none; min-width:0; display:flex; flex-direction:column; align-items:center; gap:8px; padding:12px 0; border-radius:0; border-bottom:1px solid rgba(var(--surface-700),1); overflow:hidden; cursor:pointer; }
+    .hidden-rail-item:hover { background:rgba(var(--surface-900),1); }
+    .hidden-rail-item:focus-visible { outline:2px solid rgba(var(--accent),1); outline-offset:-2px; }
+
+    /* Column header: status-colored name + count over a tinted 2px rule. */
     .col-head {
       display: flex; align-items: center; gap: 8px;
-      padding: 8px 10px;
+      padding: 6px 4px 9px;
       margin-bottom: 10px;
       border-bottom: 2px solid hsl(var(--col-tint) / 0.45);
     }
+    .col-head:focus-visible { outline:2px solid rgba(var(--accent),1); outline-offset:-2px; }
     .col-head-label {
+      min-width:0;
+      overflow-wrap:anywhere;
       font-family: 'JetBrains Mono', monospace;
       font-size: 11px;
       text-transform: uppercase;
@@ -331,9 +339,10 @@
     .col-head-count {
       font-family: 'JetBrains Mono', monospace;
       font-size: 11px;
-      color: rgba(var(--surface-600), 1);
+      color: rgba(var(--tx-log), 1);
       font-variant-numeric: tabular-nums;
     }
+    .col-head-note { font-family:'JetBrains Mono', monospace; font-size:10.5px; color:rgba(var(--warn),1); font-variant-numeric:tabular-nums; white-space:nowrap; }
 
     /* Pipeline tag badge: colored text over a 10% tint fill and 26% tint border. */
     .pipe-tag {
@@ -371,10 +380,6 @@
     }
     /* The same tag one size up, for the init modal's header band. */
     .title-tag.init-title-tag { font-size: 13px; }
-
-    /* Slim single-track stage progress bar on running cards. */
-    .card-progress { height: 3px; background: rgba(var(--surface-700), 1); border-radius: 9999px; overflow: hidden; }
-    .card-progress > div { height: 100%; background: hsl(var(--st-progress)); border-radius: 9999px; }
 
     /* Epic page sub-ticket row. The seven columns are the design's, and a grid
        template is one literal value rather than a Tailwind utility. */
@@ -422,7 +427,23 @@
     .kt-card .card-menu { display: none; }
     .kt-card.menu-open { overflow: visible; content-visibility: visible; z-index: 12; }
     .kt-card.menu-open .card-menu { display: block; }
-    .kt-card.menu-open .card-menu-btn { opacity: 1; }
+    .kt-card:is(:hover, :focus-within, .menu-open) .card-menu-btn { opacity:1; }
+    .card-row1 { min-height:16px; }
+    .card-title { margin:0; text-wrap:pretty; overflow-wrap:anywhere; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
+    .card-pipe { flex-shrink:0; max-width:60%; overflow:hidden; text-overflow:ellipsis; font-size:10px; letter-spacing:.05em; text-transform:uppercase; white-space:nowrap; color:hsl(var(--pipe-h, 240 10% 55%)); transition:opacity .15s; }
+    /* Fade the pipeline label without moving it. On coarse pointers, reserve room for both controls. */
+    .kt-card.has-menu .card-row1:not(:has(.card-pipe)) { padding-right:28px; }
+    .kt-card.has-menu:is(:hover, :focus-within, .menu-open) .card-pipe { opacity:0; }
+    @media (pointer:coarse) {
+      .kt-card.has-menu .card-menu-btn { opacity:1; }
+      .kt-card.has-menu .card-row1 { padding-right:28px; }
+      .kt-card.has-menu:is(:hover, :focus-within, .menu-open) .card-pipe { opacity:1; }
+    }
+    .card-stage { display:flex; flex:1 1 auto; align-items:center; gap:8px; min-width:0; font-family:'JetBrains Mono', monospace; font-size:10.5px; line-height:16px; }
+    .card-stage-track { flex:1; display:flex; gap:3px; min-width:40px; }
+    .card-seg { flex:1; height:3px; border-radius:9999px; background:rgba(var(--surface-700),1); }
+    .card-seg[data-state="done"] { background:hsl(var(--st-progress) / 0.45); }
+    .card-seg[data-state="current"] { background:hsl(var(--st-progress)); }
 
     /* "running" pill in the top header */
     .running-pill {
@@ -435,6 +456,9 @@
       font-size: 11px;
       color: rgba(var(--tx-2), 1);
     }
+    .desktop-header .running-pill { height:30px; font-family:'DM Sans', sans-serif; font-size:12.5px; color:rgba(var(--tx-3),1); cursor:pointer; transition:border-color .15s; }
+    .desktop-header .running-pill:hover { border-color:rgba(var(--edge-hover),1); }
+    .running-pill-count { font-family:'JetBrains Mono', monospace; font-size:11.5px; color:rgba(var(--tx-hi),1); }
     .running-pill-dot {
       width: 7px; height: 7px; border-radius: 9999px;
       background: hsl(var(--st-progress));
@@ -468,6 +492,7 @@
     .status-chip[data-status="human_review"] { color: hsl(var(--st-review));   background: hsl(var(--st-review) / 0.1);   border-color: hsl(var(--st-review) / 0.26); }
     .status-chip[data-status="done"]         { color: hsl(var(--st-done));     background: hsl(var(--st-done) / 0.1);     border-color: hsl(var(--st-done) / 0.26); }
     .status-chip[data-status="cancelled"]    { color: hsl(var(--st-cancel));   background: hsl(var(--st-cancel) / 0.1);   border-color: hsl(var(--st-cancel) / 0.26); }
+    .ticket-detail-shell .status-chip[data-status="todo"] { color:rgba(var(--warn),1); background:rgba(var(--warn),.1); border-color:rgba(var(--warn),.3); }
     /* Running pill carries a pulsing 5px dot. */
     .status-chip[data-status="in_progress"]::before {
       content: '';
@@ -694,6 +719,14 @@
       color: rgba(var(--tx-faint), 1);
     }
 
+    .ticket-detail-shell .side-label { color: rgba(var(--tx-log), 1); }
+    .ticket-detail-shell .raw-log-action { font: 12px/1 'DM Sans', sans-serif; height: 24px; padding: 0 9px; }
+
+    .run-confirm { position:absolute; right:16px; top:calc(100% + 4px); width:min(420px, calc(100vw - 32px)); max-height:calc(100dvh - 120px); z-index:40; overflow:auto; overflow-wrap:anywhere; background:rgba(var(--surface-900),1); border:1px solid rgba(var(--edge-input),1); border-radius:11px; box-shadow:0 28px 70px -20px rgba(0,0,0,.75); }
+    .run-confirm-head { padding:14px 16px 12px; border-bottom:1px solid rgba(var(--surface-700),.6); display:flex; flex-direction:column; gap:3px; }
+    .run-confirm-foot { padding:11px 16px; border-top:1px solid rgba(var(--surface-700),.6); background:rgba(var(--surface-rail),.6); display:flex; align-items:center; gap:8px; }
+    .run-confirm-foot .run-confirm-blocker { min-width:0; height:auto; min-height:30px; padding-block:5px; white-space:normal; line-height:1.3; text-align:left; }
+
     /* ─── Notes tab ─── */
     /* The hue-driven pieces. Each element carries [data-pipe-color], which sets
        --pipe-h, so one rule covers every author, every event and every chip. */
@@ -906,7 +939,7 @@
 </head>
 
 <body class="app-shell bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal || _initOpening) closeInitModal(); else if (settingsGuard) { if (!settingsSaving) settingsGuardKeepEditing(); } else if (automationsDeleteOpen) automationsCloseDelete(); else if (automationsMenu) automationsMenu = false; else if (currentView === 'automations' && (automationsDetail || automationsEditing)) { if (terminalRW && terminalWanted()) toggleTerminalRW(); else automationsBack(); } else if (sheet) closeSheet(); else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) { if (dismissStageTooltip($event.repeat)) $event.preventDefault(); else if (isMobile) mobileDetailBack(); else closeDetail(); } else if (selectedEpic) { if (isMobile) mobileDetailBack(); else closeEpic(); } else if (isMobile && currentView === 'board' && mobileColumnKey) mobileColumnBack(); else if (assistantEscape()) {}"
+      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal || _initOpening) closeInitModal(); else if (settingsGuard) { if (!settingsSaving) settingsGuardKeepEditing(); } else if (automationsDeleteOpen) automationsCloseDelete(); else if (automationsMenu) automationsMenu = false; else if (currentView === 'automations' && (automationsDetail || automationsEditing)) { if (terminalRW && terminalWanted()) toggleTerminalRW(); else automationsBack(); } else if (sheet) closeSheet(); else if (currentView === 'new') closeCreateModal(); else if (runConfirmOpen) closeRunConfirm(true); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) { if (dismissStageTooltip($event.repeat)) $event.preventDefault(); else if (isMobile) mobileDetailBack(); else closeDetail(); } else if (selectedEpic) { if (isMobile) mobileDetailBack(); else closeEpic(); } else if (isMobile && currentView === 'board' && mobileColumnKey) mobileColumnBack(); else if (assistantEscape()) {}"
       @keyup.escape.window.capture="_stageTooltipEscapeHeld = false"
       @blur.window="_stageTooltipEscapeHeld = false"
       @dragenter="onUploadDragEnter($event)"
@@ -1048,7 +1081,7 @@
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-surface-600 shrink-0"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
             </span>
           </template>
-          <span class="status-chip status-chip-sm" data-status="todo">Todo</span>
+          <span class="status-chip status-chip-sm" data-status="todo">Queued</span>
           <span class="ml-auto font-mono text-[11px] text-surface-600" x-text="initForm.ticketId"></span>
           <button @click="closeInitModal()" class="ml-[2px] flex text-surface-600 hover:text-tx-3" aria-label="Close">
             <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -1174,16 +1207,16 @@
           <p x-show="initError" class="text-[11px] text-err" x-text="initError"></p>
         </div>
         <div class="shrink-0 p-[14px_20px] border-t border-surface-700 bg-surface-rail/60 flex items-center gap-[12px]">
-          <p class="m-0 font-mono text-[11px] leading-[1.5] text-surface-600" x-text="initForm.kind === 'epic' ? 'This requests a start for the epic supervisor.' : 'This requests pickup. Unresolved dependencies can keep the ticket out of the queue.'"></p>
+          <p class="m-0 font-mono text-[11px] leading-[1.5] text-surface-600" x-text="initForm.kind === 'epic' ? 'Starts the epic supervisor.' : 'Saves these settings and requests a run. Unresolved dependencies can block pickup.'"></p>
           <div class="ml-auto flex items-center gap-[9px] shrink-0">
             <button type="button" @click="closeInitModal()"
                     class="font-mono text-[13px] h-[31px] px-[14px] rounded-[7px] bg-transparent border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors">
-              cancel
+              Cancel
             </button>
             <button type="submit" :disabled="initSubmitting"
                     class="text-[13px] font-sans font-semibold h-[31px] px-[16px] rounded-[7px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors flex items-center gap-[7px] disabled:opacity-50 disabled:cursor-not-allowed">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20"/></svg>
-              <span x-text="initSubmitting ? 'starting...' : (initForm.kind === 'epic' ? 'start epic' : 'start ticket')"></span>
+              <span x-text="initSubmitting ? 'Starting…' : (initForm.kind === 'epic' ? 'Start epic' : 'Set up and run')"></span>
             </button>
           </div>
         </div>
@@ -1195,7 +1228,7 @@
   <div data-dialog-layer="delete" x-show="deleteModal" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="closeDeleteModal()">
     <div role="dialog" aria-modal="true" aria-labelledby="delete-modal-title" data-dialog-panel tabindex="-1" class="bg-surface-900 border border-err/20 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
       <div class="flex items-center justify-between mb-4">
-        <span id="delete-modal-title" class="text-sm font-semibold text-tx-2">Delete ticket file</span>
+        <span id="delete-modal-title" class="text-sm font-semibold text-tx-2">Delete ticket</span>
         <button @click="closeDeleteModal()"
                 :disabled="deleteSubmitting"
                 class="text-surface-600 hover:text-tx-3 disabled:opacity-50 disabled:cursor-not-allowed" aria-label="Close">
@@ -1216,12 +1249,12 @@
         <button type="button" data-dialog-initial @click="closeDeleteModal()"
                 :disabled="deleteSubmitting"
                 class="text-[13px] font-mono px-4 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-          cancel
+          Cancel
         </button>
         <button type="button" @click="deleteSelectedTicket()"
                 :disabled="deleteSubmitting"
                 class="text-[13px] font-mono px-4 py-1.5 rounded bg-err/15 border border-err/25 text-err hover:bg-err/25 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-          <span x-text="deleteSubmitting ? 'deleting...' : 'delete file'"></span>
+          <span x-text="deleteSubmitting ? 'Deleting…' : 'Delete ticket'"></span>
         </button>
       </div>
     </div>
@@ -1347,9 +1380,9 @@
   </div>
 
   <!-- Top bar (desktop / tablet; the phone-width layer has its own app bar) -->
-  <header x-show="!isMobile" data-mobile-sheet-background class="desktop-header bg-surface-rail border-b border-surface-700 flex items-center gap-4 px-[18px] shrink-0">
-    <button @click="toggleSidebar()"
-            class="w-7 h-7 -ml-1 rounded text-surface-600 hover:text-tx-3 hover:bg-surface-900 transition-colors flex items-center justify-center shrink-0"
+  <header x-show="!isMobile" data-mobile-sheet-background class="desktop-header bg-surface-rail border-b border-surface-700 flex items-center gap-[10px] px-[16px] shrink-0">
+    <button type="button" @click="toggleSidebar()"
+            class="w-[30px] h-[30px] -ml-[6px] rounded-[7px] text-tx-4 hover:text-tx-2 hover:bg-surface-900 transition-colors flex items-center justify-center shrink-0"
             :aria-label="sidebarHidden ? 'Show sidebar' : 'Hide sidebar'"
             :data-tip-t="sidebarHidden ? 'Show sidebar' : 'Hide sidebar'">
       <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1358,12 +1391,10 @@
     </button>
     <!-- The wordmark is the second way back to the board, next to the "board"
          crumb. On the board itself there is nowhere to go, so it stays inert. -->
-    <h1 class="m-0 leading-none shrink-0">
-      <button type="button" @click="closeDetail()" :disabled="!selectedTicket"
-              class="group flex items-baseline gap-2.5 text-left">
+    <h1 class="m-0 mr-[10px] leading-none shrink-0">
+      <button type="button" @click="closeDetail()" :disabled="!selectedTicket" class="group flex text-left">
         <span class="font-mono font-bold text-[16px] text-tx-hi leading-none transition-colors"
               :class="selectedTicket ? 'group-hover:text-accent' : ''">kontora</span>
-        <span class="text-[10px] font-medium text-tx-faint uppercase tracking-[.2em] hidden sm:inline">agent orchestration</span>
       </button>
     </h1>
 
@@ -1371,37 +1402,43 @@
          input only narrows the board. A ticket page has nothing to filter, so
          the slot carries its breadcrumb instead. -->
     <template x-if="!boardDetailOpen() && !epicPageOpen() && !(currentView === 'automations' && (automationsDetail || automationsEditing))">
-    <div class="desktop-board-search flex-1 min-w-[120px] max-w-[300px] relative">
-      <div class="relative flex items-center">
-        <svg class="absolute left-2.5 w-3.5 h-3.5 text-surface-600 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-        </svg>
-        <input type="text" x-model="searchQuery" @keydown.escape="$el.blur()"
-               placeholder="Filter tickets…" aria-label="Filter tickets"
-               class="w-full pl-8 pr-11 py-[7px] text-[12px] font-mono rounded-[7px] bg-surface-900 border border-edge-input text-tx placeholder-surface-600 focus:outline-none focus:border-accent transition-colors"
-               title="Filter by title, id, repository or pipeline. project:name and agent:name narrow to one of those.">
-        <button x-show="searchQuery" @click="clearSearch()" aria-label="Clear search" class="absolute right-2 text-surface-600 hover:text-tx-3">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-          </svg>
-        </button>
-        <button x-show="!searchQuery" @click="openPalette()"
-                aria-label="Open command palette" title="Command palette"
-                class="absolute right-1.5 h-[19px] px-[5px] flex items-center border border-edge-input rounded bg-surface-800 text-tx-faint font-mono text-[10px] hover:text-accent hover:border-accent/[.38] focus-visible:text-accent transition-colors"
+      <div class="contents">
+        <div class="desktop-board-search flex-1 min-w-[140px] max-w-[320px] relative">
+          <div class="relative flex items-center">
+            <svg class="absolute left-[10px] w-3.5 h-3.5 text-tx-4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+            <input id="board-filter" type="text" x-model="searchQuery" @keydown.escape="$el.blur()"
+                   placeholder="Filter tickets" aria-label="Filter tickets"
+                   class="w-full h-[30px] pl-[32px] pr-[32px] text-[13px] font-sans rounded-[7px] bg-surface-900 border border-edge-input text-tx placeholder:text-tx-4 focus:outline-none focus:border-accent transition-colors"
+                   data-tip="Filter by title, ticket ID, repository folder name, or pipeline. Use project:name or agent:name for partial matches. Use project:=name or agent:=name for exact matches.">
+            <button type="button" x-show="searchQuery" @click="clearSearch()" aria-label="Clear search" class="absolute right-2 text-tx-4 hover:text-tx-2">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+            <kbd x-show="!searchQuery" aria-hidden="true" class="absolute right-[7px] h-[18px] min-w-[18px] px-1 flex items-center justify-center border border-edge-input rounded-[4px] bg-surface-800 text-tx-4 font-mono text-[10px] pointer-events-none">/</kbd>
+          </div>
+        </div>
+        <button type="button" @click="openPalette()" aria-label="Open command palette" data-tip-t="Command palette"
+                class="h-[30px] px-[9px] shrink-0 flex items-center rounded-[7px] border border-edge-input text-tx-3 font-mono text-[11px] hover:text-tx-2 hover:border-edge-hover transition-colors"
                 x-text="isMac ? '⌘K' : 'Ctrl K'"></button>
       </div>
-    </div>
     </template>
-    <button type="button" x-ref="desktopNeedsInputToggle" x-show="currentView === 'board' && !selectedTicket && !selectedEpic" @click="toggleNeedsInput()" :aria-pressed="needsInputOnly"
-            class="whitespace-nowrap shrink-0 h-8 px-2.5 rounded border text-xs font-mono" :class="needsInputOnly ? 'border-accent text-accent' : 'border-edge-input text-tx-3'">
-      Needs input <span x-text="needsInputCount"></span>
+    <button type="button" x-ref="desktopNeedsInputToggle" x-show="currentView === 'board' && !selectedTicket && !selectedEpic"
+            @click="toggleNeedsInput()" :aria-pressed="needsInputOnly" data-tip="Show only tickets whose agent is waiting on you"
+            class="h-[30px] pl-[10px] pr-[6px] shrink-0 flex items-center gap-2 whitespace-nowrap rounded-[7px] border font-sans text-[13px] transition-colors"
+            :class="needsInputOnly ? 'border-accent text-accent' : 'border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover'">
+      Needs input
+      <span class="min-w-[18px] h-[18px] px-[5px] rounded-[4px] bg-surface-800 font-mono text-[10.5px] num flex items-center justify-center"
+            :class="needsInputOnly ? 'text-accent' : 'text-tx-4'" x-text="needsInputCount"></span>
     </button>
 
     <template x-if="boardDetailOpen()">
-      <div class="flex items-center gap-3 min-w-0">
+      <nav aria-label="Breadcrumb" class="flex items-center gap-2 min-w-0">
         <button type="button" @click="closeDetail()"
-                class="font-mono text-[12px] text-tx-3 hover:text-tx-2 transition-colors">board</button>
-        <span class="text-edge-faint">/</span>
+                class="font-sans text-[13px] text-tx-3 hover:text-tx-hi transition-colors">Board</button>
+        <span class="text-edge-faint" aria-hidden="true">/</span>
         <!-- parent is navigation, not payload, so it is a crumb rather than a
              row in the body. All five data-tip-e* attributes are needed: the
              shared card mirrors them on every hover, and an omitted one leaks
@@ -1419,13 +1456,13 @@
               <span class="truncate" x-text="selectedTicket.parent.id"></span>
             </button>
             <button type="button" class="tip" :data-tip="ticketTip(selectedTicket.parent).body" aria-label="About the parent ticket">i</button>
-            <span class="text-edge-faint">/</span>
+            <span class="text-edge-faint" aria-hidden="true">/</span>
           </span>
         </template>
         <span class="font-mono text-[12px] text-tx-2 truncate" x-text="selectedTicket?.id"></span>
-        <span class="font-mono text-[11px] text-tx-3 truncate" :title="sourceLabel(selectedTicket)" x-text="sourceLabel(selectedTicket)"></span>
-        <span x-show="detailLoading" class="font-mono text-[11px] text-surface-600">loading...</span>
-      </div>
+        <span x-show="isSecondary(selectedTicket)" class="font-mono text-[11px] text-tx-3 truncate" :title="sourceLabel(selectedTicket)" x-text="sourceLabel(selectedTicket)"></span>
+        <span x-show="detailLoading" class="font-mono text-[11px] text-tx-log">loading…</span>
+      </nav>
     </template>
 
     <template x-if="currentView === 'automations' && (automationsDetail || automationsEditing)">
@@ -1451,43 +1488,44 @@
       </div>
     </template>
 
-    <div class="desktop-header-actions flex items-center gap-2 text-xs font-mono ml-auto">
-      <template x-if="!selectedTicket && searchQuery && searchQuery.trim()">
-        <span class="text-[11px] text-surface-600 mx-1">
+    <div class="desktop-header-actions flex items-center gap-2 ml-auto">
+      <template x-if="currentView === 'board' && !selectedTicket && !selectedEpic && searchQuery && searchQuery.trim()">
+        <span class="font-mono text-[11px] text-tx-log mx-1">
           <span class="text-tx-3" x-text="filteredTicketCount()"></span> matched
         </span>
       </template>
-      <span class="running-pill" :class="runningAgents + automationsRunningCount() === 0 ? 'is-idle' : ''">
-        <span class="running-pill-dot" :class="runningAgents + automationsRunningCount() > 0 ? 'pulse-dot' : ''"></span>
-        <span class="text-tx-2 num" x-text="runningAgents + automationsRunningCount()"></span>
-        <span class="text-surface-600">running</span>
-      </span>
-      <button id="assistant-trigger" @click="toggleAssistant()" data-pipe-color="mauve"
+      <button type="button" class="running-pill" :class="runningAgents + automationsRunningCount() === 0 ? 'is-idle' : ''"
+              @click="showInProgress()" aria-description="Show the In progress column"
+              :data-tip="(runningAgents + automationsRunningCount()) + ' running · show In progress'">
+        <span class="running-pill-dot" :class="runningAgents + automationsRunningCount() > 0 ? 'pulse-dot' : ''" aria-hidden="true"></span>
+        <span class="running-pill-count num" x-text="runningAgents + automationsRunningCount()"></span>
+        <span>running</span>
+      </button>
+      <button type="button" id="assistant-trigger" @click="toggleAssistant()" data-pipe-color="mauve"
               :aria-description="assistantLaunchHint()" :data-assistant-state="assistantLaunchLabel()"
-              class="assistant-launch w-7 h-7 rounded-[7px] border border-edge-input transition-colors flex items-center justify-center hover:border-edge-hover"
-              :class="assistantOpen ? '' : 'text-surface-600 hover:text-tx-3'"
+              class="assistant-launch w-[30px] h-[30px] rounded-[7px] border border-edge-input transition-colors flex items-center justify-center hover:border-edge-hover"
+              :class="assistantOpen ? '' : 'text-tx-4 hover:text-tx-2'"
               :style="assistantOpen ? 'color: hsl(var(--pipe-h))' : ''"
               aria-label="Assistant" :title="assistantLaunchHint()">
         <span class="assistant-launch-state" x-show="assistantLaunchLabel()" x-text="assistantLaunchLabel()"></span>
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
       </button>
-      <button @click="toggleTheme()"
-              class="w-7 h-7 rounded-[7px] border border-edge-input text-surface-600 hover:text-tx-3 hover:border-edge-hover transition-colors flex items-center justify-center"
+      <button type="button" @click="toggleTheme()"
+              class="w-[30px] h-[30px] rounded-[7px] border border-edge-input text-tx-4 hover:text-tx-2 hover:border-edge-hover transition-colors flex items-center justify-center"
               :disabled="themeSaving" aria-label="Cycle theme" title="Cycle theme: System, Light, Dark (press c then t)">
         <svg x-show="!lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
         <svg x-show="lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
       <template x-if="!boardDetailOpen() && !epicPageOpen() && !(currentView === 'automations' && (automationsDetail || automationsEditing))">
         <div class="desktop-ticket-tools flex items-center gap-2" :data-board="String(currentView === 'board')">
-          <button @click="gotoView('new')"
-                  class="text-[13px] font-sans font-semibold h-[31px] px-[14px] rounded-[7px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors flex items-center gap-1.5">
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
-            New ticket
+          <span class="w-px h-[18px] bg-surface-700 mx-0.5 shrink-0" aria-hidden="true"></span>
+          <button type="button" @click="$refs.uploadInput.click()" class="btn-outline">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Upload
           </button>
-          <button @click="$refs.uploadInput.click()"
-                  class="text-[12px] font-mono h-[31px] px-3 rounded-[7px] bg-surface-900 border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors flex items-center gap-1.5">
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            upload
+          <button type="button" @click="gotoView('new')" class="btn-accent">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+            New ticket
           </button>
         </div>
       </template>
@@ -1522,97 +1560,125 @@
            the same frame and has no second header of its own. -->
       <template x-if="boardDetailOpen()">
         <div class="flex items-center gap-2">
-          <button type="button" x-show="isSecondary(selectedTicket)" @click="claimTicket()"
+          <span class="w-px h-[18px] bg-surface-700 mx-0.5 shrink-0" aria-hidden="true"></span>
+          <button type="button" x-show="isSecondary(selectedTicket)" @click="claimTicket()" class="btn-accent"
                   :disabled="!ticketCanClaim(selectedTicket) || claimSubmitting"
-                  :title="selectedTicket?.refusal_reason || 'Move into primary without starting work. Related tickets are not moved; references resolve in primary.'"
-                  class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-accent text-accent-fg disabled:opacity-50 disabled:cursor-not-allowed"
-                  x-text="claimSubmitting ? 'Claiming…' : 'Claim'"></button>
-          <span x-show="isSecondary(selectedTicket) && !ticketCanClaim(selectedTicket)" class="max-w-[240px] text-[11px] text-warn" x-text="selectedTicket?.refusal_reason || 'This ticket cannot be claimed.'"></span>
+                  :data-tip-t="selectedTicket?.refusal_reason || 'Moves the ticket file into this daemon\'s tickets folder. Doesn\'t start work.'"
+                  x-text="claimSubmitting ? 'Moving…' : 'Move here'"></button>
+          <span x-show="isSecondary(selectedTicket) && !ticketCanClaim(selectedTicket)" class="max-w-[240px] font-sans text-[11px] text-warn" x-text="selectedTicket?.refusal_reason || 'This ticket can\'t be moved here.'"></span>
           <button type="button" x-show="!isSecondary(selectedTicket) && selectedTicket?.kind === 'epic'" @click="openEpic(selectedTicket.id)"
-                  class="font-mono text-[12px] text-accent hover:underline">epic overview</button>
-          <template x-if="ticketCanControl(selectedTicket) && executionActive(selectedTicket) && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
-            <button @click="action('pause')" :disabled="!!actionLoading || lifecycleBusy(selectedTicket)"
-                    class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-st-paused hover:border-st-paused/35 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                    :data-tip-t="epicIsAgent(selectedTicket) ? 'Stops only the supervisor. Child agents keep running.' : 'Stops the running agent and pauses the ticket. Pause first and wait for the agent to stop before changing stages.'">
-              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg>
-              <span x-text="actionLoading === 'pause' ? 'pausing...' : (epicIsAgent(selectedTicket) ? 'pause supervisor' : 'pause')"></span>
+                  class="font-sans text-[13px] text-accent hover:underline">Epic overview</button>
+          <select x-show="lifecycleDestinations(selectedTicket).length" aria-label="Set status" :disabled="lifecycleBusy(selectedTicket)"
+                  @change="const command = lifecycleDestinations(selectedTicket).find(d => d.status === $event.target.value); if (command) dispatchLifecycle(selectedTicket, command); $event.target.value = ''"
+                  class="h-[30px] bg-surface-900 border border-edge-input rounded-[7px] px-2 font-sans text-[13px] text-tx-2">
+            <option value="">Set status…</option>
+            <template x-for="destination in lifecycleDestinations(selectedTicket)" :key="destination.id"><option :value="destination.status" x-text="destination.statusLabel"></option></template>
+          </select>
+          <template x-if="detailPrimaryAction(selectedTicket)?.id === 'pause'">
+            <button type="button" @click="action('pause')" :disabled="!!actionLoading || lifecycleBusy(selectedTicket)"
+                    class="btn-outline hover:!text-st-paused hover:!border-st-paused/35"
+                    :data-tip-t="epicIsAgent(selectedTicket) ? 'Stops only the supervisor. Child agents keep running.' : 'Stops the agent. Change stages after it has stopped.'">
+              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg>
+              <span x-text="actionLoading === 'pause' ? 'Pausing…' : detailPrimaryAction(selectedTicket)?.label"></span>
             </button>
           </template>
-          <template x-if="ticketCanControl(selectedTicket) && canSkipStage()">
-            <button @click="action('skip')" :disabled="!!actionLoading || lifecycleBusy(selectedTicket)"
-                    class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-tx hover:border-edge-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                    data-tip-t="Queues the next stage, or marks the ticket done on the final stage. Pause first if an agent is running.">
-              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
-              <span x-text="actionLoading === 'skip' ? 'skipping...' : 'skip stage'"></span>
-            </button>
+          <template x-if="detailPrimaryAction(selectedTicket)?.id === 'move:open'">
+            <button type="button" class="btn-outline" :disabled="lifecycleBusy(selectedTicket)"
+                    :data-tip-t="'Moves the ticket back to Open.' + (selectedTicket?.scheduled_at ? ' Its schedule is kept.' : '')" @click="dispatchLifecycle(selectedTicket, 'move:open')">Unqueue</button>
           </template>
-          <!-- Retry is a kontora-only endpoint: app.Service.Retry rejects a ticket
-               the daemon does not own, so a foreign one gets no button. -->
-          <template x-if="ticketCanControl(selectedTicket) && ['paused', 'done', 'cancelled'].includes(selectedTicket?.status) && selectedTicket?.kontora && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
-            <button @click="action('retry')" :disabled="!!actionLoading || lifecycleBusy(selectedTicket)"
-                    class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-ok hover:border-ok/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                    data-tip-t="Queues the ticket again from its current stage.">
-              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
-              <span x-text="actionLoading === 'retry' ? 'Queuing…' : lifecycleCommand(selectedTicket, 'retry')?.label"></span>
-            </button>
+          <template x-if="['run', 'start'].includes(detailPrimaryAction(selectedTicket)?.id)">
+            <div @click.outside="closeRunConfirm(false)" @keydown.enter="if ($event.repeat) $event.preventDefault()">
+              <button type="button" x-ref="runConfirmTrigger" class="btn-accent" :disabled="detailLoading || lifecycleBusy(selectedTicket)"
+                      aria-haspopup="dialog" :aria-expanded="runConfirmOpen" :aria-controls="runConfirmOpen ? 'run-confirm' : null"
+                      @click="runConfirmOpen ? closeRunConfirm(true) : openRunConfirm(selectedTicket)">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 4 20 12 6 20"/></svg>
+                <span x-text="detailPrimaryAction(selectedTicket)?.label"></span>
+              </button>
+              <template x-if="runConfirmOpen">
+                <div id="run-confirm" role="dialog" aria-labelledby="run-confirm-title" class="run-confirm font-sans">
+                  <div class="run-confirm-head">
+                    <span id="run-confirm-title" class="text-[14px] font-semibold text-tx-hi" x-text="'Run ' + (selectedTicket?.id || '')"></span>
+                    <span x-show="runConfirmView().repo" class="text-[12.5px] leading-[1.45] text-tx-3">Kontora may reuse an existing checkout for the saved branch.</span>
+                  </div>
+                  <p x-show="runConfirmLoading" role="status" class="px-4 py-3 text-sm text-tx-3">Reading saved run settings…</p>
+                  <p x-show="runConfirmView().error" role="alert" class="px-4 py-3 text-sm text-err" x-text="runConfirmView().error"></p>
+                  <div x-show="runConfirmPreview && !runConfirmPreview.error" class="px-4 py-3 flex flex-col gap-2.5">
+                    <span x-show="runConfirmView().kind" class="font-mono text-[10.5px] text-tx-log" x-text="runConfirmView().kind"></span>
+                    <div x-show="runConfirmView().stages.length" class="flex flex-wrap items-center gap-[5px]">
+                      <template x-for="(s, i) in runConfirmView().stages" :key="s">
+                        <span class="contents">
+                          <span x-show="i > 0" class="text-[10px] text-edge-faint" aria-hidden="true">→</span>
+                          <span class="font-mono text-[10.5px] px-[7px] py-[2px] rounded-[4px] border"
+                                :class="i === 0 ? 'text-accent-bright bg-accent/[.14] border-accent/[.42]' : 'text-tx-3 bg-surface-800 border-surface-700'" x-text="s"></span>
+                        </span>
+                      </template>
+                    </div>
+                    <div class="grid grid-cols-[54px_minmax(0,1fr)] gap-x-2.5 gap-y-[5px] font-mono text-[11px] leading-[1.5]">
+                      <template x-if="runConfirmView().agent"><span class="contents"><span class="text-tx-log">agent</span><span class="text-tx-2" x-text="runConfirmView().agent"></span></span></template>
+                      <template x-if="runConfirmView().branch"><span class="contents"><span class="text-tx-log">branch</span><span class="text-tx-2" x-text="runConfirmView().branch"></span></span></template>
+                      <template x-if="runConfirmView().repo"><span class="contents"><span class="text-tx-log">repo</span><span class="text-tx-2" x-text="runConfirmView().repo"></span></span></template>
+                    </div>
+                    <template x-if="runConfirmView().blocker">
+                      <div class="flex flex-col gap-[3px] px-[11px] py-[9px] rounded-[7px] bg-warn/[.08] border border-warn/[.28] text-[12.5px] leading-[1.45] text-tx-2">
+                        <span class="text-warn font-semibold" x-text="'Waits for ' + runConfirmView().blocker?.id"></span>
+                        <span x-text="runConfirmView().blocker?.body"></span>
+                      </div>
+                    </template>
+                  </div>
+                  <div class="run-confirm-foot">
+                    <button type="button" x-ref="runConfirmCancel" @click="closeRunConfirm(true)" class="h-[30px] px-3 rounded-[7px] font-sans text-[13px] text-tx-3 hover:text-tx-hi">Cancel</button>
+                    <span class="flex-1"></span>
+                    <template x-if="runConfirmView().blocker?.action && !runConfirmView().error">
+                      <button type="button" @click="runBlockerFirst()" class="btn-outline run-confirm-blocker !bg-surface-850" :disabled="lifecycleBusy(selectedTicket)">
+                        <span x-text="runConfirmView().blocker?.action"></span>
+                      </button>
+                    </template>
+                    <button type="button" x-ref="runConfirmPrimary" @click="confirmRun()" class="btn-accent" :disabled="runConfirmLoading || !runConfirmPreview || !!runConfirmView().error || lifecycleBusy(selectedTicket)"
+                            x-text="runConfirmView().blocker ? 'Queue' : 'Run'"></button>
+                  </div>
+                </div>
+              </template>
+            </div>
           </template>
-          <template x-if="ticketCanControl(selectedTicket) && selectedTicket?.status === 'human_review' && selectedTicket?.kontora && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
-            <button type="button" :disabled="!!plannotatorInFlight[selectedTicket?.id] || lifecycleBusy(selectedTicket)"
-                    @click="startPlannotatorReview(selectedTicket)"
-                    class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/40 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                    data-tip-t="Open Plannotator on the daemon host to annotate the diff; submitting feedback sends it back to the agent.">
-              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-              <span x-text="plannotatorInFlight[selectedTicket?.id] ? 'reviewing…' : 'plannotator review'"></span>
-            </button>
+          <template x-if="detailPrimaryAction(selectedTicket)?.id === 'retry'">
+            <button type="button" class="btn-outline" @click="action('retry')" :disabled="!!actionLoading || lifecycleBusy(selectedTicket)"
+                    :data-tip-t="workflowWaiting(selectedTicket) ? workflowReleaseInstructions(selectedTicket) : 'Queues the ticket again from this stage.'"
+                    x-text="actionLoading === 'retry' ? 'Queuing…' : detailPrimaryAction(selectedTicket)?.label"></button>
           </template>
-          <template x-if="ticketCanControl(selectedTicket) && canAnnotateTicket(selectedTicket)">
-            <button type="button" :disabled="!!plannotatorInFlight[selectedTicket?.id] || lifecycleBusy(selectedTicket)"
-                    @click="startPlannotatorAnnotate(selectedTicket)"
-                    class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/40 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                    data-tip-t="Open Plannotator on the daemon host; submitting notes queues an agent run that rewrites the ticket and puts it back in this status.">
-              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>
-              <span x-text="plannotatorInFlight[selectedTicket?.id] ? 'annotating…' : 'annotate ticket'"></span>
-            </button>
-          </template>
-          <label x-show="ticketCanControl(selectedTicket)" class="font-mono text-[11.5px] text-tx-3">
-            <select aria-label="Move to status" :disabled="lifecycleBusy(selectedTicket)" @change="const command = lifecycleDestinations(selectedTicket).find(d => d.status === $event.target.value); if (command) dispatchLifecycle(selectedTicket, command); $event.target.value = ''" class="h-7 bg-surface-900 border border-edge-input rounded-[7px] px-2">
-              <option value="">Move to…</option><template x-for="destination in lifecycleDestinations(selectedTicket)" :key="destination.id"><option :value="destination.status" x-text="destination.label"></option></template>
-            </select>
-          </label>
-          <!-- Execution commands retain captured semantic identity; moves use the control above. -->
-          <template x-for="mv in (ticketCanControl(selectedTicket) ? detailMoves(selectedTicket).filter(m => m.kind !== 'move') : [])" :key="mv.id">
-            <button type="button" :disabled="lifecycleBusy(selectedTicket)"
-                    @click="dispatchLifecycle(selectedTicket, mv)"
-                    class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] border transition-colors flex items-center gap-1.5"
-                    :class="mv.label === 'Approve'
-                      ? 'bg-st-done/[0.16] border-st-done/[0.42] text-st-done font-bold hover:bg-st-done/[0.26]'
-                      : (mv.label === 'Cancel'
-                        ? 'bg-transparent border-st-cancel/25 text-st-cancel hover:bg-st-cancel/10'
-                        : 'bg-surface-900 border-edge-input text-tx-2 hover:text-tx hover:border-edge-hover')"
-                    x-text="(mv.label === 'Approve' ? '✓ ' : (mv.label === 'Cancel' ? '✕ ' : (mv.label === 'Send back' ? '↩ ' : ''))) + mv.label.toLowerCase()"></button>
+          <template x-if="detailPrimaryAction(selectedTicket)?.id === 'review'">
+            <button type="button" class="btn-outline" @click="startPlannotatorReview(selectedTicket)"
+                    :disabled="!!plannotatorInFlight[selectedTicket?.id] || lifecycleBusy(selectedTicket)"
+                    data-tip-t="Opens Plannotator on the daemon host to annotate the diff. Submitted feedback goes back to the agent."
+                    x-text="plannotatorInFlight[selectedTicket?.id] ? 'Reviewing…' : 'Review diff in Plannotator'"></button>
           </template>
 
           <div x-show="ticketCanControl(selectedTicket)" class="relative" @click.outside="detailMenuOpen = false">
-            <button x-ref="desktopDetailMenuTrigger" @click.stop="detailMenuOpen = !detailMenuOpen"
-                    class="w-7 h-7 rounded-[7px] bg-surface-850 border border-edge-hover text-tx-2 hover:bg-surface-800 transition-colors flex items-center justify-center"
+            <button type="button" x-ref="desktopDetailMenuTrigger" @click.stop="detailMenuOpen = !detailMenuOpen; if (detailMenuOpen) closeRunConfirm(false)"
+                    class="w-[30px] h-[30px] rounded-[7px] bg-surface-900 border border-edge-input text-tx-3 hover:border-edge-hover hover:text-tx-hi transition-colors flex items-center justify-center"
                     aria-haspopup="menu" :aria-expanded="detailMenuOpen" aria-label="More actions">
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/></svg>
             </button>
-            <div x-show="detailMenuOpen" x-cloak x-transition.origin.top.right @click.stop
-                 class="absolute right-0 top-9 min-w-[186px] max-h-[70vh] overflow-y-auto rounded-[9px] border border-surface-700 bg-surface-900 shadow-[0_12px_30px_-10px_rgba(0,0,0,.7)] z-40" role="menu">
-              <template x-for="destination in lifecycleDestinations(selectedTicket)" :key="destination.id"><button type="button" :disabled="lifecycleBusy(selectedTicket)" @click="detailMenuOpen = false; dispatchLifecycle(selectedTicket, destination)" class="w-full px-3 py-2 text-left font-mono text-[12px] text-tx-2 hover:bg-surface-850" x-text="destination.label"></button></template>
-              <button type="button" @click="detailMenuOpen = false; dispatchLifecycle(selectedTicket, 'copy-id')" class="w-full px-3 py-2 text-left font-mono text-[12px] text-tx-3">Copy ID</button>
-              <button type="button" @click="detailMenuOpen = false; dispatchLifecycle(selectedTicket, 'copy-link')" class="w-full px-3 py-2 text-left font-mono text-[12px] text-tx-3">Copy link</button>
-              <button x-show="['done', 'cancelled'].includes(selectedTicket?.status)"
+            <div x-show="detailMenuOpen" x-cloak x-transition.origin.top.right @click.stop role="menu"
+                 class="absolute right-0 top-9 min-w-[200px] max-h-[70vh] overflow-y-auto rounded-[9px] border border-surface-700 bg-surface-900 shadow-[0_12px_30px_-10px_rgba(0,0,0,.7)] z-40 py-1">
+              <template x-for="item in detailMenuActions(selectedTicket)" :key="item.id">
+                <button type="button" role="menuitem" :disabled="!!actionLoading || !!plannotatorInFlight[selectedTicket?.id] || lifecycleBusy(selectedTicket)"
+                        @click="detailMenuOpen = false; if (item.id === 'annotate') startPlannotatorAnnotate(selectedTicket); else if (item.id === 'start') dispatchLifecycle(selectedTicket, 'start'); else action(item.id)"
+                        class="w-full px-3 py-2 text-left font-sans text-[13px] text-tx-2 hover:bg-surface-850 disabled:opacity-50" x-text="item.label"></button>
+              </template>
+              <div x-show="detailMenuActions(selectedTicket).length" role="separator" class="h-px my-1 bg-surface-700/60"></div>
+              <button type="button" role="menuitem" @click="detailMenuOpen = false; dispatchLifecycle(selectedTicket, 'copy-id')" class="w-full px-3 py-2 text-left font-sans text-[13px] text-tx-3 hover:bg-surface-850">Copy ID</button>
+              <button type="button" role="menuitem" @click="detailMenuOpen = false; dispatchLifecycle(selectedTicket, 'copy-link')" class="w-full px-3 py-2 text-left font-sans text-[13px] text-tx-3 hover:bg-surface-850">Copy link</button>
+              <div role="separator" class="h-px my-1 bg-surface-700/60"></div>
+              <button type="button" role="menuitem" x-show="['done', 'cancelled'].includes(selectedTicket?.status)"
                       @click="detailMenuOpen = false; openArchivePrompt(selectedTicket?.id, $refs.desktopDetailMenuTrigger)"
-                      class="w-full px-3 py-2 text-left font-mono text-[12px] text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors flex items-center gap-[7px]">
-                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="11" height="3" rx=".8"/><path d="M2.5 5.5v5.2c0 .5.4.8.8.8h7.4c.4 0 .8-.3.8-.8V5.5"/><path d="M5.6 8h2.8"/></svg>
-                archive…
+                      class="w-full px-3 py-2 text-left font-sans text-[13px] text-tx-3 hover:bg-surface-850 hover:text-tx-2 flex items-center gap-[7px]">
+                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="2.5" width="11" height="3" rx=".8"/><path d="M2.5 5.5v5.2c0 .5.4.8.8.8h7.4c.4 0 .8-.3.8-.8V5.5"/><path d="M5.6 8h2.8"/></svg>
+                Archive…
               </button>
-              <button @click="detailMenuOpen = false; openDeleteModal(); if (deleteModal) rememberDialogTrigger('delete', $refs.desktopDetailMenuTrigger)"
-                      class="w-full px-3 py-2 text-left font-mono text-[12px] text-err hover:bg-err/10 transition-colors flex items-center gap-[7px]">
-                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-                delete file
+              <button type="button" role="menuitem" @click="detailMenuOpen = false; openDeleteModal(); if (deleteModal) rememberDialogTrigger('delete', $refs.desktopDetailMenuTrigger)"
+                      class="w-full px-3 py-2 text-left font-sans text-[13px] text-err hover:bg-err/10 flex items-center gap-[7px]">
+                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                Delete ticket…
               </button>
             </div>
           </div>
@@ -1679,83 +1745,77 @@
            class="shrink-0 border-r border-surface-700 bg-surface-rail flex flex-col overflow-y-auto">
       <!-- Nav -->
       <nav class="p-2.5 flex flex-col gap-0.5">
-        <button @click="gotoView('board')"
-                class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
-                :class="currentView === 'board' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
+        <button type="button" @click="gotoView('board')"
+                class="flex items-center gap-2.5 h-[30px] px-2.5 rounded-[6px] text-[13px] transition-colors"
+                :aria-current="currentView === 'board' ? 'page' : null"
+                :class="currentView === 'board' ? 'bg-surface-850 text-tx-hi' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" class="opacity-80"><rect x="2" y="2" width="3" height="10" rx="0.8" stroke="currentColor" stroke-width="1.1"/><rect x="6" y="2" width="3" height="6" rx="0.8" stroke="currentColor" stroke-width="1.1"/><rect x="10" y="2" width="2" height="8" rx="0.8" stroke="currentColor" stroke-width="1.1"/></svg>
-          <span>Dashboard</span>
+          <span>Board</span>
         </button>
         <button type="button" @click="currentView === 'automations' ? automationsBack(true, true) : gotoView('automations')"
-                class="automations-nav flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
+                class="automations-nav flex items-center gap-2.5 h-[30px] px-2.5 rounded-[6px] text-[13px] transition-colors"
                 :aria-current="currentView === 'automations' ? 'page' : null"
-                :class="currentView === 'automations' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
+                :class="currentView === 'automations' ? 'bg-surface-850 text-tx-hi' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
           <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="opacity-85"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
           <span>Automations</span>
-          <span class="ml-auto flex items-center gap-1.5"><span x-show="automationsRunningCount() > 0" class="w-[5px] h-[5px] rounded-full bg-st-progress pulse-dot"></span><span class="font-mono num text-[10px] text-surface-600" x-text="automations.length"></span></span>
+          <span x-show="automations.length" class="ml-auto flex items-center gap-1.5"><span x-show="automationsRunningCount() > 0" class="w-[5px] h-[5px] rounded-full bg-st-progress pulse-dot"></span><span class="font-mono num text-[10px] text-tx-log" x-text="automations.length"></span></span>
         </button>
-        <button @click="gotoView('stats')"
-                class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
-                :class="currentView === 'stats' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
+        <button type="button" @click="gotoView('stats')"
+                class="flex items-center gap-2.5 h-[30px] px-2.5 rounded-[6px] text-[13px] transition-colors"
+                :aria-current="currentView === 'stats' ? 'page' : null"
+                :class="currentView === 'stats' ? 'bg-surface-850 text-tx-hi' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" class="opacity-85"><path d="M2 11.5V8M5.3 11.5V4.5M8.7 11.5V6.5M12 11.5V2.5" stroke-linecap="round"/></svg>
           <span>Stats</span>
         </button>
-        <button @click="gotoView('archive')"
-                class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
-                :class="currentView === 'archive' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
+        <button type="button" @click="gotoView('archive')"
+                class="flex items-center gap-2.5 h-[30px] px-2.5 rounded-[6px] text-[13px] transition-colors"
+                :aria-current="currentView === 'archive' ? 'page' : null"
+                :class="currentView === 'archive' ? 'bg-surface-850 text-tx-hi' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" class="opacity-90"><rect x="1.5" y="2.5" width="11" height="3" rx=".8"/><path d="M2.5 5.5v5.2c0 .5.4.8.8.8h7.4c.4 0 .8-.3.8-.8V5.5"/><path d="M5.6 8h2.8"/></svg>
           <span>Archive</span>
-          <span class="ml-auto font-mono num text-[10px] text-surface-600" x-show="archiveRows.length" x-text="archiveRows.length"></span>
+          <span class="ml-auto font-mono num text-[10px] text-tx-log" x-show="archiveRows.length" x-text="archiveRows.length"></span>
         </button>
-        <button @click="gotoView('new')"
-                class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
-                :class="currentView === 'new' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 12 12" fill="none" class="opacity-80"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-          <span>New ticket</span>
-        </button>
-        <button @click="gotoView('settings')"
-                class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
-                :class="currentView === 'settings' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
+        <button type="button" @click="gotoView('settings')"
+                class="flex items-center gap-2.5 h-[30px] px-2.5 rounded-[6px] text-[13px] transition-colors"
+                :aria-current="currentView === 'settings' ? 'page' : null"
+                :class="currentView === 'settings' ? 'bg-surface-850 text-tx-hi' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="opacity-80"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
           <span>Settings</span>
           <span x-show="settingsDirty()" class="ml-auto w-[5px] h-[5px] rounded-full bg-accent"></span>
         </button>
       </nav>
 
-      <!-- Epics. One row per epic: a spine in the epic's hue, the name, the
-           done/total count, and under it one block per child in that child's
-           status hue plus a note saying what the epic is waiting on. The meter
-           is capped the way chainMeter() is; the count carries the true total.
-           Clicking a row opens the epic page. -->
+      <!-- The meter is capped; the count carries the true child total. -->
       <div class="p-2.5 pt-2" x-show="!needsInputOnly && epics.length > 0">
-        <div class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest px-2 pb-1.5">epics</div>
+        <div class="font-mono text-[10px] font-semibold text-tx-log uppercase tracking-widest px-2 pb-1.5">epics</div>
         <div class="flex flex-col gap-0.5">
           <template x-for="e in epics" :key="e.id">
-            <button @click="openEpic(e.id)"
-                    class="flex flex-col gap-1 px-2 py-1.5 w-full text-left rounded min-w-0 transition-colors hover:bg-surface-900"
+            <button type="button" @click="openEpic(e.id)"
+                    class="flex flex-col gap-1 px-2 py-[7px] w-full text-left rounded-[6px] min-w-0 transition-colors hover:bg-surface-900"
                     :class="selectedEpic?.id === e.id ? 'bg-surface-850' : ''"
+                    :aria-current="selectedEpic?.id === e.id ? 'page' : null"
                     :title="e.title || e.id">
-              <span class="flex items-center gap-2 min-w-0">
+              <span class="flex items-center gap-2 min-w-0 w-full">
                 <span class="w-[3px] h-3 rounded-sm shrink-0"
                       :data-pipe-color="pipelineColorByName(e.id)"
                       style="background: hsl(var(--pipe-h, 240 10% 55%))"></span>
-                <span class="flex-1 min-w-0 truncate text-[12px]"
-                      :class="selectedEpic?.id === e.id ? 'text-tx' : 'text-tx-2'"
+                <span class="flex-1 min-w-0 truncate text-[12.5px] leading-4"
+                      :class="selectedEpic?.id === e.id ? 'text-tx-hi' : 'text-tx-2'"
                       x-text="e.title || e.id"></span>
               </span>
-              <span x-show="epicIsAgent(e)" class="font-mono text-[9.5px] pl-[11px] truncate"
-                    :class="epicNoteClass(e.id)" x-text="epicNote(e.id)"></span>
-              <span class="flex items-center gap-1.5 pl-[11px] min-w-0">
-                <span class="font-mono num text-[10px] text-surface-600 shrink-0"
-                      x-text="epicRollup(e.id).done + '/' + epicRollup(e.id).total + ' done'"></span>
-                <span class="flex gap-0.5 shrink-0">
+              <span class="flex items-center gap-2 pl-[11px] min-w-0">
+                <span class="flex gap-0.5 shrink-0" aria-hidden="true">
                   <template x-for="(seg, i) in epicRollup(e.id).segs" :key="seg.id + i">
                     <span class="w-[9px] h-1 rounded-[1px]"
                           :style="seg.hue ? 'background: hsl(var(' + seg.hue + '))' : 'background: rgb(var(--surface-700))'"></span>
                   </template>
                 </span>
-                <span x-show="!epicIsAgent(e)" class="font-mono text-[9.5px] truncate min-w-0"
-                      :class="epicNoteClass(e.id)" x-text="epicNote(e.id)"></span>
+                <span class="font-mono num text-[10px] text-tx-log whitespace-nowrap"
+                      :title="epicRollup(e.id).done + ' of ' + epicRollup(e.id).total + ' children done'"
+                      x-text="epicRollup(e.id).done + '/' + epicRollup(e.id).total"></span>
               </span>
+              <span x-show="epicNote(e.id)" class="pl-[11px] font-mono text-[10px] leading-[14px] truncate max-w-full"
+                    :class="epicNoteClass(e.id)" x-text="epicNote(e.id)"></span>
             </button>
           </template>
         </div>
@@ -1763,23 +1823,21 @@
 
       <!-- Projects. Clicking a row puts a project:=<name> token in the filter
            box, which selects that name and not every name containing it;
-           clicking the row that is already the whole query empties the box.
-           The dot takes the same hue as the card left border, which is the
-           pipeline where one is configured and the repository name otherwise. -->
+           clicking the row that is already the whole query empties the box. -->
       <div class="p-2.5 pt-2" x-show="(configCache?.projects || []).length > 0">
-        <div class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest px-2 pb-1.5">projects</div>
+        <div class="font-mono text-[10px] font-semibold text-tx-log uppercase tracking-widest px-2 pb-1.5">projects</div>
         <div class="flex flex-col">
           <template x-for="p in (configCache?.projects || [])" :key="p.name">
-            <button @click="currentView === 'archive' ? archiveToggleFacet('project', p.name) : toggleFilterToken('project', p.name)"
-                    class="flex items-center gap-2 h-6 px-2 w-full text-left text-[11px] rounded min-w-0 transition-colors"
+            <button type="button" @click="currentView === 'archive' ? archiveToggleFacet('project', p.name) : toggleFilterToken('project', p.name)"
+                    class="flex items-center gap-2 h-[26px] px-2 w-full text-left text-[11.5px] rounded-[6px] min-w-0 transition-colors"
                     :class="(currentView === 'archive' ? archiveFacetActive('project', p.name) : filterTokenActive('project', p.name)) ? 'bg-surface-850 text-tx' : 'text-tx-2 hover:bg-surface-900'"
                     :aria-pressed="currentView === 'archive' ? archiveFacetActive('project', p.name) : filterTokenActive('project', p.name)"
                     :title="p.name">
-              <span class="w-[5px] h-[5px] rounded-full shrink-0"
-                    :data-pipe-color="pipelineColorByName(p.pipeline || pathBasename(p.path))"
+              <span class="w-1.5 h-1.5 rounded-full shrink-0"
+                    :data-pipe-color="pipelineColorByName(p.name)"
                     style="background: hsl(var(--pipe-h, 240 10% 55%))"></span>
               <span class="font-mono truncate flex-1" x-text="p.name"></span>
-              <span x-show="currentView === 'archive'" class="font-mono num text-[10px] text-surface-600 shrink-0"
+              <span x-show="currentView === 'archive'" class="font-mono num text-[10.5px] text-tx-log shrink-0"
                     x-text="archiveFacetCount('project', p.name)"></span>
             </button>
           </template>
@@ -1788,42 +1846,28 @@
 
       <!-- Agents. The same rows, writing an agent: token. -->
       <div class="p-2.5 pt-2" x-show="(configCache?.agents || []).length > 0">
-        <div class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest px-2 pb-1.5">agents</div>
+        <div class="font-mono text-[10px] font-semibold text-tx-log uppercase tracking-widest px-2 pb-1.5">agents</div>
         <div class="flex flex-col">
           <template x-for="a in (configCache?.agents || [])" :key="a">
-            <button @click="currentView === 'archive' ? archiveToggleFacet('agent', a) : toggleFilterToken('agent', a)"
-                    class="flex items-center gap-2 h-6 px-2 w-full text-left text-[11px] rounded min-w-0 transition-colors"
+            <button type="button" @click="currentView === 'archive' ? archiveToggleFacet('agent', a) : toggleFilterToken('agent', a)"
+                    class="flex items-center gap-2 h-[26px] px-2 w-full text-left text-[11.5px] rounded-[6px] min-w-0 transition-colors"
                     :class="(currentView === 'archive' ? archiveFacetActive('agent', a) : filterTokenActive('agent', a)) ? 'bg-surface-850 text-tx' : 'text-tx-2 hover:bg-surface-900'"
                     :aria-pressed="currentView === 'archive' ? archiveFacetActive('agent', a) : filterTokenActive('agent', a)"
                     :title="a">
-              <span class="w-[5px] h-[5px] rounded-full shrink-0"
+              <span class="w-1.5 h-1.5 rounded-full shrink-0"
                     :style="agentRunningCount(a) > 0 ? 'background: hsl(var(--st-progress)); box-shadow: 0 0 0 2px hsl(var(--st-progress) / 0.2)' : 'background: rgba(var(--surface-600), 1)'"></span>
               <span class="font-mono truncate flex-1" x-text="a"></span>
-              <span class="font-mono num text-[10px] text-surface-600 shrink-0"
+              <span x-show="currentView === 'archive' || agentRunningCount(a) > 0" class="font-mono num text-[10.5px] shrink-0"
+                    :class="currentView === 'archive' ? 'text-tx-log' : 'text-st-progress'"
                     x-text="currentView === 'archive' ? archiveFacetCount('agent', a) : agentRunningCount(a)"></span>
             </button>
           </template>
         </div>
       </div>
 
-      <!-- Display toggles (mirrors the column ⋯ menu) -->
-      <div class="mt-auto p-2.5">
-        <div class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest px-2 pb-1.5">display</div>
-        <button @click="toggleShowBadges()"
-                class="flex items-center justify-between gap-2 w-full h-6 px-2 text-[11px] text-tx-2 rounded hover:bg-surface-900 transition-colors">
-          <span>Pipeline badges</span><span class="text-ok font-mono" x-show="showPipelineBadges">✓</span>
-        </button>
-        <button @click="toggleShowAgentMeta()"
-                class="flex items-center justify-between gap-2 w-full h-6 px-2 text-[11px] text-tx-2 rounded hover:bg-surface-900 transition-colors">
-          <span>Agent meta</span><span class="text-ok font-mono" x-show="showAgentMeta">✓</span>
-        </button>
-      </div>
-
-      <!-- Footer -->
-      <div class="p-2.5 border-t border-surface-700/30 font-mono text-[10px] text-tx-4 leading-relaxed">
-        <div class="px-2">daemon · <span x-text="window.location.host"></span></div>
-        <div class="px-2">go 1.26 · single-instance</div>
-        <div class="px-2">retention · keep forever</div>
+      <div class="mt-auto px-[18px] pt-2.5 pb-3 border-t border-surface-700/50 font-mono text-[10px] text-tx-log leading-[1.7]">
+        <div class="flex items-center gap-[7px] min-w-0"><span class="w-1.5 h-1.5 rounded-full bg-ok shrink-0" aria-hidden="true"></span><span class="truncate" x-text="window.location.host"></span></div>
+        <div class="pl-[13px] text-tx-4">go 1.26 · keep forever</div>
       </div>
     </aside>
 
@@ -1886,92 +1930,76 @@
     <div x-data="boardOverflowOwner('x')"
          class="board-scroll flex-1 overflow-x-auto overflow-y-hidden"
          :class="hasOverflowRight ? 'has-overflow-right' : ''">
-      <div id="board-cols" class="flex gap-3 p-4 h-full min-w-0">
-        <template x-for="(col, colIdx) in columns" :key="col.key">
-          <div class="kanban-col flex flex-col h-full relative"
-               :class="isCollapsed(col.key) ? 'w-9 flex-none' : 'flex-1 min-w-[280px] basis-0'"
-               :style="'--col-tint: ' + col.tint"
+      <div id="board-cols" class="flex gap-[14px] p-4 h-full min-w-0">
+        <template x-for="col in expandedColumns()" :key="col.key">
+          <div class="kanban-col flex flex-col h-full relative flex-1 min-w-[280px] basis-0"
+               :style="'--col-tint: ' + (col.tint || '240 10% 55%')"
                x-data="{ colHover: false }" @mouseenter="colHover = true" @mouseleave="colHover = false">
-
-            <!-- Collapsed: 36px vertical rail; click to expand, still a drop target -->
-            <template x-if="isCollapsed(col.key)">
-              <div class="h-full w-9 flex flex-col items-center gap-2.5 bg-surface-rail border border-surface-700 rounded-[9px] py-3 cursor-pointer hover:border-edge-hover transition-colors relative"
-                   @click="toggleColumnCollapsed(col.key)"
-                   role="button" tabindex="0"
-                   @keydown.enter.prevent="toggleColumnCollapsed(col.key)"
-                   :aria-label="'Expand ' + col.label + ' column'">
-                <span class="w-2 h-2 rounded-[2px] shrink-0 relative z-[1]" style="background: hsl(var(--col-tint))"></span>
-                <span class="font-mono text-[10px] font-bold tracking-[.12em] text-tx-3 uppercase [writing-mode:vertical-rl] relative z-[1]"
-                      x-text="col.label + ' · ' + boardTickets(col.key).length"></span>
-                <!-- Invisible card container: keeps the rail a Sortable drop target. -->
-                <div class="absolute inset-0"
-                     :id="'col-' + col.key"
-                     :data-drop-status="col.dropStatus"
-                     x-data="boardSortableOwner(col.key)"></div>
-              </div>
-            </template>
-
-            <!-- Expanded column -->
-            <template x-if="!isCollapsed(col.key)">
-              <div class="flex flex-col h-full min-h-0">
-                <!-- Column header -->
-                <div class="col-head" :data-status="col.key">
-                  <span class="col-head-label" x-text="col.label"></span>
-                  <span class="col-head-count" x-text="boardTickets(col.key).length"></span>
-                  <button x-show="col.key === 'open' && colHover"
-                          x-transition:enter="transition-opacity duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-                          x-transition:leave="transition-opacity duration-100" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
-                          @click.stop="openCreateModal()"
-                          class="text-[10px] font-mono leading-none h-[18px] px-1.5 rounded bg-surface-800 border border-surface-700/50 text-surface-600 hover:text-accent hover:border-accent/30 inline-flex items-center gap-1">+ new</button>
-                  <div class="ml-auto flex items-center gap-1">
-                    <button type="button" class="tip" :data-tip="col.tip" :aria-label="col.tip">i</button>
-                    <div class="relative" @click.outside="if (colMenuOpen === col.key) colMenuOpen = null">
-                      <button type="button"
-                              @click.stop="colMenuOpen = colMenuOpen === col.key ? null : col.key"
-                              class="w-[18px] h-[18px] rounded text-surface-600 hover:text-tx-2 flex items-center justify-center text-[14px] leading-none transition-opacity"
-                              :class="(colHover || colMenuOpen === col.key) ? 'opacity-100' : 'opacity-0'"
-                              aria-haspopup="menu" :aria-expanded="colMenuOpen === col.key" aria-label="Column options">⋯</button>
-                      <div x-show="colMenuOpen === col.key" x-cloak @click.stop
-                           class="absolute right-0 top-6 min-w-[11rem] overflow-hidden rounded-lg border border-surface-700 bg-surface-900/95 shadow-lg shadow-black/30 z-20" role="menu">
-                        <button @click="colMenuOpen = null; toggleColumnCollapsed(col.key)"
-                                class="w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors">Collapse column</button>
-                        <div class="h-px bg-surface-700/60"></div>
-                        <button @click="toggleShowBadges()"
-                                class="w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors flex items-center justify-between gap-3">
-                          <span>Pipeline badges</span><span class="text-ok" x-show="showPipelineBadges">✓</span>
-                        </button>
-                        <button @click="toggleShowAgentMeta()"
-                                class="w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors flex items-center justify-between gap-3">
-                          <span>Agent meta</span><span class="text-ok" x-show="showAgentMeta">✓</span>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <!-- Card list (overflow fade + "more" chip shown when column has more below) -->
-                <div class="col-fade flex-1 min-h-0 flex flex-col relative"
-                     x-data="boardOverflowOwner('y')"
-                     :class="overflowBottom ? 'has-overflow-bottom' : ''">
-                  <div x-show="overflowBottom && colHover"
-                       x-transition:enter="transition-opacity duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
-                       x-transition:leave="transition-opacity duration-100" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
-                       class="col-more-hint">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-                    <span x-text="'more'"></span>
-                  </div>
-                  <div class="flex-1 min-h-0 flex flex-col overflow-y-auto no-scrollbar space-y-2 px-0.5 pb-2 rounded-lg"
-                     x-ref="colList"
-                     :id="'col-' + col.key"
-                     :data-drop-status="col.dropStatus"
-                     x-data="boardSortableOwner(col.key)">
-                  <!-- Cards are injected imperatively by renderColumn() (ui/board.js); see
-                       _cardHTML for the markup this reproduces. -->
+            <div class="col-head" tabindex="-1" role="group" :aria-label="col.label + ' column'" :data-status="col.key">
+              <span class="col-head-label" :data-tip="col.tip" x-text="col.label"></span>
+              <span class="col-head-count num" x-text="boardTickets(col.key).length"></span>
+              <button x-show="col.key === 'open' && colHover"
+                      x-transition:enter="transition-opacity duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+                      x-transition:leave="transition-opacity duration-100" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+                      @click.stop="openCreateModal()"
+                      class="text-[10px] font-mono leading-none h-[18px] px-1.5 rounded bg-surface-800 border border-surface-700/50 text-surface-600 hover:text-accent hover:border-accent/30 inline-flex items-center gap-1">+ new</button>
+              <div class="ml-auto flex items-center gap-2">
+                <span x-show="colNote(col.key)" class="col-head-note" x-text="colNote(col.key)"></span>
+                <div class="relative" @click.outside="if (colMenuOpen === col.key) colMenuOpen = null">
+                  <button type="button"
+                          @click.stop="colMenuOpen = colMenuOpen === col.key ? null : col.key"
+                          class="w-[18px] h-[18px] rounded text-tx-4 hover:text-tx-2 focus-visible:opacity-100 flex items-center justify-center text-[14px] leading-none transition-opacity"
+                          :class="(colHover || colMenuOpen === col.key) ? 'opacity-100' : 'opacity-0'"
+                          aria-haspopup="menu" :aria-expanded="colMenuOpen === col.key" aria-label="Column options">⋯</button>
+                  <div x-show="colMenuOpen === col.key" x-cloak @click.stop
+                       class="absolute right-0 top-6 min-w-[11rem] overflow-hidden rounded-lg border border-surface-700 bg-surface-900/95 shadow-lg shadow-black/30 z-20" role="menu">
+                    <button type="button" @click="colMenuOpen = null; toggleColumnCollapsed(col.key)"
+                            class="w-full px-3 py-2 text-left text-[13px] font-sans text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors">Collapse column</button>
+                    <div class="h-px bg-surface-700/60"></div>
+                    <button type="button" @click="toggleShowBadges()"
+                            class="w-full px-3 py-2 text-left text-[13px] font-sans text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors flex items-center justify-between gap-3">
+                      <span>Pipeline badges</span><span class="text-ok" x-show="showPipelineBadges">✓</span>
+                    </button>
+                    <button type="button" @click="toggleShowAgentMeta()"
+                            class="w-full px-3 py-2 text-left text-[13px] font-sans text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors flex items-center justify-between gap-3">
+                      <span>Agent details</span><span class="text-ok" x-show="showAgentMeta">✓</span>
+                    </button>
                   </div>
                 </div>
               </div>
-            </template>
+            </div>
+            <div class="col-fade flex-1 min-h-0 flex flex-col relative"
+                 x-data="boardOverflowOwner('y')"
+                 :class="overflowBottom ? 'has-overflow-bottom' : ''">
+              <div x-show="overflowBottom && colHover"
+                   x-transition:enter="transition-opacity duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+                   x-transition:leave="transition-opacity duration-100" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+                   class="col-more-hint">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                <span x-text="'more'"></span>
+              </div>
+              <div class="flex-1 min-h-0 flex flex-col overflow-y-auto no-scrollbar space-y-2 px-0.5 pb-2 rounded-lg"
+                   x-ref="colList" :id="'col-' + col.key" :data-drop-status="col.dropStatus"
+                   x-data="boardSortableOwner(col.key)">
+                <!-- Cards are injected by renderColumn() in ui/board.js. -->
+              </div>
+            </div>
           </div>
         </template>
+        <div x-show="collapsedColumns().length" x-cloak class="hidden-rail no-scrollbar" role="group" aria-label="Hidden statuses">
+          <template x-for="col in collapsedColumns()" :key="col.key">
+            <div class="kanban-col hidden-rail-item" :style="'--col-tint: ' + (col.tint || '240 10% 55%')"
+                 role="button" tabindex="0" :data-tip="col.tip"
+                 @click="expandBoardColumn(col.key, { focus: true })"
+                 @keydown.enter.prevent="expandBoardColumn(col.key, { focus: true })" @keydown.space.prevent="expandBoardColumn(col.key, { focus: true })"
+                 :aria-label="'Expand ' + col.label + ' column'">
+              <span class="w-[7px] h-[7px] rounded-[2px] shrink-0 relative z-[1] pointer-events-none" :style="'background: ' + railSwatch(col)" aria-hidden="true"></span>
+              <span class="font-mono text-[10px] font-bold tracking-[.12em] text-tx-3 uppercase [writing-mode:vertical-rl] relative z-[1] pointer-events-none"><span x-text="col.label"></span> <span class="font-normal text-tx-4 num" x-text="boardTickets(col.key).length"></span></span>
+              <!-- The rail item can still receive a Sortable drop. -->
+              <div class="absolute inset-0" :id="'col-' + col.key" :data-drop-status="col.dropStatus" x-data="boardSortableOwner(col.key)"></div>
+            </div>
+          </template>
+        </div>
       </div>
     </div>
     </div>
@@ -1985,7 +2013,7 @@
     <div data-ticket-detail tabindex="-1" class="ticket-detail-shell absolute inset-0 z-30 flex flex-col bg-surface-950">
 
       <!-- Identity block. The breadcrumb and the actions live in the app header. -->
-      <div class="shrink-0 px-6 pt-[15px] pb-[11px] flex flex-col gap-2 min-w-0">
+      <div class="shrink-0 px-6 pt-4 pb-3 flex flex-col gap-2 min-w-0">
         <div class="flex items-center gap-2.5 flex-wrap min-w-0">
           <span class="status-chip shrink-0" :data-status="selectedTicket?.status" x-text="workflowStatusLabel(selectedTicket)"></span>
           <span x-show="needsLiveInput(selectedTicket)" class="waiting-chip"
@@ -1994,21 +2022,41 @@
             <span x-text="waitingFor(selectedTicket)"></span>
           </span>
           <p x-show="needsLiveInput(selectedTicket)" class="min-w-0 text-sm text-tx-2 whitespace-pre-wrap break-words" x-text="liveQuestion(selectedTicket)"></p>
-          <span class="pipe-tag shrink-0"
-                :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'"
-                x-text="selectedTicket ? ticketTagLabel(selectedTicket) : ''"></span>
-          <!-- The id sits in the breadcrumb, the path in the details rail. -->
-          <span class="font-mono text-[11px] text-surface-600 truncate"
-                x-text="[selectedTicket?.agent, selectedTicket?.branch].filter(Boolean).join(' · ')"></span>
+          <span class="flex items-center gap-1.5 min-w-0 font-mono text-[11px] text-tx-3">
+            <template x-if="parseTitleTag(selectedTicket || {}).tag">
+              <span class="contents">
+                <span class="w-1.5 h-1.5 rounded-full shrink-0" :data-pipe-color="pipelineColorByName(parseTitleTag(selectedTicket || {}).tag)" style="background: hsl(var(--pipe-h))" aria-hidden="true"></span>
+                <span class="truncate" x-text="parseTitleTag(selectedTicket || {}).tag"></span>
+              </span>
+            </template>
+            <template x-if="selectedTicket?.pipeline">
+              <span class="contents">
+                <span x-show="parseTitleTag(selectedTicket || {}).tag" class="text-edge-faint" aria-hidden="true">·</span>
+                <span class="uppercase tracking-[.05em] text-[10px] truncate" :data-pipe-color="ticketPipeColor(selectedTicket)" style="color: hsl(var(--pipe-h))" x-text="selectedTicket.pipeline"></span>
+              </span>
+            </template>
+            <template x-if="selectedTicket?.agent || selectedTicket?.branch">
+              <span class="contents">
+                <span x-show="selectedTicket?.pipeline || parseTitleTag(selectedTicket || {}).tag" class="text-edge-faint" aria-hidden="true">·</span>
+                <span class="text-tx-log truncate" x-text="[selectedTicket?.agent, selectedTicket?.branch].filter(Boolean).join(' · ')"></span>
+              </span>
+            </template>
+          </span>
           <span x-show="selectedTicket && !selectedTicket.kontora"
                 class="font-mono text-[11px] px-2 py-0.5 rounded-full border border-warn/20 bg-warn/10 text-warn shrink-0">not a kontora ticket</span>
         </div>
-        <h1 class="m-0 text-[19px] font-semibold leading-[1.35] text-tx-hi [text-wrap:pretty] min-w-0">
-          <span x-show="parseTitleTag(selectedTicket || {}).tag" class="title-tag"
-                :data-pipe-color="pipelineColorByName(parseTitleTag(selectedTicket || {}).tag)"
-                x-text="'[' + parseTitleTag(selectedTicket || {}).tag + ']'"></span>
-          <span x-text="parseTitleTag(selectedTicket || {}).rest"></span>
-        </h1>
+        <h1 class="m-0 text-[20px] font-semibold leading-[1.35] text-tx-hi [text-wrap:pretty] min-w-0" x-text="parseTitleTag(selectedTicket || {}).rest"></h1>
+        <template x-if="queueReason(selectedTicket)">
+          <div class="flex items-center gap-2 flex-wrap text-[13px] text-tx-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-warn shrink-0" aria-hidden="true"></span>
+            <template x-if="queueReason(selectedTicket)?.id">
+              <span class="min-w-0 break-words">Queued. Waiting for <button type="button" class="max-w-full break-all text-left font-mono text-[12px] text-accent hover:text-accent-bright disabled:text-tx-2"
+                    :disabled="queueReason(selectedTicket)?.missing || !relationKnown(queueReason(selectedTicket)?.ref)"
+                    @click="openTicketRef(queueReason(selectedTicket)?.ref)" x-text="queueReason(selectedTicket)?.id"></button></span>
+            </template>
+            <template x-if="queueReason(selectedTicket)?.kind === 'queued'"><span>Queued.</span></template>
+          </div>
+        </template>
       </div>
 
       <details x-show="isGraphTicket(selectedTicket)" class="px-6 pb-3 font-mono text-[11px] text-tx-3">
@@ -2022,8 +2070,7 @@
            x-data="stageRibbonOwner()"
            x-show="!isSecondary(selectedTicket) && (stageRibbon().length > 0 || ribbonMeters().length > 0)">
         <div class="stage-ribbon-stages">
-          <div class="stage-ribbon-viewport no-scrollbar" role="region" aria-label="Ticket stages"
-               :class="['todo', 'open'].includes(selectedTicket?.status) ? 'opacity-60' : ''">
+          <div class="stage-ribbon-viewport no-scrollbar" role="region" aria-label="Ticket stages">
           <template x-for="seg in stageRibbon()" :key="seg.name">
             <button type="button" class="stage-ribbon-card flex flex-col gap-[7px] min-w-[136px] basis-0"
                  :data-stage="seg.name"
@@ -2033,17 +2080,16 @@
                  @pointerenter="ribbonTrigger($event)" @pointerleave="ribbonTrigger($event)"
                  @focus="ribbonTrigger($event)" @blur="ribbonTrigger($event)"
                  :style="'flex-grow:' + seg.seconds"
-                 :class="[seg.state === 'queued' ? 'opacity-50' : '',
-                          seg.state === 'done' && seg.runs ? 'cursor-pointer' : '',
+                 :class="[seg.state === 'done' && seg.runs ? 'cursor-pointer' : '',
                           activityStage && activeTab === 'activity' && activityStage !== seg.name ? 'opacity-40' : '']"
                  @click="ribbonTrigger($event); clickRibbon(seg)">
               <div class="flex flex-col gap-[2px] min-w-0">
                 <span class="stage-ribbon-label font-mono text-[11.5px] whitespace-nowrap"
-                      :class="seg.state === 'running' ? 'text-st-progress font-bold' : (seg.state === 'done' ? 'text-tx-2' : 'text-tx-3')">
+                      :class="seg.state === 'running' ? 'text-st-progress font-bold' : (seg.state === 'done' || seg.startsHere ? 'text-tx-2' : 'text-tx-3')">
                   <span x-show="seg.state === 'done'" class="shrink-0" aria-hidden="true">✓ </span><span class="stage-ribbon-name" x-text="seg.name"></span><span
-                        x-show="seg.runs > 1" class="shrink-0 text-surface-600" x-text="' ×' + seg.runs"></span>
+                        x-show="seg.runs > 1" class="shrink-0 text-tx-log" x-text="' ×' + seg.runs"></span>
                 </span>
-                <span class="font-mono text-[10.5px] text-surface-600 whitespace-nowrap" x-text="seg.meta"></span>
+                <span class="font-mono text-[10.5px] whitespace-nowrap" :class="seg.startsHere ? 'text-tx-2' : 'text-tx-log'" x-text="seg.meta"></span>
                 <span x-show="costLabel(seg.cost)" :title="costTooltip(seg.cost)"
                       class="font-mono text-[10.5px] text-tx-3 whitespace-nowrap" x-text="costLabel(seg.cost)"></span>
               </div>
@@ -2076,13 +2122,11 @@
              x-show="ribbonMeters().length">
           <template x-for="m in ribbonMeters()" :key="m.k">
             <div class="flex flex-col gap-[3px]">
-              <span class="font-mono text-[10px] uppercase tracking-[.12em] text-tx-faint" x-text="m.k"></span>
-              <span class="font-mono text-[14px] text-tx-hi num" :title="m.title || ''" x-text="m.v"></span>
+              <span class="font-mono text-[10px] uppercase tracking-[.12em] text-tx-log" x-text="m.k"></span>
+              <span class="font-mono text-[14px] num" :class="m.muted ? 'text-tx-3' : 'text-tx-hi'" :title="m.title || ''" x-text="m.v"></span>
             </div>
           </template>
         </div>
-        <span x-show="!ribbonMeters().length && !selectedTicket?.history?.length"
-              class="stage-ribbon-empty font-mono text-[10.5px] text-surface-600 pl-5 border-l border-surface-700/70">no runs yet</span>
       </div>
 
       <!-- Body: content column + fixed-width rail. The tab bar and the rail's
@@ -2096,43 +2140,41 @@
         <div data-ticket-tabs class="shrink-0 flex items-stretch border-b border-surface-700/70">
           <!-- Tab bar -->
           <div class="flex-1 min-w-0 px-6 pt-[11px]">
-            <div class="flex items-center gap-5">
-              <button x-show="!isSecondary(selectedTicket) && executionActive(selectedTicket)" @click="switchTab('session')"
-                      class="flex items-center gap-[7px] font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
-                      :class="activeTab === 'session' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
-                <span class="w-[5px] h-[5px] rounded-full bg-st-progress pulse-dot"></span>session
+            <div class="flex flex-wrap items-center gap-x-[22px]">
+              <button type="button" x-show="!isSecondary(selectedTicket) && executionActive(selectedTicket)" @click="switchTab('session')"
+                      class="flex items-center gap-[7px] font-sans text-[13px] pb-[9px] border-b-2 transition-colors"
+                      :aria-pressed="activeTab === 'session'" :class="activeTab === 'session' ? 'text-tx-hi font-semibold border-accent' : 'text-tx-3 border-transparent hover:text-tx-2'">
+                <span class="w-[5px] h-[5px] rounded-full bg-st-progress pulse-dot"></span>Session
               </button>
-              <button x-show="!isSecondary(selectedTicket) && showTerminalTab()" @click="switchTab('activity')"
-                      class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
-                      :class="activeTab === 'activity' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">activity</button>
-              <button x-show="showSummaryTab()" @click="switchTab('summary')"
-                      class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
-                      :class="activeTab === 'summary' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">summary</button>
-              <button x-show="showDiffTab()" @click="switchTab('diff')"
-                      class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
-                      :class="activeTab === 'diff' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
-                Committed changes <span class="text-tx-faint" x-text="churn().count || ''"></span></button>
-              <button @click="switchTab('ticket')"
-                      class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
-                      :class="activeTab === 'ticket' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">ticket</button>
-              <!-- Notes has no precondition: an open ticket with no runs can
-                   still carry a note, so no x-show and no tab-repair guard. -->
-              <button @click="switchTab('notes')"
-                      class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
-                      :class="activeTab === 'notes' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">notes</button>
+              <button type="button" x-show="!isSecondary(selectedTicket) && showTerminalTab()" @click="switchTab('activity')"
+                      class="font-sans text-[13px] pb-[9px] border-b-2 transition-colors"
+                      :aria-pressed="activeTab === 'activity'" :class="activeTab === 'activity' ? 'text-tx-hi font-semibold border-accent' : 'text-tx-3 border-transparent hover:text-tx-2'">Activity</button>
+              <button type="button" x-show="showSummaryTab()" @click="switchTab('summary')"
+                      class="font-sans text-[13px] pb-[9px] border-b-2 transition-colors"
+                      :aria-pressed="activeTab === 'summary'" :class="activeTab === 'summary' ? 'text-tx-hi font-semibold border-accent' : 'text-tx-3 border-transparent hover:text-tx-2'">Summary</button>
+              <button type="button" x-show="showDiffTab()" @click="switchTab('diff')"
+                      class="font-sans text-[13px] pb-[9px] border-b-2 transition-colors"
+                      :aria-pressed="activeTab === 'diff'" :class="activeTab === 'diff' ? 'text-tx-hi font-semibold border-accent' : 'text-tx-3 border-transparent hover:text-tx-2'">
+                Changes <span class="font-mono text-[10.5px] text-tx-log" x-text="churn().count || ''"></span></button>
+              <button type="button" @click="switchTab('ticket')"
+                      class="font-sans text-[13px] pb-[9px] border-b-2 transition-colors"
+                      :aria-pressed="activeTab === 'ticket'" :class="activeTab === 'ticket' ? 'text-tx-hi font-semibold border-accent' : 'text-tx-3 border-transparent hover:text-tx-2'">Ticket</button>
+              <button type="button" @click="switchTab('notes')"
+                      class="font-sans text-[13px] pb-[9px] border-b-2 transition-colors"
+                      :aria-pressed="activeTab === 'notes'" :class="activeTab === 'notes' ? 'text-tx-hi font-semibold border-accent' : 'text-tx-3 border-transparent hover:text-tx-2'">Notes</button>
               <div class="flex-1"></div>
-              <button @click="toggleLogFollow()" x-show="!isSecondary(selectedTicket) && logTabActive()" :aria-pressed="logFollow"
-                      class="font-mono text-[10px] px-2.5 py-1 mb-[6px] rounded-md border transition-colors"
-                      :class="logFollow ? 'text-tx-2 border-edge-hover' : 'text-surface-600 border-edge-input hover:text-tx-2 hover:border-edge-hover'"
-                      data-tip-t="Autoscroll to the newest output">⇣ follow</button>
+              <button type="button" @click="toggleLogFollow()" x-show="!isSecondary(selectedTicket) && logTabActive()" :aria-pressed="logFollow"
+                      class="font-sans text-[12px] h-[24px] px-[9px] mb-[6px] rounded-md border transition-colors"
+                      :class="logFollow ? 'text-tx-2 border-edge-hover' : 'text-tx-3 border-edge-input hover:text-tx-2 hover:border-edge-hover'"
+                      data-tip-t="Autoscroll to the newest output">Follow output</button>
               <button type="button" @click="openRawLog()" x-show="!isSecondary(selectedTicket) && activeTab === 'activity' && activityStage"
-                      class="raw-log-action mb-[6px]" data-tip-t="Open the selected run as plain text">⧉ raw</button>
+                      class="raw-log-action mb-[6px]" data-tip-t="Open the selected run as plain text">Raw log</button>
               <span x-show="rawLogError" role="status" class="font-mono text-xs text-err" x-text="rawLogError"></span>
               <button type="button" x-show="activeTab === 'activity' && rawLogCanExportLatest" @click="openRawLog(true)"
                       class="raw-log-action mb-[6px]">Export latest stage log</button>
-              <button x-show="!isSecondary(selectedTicket) && activeTab === 'activity' && executionActive(selectedTicket)"
+              <button type="button" x-show="!isSecondary(selectedTicket) && activeTab === 'activity' && executionActive(selectedTicket)"
                       @click="switchTab('session')"
-                      class="font-mono text-[11px] pb-[9px] text-accent hover:underline">← back to live</button>
+                      class="font-sans text-[12px] pb-[9px] text-accent hover:underline">Back to live</button>
             </div>
           </div>
           <div class="ticket-detail-rail-cap shrink-0 w-[308px] border-l border-surface-700/50"></div>
@@ -2149,19 +2191,20 @@
             <!-- Live session: the source of truth while a stage runs -->
             <div x-show="!isSecondary(selectedTicket) && activeTab === 'session'" class="h-full min-h-0 flex flex-col bg-surface-frame">
               <div class="shrink-0 flex items-center gap-[10px] px-6 pt-[11px] pb-[9px]">
-                <span class="font-mono text-[11px] text-surface-600"
+                <span class="font-mono text-[11px] text-tx-log truncate"
                       x-text="'tmux · ' + (selectedTicket?.id || '') + (selectedTicket?.agent ? ' · ' + selectedTicket.agent : '')"></span>
                 <div class="flex-1"></div>
-                <button @click="toggleTerminalRW()"
-                        class="flex items-center gap-[5px] font-mono text-[11px] px-[9px] py-[3px] rounded-md border transition-colors"
-                        :class="terminalRW ? 'text-err bg-err/10 border-err/40' : 'text-surface-600 border-edge-input hover:text-tx-2 hover:border-edge-hover'">
+                <button type="button" @click="toggleTerminalRW()" :aria-pressed="terminalRW"
+                        class="flex items-center gap-1.5 font-sans text-[12px] h-[24px] px-[9px] rounded-md border transition-colors shrink-0"
+                        :class="terminalRW ? 'text-err bg-err/10 border-err/40' : 'text-tx-3 border-edge-input hover:text-tx-hi hover:border-edge-hover'"
+                        :data-tip-t="terminalRW ? 'Your typing goes to the agent. Click to go back to watching.' : 'Read-only. Click to type into the agent\'s terminal.'">
                   <svg x-show="terminalRW" xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
                   <svg x-show="!terminalRW" xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-                  <span x-text="terminalRW ? 'read-write' : 'read-only'"></span>
+                  <span x-text="terminalRW ? 'In control · hand back' : 'Watching · take over'"></span>
                 </button>
-                <span class="copyable font-mono text-[11px] text-surface-600 hover:text-tx-3"
-                      @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
-                      x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span>
+                <button type="button" @click="copyCmd('kontora attach ' + selectedTicket?.id)" :data-tip-t="'kontora attach ' + selectedTicket?.id"
+                        class="font-sans text-[12px] h-[24px] px-[9px] rounded-md border border-edge-input text-tx-3 hover:text-tx-hi hover:border-edge-hover transition-colors shrink-0"
+                        x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? 'Copied' : 'Copy attach command'"></button>
               </div>
               <div x-show="terminalError" class="shrink-0 px-6 pb-3 font-mono text-xs text-err" role="alert">
                 <span x-text="terminalError"></span>
@@ -2352,7 +2395,7 @@
                   <template x-if="!isSecondary(selectedTicket) && ticketChanges?.commits?.length">
                     <div class="summary-rail">
                       <div class="rail-card">
-                        <div class="side-label mb-[11px]">Committed changes</div>
+                        <div class="side-label mb-[11px]">Changes</div>
                         <div class="flex flex-col gap-2">
                           <template x-for="c in ticketChanges.commits" :key="c.sha">
                             <button type="button" class="flex items-center gap-2 min-w-0 text-left" @click="copyBranch(c.sha)"
@@ -2391,31 +2434,29 @@
             <div x-show="activeTab === 'ticket'"
                  class="h-full flex flex-col bg-surface-frame">
               <div class="flex-1 min-h-0 overflow-y-auto">
-                <div class="max-w-[960px] mx-auto px-6 pt-4 pb-6">
+                <div class="max-w-[960px] mx-auto px-6 pt-[18px] pb-6 flex flex-col gap-[22px]">
                   <template x-if="selectedTicket && !selectedTicket.kontora">
-                    <div class="mb-4 border-l-[3px] border-warn pl-3 text-xs">
+                    <div class="border-l-[3px] border-warn pl-3 text-xs">
                       <span class="text-warn text-xs font-mono font-semibold">not a kontora ticket</span>
-                      <p class="text-surface-600 text-xs font-mono mt-1">Initialize this ticket from the card menu before queueing, resuming, or running an agent.</p>
+                      <p class="text-tx-log text-xs font-mono mt-1" x-text="isSecondary(selectedTicket) ? (ticketCanClaim(selectedTicket) ? 'Select Move here before setting up a run.' : 'This daemon cannot run this ticket from its current folder.') : 'Select Run… to set up the ticket and request pickup.'"></p>
                     </div>
                   </template>
                   <template x-if="selectedTicket?.last_error">
-                    <div class="mb-4 border-l-[3px] border-err pl-3 text-xs">
+                    <div class="border-l-[3px] border-err pl-3 text-xs">
                       <span class="text-err text-xs font-mono font-semibold">Error: </span>
                       <span class="text-err/80 text-xs font-mono break-words whitespace-pre-wrap" x-text="selectedTicket.last_error"></span>
                     </div>
                   </template>
-                  <div x-html="detailRelationshipsMarkup"></div>
-                  <div class="mt-4" x-html="detailMetadataMarkup"></div>
+                  <div x-show="chainError || chainVerdict() === 'cycle' || dependsOn().total || dependsOn().holder || relatedRefs().length || selectedTicket?.blocks?.length || selectedTicket?.children?.length" x-html="detailRelationshipsMarkup"></div>
+                  <div x-html="detailMetadataMarkup"></div>
                   <!-- Secondary tickets remain editable in every status. -->
                   <template x-if="editing && editorCanEdit(selectedTicket)">
-                    <!-- The top padding is the gap under the sub-ticket tree, so
-                         it is bound rather than fixed: a ticket that draws no
-                         tree has nothing to clear. -->
-                    <fieldset :disabled="editorClaimLocked() || lifecycleBusy(selectedTicket)" class="pt-5">
-                      <div class="flex items-center justify-between mb-1">
-                        <label class="text-xs font-mono text-surface-600 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>Description</label>
-                        <span x-show="editSubmitting" class="text-xs font-mono text-surface-600">saving...</span>
-                        <span x-show="editSaved && !editSubmitting" class="text-xs font-mono text-ok/70">saved</span>
+                    <fieldset :disabled="editorClaimLocked() || lifecycleBusy(selectedTicket)" class="min-w-0">
+                      <div class="flex items-baseline gap-2.5 mb-2">
+                        <h2 class="side-label">Description</h2>
+                        <span x-show="!editingBody" class="text-[12px] text-tx-log">Click to edit</span>
+                        <span x-show="editSubmitting" class="text-[12px] text-tx-log">Saving…</span>
+                        <span x-show="editSaved && !editSubmitting" class="text-[12px] text-ok/70">Saved</span>
                       </div>
                       <!-- Body: click-to-edit toggle. Overflow must stay hidden: it
                            holds the scrollbar gutter at zero, so a short value
@@ -2435,10 +2476,9 @@
                       </template>
                       <template x-if="!editingBody">
                         <div @click="beginBodyEdit($event)"
-                          class="group/edit cursor-text rounded-lg border border-surface-700 hover:border-edge-hover transition-colors min-h-[150px] px-[14px] py-3 relative">
+                          class="cursor-text rounded-lg border border-surface-700 hover:border-edge-hover transition-colors min-h-[150px] px-[14px] py-3 relative">
                           <div x-show="editForm.body" x-ref="bodyPreview" class="ticket-prose ticket-read" x-effect="setProse($el, editForm.body)"></div>
                           <p x-show="!editForm.body" class="text-sm font-mono text-surface-600">Click to add a description...</p>
-                          <span x-show="editForm.body" class="absolute top-1 right-2 text-[11px] font-mono text-surface-600 opacity-0 group-hover/edit:opacity-100 transition-opacity">click to edit</span>
                         </div>
                       </template>
                       <div x-show="descriptionTail(selectedTicket)" class="mt-4">
@@ -2449,14 +2489,14 @@
                   </template>
                   <!-- Read-only view for non-editable tickets -->
                   <template x-if="!editing || !editorCanEdit(selectedTicket)">
-                    <!-- No box to click, but the same inset as the editable
-                         body, so a running ticket reads at the same measure and
-                         the same left edge as an idle one. -->
-                    <div class="border border-transparent px-[14px] py-3"
-                         :class="(selectedTicket?.children || []).length > 0 ? 'pt-5' : ''">
-                      <div class="ticket-prose ticket-read" x-effect="setProse($el, selectedTicket?.body || '')"></div>
-                      <div x-show="!selectedTicket?.body" class="text-sm font-mono text-surface-600">
-                        <p>No ticket description.</p>
+                    <div class="min-w-0">
+                      <div class="flex items-baseline gap-2.5 mb-2"><h2 class="side-label">Description</h2></div>
+                      <!-- Match the inset of the editable body without drawing a box. -->
+                      <div class="border border-transparent px-[14px] py-3">
+                        <div class="ticket-prose ticket-read" x-effect="setProse($el, selectedTicket?.body || '')"></div>
+                        <div x-show="!selectedTicket?.body" class="text-sm font-mono text-surface-600">
+                          <p>No ticket description.</p>
+                        </div>
                       </div>
                     </div>
                   </template>
@@ -2473,11 +2513,8 @@
           </div>
         </div>
 
-        <!-- Right rail. Its p-4 is the top inset the tab panes match, so the
-             first row of whichever pane is open sits on the same line as the
-             rail's first label. The session and activity rows use a smaller
-             inset instead: items-center in a row with taller controls already
-             pushes their text down. -->
+        <!-- Right rail. Changes and Summary share its top inset. Ticket starts slightly lower.
+             Session and Activity use smaller insets because taller controls already lower the text. -->
         <div class="ticket-detail-rail shrink-0 w-[308px] border-l border-surface-700/50 bg-surface-frame flex flex-col min-h-0">
           <div class="flex-1 min-h-0 overflow-y-auto p-4 pb-[22px] flex flex-col gap-4">
 
@@ -2486,11 +2523,11 @@
               <div class="flex items-baseline gap-2">
                 <span class="side-label">churn</span>
                 <div class="flex-1"></div>
-                <span class="font-mono text-[10.5px] text-surface-600" x-show="ticketChanges?.base" x-text="'vs ' + ticketChanges?.base"></span>
+                <span class="font-mono text-[10.5px] text-tx-log truncate" x-show="ticketChanges?.base" :title="ticketChanges?.base" x-text="'vs ' + ticketChanges?.base"></span>
               </div>
               <div class="flex items-baseline gap-2.5">
                 <span class="font-mono text-[19px] text-tx-hi num" x-text="churn().count"></span>
-                <span class="font-mono text-[11px] text-surface-600">files</span>
+                <span class="font-mono text-[11px] text-tx-log">files</span>
                 <span class="font-mono text-[13px] text-ok num" x-text="'+' + churn().added"></span>
                 <span class="font-mono text-[13px] text-err num" x-text="'−' + churn().deleted"></span>
               </div>
@@ -2508,7 +2545,7 @@
                 </template>
                 <button type="button" x-show="churn().more > 0" @click="switchTab('diff')"
                         class="mt-[3px] text-left font-mono text-[10.5px] text-accent hover:underline"
-                        x-text="churn().more + ' more file' + (churn().more === 1 ? '' : 's') + ' in Committed changes'"></button>
+                        x-text="churn().more + ' more file' + (churn().more === 1 ? '' : 's') + ' in Changes'"></button>
               </div>
             </div>
 
@@ -2524,86 +2561,40 @@
                  :inert="detailLoading || lifecycleBusy(selectedTicket) || editorClaimLocked()">
               <div class="h-px bg-surface-700" x-show="churn().count > 0 || selectedTicket?.history?.length > 0"></div>
               <span class="side-label">details</span>
-              <div class="grid grid-cols-[58px_1fr] gap-x-[10px] gap-y-[6px] font-mono text-[11px] items-start">
-                <span class="text-surface-600">id</span>
-                <button type="button" class="copyable text-tx-2 hover:text-tx text-left break-all justify-self-start"
-                        aria-label="Copy ticket ID" @click.stop="copyTicketId(selectedTicket?.id)"
+              <div class="grid grid-cols-[62px_minmax(0,1fr)] gap-x-[10px] gap-y-[7px] leading-[1.5] font-mono text-[11px] items-start">
+                <span class="text-tx-log">id</span>
+                <button type="button" class="copyable text-tx-2 hover:text-tx-hi text-left truncate justify-self-start max-w-full"
+                        aria-label="Copy ticket ID" :title="selectedTicket?.id" @click.stop="copyTicketId(selectedTicket?.id)"
                         x-text="copiedId ? '✓ copied' : selectedTicket?.id"></button>
-                <template x-if="chainSummary().total > 1 && chainSummary().place">
-                  <div class="col-span-2 grid grid-cols-[58px_1fr] gap-x-[10px] items-start">
-                    <span class="text-surface-600">chain</span>
-                    <span class="text-tx-2" x-text="chainSummary().place + ' · ' + chainVerdict()"></span>
-                  </div>
+                <template x-if="dependsOn().holder">
+                  <span class="contents" x-data="{ get holder() { return dependsOn().holder }, get holderLabel() { return this.holder ? this.holder.id + ' · ' + (relationKnown(this.holder) ? statusLabel(this.holder.status) : 'not found') : '' } }">
+                    <span class="text-tx-log">waits for</span>
+                    <button type="button" class="text-left truncate text-tx-2 hover:text-tx-hi disabled:text-tx-log"
+                            :disabled="!relationKnown(holder)" @click="openTicketRef(holder)"
+                            :title="holderLabel" x-text="holderLabel"></button>
+                  </span>
                 </template>
-                <template x-if="chainHolder() && chainHolder().direction === 'upstream'">
-                  <div class="col-span-2 grid grid-cols-[58px_1fr] gap-x-[10px] items-start">
-                    <span class="text-surface-600">blocked by</span>
-                    <button type="button" class="text-left break-all justify-self-start"
-                            :disabled="!relationKnown(chainHolder()) || !!chainHolder().missing"
-                            :class="relationChipClass(chainHolder())"
-                            :data-tip-e="ticketTip(chainHolder()).title"
-                            :data-tip-e-tag="ticketTip(chainHolder()).tag"
-                            :data-tip-e-tag-color="ticketTip(chainHolder()).tagColor"
-                            :data-tip-e-body="ticketTip(chainHolder()).body"
-                            :data-tip-e-hint="ticketTip(chainHolder()).hint"
-                            @click="openTicketRef(chainHolder())"
-                            x-text="chainHolder().id"></button>
-                  </div>
-                </template>
-                <template x-if="chainUnblocks().length > 0">
-                  <div class="col-span-2 grid grid-cols-[58px_1fr] gap-x-[10px] items-start">
-                    <span class="text-surface-600">unblocks</span>
-                    <div class="flex flex-wrap gap-[5px] items-center">
-                      <template x-for="n in chainUnblocks()" :key="n.id">
-                        <button type="button" class="break-all"
-                                :disabled="!relationKnown(n) || !!n.missing"
-                                :class="relationHueClass(n)"
-                                :data-tip-e="ticketTip(n).title"
-                                :data-tip-e-tag="ticketTip(n).tag"
-                                :data-tip-e-tag-color="ticketTip(n).tagColor"
-                                :data-tip-e-body="ticketTip(n).body"
-                                :data-tip-e-hint="ticketTip(n).hint"
-                                @click="openTicketRef(n)"
-                                x-text="n.id"></button>
+                <template x-if="!['open', 'todo'].includes(selectedTicket?.status) && selectedTicket?.links?.length">
+                  <span class="contents">
+                    <span class="text-tx-log">related</span>
+                    <span class="flex flex-col items-start gap-0.5 min-w-0">
+                      <template x-for="ref in selectedTicket?.links || []" :key="(ref.source || '') + ':' + ref.id">
+                        <button type="button" class="text-left truncate max-w-full text-tx-2 hover:text-tx-hi disabled:text-tx-log" :disabled="!relationKnown(ref)"
+                                :title="ref.id" @click="openTicketRef(ref)" x-text="ref.id + (relationKnown(ref) ? '' : ' · not found')"></button>
                       </template>
-                    </div>
-                  </div>
+                    </span>
+                  </span>
                 </template>
-                <template x-for="row in relationRows()" :key="row.key">
-                  <div class="col-span-2 grid grid-cols-[58px_1fr] gap-x-[10px] items-start">
-                    <span class="text-surface-600" x-text="row.label"></span>
-                    <div class="flex flex-wrap gap-[5px] items-center">
-                      <template x-for="ref in relationRefs(row)" :key="ref.id">
-                        <button type="button" :class="relationChipClass(ref)"
-                                :disabled="!relationKnown(ref) || !!ref.missing"
-                                :data-tip-e="ticketTip(ref).title"
-                                :data-tip-e-tag="ticketTip(ref).tag"
-                                :data-tip-e-tag-color="ticketTip(ref).tagColor"
-                                :data-tip-e-body="ticketTip(ref).body"
-                                :data-tip-e-hint="ticketTip(ref).hint"
-                                @click="openTicketRef(ref)"
-                                x-text="ref.id"></button>
-                      </template>
-                      <button type="button" x-show="relationHidden(row) > 0"
-                              class="text-[10.5px] text-accent hover:underline"
-                              @click="relExpanded[row.key] = true"
-                              x-text="'+' + relationHidden(row) + ' more'"></button>
-                    </div>
-                  </div>
-                </template>
-                <template x-if="selectedTicket?.agent"><span class="text-surface-600">agent</span></template>
-                <template x-if="selectedTicket?.agent"><span class="text-tx-2 break-all" x-text="selectedTicket?.agent"></span></template>
-                <template x-if="selectedTicket?.stages?.length > 1"><span class="text-surface-600">stage</span></template>
-                <template x-if="selectedTicket?.stages?.length > 1">
-                  <span>
+                <template x-if="!isGraphTicket(selectedTicket) && selectedTicket?.stages?.length > 1 && !['open', 'todo'].includes(selectedTicket.status)">
+                  <span class="contents">
+                    <span class="text-tx-log">stage</span>
                     <template x-if="ticketCanControl(selectedTicket) && canSetStage() && setStageOpen">
-                      <select aria-label="Stage" class="text-[11px] font-mono bg-surface-800 text-tx-3 border border-edge-input rounded px-1 py-0.5 outline-none focus:border-accent/40"
+                      <select aria-label="Stage" class="max-w-full text-[11px] font-mono bg-surface-800 text-tx-3 border border-edge-input rounded px-1 py-0.5 outline-none focus:border-accent/40"
                               @change="setStage($event.target.value); setStageOpen = false"
                               @blur="setStageOpen = false"
                               x-init="$nextTick(() => $el.focus())">
-                        <!-- An unset stage needs a placeholder so selecting the fallback stage emits change. -->
-                        <template x-if="!selectedTicket?.stage">
-                          <option value="" selected>set stage…</option>
+                        <template x-if="!selectedTicket?.stages?.includes(selectedTicket.stage)">
+                          <option value="" selected disabled x-text="selectedTicket?.stage ? selectedTicket.stage + ' (saved)' : 'Set stage…'"></option>
                         </template>
                         <template x-for="s in selectedTicket?.stages || []" :key="s">
                           <option :value="s" x-text="s" :selected="s === selectedTicket?.stage"></option>
@@ -2611,20 +2602,20 @@
                       </select>
                     </template>
                     <template x-if="!(ticketCanControl(selectedTicket) && canSetStage() && setStageOpen)">
-                      <button type="button" aria-label="Change stage" class="text-tx-2"
+                      <button type="button" aria-label="Change stage" class="text-tx-2 text-left truncate max-w-full justify-self-start"
                               :disabled="!canSetStage()"
-                              :class="ticketCanControl(selectedTicket) && canSetStage() ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
-                              :title="executionActive(selectedTicket) ? 'Pause first and wait for the agent to stop before changing stages.' : (plannotatorInFlight[selectedTicket?.id] ? 'Close the review before changing stages.' : '')"
+                              :class="canSetStage() ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
+                              :title="executionActive(selectedTicket) ? 'Pause first and wait for the agent to stop before changing stages.' : (plannotatorInFlight[selectedTicket?.id] ? 'Close the review before changing stages.' : displayStage())"
                               @click="setStageOpen = true"
-                              x-text="displayStage()"></button>
+                              x-text="displayStage() + (selectedTicket?.stages?.includes(displayStage()) ? ' · ' + (selectedTicket.stages.indexOf(displayStage()) + 1) + ' of ' + selectedTicket.stages.length : '')"></button>
                     </template>
                   </span>
                 </template>
                 <template x-if="notifyCanEdit() && notifyEditing">
                   <div class="col-span-2 flex flex-col gap-[7px] p-[9px] bg-surface-850 border border-edge-input rounded-[7px]">
                     <div class="flex items-center gap-[10px]">
-                      <span class="text-surface-600">notify</span>
-                      <span x-show="notifySaving" class="ml-auto text-[10.5px] text-surface-600">saving…</span>
+                      <span class="text-tx-log">notify</span>
+                      <span x-show="notifySaving" class="ml-auto text-[10.5px] text-tx-log">saving…</span>
                       <span x-show="notifySaved && !notifySaving" class="ml-auto text-[10.5px] text-ok/70">saved</span>
                       <button type="button" class="text-[10.5px] text-accent hover:underline"
                               :class="(notifySaving || notifySaved) ? '' : 'ml-auto'"
@@ -2656,84 +2647,77 @@
                                     @click="notifyToggleChannel(notifyDraft, c)" x-text="c.label"></button>
                           </template>
                         </div>
-                        <p class="m-0 font-sans text-[10.5px] leading-[1.5] text-surface-600" x-text="notifyChannelHint(notifyDraft)"></p>
+                        <p class="m-0 font-sans text-[10.5px] leading-[1.5] text-tx-log" x-text="notifyChannelHint(notifyDraft)"></p>
                       </div>
                     </template>
-                    <span class="text-[10.5px] leading-[1.5] text-surface-600 break-all" x-text="notifyEcho(notifyDraft)"></span>
+                    <span class="text-[10.5px] leading-[1.5] text-tx-log break-all" x-text="notifyEcho(notifyDraft)"></span>
                     <span x-show="notifyError" role="alert" class="text-[10.5px] text-err" x-text="notifyError"></span>
                   </div>
                 </template>
-                <template x-if="!(notifyCanEdit() && notifyEditing)"><span class="text-surface-600">notify</span></template>
+                <template x-if="!(notifyCanEdit() && notifyEditing)"><span class="text-tx-log">notify</span></template>
                 <template x-if="!(notifyCanEdit() && notifyEditing)">
-                  <button type="button" class="text-tx-2 text-left justify-self-start"
-                          :disabled="!notifyCanEdit()"
+                  <button type="button" class="text-tx-2 text-left truncate max-w-full justify-self-start"
+                          :disabled="!notifyCanEdit()" :title="notifyRailLabel()"
                           :class="notifyCanEdit() ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
                           @click="openNotifyEditor()" x-text="notifyRailLabel()"></button>
                 </template>
-                <template x-if="selectedTicket?.branch"><span class="text-surface-600">branch</span></template>
+                <span class="text-tx-log">branch</span>
                 <template x-if="selectedTicket?.branch">
-                  <button type="button" class="copyable text-tx-2 hover:text-tx text-left break-all justify-self-start"
-                          aria-label="Copy branch" @click.stop="copyBranch(selectedTicket?.branch)"
+                  <button type="button" class="copyable text-tx-2 hover:text-tx-hi text-left truncate max-w-full justify-self-start"
+                          aria-label="Copy branch" :title="selectedTicket?.branch" @click.stop="copyBranch(selectedTicket?.branch)"
                           x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button>
                 </template>
-                <template x-if="selectedTicket?.base_branch"><span class="text-surface-600">base branch</span></template>
+                <template x-if="!selectedTicket?.branch"><span class="text-tx-log">assigned on first run</span></template>
                 <template x-if="selectedTicket?.base_branch">
-                  <span class="text-tx-2 break-all" x-text="selectedTicket?.base_branch"></span>
-                </template>
-                <span class="text-surface-600">path</span>
-                <span class="text-tx-2 break-all" x-text="selectedTicket?.path" :title="selectedTicket?.path"></span>
-                <template x-if="!isSecondary(selectedTicket) && selectedTicket?.last_log"><span class="text-surface-600">log</span></template>
-                <template x-if="!isSecondary(selectedTicket) && selectedTicket?.last_log">
-                  <button type="button" class="copyable text-tx-2 hover:text-tx text-left break-all justify-self-start"
-                          aria-label="Copy log path" @click.stop="copyCmd(selectedTicket?.last_log)"
-                          x-text="copiedCmd === selectedTicket?.last_log ? '✓ copied' : selectedTicket?.last_log"></button>
-                </template>
-                <template x-if="selectedTicket?.created_at"><span class="text-surface-600">created</span></template>
-                <template x-if="selectedTicket?.created_at"><span class="text-tx-2" x-text="formatAbsDate(selectedTicket.created_at)"></span></template>
-                <template x-if="selectedTicket?.scheduled_at || canSchedule(selectedTicket)"><span class="text-surface-600">starts</span></template>
-                <template x-if="selectedTicket?.scheduled_at || canSchedule(selectedTicket)">
-                  <span>
-                    <template x-if="canSchedule(selectedTicket) && scheduleEditing">
-                      <span class="flex flex-wrap items-center gap-1.5">
-                        <input type="datetime-local" aria-label="Scheduled start" x-model="scheduleDraft" :min="scheduleMin()"
-                               class="text-[11px] font-mono bg-surface-800 text-tx-3 border border-edge-input rounded px-1 py-0.5 outline-none focus:border-accent/40">
-                        <button type="button" class="text-[10.5px] text-accent hover:underline disabled:opacity-50"
-                                :disabled="scheduleSubmitting" @click="submitSchedule()">save</button>
-                        <button type="button" class="text-[10.5px] text-surface-600 hover:text-tx-3"
-                                @click="closeScheduleEditor()">cancel</button>
-                      </span>
-                    </template>
-                    <template x-if="!(canSchedule(selectedTicket) && scheduleEditing)">
-                      <span class="flex flex-wrap items-center gap-1.5">
-                        <button type="button" aria-label="Edit scheduled start" class="text-tx-2 text-left"
-                                :disabled="!canSchedule(selectedTicket)"
-                                :class="canSchedule(selectedTicket) ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
-                                @click="openScheduleEditor()"
-                                x-text="scheduleLabel(selectedTicket) || 'not scheduled'"></button>
-                        <template x-if="selectedTicket?.scheduled_at && canSchedule(selectedTicket)">
-                          <button type="button" class="text-[10.5px] text-surface-600 hover:text-tx-3 disabled:opacity-50"
-                                  :disabled="scheduleSubmitting" @click="clearTicketSchedule()">clear</button>
-                        </template>
-                        <template x-if="selectedTicket?.scheduled_at && canSchedule(selectedTicket)">
-                          <button type="button" class="text-[10.5px] text-accent hover:underline"
-                                  @click="dispatchLifecycle(selectedTicket, 'start')">run now</button>
-                        </template>
-                      </span>
-                    </template>
-                    <span x-show="scheduleError" role="alert" class="block text-[10.5px] text-err mt-0.5" x-text="scheduleError"></span>
+                  <span class="contents">
+                    <span class="text-tx-log">base branch</span>
+                    <span class="text-tx-2 truncate" :title="selectedTicket?.base_branch" x-text="selectedTicket?.base_branch"></span>
                   </span>
                 </template>
+                <span class="text-tx-log">repo</span>
+                <span class="text-tx-2 truncate" x-text="selectedTicket?.path" :title="selectedTicket?.path"></span>
+                <template x-if="!isSecondary(selectedTicket) && selectedTicket?.last_log">
+                  <span class="contents">
+                    <span class="text-tx-log">log</span>
+                    <button type="button" class="copyable text-tx-2 hover:text-tx-hi text-left truncate max-w-full justify-self-start"
+                            aria-label="Copy log path" :title="selectedTicket?.last_log" @click.stop="copyCmd(selectedTicket?.last_log)"
+                            x-text="copiedCmd === selectedTicket?.last_log ? '✓ copied' : selectedTicket?.last_log"></button>
+                  </span>
+                </template>
+                <template x-if="selectedTicket?.created_at">
+                  <span class="contents">
+                    <span class="text-tx-log">created</span>
+                    <span class="text-tx-2 truncate" :title="formatAbsDate(selectedTicket?.created_at)" x-text="formatAbsDate(selectedTicket?.created_at)"></span>
+                  </span>
+                </template>
+                <span class="text-tx-log">schedule</span>
+                <span>
+                  <template x-if="canSchedule(selectedTicket) && scheduleEditing">
+                    <span class="flex flex-wrap items-center gap-1.5">
+                      <input type="datetime-local" aria-label="Scheduled start" x-model="scheduleDraft" :min="scheduleMin()"
+                             class="max-w-full text-[11px] font-mono bg-surface-800 text-tx-3 border border-edge-input rounded px-1 py-0.5 outline-none focus:border-accent/40">
+                      <button type="button" class="font-sans text-[12px] text-accent hover:underline disabled:opacity-50"
+                              :disabled="scheduleSubmitting" @click="submitSchedule()">Save</button>
+                      <button type="button" class="font-sans text-[12px] text-tx-log hover:text-tx-2"
+                              @click="closeScheduleEditor()">Cancel</button>
+                    </span>
+                  </template>
+                  <template x-if="canSchedule(selectedTicket) && !scheduleEditing">
+                    <span class="flex flex-wrap items-center gap-1.5">
+                      <button type="button" aria-label="Edit scheduled start" class="text-left truncate max-w-full cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40"
+                              :class="selectedTicket?.scheduled_at ? 'text-tx-2' : 'text-tx-log'" :title="scheduleLabel(selectedTicket) || 'none'"
+                              @click="openScheduleEditor()" x-text="scheduleLabel(selectedTicket) || 'none'"></button>
+                      <button type="button" x-show="selectedTicket?.scheduled_at" class="font-sans text-[12px] text-tx-log hover:text-tx-2 disabled:opacity-50"
+                              :disabled="scheduleSubmitting" @click="clearTicketSchedule()">Clear</button>
+                    </span>
+                  </template>
+                  <span x-show="!canSchedule(selectedTicket)" class="block truncate" :class="selectedTicket?.scheduled_at ? 'text-tx-2' : 'text-tx-log'"
+                        :title="scheduleLabel(selectedTicket) || 'none'" x-text="scheduleLabel(selectedTicket) || 'none'"></span>
+                  <span x-show="scheduleError" role="alert" class="block text-[10.5px] text-err mt-0.5" x-text="scheduleError"></span>
+                </span>
               </div>
             </div>
 
-          </div>
-
-          <!-- Terminal: pinned to the rail bottom for non-running tickets -->
-          <div class="shrink-0 p-4 pt-0 flex flex-col gap-[9px]" x-show="ticketCanControl(selectedTicket) && !executionActive(selectedTicket)">
-            <div class="h-px bg-surface-700"></div>
-            <button type="button" @click="attachTerminal()"
-                    class="w-full font-mono text-[12px] px-3 py-2.5 rounded-lg bg-surface-900 border border-edge-input text-accent hover:border-accent transition-colors flex items-center justify-center gap-2"
-                    x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied attach command' : '⌁ attach tmux session'"></button>
           </div>
         </div>
         </div>
@@ -2874,7 +2858,7 @@
                 <div class="flex-1"></div>
                 <button type="button" @click="toggleLogFollow()" :aria-pressed="logFollow"
                         class="font-mono text-[10px] px-2 py-1 rounded-md border border-edge-input"
-                        :class="logFollow ? 'text-tx-2' : 'text-surface-600'">⇣ follow</button>
+                        :class="logFollow ? 'text-tx-2' : 'text-surface-600'">Follow output</button>
                 <button type="button" x-show="epicTab === 'activity' && activityStage" @click="openRawLog()" class="raw-log-action">⧉ raw</button>
                 <span x-show="rawLogError" role="status" class="font-mono text-xs text-err" x-text="rawLogError"></span>
                 <button type="button" x-show="epicTab === 'activity' && rawLogCanExportLatest" @click="openRawLog(true)" class="raw-log-action">Export latest stage log</button>
@@ -2889,7 +2873,7 @@
                     <div class="flex-1"></div>
                     <button type="button" @click="toggleTerminalRW()" :disabled="!terminalConnected"
                             class="px-2 py-1 rounded-md border border-edge-input disabled:opacity-40"
-                            :class="terminalRW ? 'text-err bg-err/10 border-err/40' : 'text-tx-3'" x-text="terminalRW ? 'read-write' : 'read-only'"></button>
+                            :class="terminalRW ? 'text-err bg-err/10 border-err/40' : 'text-tx-3'" x-text="terminalRW ? 'In control · hand back' : 'Watching · take over'"></button>
                   </div>
                   <div x-show="terminalError" class="shrink-0 px-6 pb-3 flex items-center gap-3 font-mono text-xs text-err" role="alert">
                     <span class="whitespace-pre-wrap break-words" x-text="terminalError"></span>
@@ -3220,7 +3204,7 @@
                     <div class="font-mono text-[11.5px] text-err" role="alert" x-text="createScheduleError()"></div>
                   </template>
 
-                  <p class="text-[11px] leading-relaxed text-surface-600">At the scheduled time, the daemon moves the ticket to Todo. Pickup respects automatic pickup and unresolved dependencies.</p>
+                  <p class="text-[11px] leading-relaxed text-surface-600">When due, the daemon moves the ticket to Queued. Automatic pickup must be on for the schedule to request a run.</p>
                 </div>
               </template>
             </div>
@@ -3249,7 +3233,7 @@
                 <select id="new-status" x-model="createForm.status" x-show="!createSchedulePinned()"
                         class="w-full h-[36px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
                   <option value="open">Draft (Open)</option>
-                  <option value="todo">Queue (Todo)</option>
+                  <option value="todo">Queued</option>
                 </select>
                 <p x-show="createSchedulePinned()" class="text-sm text-tx-2 font-mono">Open until scheduled time</p>
               </div>
@@ -3394,10 +3378,10 @@
                   <button x-show="automationsRow().running" type="button" role="tab" :aria-selected="automationsTab === 'session'" @click="automationsSwitchTab('session')" class="flex items-center gap-1.5 font-mono text-[12px] pb-[9px] border-b-2" :class="automationsTab === 'session' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'"><span class="w-[5px] h-[5px] bg-st-progress rounded-full pulse-dot"></span>session</button>
                   <button type="button" role="tab" :aria-selected="automationsTab === 'runs'" @click="automationsSwitchTab('runs')" class="font-mono text-[12px] pb-[9px] border-b-2 whitespace-nowrap" :class="automationsTab === 'runs' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">runs <span class="text-tx-faint" x-text="automationsRow().runs_total ?? automationsHistoryTotal"></span></button>
                   <button type="button" role="tab" :aria-selected="automationsTab === 'prompt'" @click="automationsSwitchTab('prompt')" class="font-mono text-[12px] pb-[9px] border-b-2" :class="automationsTab === 'prompt' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">prompt</button>
-                  <div class="automations-output-actions ml-auto flex items-center gap-3 pb-[9px] font-mono text-[11px] whitespace-nowrap"><button type="button" x-show="automationsTab === 'session'" @click="automationsFollow()" class="text-tx-3">⇣ follow</button><a x-show="automationsTab === 'runs' && automationsLogRun" :href="automationsRawURL()" target="_blank" rel="noopener" class="text-tx-3">⧉ raw</a><button type="button" x-show="automationsRow().running && automationsTab !== 'session'" @click="automationsSwitchTab('session')" class="text-accent">← live</button></div>
+                  <div class="automations-output-actions ml-auto flex items-center gap-3 pb-[9px] font-mono text-[11px] whitespace-nowrap"><button type="button" x-show="automationsTab === 'session'" @click="automationsFollow()" class="text-tx-3">Follow output</button><a x-show="automationsTab === 'runs' && automationsLogRun" :href="automationsRawURL()" target="_blank" rel="noopener" class="text-tx-3">⧉ raw</a><button type="button" x-show="automationsRow().running && automationsTab !== 'session'" @click="automationsSwitchTab('session')" class="text-accent">← live</button></div>
                 </div>
                 <div x-show="automationsTab === 'session'" role="tabpanel" class="flex flex-col flex-1 min-h-0">
-                  <div class="automations-session-controls flex flex-wrap items-center gap-3 px-6 py-3 font-mono text-[11px] text-surface-600"><span class="automations-session-context flex-1" x-text="'tmux · ' + (automationsRow().current_run?.session || 'kontora-auto-' + automationsSelected + '-' + automationsRow().current_run?.n) + ' · ' + automationsRow().agent + ' · running ' + automationsWall(automationsRow().current_run)"></span><button type="button" @click="toggleTerminalRW()" class="px-2 py-1 rounded border" :class="terminalRW ? 'text-err bg-err/10 border-err/40' : 'text-surface-600 border-edge-input'" x-text="terminalRW ? 'read-write' : 'read-only'"></button><button type="button" @click="copyCmd('kontora attach ' + automationsSelected)" class="copyable" x-text="'kontora attach ' + automationsSelected"></button></div>
+                  <div class="automations-session-controls flex flex-wrap items-center gap-3 px-6 py-3 font-mono text-[11px] text-surface-600"><span class="automations-session-context flex-1" x-text="'tmux · ' + (automationsRow().current_run?.session || 'kontora-auto-' + automationsSelected + '-' + automationsRow().current_run?.n) + ' · ' + automationsRow().agent + ' · running ' + automationsWall(automationsRow().current_run)"></span><button type="button" @click="toggleTerminalRW()" class="px-2 py-1 rounded border" :class="terminalRW ? 'text-err bg-err/10 border-err/40' : 'text-surface-600 border-edge-input'" x-text="terminalRW ? 'In control · hand back' : 'Watching · take over'"></button><button type="button" @click="copyCmd('kontora attach ' + automationsSelected)" class="copyable" x-text="'kontora attach ' + automationsSelected"></button></div>
                   <p x-show="terminalError" role="alert" class="px-6 text-xs text-err"><span x-text="terminalError"></span> <button type="button" @click="automationsReconnect()" class="font-mono text-[11px] text-accent">retry</button></p>
                   <div id="automation-terminal-session" class="flex-1 min-h-[200px] mx-6 mb-5 bg-surface-deep border border-surface-700 rounded-[10px] px-[18px] py-[14px] overflow-hidden" :class="terminalRW ? 'ring-1 ring-err/40' : ''"></div>
                 </div>
@@ -4491,7 +4475,7 @@
                       <div>
                         <label for="gen-secondary_tickets_dirs" class="settings-label">Secondary ticket directories</label>
                         <code class="settings-key">secondary_tickets_dirs</code>
-                        <p class="settings-help">One directory per line. Claim a ticket into the primary directory before running it. Relationships stay within each directory.</p>
+                        <p class="settings-help">One folder per line. Use Move here before running a ticket from another folder. A primary ticket can depend on a unique match in a secondary folder.</p>
                         <p class="settings-warning">Restart the daemon to apply.</p>
                       </div>
                       <textarea id="gen-secondary_tickets_dirs" x-model="settingsConfig.general.secondary_tickets_dirs" rows="4" placeholder="~/org/team-tickets" class="settings-input"></textarea>
@@ -5584,7 +5568,7 @@
                     <button type="button" class="mobile-ios-row-action" @click="openActionsSheet(ticket)" aria-haspopup="dialog"><span class="mobile-ios-pill" x-text="scheduleChip(ticket).abs"></span></button>
                   </template>
                   <template x-if="!mobileSelecting && ticket.status === 'open' && !ticket.kontora && ticketCanControl(ticket) && !ticket.scheduled_at">
-                    <button type="button" class="mobile-ios-row-action" @click="dispatchLifecycle(ticketKey(ticket), 'start')" :disabled="lifecycleBusy(ticket)"><span class="mobile-ios-pill">Initialize</span></button>
+                    <button type="button" class="mobile-ios-row-action" @click="dispatchLifecycle(ticketKey(ticket), 'start')" :disabled="lifecycleBusy(ticket)"><span class="mobile-ios-pill">Set up and run…</span></button>
                   </template>
                   <template x-if="!mobileSelecting && ticket.status === 'human_review' && (ticketCanControl(ticket) || ticketCanClaim(ticket))">
                     <button type="button" class="mobile-ios-row-action" :aria-label="'Actions for ' + (ticket.title || ticket.id)" @click="openActionsSheet(ticket)" aria-haspopup="dialog">More</button>
@@ -5792,7 +5776,7 @@
               <button type="button" @click="epicRunDetails()" class="font-mono text-[11px] text-accent">run details</button>
               <button type="button" @click="toggleLogFollow()" :aria-pressed="logFollow"
                       class="font-mono text-[10px] px-2 py-1 rounded-md border border-edge-input"
-                      :class="logFollow ? 'text-tx-2' : 'text-surface-600'">⇣ follow</button>
+                      :class="logFollow ? 'text-tx-2' : 'text-surface-600'">Follow output</button>
               <button type="button" x-show="epicTab === 'activity' && activityStage" @click="openRawLog()" class="raw-log-action">⧉ raw</button>
               <span x-show="rawLogError" role="status" class="font-mono text-xs text-err" x-text="rawLogError"></span>
               <button type="button" x-show="epicTab === 'activity' && rawLogCanExportLatest" @click="openRawLog(true)" class="raw-log-action">Export latest stage log</button>
@@ -5966,9 +5950,9 @@
           <button type="button" x-show="mobileRunningOverview()" class="mobile-control" @click="mobileSwitchTab('terminal')">Terminal</button>
           <button type="button" @click="openActionsSheet(selectedTicket)" class="mobile-control" aria-haspopup="dialog" x-text="mobileRunningOverview() ? 'More' : 'Actions'"></button>
           <button type="button" x-show="isSecondary(selectedTicket)" @click="claimTicket()"
-                  :disabled="!ticketCanClaim(selectedTicket) || claimSubmitting" :title="selectedTicket?.refusal_reason || 'Move into primary without starting work. Related tickets are not moved; references resolve in primary.'"
+                  :disabled="!ticketCanClaim(selectedTicket) || claimSubmitting" :data-tip-t="selectedTicket?.refusal_reason || 'Moves the ticket file into this daemon\'s tickets folder. Doesn\'t start work.'"
                   class="font-mono text-xs px-3 py-2 rounded bg-accent text-accent-fg disabled:opacity-50 disabled:cursor-not-allowed"
-                  x-text="claimSubmitting ? 'Claiming…' : 'Claim'"></button>
+                  x-text="claimSubmitting ? 'Moving…' : 'Move here'"></button>
           <button type="button" x-show="!mobileRunningOverview()" @click="sheet = { type: 'navigation' }" class="mobile-icon-button" aria-label="Open navigation" aria-haspopup="dialog"><svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
           <button type="button" x-show="!mobileRunningOverview()" @click="openAssistantSheet($event.currentTarget)" class="mobile-icon-button assistant-launch" aria-label="Assistant" :aria-description="assistantLaunchHint()" aria-haspopup="dialog"><span class="assistant-launch-state" x-show="assistantLaunchLabel()" x-text="assistantLaunchLabel()"></span><svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-3 3V11.5a10 10 0 0 1 20 0z"/></svg></button>
 
@@ -5977,7 +5961,7 @@
           <button type="button" class="mobile-tab" @click="mobileSwitchPanel('ticket')" :aria-pressed="mobilePanel() === 'ticket'">Ticket</button>
           <button type="button" class="mobile-tab" @click="mobileSwitchPanel('notes')" :aria-pressed="mobilePanel() === 'notes'">Notes</button>
           <button type="button" class="mobile-tab" @click="mobileSwitchPanel('output')" :aria-pressed="mobilePanel() === 'output'">Output</button>
-          <button type="button" class="mobile-tab" @click="mobileSwitchPanel('changes')" :aria-pressed="mobilePanel() === 'changes'">Committed changes</button>
+          <button type="button" class="mobile-tab" @click="mobileSwitchPanel('changes')" :aria-pressed="mobilePanel() === 'changes'">Changes</button>
         </nav>
       </div>
 
@@ -6058,7 +6042,7 @@
           <div class="shrink-0 p-3 flex items-center gap-2">
             <button type="button" @click="toggleLogFollow()" :aria-pressed="logFollow"
                     class="font-mono text-[10px] px-2 py-1 rounded-md border border-edge-input"
-                    :class="logFollow ? 'text-tx-2' : 'text-surface-600'">⇣ follow</button>
+                    :class="logFollow ? 'text-tx-2' : 'text-surface-600'">Follow output</button>
             <button type="button" x-show="activityStage" @click="openRawLog()" class="raw-log-action">⧉ raw</button>
             <span x-show="rawLogError" role="status" class="font-mono text-xs text-err" x-text="rawLogError"></span>
             <button type="button" x-show="rawLogCanExportLatest" @click="openRawLog(true)" class="raw-log-action">Export latest stage log</button>
@@ -6213,11 +6197,11 @@
           </template>
           <div class="mobile-detail-secondary" :class="{ 'mobile-ios-running-secondary': mobileRunningOverview() }">
             <span class="pipe-tag" :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'" x-text="selectedTicket ? mobileTagLabel(selectedTicket) : ''"></span>
-            <button type="button" class="status-chip" :data-status="selectedTicket?.status" :disabled="!ticketCanControl(selectedTicket) || lifecycleBusy(selectedTicket)" @click="openMoveSheet(selectedTicket)" :aria-label="workflowStatusLabel(selectedTicket) + '. Move to status'" x-text="workflowStatusLabel(selectedTicket)"></button>
+            <button type="button" class="status-chip" :data-status="selectedTicket?.status" :disabled="!ticketCanControl(selectedTicket) || lifecycleBusy(selectedTicket)" @click="openMoveSheet(selectedTicket)" :aria-label="workflowStatusLabel(selectedTicket) + '. Set status'" x-text="workflowStatusLabel(selectedTicket)"></button>
             <span x-show="selectedTicket?.agent" class="mobile-label text-tx-3" x-text="selectedTicket?.agent"></span>
             <span x-show="selectedTicket?.branch" class="mobile-technical text-tx-3" x-text="selectedTicket?.branch"></span>
             <span class="mobile-technical text-tx-3 break-all" x-text="sourceLabel(selectedTicket)"></span>
-            <span x-show="isSecondary(selectedTicket) && !ticketCanClaim(selectedTicket)" class="w-full font-mono text-[11px] text-warn" x-text="selectedTicket?.refusal_reason || 'This ticket cannot be claimed.'"></span>
+            <span x-show="isSecondary(selectedTicket) && !ticketCanClaim(selectedTicket)" class="w-full font-mono text-[11px] text-warn" x-text="selectedTicket?.refusal_reason || 'This ticket can\'t be moved here.'"></span>
             <template x-if="scheduleLabel(selectedTicket)">
               <button @click="canSchedule(selectedTicket) && openScheduleSheet(selectedTicket)" class="sched-chip" :disabled="!canSchedule(selectedTicket)" :style="canSchedule(selectedTicket) ? 'cursor:pointer;' : 'cursor:default;'">
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
@@ -6284,7 +6268,7 @@
               <template x-if="!isSecondary(selectedTicket) && ticketChanges?.commits?.length">
                 <div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(var(--surface-700),.3);font-family:'JetBrains Mono',monospace;font-size:11px;">
                   <div style="color:rgba(var(--surface-600),1);margin-bottom:6px;"
-                       x-text="'Committed changes: ' + ticketChanges.commits.length + ' commit' + (ticketChanges.commits.length === 1 ? '' : 's') + ', ' + ticketChanges.files.length + ' file' + (ticketChanges.files.length === 1 ? '' : 's') + ' vs ' + ticketChanges.base"></div>
+                       x-text="'Changes: ' + ticketChanges.commits.length + ' commit' + (ticketChanges.commits.length === 1 ? '' : 's') + ', ' + ticketChanges.files.length + ' file' + (ticketChanges.files.length === 1 ? '' : 's') + ' vs ' + ticketChanges.base"></div>
                   <template x-for="c in ticketChanges.commits" :key="c.sha">
                     <div style="display:flex;align-items:baseline;gap:8px;min-width:0;line-height:1.7;">
                       <span style="color:rgba(var(--surface-600),1);flex:none;" x-text="c.sha"></span>
@@ -6388,7 +6372,7 @@
           <header class="mobile-sheet-header">
             <div class="mobile-sheet-heading">
               <h2 id="mobile-sheet-title" class="mobile-label text-tx-2 m-0"
-                  x-text="({ browse: 'Browse', navigation: 'Navigation', filters: 'Ticket filters', actions: 'Ticket actions', move: 'Move to', schedule: 'Start later', assistant: 'Assistant', new: 'New ticket', 'bulk-more': 'Selected ticket actions' })[sheet.type] || (sheet.type === 'queue' ? mobileBatchLabel(sheet) : 'Ticket')"></h2>
+                  x-text="({ browse: 'Browse', navigation: 'Navigation', filters: 'Ticket filters', actions: 'Ticket actions', move: 'Set status', schedule: 'Start later', assistant: 'Assistant', new: 'New ticket', 'bulk-more': 'Selected ticket actions' })[sheet.type] || (sheet.type === 'queue' ? mobileBatchLabel(sheet) : 'Ticket')"></h2>
               <button type="button" @click="assistantNewThread()" x-show="sheet.type === 'assistant' && assistantEnabled()"
                       class="mobile-assistant-new" aria-label="New chat">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg>
@@ -6438,7 +6422,7 @@
 
           <template x-if="sheet.type === 'navigation'">
             <nav class="mobile-navigation" aria-label="Main navigation">
-              <template x-for="view in [{ key: 'board', label: 'Dashboard' }, { key: 'new', label: 'New ticket' }, { key: 'automations', label: 'Automations' }, { key: 'stats', label: 'Stats' }, { key: 'archive', label: 'Archive' }, { key: 'settings', label: 'Settings' }]" :key="view.key">
+              <template x-for="view in [{ key: 'board', label: 'Board' }, { key: 'new', label: 'New ticket' }, { key: 'automations', label: 'Automations' }, { key: 'stats', label: 'Stats' }, { key: 'archive', label: 'Archive' }, { key: 'settings', label: 'Settings' }]" :key="view.key">
                 <button type="button" @click="mobileNavigate(view.key)"
                         :aria-current="currentView === view.key ? 'page' : null">
                   <span x-text="view.label"></span><span class="mobile-navigation-count" x-text="mobileNavigationCount(view.key)"></span>
@@ -6507,8 +6491,8 @@
 
           <template x-if="sheet.type === 'move' && ticketCanControl(sheet.ticket)">
             <div class="mobile-move-destinations overflow-y-auto">
-              <p class="px-5 pb-3 text-sm text-tx-3">Choose a status destination. Request pickup and Retry stage are separate commands.</p>
-              <template x-for="destination in mobileMoveDestinations()" :key="destination.id"><button type="button" class="mobile-action-row" :disabled="lifecycleBusy(sheet.ticket)" @click="mobileMoveTo(destination.status)" x-text="destination.label"></button></template>
+              <p class="px-5 pb-3 text-sm text-tx-3">Choose a status. Selecting Queued can start an agent without a separate Run command.</p>
+              <template x-for="destination in mobileMoveDestinations()" :key="destination.id"><button type="button" class="mobile-action-row" :disabled="lifecycleBusy(sheet.ticket)" @click="mobileMoveTo(destination.status)" x-text="destination.statusLabel"></button></template>
             </div>
           </template>
 

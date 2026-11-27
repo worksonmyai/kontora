@@ -322,6 +322,372 @@ test('unsupported observed statuses and endpoint overrides cannot authorize comm
   assert.equal(command.status, undefined);
 });
 
+test('Queue requests pickup with saved settings and does not open init or overwrite newer SSE', async t => {
+  for (const newerSSE of [false, true]) {
+    const a = app({ openInitModal: () => assert.fail('Queue must not initialize'), needsInitModal: () => true });
+    Object.assign(a.tickets[0], { status: 'open', pipeline: 'saved' });
+    const command = a.lifecycleCommand('a', { id: 'queue-saved', endpoint: 'init', body: { pipeline: 'not saved' } });
+    assert.equal(command.endpoint, 'run');
+    assert.equal(command.label, 'Queue');
+    assert.equal(command.body, undefined);
+    assert.equal(a.lifecycleCanQueueSaved('a'), true);
+    assert.equal(a.lifecycleActions('a').find(c => c.endpoint === 'run').id, 'start');
+    const fetch = t.mock.method(globalThis, 'fetch', async (url, options) => {
+      assert.equal(url, '/api/tickets/a/run');
+      assert.deepEqual(options, { method: 'POST' });
+      if (newerSSE) a.applyTicketUpdate({ ...a.tickets[0], status: 'in_progress' });
+      return { ok: true, json: async () => ({ ...a.tickets[0], status: 'todo' }) };
+    });
+    assert.deepEqual(await a.dispatchLifecycle('a', command), {
+      outcome: 'success', ticketKey: 'a', command: 'queue-saved', transportStarted: true,
+    });
+    assert.equal(fetch.mock.callCount(), 1);
+    assert.equal(a.tickets[0].status, newerSSE ? 'in_progress' : 'todo');
+    assert.equal(a.toast, 'a: Pickup requested');
+    fetch.mock.restore();
+  }
+});
+
+test('Queue declines ineligible rows and rechecks eligibility after saving', async () => {
+  for (const change of [
+    { status: 'todo' }, { kontora: false }, { kind: 'epic' }, { kind: 'epic', epic_execution: 'agent' },
+    { execution_active: true }, { scheduled_at: '2099-01-01T00:00:00Z' }, { can_control: false },
+  ]) {
+    const a = app({ _lifecyclePost: () => assert.fail('ineligible Queue sent a POST') });
+    const open = a.tickets[0] = { ...a.tickets[0], status: 'open' };
+    const capture = a.lifecycleCommand('a', 'queue-saved');
+    a.tickets[0] = { ...open, ...change };
+    assert.equal(a.lifecycleCanQueueSaved(open), false, JSON.stringify(change));
+    assert.equal((await a.dispatchLifecycle('a', 'queue-saved')).outcome, 'refused');
+    a.tickets[0] = open;
+    a.lifecycleDraftBarrier = async () => { a.tickets[0] = { ...open, ...change }; return true; };
+    const result = await a.dispatchLifecycle('a', capture);
+    assert.equal(result.outcome, 'obsolete');
+    assert.equal(result.transportStarted, false);
+    assert.ok(result.error);
+    assert.equal(a.lifecycleBusy('a'), false);
+  }
+  const a = app({ _lifecyclePost: () => assert.fail('missing or secondary subject sent a POST') });
+  a.tickets[0].status = 'open';
+  a.secondaryTickets = [{ ...a.tickets[0], source: 'other', can_control: true }];
+  for (const key of ['other/a', 'missing']) {
+    assert.equal(a.lifecycleCanQueueSaved(key), false);
+    assert.equal((await a.dispatchLifecycle(key, 'queue-saved')).outcome, 'refused');
+  }
+});
+
+test('Queue and Schedule reject a pipeline change after review, including during draft saves', async () => {
+  for (const id of ['queue-saved', 'schedule']) {
+    for (const duringSave of [false, true]) {
+      const a = app({ _lifecyclePost: () => assert.fail('unreviewed pipeline sent a POST') });
+      Object.assign(a.tickets[0], { status: 'open', pipeline: 'reviewed' });
+      const reviewed = a.lifecycleCommand('a', 'queue-saved');
+      const changePipeline = () => { a.tickets[0].pipeline = 'unreviewed'; return true; };
+      if (duringSave) a.lifecycleDraftBarrier = async () => changePipeline();
+      else changePipeline();
+      const command = id === 'schedule' ? a.lifecycleCommand('a', {
+        id, expected: reviewed.expected, body: { scheduled_at: '2099-01-01T00:00:00Z' },
+      }) : reviewed;
+      const result = await a.dispatchLifecycle('a', command, { isOwner: () => true });
+      assert.equal(result.outcome, 'obsolete');
+      assert.equal(result.transportStarted, false);
+    }
+  }
+});
+
+test('Schedule validates an absolute timestamp or clear, with existing single-ticket grace', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2099-01-01T00:00:00Z') });
+  const a = app();
+  a.tickets[0].status = 'open';
+  const posts = [];
+  a._lifecyclePost = async (_key, _endpoint, body) => { posts.push(body); return { outcome: 'success' }; };
+  for (const body of [undefined, {}, { clear: 'true' }, { clear: true, scheduled_at: '2099-01-02T00:00:00Z' },
+    ...['2h', '2099-01-02', '2099-01-02T00:00:00', '2099-02-29T00:00:00Z', '2099-01-02T24:00:00Z',
+      '2099-01-02T00:00:00+01:59X', '2098-12-31T23:58:59Z'].map(scheduled_at => ({ scheduled_at }))]) {
+    const result = await a.dispatchLifecycle('a', { id: 'schedule', body });
+    assert.equal(result.outcome, 'refused', JSON.stringify(body));
+    assert.equal(result.transportStarted, false);
+    assert.ok(result.error);
+  }
+  assert.deepEqual(posts, []);
+  for (const body of [{ clear: true }, { scheduled_at: '2098-12-31T23:59:00Z' }, { scheduled_at: '2099-01-02T01:00:00+01:00' }]) {
+    assert.equal((await a.dispatchLifecycle('a', { id: 'schedule', body })).outcome, 'success');
+    assert.deepEqual(posts.at(-1), body);
+  }
+  a.tickets[0].execution_active = true;
+  assert.equal((await a.dispatchLifecycle('a', { id: 'schedule', body: { clear: true } })).outcome, 'refused');
+  assert.equal(posts.length, 3);
+});
+
+test('batch scheduling snapshots the reviewed instant and rechecks for expiry after the save barrier', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2099-01-01T00:00:00Z') });
+  const a = app();
+  a.tickets[0].status = 'open';
+  const posts = [];
+  const optedIn = { isOwner: () => true, suppressToast: true };
+  a._lifecyclePost = async (_key, _endpoint, body) => { posts.push(body); return { outcome: 'success' }; };
+  const body = { scheduled_at: '2099-01-01T00:00:01Z' };
+  const descriptor = a.lifecycleCommand('a', { id: 'schedule', body });
+  body.scheduled_at = '2099-01-02T00:00:00Z';
+  const saved = deferred();
+  a.lifecycleDraftBarrier = () => saved.promise;
+  const submission = a.dispatchLifecycle('a', descriptor, optedIn);
+  descriptor.body.scheduled_at = '2099-01-03T00:00:00Z';
+  saved.resolve(true);
+  assert.equal((await submission).outcome, 'success');
+  assert.deepEqual(posts, [{ scheduled_at: '2099-01-01T00:00:01Z' }]);
+  a.lifecycleDraftBarrier = async () => { t.mock.timers.tick(1_000); return true; };
+  const expired = await a.dispatchLifecycle('a', { id: 'schedule', body: posts[0] }, optedIn);
+  assert.equal(expired.outcome, 'expired');
+  assert.equal(expired.transportStarted, false);
+  assert.equal(expired.error, 'The pickup time passed. Choose a new time.');
+  const alreadyExpired = await a.dispatchLifecycle('a', { id: 'schedule', body: posts[0] }, optedIn);
+  assert.deepEqual(alreadyExpired, expired);
+  assert.equal(posts.length, 1);
+});
+
+test('a committed schedule with a lost acknowledgement remains uncertain after reconciliation', async t => {
+  const a = app();
+  a.tickets[0].status = 'open';
+  const scheduled_at = '2099-01-01T00:00:00Z';
+  const opts = { isOwner: () => true, suppressToast: true };
+  const command = a.lifecycleCommand('a', { id: 'schedule', body: { scheduled_at } });
+  const fetch = t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (options.method === 'POST') {
+      assert.equal(url, '/api/tickets/a/schedule');
+      assert.deepEqual(JSON.parse(options.body), { scheduled_at });
+      return { ok: false, status: 502, json: async () => ({ error: 'Lost the response' }) };
+    }
+    assert.equal(url, '/api/tickets/a');
+    assert.equal(options.cache, 'no-store');
+    return { ok: true, json: async () => ({ ...a.tickets[0], scheduled_at }) };
+  });
+  const result = await a.dispatchLifecycle('a', command, opts);
+  assert.equal(result.outcome, 'uncertain');
+  assert.equal(result.resolution, 'review-required');
+  assert.equal(result.error, 'Result unknown: Lost the response');
+  assert.equal(a.lifecycleNeedsReconciliation('a'), false);
+  assert.equal(a.lifecycleResolve('a').scheduled_at, scheduled_at);
+  assert.equal(a.lifecycleCanQueueSaved('a'), false);
+  assert.equal((await a.dispatchLifecycle('a', command, opts)).outcome, 'obsolete');
+
+  // A separate operator clears the schedule. Only a newly reviewed command is eligible.
+  a.applyTicketUpdate({ ...a.tickets[0], scheduled_at: undefined });
+  assert.equal(a.lifecycleCanQueueSaved('a'), true);
+  assert.equal(await a.lifecycleReconcile('a', result.reconciliationId), 'review-required');
+  assert.equal((await a.dispatchLifecycle('a', command, opts)).outcome, 'obsolete');
+  assert.equal(fetch.mock.callCount(), 2);
+});
+
+test('an uncertain write blocks the same ticket after the sheet closes, until explicitly reconciled', async t => {
+  const a = app();
+  const scheduled_at = '2099-01-01T00:00:00Z';
+  a.tickets.forEach(ticket => { ticket.status = 'open'; });
+  const open = { ...a.tickets[0] };
+  const gesture = a.lifecycleCommand('a', 'queue-saved');
+  const post = deferred(), read = deferred(), calls = [];
+  let ownsSheet = true;
+  let canRead = false;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls.push([options.method || 'GET', url]);
+    if (url === '/api/tickets/a/schedule') { await post.promise; throw new Error('connection lost'); }
+    if (url === '/api/tickets/b/run') return { ok: true, json: async () => ({ ...a.tickets[1], status: 'todo' }) };
+    assert.equal(url, '/api/tickets/a');
+    if (!canRead) return { ok: false, status: 503 };
+    await read.promise;
+    return { ok: true, json: async () => ({ ...open, status: 'open', scheduled_at }) };
+  });
+  const command = a.lifecycleCommand('a', { id: 'schedule', body: { scheduled_at } });
+  const dispatch = a.dispatchLifecycle('a', command, { isOwner: () => ownsSheet });
+  await until(() => calls.length === 1);
+  ownsSheet = false;
+  post.resolve();
+  const result = await dispatch;
+  assert.equal(result.outcome, 'uncertain');
+  assert.equal(result.resolution, 'refresh-required');
+  assert.equal(a.lifecycleBusy('a'), false);
+  assert.equal(a.lifecycleNeedsReconciliation('a'), true);
+  assert.equal(a.lifecycleNeedsReconciliation({ source: 'other', id: 'a' }), false);
+  a.applyTicketUpdate(open);
+  assert.equal(a.lifecycleCanQueueSaved('a'), false);
+  assert.equal(a._lifecycleAllowed(a.lifecycleResolve('a'), gesture), false);
+  for (const [request, options] of [
+    ['queue-saved'], ['start'], [gesture],
+    [a.lifecycleCommand('a', command), { isOwner: () => true }],
+  ]) {
+    const blocked = await a.dispatchLifecycle('a', request, options);
+    assert.equal(blocked.outcome, 'blocked');
+    assert.equal(blocked.transportStarted, false);
+    assert.equal(blocked.error, 'Result unknown: connection lost');
+    assert.equal(blocked.resolution, 'refresh-required');
+    assert.equal(blocked.reconciliationId, result.reconciliationId);
+  }
+  assert.equal((await a.dispatchLifecycle('b', 'queue-saved')).outcome, 'success');
+  assert.equal(await a.lifecycleReconcile('a', result.reconciliationId + 1), 'review-required');
+  assert.equal(a.lifecycleNeedsReconciliation('a'), true);
+  canRead = true;
+  const fromRow = a.lifecycleReconcile('a');
+  const fromSheet = a.lifecycleReconcile('a', result.reconciliationId);
+  read.resolve();
+  assert.deepEqual(await Promise.all([fromRow, fromSheet]), ['review-required', 'review-required']);
+  assert.equal(a.lifecycleNeedsReconciliation('a'), false);
+  assert.equal(a.lifecycleResolve('a').scheduled_at, scheduled_at);
+  assert.equal(a.lifecycleCanQueueSaved('a'), false);
+  assert.deepEqual(calls, [
+    ['POST', '/api/tickets/a/schedule'], ['GET', '/api/tickets/a'],
+    ['POST', '/api/tickets/b/run'], ['GET', '/api/tickets/a'],
+  ]);
+});
+
+test('conflicting SSE cannot erase evidence of a committed schedule from the reconciliation read', async t => {
+  const a = app();
+  a.tickets[0].status = 'open';
+  const before = { ...a.tickets[0] }, scheduled_at = '2099-01-01T00:00:00Z';
+  const get = deferred();
+  let reads = 0;
+  const fetch = t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    if (options.method) throw new Error('lost acknowledgement');
+    if (++reads === 1) return { ok: true, json: () => get.promise };
+    return { ok: true, json: async () => before };
+  });
+  const opts = { isOwner: () => true };
+  const command = a.lifecycleCommand('a', { id: 'schedule', body: { scheduled_at } });
+  const dispatch = a.dispatchLifecycle('a', command, opts);
+  await until(() => reads === 1);
+  a.applyTicketUpdate({ ...before }); // A delayed pre-write SSE event.
+  get.resolve({ ...before, scheduled_at });
+  const result = await dispatch;
+  assert.equal(result.resolution, 'refresh-required');
+  assert.equal(a.lifecycleNeedsReconciliation('a'), true);
+  assert.equal((await a.dispatchLifecycle('a', 'queue-saved')).outcome, 'blocked');
+
+  // By the time the next read finishes, another operator has cleared the schedule.
+  assert.equal(await a.lifecycleReconcile('a', result.reconciliationId), 'review-required');
+  assert.equal(a.lifecycleNeedsReconciliation('a'), false);
+  assert.equal(a.lifecycleCanQueueSaved('a'), true);
+  assert.equal((await a.dispatchLifecycle('a', command, opts)).outcome, 'obsolete');
+  assert.equal(fetch.mock.callCount(), 3);
+});
+
+test('an unchanged read allows an explicit retry without overwriting matching SSE fields', async t => {
+  const a = app();
+  a.tickets[0].status = 'open';
+  const before = { ...a.tickets[0], title: 'old' };
+  let posts = 0;
+  const fetch = t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    if (!options.method) {
+      a.applyTicketUpdate({ ...before, title: 'new' });
+      return { ok: true, json: async () => before };
+    }
+    if (++posts === 1) throw new Error('connection lost');
+    return { ok: true, json: async () => ({ ...a.tickets[0], status: 'todo' }) };
+  });
+  const command = a.lifecycleCommand('a', 'queue-saved');
+  const result = await a.dispatchLifecycle('a', command);
+  assert.equal(result.outcome, 'uncertain');
+  assert.equal(result.resolution, 'retryable');
+  assert.equal(a.lifecycleNeedsReconciliation('a'), false);
+  assert.equal(a.tickets[0].title, 'new');
+  assert.equal(fetch.mock.callCount(), 2);
+  assert.equal((await a.dispatchLifecycle('a', command)).outcome, 'success');
+  assert.equal(posts, 2);
+});
+
+test('batch ownership stops writes after the save barrier but cannot undo an in-flight POST', async t => {
+  const a = app();
+  for (const ticket of a.tickets) ticket.status = 'open';
+  const saved = deferred(), ack = deferred();
+  let open = true;
+  const options = { isOwner: () => open, suppressToast: true };
+  a.lifecycleDraftBarrier = () => saved.promise;
+  const fetch = t.mock.method(globalThis, 'fetch', async () => {
+    await ack.promise;
+    return { ok: true, json: async () => ({ ...a.tickets[0], status: 'todo' }) };
+  });
+  const waiting = a.dispatchLifecycle('a', 'queue-saved', options);
+  assert.equal(a.lifecycleBusy('a'), true);
+  open = false;
+  saved.resolve(true);
+  const unsent = await waiting;
+  assert.equal(unsent.outcome, 'cancelled');
+  assert.equal(unsent.transportStarted, false);
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(a.lifecycleBusy('a'), false);
+
+  open = true;
+  const sent = a.dispatchLifecycle('a', 'queue-saved', options);
+  await until(() => fetch.mock.callCount() === 1);
+  open = false;
+  assert.equal(a.lifecycleBusy('a'), true);
+  assert.equal((await a.dispatchLifecycle('b', 'queue-saved', options)).outcome, 'cancelled');
+  ack.resolve();
+  assert.deepEqual(await sent, { outcome: 'success', ticketKey: 'a', command: 'queue-saved', transportStarted: true });
+  assert.equal(a.toast, undefined);
+  assert.equal(a.lifecycleBusy('a'), false);
+  assert.equal(a.tickets[0].status, 'todo');
+  assert.equal(fetch.mock.callCount(), 1);
+});
+
+test('batch returns separate acknowledged, refused and uncertain outcomes in order without replay', async t => {
+  const a = app(); const calls = [];
+  a.tickets.push({ id: 'c', status: 'paused', kontora: true }, { id: 'd', status: 'paused', kontora: true });
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls.push([options.method || 'GET', url]);
+    const id = url.split('/')[3];
+    if (options.method) {
+      assert.deepEqual(JSON.parse(options.body), { status: 'done' });
+      if (id === 'b') return { ok: false, status: 409, json: async () => ({ error: 'Daemon refused b' }) };
+      if (id === 'c') return { ok: false, status: 500, json: async () => ({ error: 'Could not send updated ticket' }) };
+    }
+    return { ok: true, json: async () => ({ id, status: 'done' }) };
+  });
+  const descriptors = a.tickets.map(ticket => a.lifecycleCommand(ticket, 'move:done'));
+  const results = [];
+  for (const c of descriptors) results.push(await a.dispatchLifecycle(c.ticketKey, c, { isOwner: () => true, suppressToast: true }));
+  assert.deepEqual(results.map(r => [r.ticketKey, r.outcome, r.transportStarted, r.resolution]), [
+    ['a', 'success', true, undefined], ['b', 'failed', true, undefined],
+    ['c', 'uncertain', true, 'review-required'], ['d', 'success', true, undefined],
+  ]);
+  assert.equal(results[1].error, 'Daemon refused b');
+  assert.equal(results[2].error, 'Result unknown: Could not send updated ticket');
+  assert.deepEqual(a.tickets.map(row => row.status), ['done', 'paused', 'done', 'done']);
+  assert.deepEqual(calls, [
+    ['POST', '/api/tickets/a/move'], ['POST', '/api/tickets/b/move'], ['POST', '/api/tickets/c/move'],
+    ['GET', '/api/tickets/c'], ['POST', '/api/tickets/d/move'],
+  ]);
+});
+
+for (const mode of ['network', 'server error', 'wrong acknowledgement', 'missing status']) {
+  test(`uncertain Queue requires a fresh ticket read before retry: ${mode}`, async t => {
+    const a = app(); const calls = [];
+    a.tickets[0].status = 'open';
+    let refreshOK = false;
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+      calls.push([options.method || 'GET', url]);
+      if (!options.method) {
+        if (!refreshOK) return { ok: false, status: 503 };
+        return { ok: true, json: async () => ({ ...a.tickets[0], status: 'in_progress' }) };
+      }
+      if (mode === 'network') throw new Error('connection lost');
+      if (mode === 'server error') return { ok: false, status: 500, json: async () => ({ error: 'Could not read saved ticket' }) };
+      return { ok: true, json: async () => mode === 'missing status' ? { id: 'a' } : { id: 'wrong', status: 'todo' } };
+    });
+    const result = await a.dispatchLifecycle('a', 'queue-saved');
+    assert.equal(result.outcome, 'uncertain');
+    assert.equal(result.transportStarted, true);
+    assert.equal(result.resolution, 'refresh-required');
+    assert.match(result.error, /^Result unknown: /);
+    assert.equal(a.toast, undefined);
+    assert.equal(a.lifecycleBusy('a'), false);
+    assert.equal(a.lifecycleNeedsReconciliation('a'), true);
+    refreshOK = true;
+    assert.equal(await a.lifecycleReconcile('a', result.reconciliationId), 'review-required');
+    assert.equal(a.lifecycleNeedsReconciliation('a'), false);
+    assert.equal(a.lifecycleCanQueueSaved('a'), false);
+    assert.deepEqual(calls, [['POST', '/api/tickets/a/run'], ['GET', '/api/tickets/a'], ['GET', '/api/tickets/a']]);
+  });
+}
+
 test('schedule changes share conflict ownership with execution', async () => {
   const a = app(); a.tickets[0].status = 'open';
   const pending = deferred(); let posts = 0;

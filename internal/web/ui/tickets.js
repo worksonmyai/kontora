@@ -32,6 +32,7 @@ export function kontoraTickets() {
     ticketsLastLoaded: null,
     ticketsLoadError: null,
     ticketDetailRefreshError: null,
+    ticketColumnConfigFailed: false,
 
     ticketRead(run, controller = new AbortController()) {
       reads.add(controller);
@@ -134,11 +135,43 @@ export function kontoraTickets() {
         const config = await res.json();
         if (fresh()) {
           this.configCache = config;
+          this.ticketColumnConfigFailed = false;
           this.applyConfigTheme(config);
         }
       } catch (e) {
         if (fresh()) throw e;
       }
+    },
+
+    async readTicketColumnConfig({ reportError = false } = {}) {
+      const read = this.ticketRead(signal => this.loadConfigCache({ required: false, signal, current: () => !signal.aborted }));
+      const generation = configGeneration;
+      const current = () => !this._appDestroyed && generation === configGeneration;
+      try {
+        const response = await read;
+        if (!current() || !response) return;
+        this.ticketColumnConfigFailed = true;
+        if (response.status === 401) this.ticketReadUnauthorized();
+      } catch (e) {
+        if (!current()) return;
+        this.ticketColumnConfigFailed = true;
+        if (reportError) this.error = 'Failed to load config';
+      }
+    },
+
+    ticketColumnRouteStatus(key, columns) {
+      if (this.loading) return 'pending';
+      // Secondary snapshots schedule a board flush rather than recomputing
+      // immediately. Do not infer absence from the last rendered board.
+      if ((columns || this._deriveColumns()).some(column => column.key === key)) return 'valid';
+      if (this.ticketColumnConfigFailed || !this.configCache || this.ticketsRefreshing || this.ticketsLoadError || this.ticketsLastLoaded === null ||
+          !this.ticketSourcesLoaded || this.ticketSourcesFailed()) return 'unverified';
+      return 'missing';
+    },
+
+    activeTicketColumnRouteStatus() {
+      if (this.currentView !== 'board' || this.selectedTicket || this.selectedEpic || !this.mobileColumnKey) return '';
+      return this.ticketColumnRouteStatus(this.mobileColumnKey, this.columns);
     },
 
     async refreshConfigCache() {
@@ -221,7 +254,7 @@ export function kontoraTickets() {
       // The palette model is small and fully in memory, so it rebuilds on every
       // keystroke without a debounce.
       this.$watch('paletteQuery', () => this.onPaletteQueryChanged());
-      // Detail covers the board without rebuilding the column DOM.
+      // On desktop, detail covers the board without rebuilding the column DOM.
       const dismissCoveredMenu = () => {
         if (this.selectedTicket || this.selectedEpic) this._closeCardMenu();
       };
@@ -230,6 +263,7 @@ export function kontoraTickets() {
         this._markSelectedCard();
       });
       this.$watch('selectedEpic', dismissCoveredMenu);
+      this.$watch('activeTicketColumnRouteStatus()', () => this.reconcileMobileColumnRoute());
       // Custom statuses add columns; recompute so _board gains the new key,
       // then renderBoard (called by recomputeBoard) fills the new column DOM.
       this.$watch('configCache', () => this.$nextTick(() => {
@@ -269,14 +303,7 @@ export function kontoraTickets() {
         initialWaitTimer = setTimeout(() => this._releaseInitialSnapshot(), SSE_OPEN_WAIT_MS);
       });
       this.connectSSE();
-      var config = (async () => {
-        try {
-          const res = await this.ticketRead(signal => this.loadConfigCache({ required: false, signal, current: () => !signal.aborted }));
-          if (res?.status === 401) this.ticketReadUnauthorized();
-        } catch (e) {
-          this.error = 'Failed to load config';
-        }
-      })();
+      const config = this.readTicketColumnConfig({ reportError: true });
       await subscribed;
       if (this._appDestroyed) return;
       this.setupTicketRefresh();
@@ -303,8 +330,8 @@ export function kontoraTickets() {
       // second 401 of its own.
       this.initAssistant();
       this.companionInit();
-      // Open whatever the URL addresses. Tickets are loaded by now, so a
-      // #/t/<id> link can resolve against the board.
+      // Wait for the config and ticket reads: a failed read cannot establish
+      // that a column is missing.
       await this.applyRoute();
       // The board DOM (column containers) is created by Alpine once loading
       // flips false; render cards into it on the next tick, then bind the one

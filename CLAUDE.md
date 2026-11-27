@@ -31,7 +31,7 @@ Single test: `go test ./internal/pipeline/... -run TestEvaluate/advance_on_exit_
 go test ./internal/web                   # Go and JavaScript tests; Node.js on PATH
 make test-browser-install                # Install pinned Playwright and browsers if missing
 make test-browser                        # Run behavior tests in Chromium and WebKit
-KONTORA_BROWSER_TEST_FILTER='phone In progress first puts' make test-browser BROWSER_ENGINE=chromium
+KONTORA_BROWSER_TEST_FILTER='^phone home previews' make test-browser BROWSER_ENGINE=chromium
 make test-visual                         # Compare screenshots in the pinned Linux x64 Docker renderer
 make test-visual-update                  # Generate candidates without changing baselines
 make test-visual-repeat                  # Repeat every screenshot comparison ten times

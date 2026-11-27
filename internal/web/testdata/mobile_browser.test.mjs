@@ -3664,7 +3664,8 @@ function desktopRibbonFixtures(extra = {}) {
     stage: ribbonStages[10], stages: ribbonStages, started_at: stamp, attempt: 1, branch: 'fixture/ribbon',
     can_edit: false, history, ...extra });
   return { records: [record], thinLists: true,
-    config: { pipeline_infos: [{ name: 'standard', stages: ribbonStages, max_retries: ribbonStages.map(() => 3) }] },
+    config: { pipeline_infos: [{ name: 'standard', stages: ribbonStages, max_retries: ribbonStages.map(() => 3),
+      graph_definition: extra.graph_definition }] },
     costs: { [record.id]: { id: record.id, cost_usd: '12.34', tracked_runs: 14, priced_runs: 13,
       stages: [{ name: ribbonStages[1], cost_usd: '12.00', tracked_runs: 2, priced_runs: 2 },
         { name: ribbonCostOnly, cost_usd: '0.34', tracked_runs: 1, priced_runs: 1 }], runs: [] } } };
@@ -3956,7 +3957,12 @@ describe('desktop stage ribbon browser regressions', () => {
       const tooltip = ribbonTooltip(page);
       const clip = () => ribbonViewport(page).boundingBox();
       const setGraph = open => graph.evaluate((el, open) => { el.parentElement.open = open; }, open);
+      await expect(graph).toBeVisible();
+      const collapsedY = (await clip()).y;
       await setGraph(true);
+      await page.locator('[data-ticket-detail]').getByText('Current configuration', { exact: true })
+        .evaluate(el => { el.parentElement.open = true; });
+      await expect.poll(async () => (await clip()).y).toBeGreaterThan(collapsedY);
       await first.focus();
       await expect(tooltip).toBeVisible();
       const expanded = await clip();
@@ -3969,7 +3975,8 @@ describe('desktop stage ribbon browser regressions', () => {
       assert.equal((await clip()).height, expanded.height);
       await setGraph(true);
       await expect.poll(async () => (await clip()).y).toBe(expanded.y);
-      await page.setViewportSize({ width: 1024, height: Math.floor(expanded.y) - 12 });
+      await page.setViewportSize({ width: 1024, height: Math.floor(collapsedY) - 12 });
+      await expect(ribbonViewport(page)).not.toBeInViewport();
       await expect(tooltip).toBeHidden();
       await page.keyboard.press('Escape');
       await expect(first).toHaveCount(0);

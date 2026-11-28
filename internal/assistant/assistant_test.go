@@ -31,6 +31,7 @@ func TestClassify(t *testing.T) {
 		{name: "a tool with no name is unknown", tool: "", want: DecisionUnknown},
 
 		{name: "a kontora read verb", tool: "Bash", input: cmd("kontora ls"), want: DecisionRead},
+		{name: "poll ticket attention", tool: "Bash", input: cmd("kontora ls --json --attention"), want: DecisionRead},
 		{name: "a kontora read verb with flags", tool: "Bash", input: cmd("kontora view kon-7d21 --json"), want: DecisionRead},
 		{name: "an absolute kontora path", tool: "Bash", input: cmd("/usr/local/bin/kontora activity kon-7d21"), want: DecisionRead},
 		{name: "a chain of read verbs", tool: "Bash", input: cmd("kontora ls && kontora stats"), want: DecisionRead},

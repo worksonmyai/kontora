@@ -972,6 +972,22 @@ available, but feedback cannot launch automatic rework.
 
 Both Plannotator endpoints return 202 once the session is accepted, and report its outcome over `GET /api/events` as a `plannotator_finished` event. They return 404 for an unknown ticket, 409 when a Plannotator process is already open for the ticket or its status does not allow the requested pass, and 500 when the `plannotator` binary is not installed. `GET /api/tickets` and `GET /api/tickets/{id}` carry `can_annotate`, which answers the same status rules the annotate endpoint enforces.
 
+## Live agent questions
+
+`GET /api/tickets`, `GET /api/tickets/{id}` and `ticket_updated` events include
+these fields while the daemon knows of a live question:
+
+| Field | Meaning |
+|-------|---------|
+| `waiting_for_input` | `true` while the agent is waiting for an answer. |
+| `waiting_since` | RFC 3339 time the agent started waiting, or when the daemon first observed the wait if the reported time was missing or invalid. |
+| `waiting_tool` | The name of the tool that asked the question. |
+| `waiting_question` | The question text, when available. |
+
+The daemon keeps this state in memory. Ticket files do not store it. Empty
+fields are omitted. A [durable workflow wait](#durable-wait-releases) does not
+set `waiting_for_input`.
+
 ## Ticket event stream
 
 `GET /api/events` reports changes over SSE. It is not an initial snapshot or a durable

@@ -205,12 +205,44 @@ func TestListJSONEmptyIsAnArray(t *testing.T) {
 	assert.Equal(t, "[]\n", buf.String())
 }
 
-func TestListRejectsContradictoryFilters(t *testing.T) {
-	cfg := listFixture(t, "tst-001 todo")
+func TestFilterListAttention(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		item ListItem
+		want bool
+	}{
+		{name: "review", item: ListItem{Status: "human_review"}, want: true},
+		{name: "question", item: ListItem{Status: "todo", WaitingForInput: true}, want: true},
+		{name: "both", item: ListItem{Status: "human_review", WaitingForInput: true}, want: true},
+		{name: "neither", item: ListItem{Status: "todo"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FilterList([]ListItem{tc.item}, ListOpts{Attention: true})
+			if tc.want {
+				assert.Equal(t, []ListItem{tc.item}, got.Items)
+			} else {
+				assert.Empty(t, got.Items)
+			}
+		})
+	}
+}
 
-	var buf bytes.Buffer
-	err := List(cfg, &buf, ListOpts{Ready: true, Blocked: true})
-	require.ErrorContains(t, err, "--ready and --blocked")
+func TestListRejectsContradictoryFilters(t *testing.T) {
+	for _, tc := range []struct {
+		opts ListOpts
+		want string
+	}{
+		{ListOpts{Ready: true, Blocked: true}, "--ready and --blocked"},
+		{ListOpts{Attention: true, Status: "todo"}, "--attention and --status"},
+		{ListOpts{Attention: true, Ready: true}, "--attention and --ready"},
+		{ListOpts{Attention: true, Blocked: true}, "--attention and --blocked"},
+		{ListOpts{Attention: true, ShowClosed: true}, "--attention and --closed"},
+		{ListOpts{Attention: true, ShowArchived: true}, "--attention and --archived"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			require.ErrorContains(t, tc.opts.Validate(), tc.want)
+		})
+	}
 }
 
 func TestListTableCarriesBlockers(t *testing.T) {

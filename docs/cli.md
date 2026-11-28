@@ -78,15 +78,28 @@ Lists tickets. On a terminal with no flags it opens the kanban TUI; any filter, 
 | `--path PATH` | Only tickets for this repository path. |
 | `--ready` | Only `todo` kontora tickets whose dependencies are all closed. |
 | `--blocked` | Only `todo` kontora tickets waiting on a dependency. |
+| `--attention` | Only tickets in `human_review` or with a live agent question. Requires the daemon. |
 | `--limit N` | Print at most N tickets. |
 | `--json` | Print JSON instead of a table. |
 | `--static` | Print the static table even on a terminal. |
 
 `--ready` and `--blocked` select opposite sets and cannot be combined; passing both exits non-zero. Both follow scheduler order, oldest `created` first. Every other listing keeps the board's order: by status, then most recently touched.
 
+Use `kontora ls --json --attention` to poll for tickets that need a person.
+Without a remote URL, the command requires a [matching local daemon](#local-daemon-connections).
+If it cannot read the daemon, it exits non-zero without falling back to ticket files.
+Do not combine `--attention` with `--status`, `--ready`, `--blocked`, `--closed` or `--archived`.
+
 The static table has ID, status, title, project, stage, agent, and the ids blocking the ticket.
 
-`--json` prints an array of objects with `id`, `title`, `status`, `kontora`, `path`, `project`, `pipeline`, `stage`, `agent`, `created_at`, `started_at`, `completed_at`, `deps`, `links`, `parent`, `kind`, `epic_execution`, `child_order`, `branch`, `base_branch`, `ready` and `blockers`. `epic_execution: "agent"` identifies an activated supervisor. `child_order` is stored display order, not membership; use each child's `parent` to find members. It never carries the ticket body; `kontora view --body` is what prints that. `deps`, `links` and `blockers` are always arrays, and an empty result is `[]`, so a script can iterate without a nil check.
+`--json` prints an array of objects with `id`, `title`, `status`, `execution_active`, `kontora`, `path`, `project`, `pipeline`, `stage`, `agent`, `created_at`, `started_at`, `completed_at`, `scheduled_at`, `deps`, `links`, `parent`, `kind`, `epic_execution`, `child_order`, `branch`, `base_branch`, `ready` and `blockers`. `epic_execution: "agent"` identifies an activated supervisor. `child_order` is stored display order, not membership; use each child's `parent` to find members. It never carries the ticket body; `kontora view --body` is what prints that. `deps`, `links` and `blockers` are always arrays, and an empty result is `[]`, so a script can iterate without a nil check.
+
+The listing omits `scheduled_at` when empty.
+
+Listings from the daemon (`--attention` or remote mode) also report
+[live questions](api.md#live-agent-questions) with `waiting_for_input`,
+`waiting_since`, `waiting_tool` and `waiting_question`. The fields are omitted
+when empty. Listings from ticket files do not have waiting fields.
 
 The local TUI uses the daemon API only after verifying that its advertised `tickets_dir` identifies the requested local directory. Requested paths can be relative, contain `~`, or use symlinks. Automatic discovery accepts only loopback addresses, `localhost`, or wildcard addresses normalized to loopback. It does not use proxies or follow redirects.
 

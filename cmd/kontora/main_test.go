@@ -98,6 +98,86 @@ func TestLocalRunChecksBoard(t *testing.T) {
 	}
 }
 
+func TestLocalListAttention(t *testing.T) {
+	board := t.TempDir()
+	other := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(board, "tst-offline.md"), []byte(
+		"---\nid: tst-offline\nstatus: human_review\nkontora: true\n---\n# Local ticket\n"), 0o600))
+	for _, tc := range []struct {
+		name, advertised, wantError string
+		noDaemon, empty, failList   bool
+		filters                     []string
+		wantIDs                     []string
+	}{
+		{name: "matching board", advertised: board, wantIDs: []string{"tst-review", "tst-question"}},
+		{name: "list fails after verification", advertised: board, failList: true, wantError: "cannot list tickets"},
+		{name: "no attention", advertised: board, empty: true},
+		{name: "no daemon", noDaemon: true, wantError: "cannot verify daemon board"},
+		{name: "other board", advertised: other, wantError: "does not match requested board"},
+		{name: "conflicting status", noDaemon: true, filters: []string{"--status", "todo"}, wantError: "--attention and --status"},
+		{name: "explicit empty status", noDaemon: true, filters: []string{"--status="}, wantError: "--attention and --status"},
+		{name: "explicit false ready", noDaemon: true, filters: []string{"--ready=false"}, wantError: "--attention and --ready"},
+		{name: "explicit false blocked", noDaemon: true, filters: []string{"--blocked=false"}, wantError: "--attention and --blocked"},
+		{name: "explicit false closed", noDaemon: true, filters: []string{"--closed=false"}, wantError: "--attention and --closed"},
+		{name: "explicit false archived", noDaemon: true, filters: []string{"--archived=false"}, wantError: "--attention and --archived"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method + " " + r.URL.Path {
+				case "GET /api/config":
+					_ = json.NewEncoder(w).Encode(web.ConfigInfo{TicketsDir: tc.advertised})
+				case "GET /api/tickets":
+					assert.Equal(t, board, tc.advertised, "do not list tickets on another board")
+					if tc.failList {
+						http.Error(w, `{"error":"cannot list tickets"}`, http.StatusServiceUnavailable)
+						return
+					}
+					tickets := []web.TicketInfo{{ID: "tst-plain", Status: "todo"}}
+					if !tc.empty {
+						tickets = append(tickets,
+							web.TicketInfo{ID: "tst-review", Status: "human_review"},
+							web.TicketInfo{ID: "tst-question", Status: "todo", WaitingForInput: true},
+						)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"tickets": tickets})
+				default:
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			cfg := filepath.Join(t.TempDir(), "config.yaml")
+			content := fmt.Sprintf("tickets_dir: %q\nagents:\n  claude:\n    binary: true\nweb:\n  host: 127.0.0.1\n  port: %d\n", board, srv.Listener.Addr().(*net.TCPAddr).Port)
+			require.NoError(t, os.WriteFile(cfg, []byte(content), 0o600))
+			if tc.noDaemon {
+				srv.Close()
+			}
+
+			args := append([]string{"ls", "--config", cfg, "--json", "--attention"}, tc.filters...)
+			out, stderr, err := runCLISeparated(t, nil, nil, args...)
+			if tc.wantError != "" {
+				require.Error(t, err)
+				assert.Empty(t, out)
+				assert.Contains(t, stderr, tc.wantError)
+				return
+			}
+			require.NoError(t, err, stderr)
+			if tc.empty {
+				assert.Equal(t, "[]\n", out)
+				return
+			}
+			var rows []cli.ListItem
+			require.NoError(t, json.Unmarshal([]byte(out), &rows))
+			var ids []string
+			for _, row := range rows {
+				ids = append(ids, row.ID)
+				assert.Equal(t, row.ID == "tst-question", row.WaitingForInput, row.ID)
+			}
+			assert.ElementsMatch(t, tc.wantIDs, ids)
+		})
+	}
+}
+
 func TestResolveConfigPath(t *testing.T) {
 	cases := []struct {
 		name       string

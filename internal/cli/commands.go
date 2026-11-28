@@ -14,6 +14,7 @@ var Commands = []Command{
 		{Name: "path", Desc: "Only show tickets for this repository path", Value: "path"},
 		{Name: "ready", Desc: "Only show todo tickets whose dependencies are all closed"},
 		{Name: "blocked", Desc: "Only show todo tickets waiting on a dependency"},
+		{Name: "attention", Desc: "Show tickets in human_review or with a live question (requires daemon)"},
 		{Name: "limit", Desc: "Print at most N tickets", Value: "text"},
 		{Name: "json", Desc: "Print JSON instead of a table"},
 	}},

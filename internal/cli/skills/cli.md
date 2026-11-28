@@ -303,6 +303,32 @@ Rejected, because they act on local files: `edit`, `search`, `archive`,
 Unaffected, because they read neither config nor daemon: `fmt`, `completion`,
 `version`, `help`, `phase-complete`, `skills`, invocation-bound `result` and `wait`.
 
+## HTTP API
+
+In shared-token mode, the API uses the first credential present:
+`Authorization: Bearer TOKEN`, the `kontora_token` cookie, then `?token=TOKEN`.
+Open `/?token=TOKEN` in the browser to set or refresh the cookie.
+`GET /health` is public.
+
+| Read endpoint | Returns |
+| --- | --- |
+| `GET /api/tickets` | Primary tickets in board columns or with an active execution. Add `?all=true` for all primary tickets. |
+| `GET /api/tickets/{id}` | Ticket details. |
+| `GET /api/tickets/{id}/logs` | Raw run logs. |
+| `GET /api/tickets/{id}/activity` | Structured run activity, with raw logs as a fallback. |
+| `GET /api/tickets/{id}/changes` | Commits and files changed on the ticket branch. |
+| `GET /api/tickets/{id}/chain` | The ticket's dependency chain. |
+| `GET /api/tickets/{id}/cost` | Estimated cost of finished, priced runs, with counts of tracked and priced runs. |
+| `GET /api/tickets/archived` | Archived ticket summaries. |
+| `GET /api/config` | Pipelines, agents, projects, and daemon identity fields when available. |
+| `GET /api/stats` | Ticket and run statistics. |
+| `GET /api/events` | Streams changes without an initial snapshot or replay. Fetch a snapshot after connecting or reconnecting. |
+
+Ticket list, detail and `ticket_updated` event payloads report live questions
+with `waiting_for_input`, `waiting_since`, `waiting_tool` and `waiting_question`.
+Use the CLI to make changes. See the [API reference](https://worksonmyai.github.io/kontora/api/)
+for the full endpoints and payloads.
+
 ## kontora ls
 
 `kontora ls [flags]` — list tickets. On a terminal with no flags it opens the
@@ -317,6 +343,9 @@ it print a table instead. Prefer `--json` when parsing.
 - `--path PATH` — only this repository path.
 - `--ready` — only `todo` kontora tickets whose deps are all closed.
 - `--blocked` — only `todo` kontora tickets waiting on a dep.
+- `--attention` — only tickets in `human_review` or with a live question. Reads
+  from the daemon and never falls back to ticket files. Cannot be combined with
+  `--status`, `--ready`, `--blocked`, `--closed` or `--archived`.
 - `--limit N` — print at most N.
 - `--json` — print JSON.
 - `--static` — print the table even on a terminal.
@@ -339,8 +368,13 @@ across the complete listing to find all children. The listing omits the ticket b
 The object omits an empty `path`, `project`, `pipeline`, `stage`, `agent`,
 `parent`, `scheduled_at` or timestamp. `stage` is `standalone` for a ticket
 without a pipeline. Kontora derives `ready` and `blockers` on every read.
-`ready` means something only for a `todo` ticket. One object, for a paused
-ticket:
+`ready` means something only for a `todo` ticket.
+
+Daemon listings report live questions with `waiting_for_input: true`,
+`waiting_since`, `waiting_tool` and `waiting_question`. Empty waiting fields
+are omitted. Listings from ticket files do not have waiting fields.
+
+One object, for a paused ticket:
 
 ```json
 {
@@ -369,30 +403,24 @@ ticket:
 
 ## Polling for ticket attention
 
-Poll the daemon with a read-only `GET /api/tickets` request. Use the API because
-`kontora ls --json` omits `waiting_for_input` in both local and remote mode.
+Run this read-only command at each polling interval. The dashboard assistant
+can run it in read mode without approval.
 
-Set `KONTORA_URL` to the daemon's web URL. Set `KONTORA_TOKEN` to that daemon's
-bearer token. If the daemon requires no token, unset `KONTORA_TOKEN`. Use a URL
-that the shell can reach directly: the snippet bypasses proxies to protect
-loopback bearer tokens.
-
-Run the Bash snippet with `curlie` and `jq` in an external shell at each polling
-interval. The dashboard assistant can show the recipe. It refuses the snippet in
-read mode and requires approval in ask and auto modes.
-
-```bash
-set -o pipefail
-url=${KONTORA_URL:?Set KONTORA_URL to the daemon URL}
-while [[ $url == */ ]]; do url=${url%/}; done
-args=(--noproxy '*' --fail --silent --show-error --max-time 5 GET "$url/api/tickets")
-if [[ -n ${KONTORA_TOKEN:-} ]]; then args+=("Authorization:Bearer $KONTORA_TOKEN"); fi
-curlie "${args[@]}" | jq -ce '[.tickets[] | select(.status == "human_review" or .waiting_for_input == true)]'
+```sh
+kontora ls --json --attention
 ```
 
-Each successful poll prints a JSON array of tickets on the primary board in
-`human_review` or with a live question reported by a Pi stage. It prints `[]`
-when neither condition matches. A parked workflow does not imply a live question.
+The JSON array lists tickets in the daemon's primary store that are in
+`human_review` or have `waiting_for_input: true`. Only Pi runs report live questions.
+A parked workflow alone does not set the flag. If neither condition matches,
+the command prints `[]`.
+
+Plain local `ls --json` reads ticket files and cannot see live questions.
+To poll a specific daemon, use `--url` or `KONTORA_URL`.
+If the daemon requires a token, use `--token` or `KONTORA_TOKEN`.
+Without a remote URL, the command requires a matching local daemon.
+If it cannot read the daemon, it exits non-zero without a list.
+
 Polling can miss short-lived changes between reads. Use `hooks` for worktree
 or stage actions. For scheduled agent runs, use Automations (see
 `kontora skills show cli 'kontora automation'`).

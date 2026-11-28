@@ -558,10 +558,11 @@ func TestRemoteDispatch_RunWithoutLocalConfig(t *testing.T) {
 
 func TestRemoteDispatch_ListWithoutDirectoryIdentity(t *testing.T) {
 	for _, tc := range []struct {
-		name, identity string
-		useEnv         bool
+		name, identity    string
+		useEnv, attention bool
 	}{
 		{name: "url with missing identity"},
+		{name: "attention with missing identity", attention: true},
 		{name: "url with another board", identity: "/remote/board-a"},
 		{name: "environment with missing identity", useEnv: true},
 	} {
@@ -571,6 +572,7 @@ func TestRemoteDispatch_ListWithoutDirectoryIdentity(t *testing.T) {
 				"---\nid: kon-shared\nstatus: paused\nkontora: true\n---\n# Requested board B\n"), 0o600))
 			var mu sync.Mutex
 			var requests, auth []string
+			waitingSince := time.Date(2026, time.November, 28, 10, 30, 0, 0, time.UTC)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				mu.Lock()
 				requests = append(requests, r.Method+" "+r.URL.Path)
@@ -581,7 +583,12 @@ func TestRemoteDispatch_ListWithoutDirectoryIdentity(t *testing.T) {
 					_ = json.NewEncoder(w).Encode(web.ConfigInfo{TicketsDir: tc.identity})
 				case "/api/tickets":
 					_ = json.NewEncoder(w).Encode(map[string]any{"tickets": []web.TicketInfo{
-						{ID: "kon-shared", Title: "Daemon board A", Status: "paused", Kontora: true, Ready: true},
+						{
+							ID: "kon-shared", Title: "Daemon board A", Status: "paused", Kontora: true, Ready: true,
+							WaitingForInput: true, WaitingSince: &waitingSince,
+							WaitingTool: "AskUserQuestion", WaitingQuestion: "Which branch?",
+						},
+						{ID: "kon-archived", Status: "archived"},
 					}})
 				default:
 					w.WriteHeader(http.StatusNotFound)
@@ -590,6 +597,9 @@ func TestRemoteDispatch_ListWithoutDirectoryIdentity(t *testing.T) {
 			defer srv.Close()
 			args := []string{"ls", "--json", "--tickets-dir", boardB,
 				"--config", filepath.Join(t.TempDir(), "missing-config.yaml")}
+			if tc.attention {
+				args = append(args, "--attention")
+			}
 			var env []string
 			if tc.useEnv {
 				env = []string{"KONTORA_URL=" + srv.URL, "KONTORA_TOKEN=explicit-token"}
@@ -604,6 +614,10 @@ func TestRemoteDispatch_ListWithoutDirectoryIdentity(t *testing.T) {
 			assert.Equal(t, "kon-shared", rows[0]["id"])
 			assert.Equal(t, "Daemon board A", rows[0]["title"])
 			assert.Equal(t, true, rows[0]["ready"])
+			assert.Equal(t, true, rows[0]["waiting_for_input"])
+			assert.Equal(t, waitingSince.Format(time.RFC3339), rows[0]["waiting_since"])
+			assert.Equal(t, "AskUserQuestion", rows[0]["waiting_tool"])
+			assert.Equal(t, "Which branch?", rows[0]["waiting_question"])
 			assert.NotContains(t, out, "Requested board B")
 			mu.Lock()
 			assert.Equal(t, []string{"GET /api/tickets"}, requests, "explicit remote mode must not probe local directory identity")

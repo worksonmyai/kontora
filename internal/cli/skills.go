@@ -26,10 +26,10 @@ type skillTopic struct {
 // skillTopics is the registry. TestSkillTopicsMatchFiles holds it and the
 // embedded directory together, so a new file cannot be orphaned.
 var skillTopics = []skillTopic{
-	{"cli", "Every kontora verb: arguments, flags and what it prints", "skills/cli.md"},
+	{"cli", "Every kontora verb, with common tasks, flags, examples and sample output", "skills/cli.md"},
 	{"tickets", "The ticket file: frontmatter fields, statuses and relations", "skills/tickets.md"},
 	{"pipelines", "Stages, pipelines, runs, and where logs and worktrees live", "skills/pipelines.md"},
-	{"config", "The config fields a question about a board is answered from", "skills/config.md"},
+	{"config", "Config fields, including hooks, automations and notification channels", "skills/config.md"},
 	{"orchestrator", "Disabled objective components, retained work, and operator authority", "skills/orchestrator.md"},
 }
 

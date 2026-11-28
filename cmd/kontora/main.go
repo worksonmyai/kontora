@@ -179,6 +179,7 @@ func main() {
 // daemon nor a config file, so an exported KONTORA_URL must not stop a shell rc
 // from running "kontora completion fish | source".
 func cmdFmt() {
+	parseArgs(newFlagSet("fmt"), os.Args[2:], 0)
 	if err := cli.Fmt(os.Stdin, os.Stdout); err != nil {
 		log.Fatal(err)
 	}
@@ -201,7 +202,7 @@ func cmdVersion() {
 func cmdStart() {
 	rejectInRemoteMode("start")
 
-	fs := flag.NewFlagSet("start", flag.ExitOnError)
+	fs := newFlagSet("start")
 	configPath, ticketsDir := addStoreFlags(fs)
 	address := fs.String("address", "", "web server listen address (overrides config)")
 	port := fs.Int("port", 0, "web server port (overrides config)")
@@ -262,7 +263,7 @@ func runDaemon(cfg *config.Config, configPath string, override func(*config.Conf
 }
 
 func cmdWorkflowSimulate() {
-	fs := flag.NewFlagSet("workflow-simulate", flag.ExitOnError)
+	fs := newFlagSet("workflow-simulate")
 	var opts cli.WorkflowSimulationOptions
 	fs.StringVar(&opts.Recipe, "recipe", "", "built-in graph recipe name")
 	fs.StringVar(&opts.Config, "config", "", "explicit config file path (requires --pipeline)")
@@ -286,7 +287,7 @@ func cmdWorkflowSimulate() {
 func cmdSetup() {
 	rejectInRemoteMode("setup")
 
-	fs := flag.NewFlagSet("setup", flag.ExitOnError)
+	fs := newFlagSet("setup")
 	configPath := fs.String("config", "", "path to config file")
 	recipe := fs.String("recipe", "", cli.SetupRecipeHelp)
 	// Unlike every other command's --agent, this one is a boolean: setup has no
@@ -361,7 +362,7 @@ func interactiveTerminal() bool {
 }
 
 func cmdInit() {
-	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	fs := newFlagSet("init")
 	configPath, ticketsDir := addStoreFlags(fs)
 	pipeline := fs.String("pipeline", "", "pipeline name, or \"none\" for a standalone ticket (required for remote ordinary tickets)")
 	repoPath := fs.String("path", "", "repository path, on the daemon host in remote mode (required for remote ordinary tickets)")
@@ -418,7 +419,7 @@ func cmdLs() {
 		args = os.Args[2:]
 	}
 
-	fs := flag.NewFlagSet("ls", flag.ExitOnError)
+	fs := newFlagSet("ls")
 	configPath, ticketsDir := addStoreFlags(fs)
 	closed := fs.Bool("closed", false, "show done/cancelled tickets")
 	archived := fs.Bool("archived", false, "show archived tickets")
@@ -473,7 +474,7 @@ func cmdLs() {
 }
 
 func cmdNew() {
-	fs := flag.NewFlagSet("new", flag.ExitOnError)
+	fs := newFlagSet("new")
 	configPath, ticketsDir := addStoreFlags(fs)
 	repoPath := fs.String("path", "", "repository path (defaults to the parent epic's path, otherwise current git root; required in remote mode)")
 	pipeline := fs.String("pipeline", "", "pipeline name, or \"none\" to skip the project default")
@@ -507,6 +508,9 @@ func cmdNew() {
 		}
 	})
 
+	if word := flagAfterText(fs, fs.Args()); word != "" {
+		log.Fatalf("%s comes after the title: put flags before the title (kontora new [flags] TITLE), or quote a title that contains it", word)
+	}
 	title := strings.Join(fs.Args(), " ")
 	if title == "" {
 		log.Fatal("title is required: kontora new [flags] TITLE")
@@ -603,7 +607,7 @@ func printNewTicket(id string, quiet bool) {
 }
 
 func cmdView() {
-	fs := flag.NewFlagSet("view", flag.ExitOnError)
+	fs := newFlagSet("view")
 	configPath, ticketsDir := addStoreFlags(fs)
 	bodyOnly := fs.Bool("body", false, "print only the ticket body")
 	notesOnly := fs.Bool("notes", false, "print the Notes section and all later sections")
@@ -685,7 +689,7 @@ func cmdView() {
 func cmdEdit() {
 	rejectInRemoteMode("edit")
 
-	fs := flag.NewFlagSet("edit", flag.ExitOnError)
+	fs := newFlagSet("edit")
 	configPath, ticketsDir := addStoreFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
@@ -704,7 +708,7 @@ func cmdEdit() {
 }
 
 func cmdUpdate() {
-	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	fs := newFlagSet("update")
 	configPath, ticketsDir := addStoreFlags(fs)
 	bodyFile := fs.String("body-file", "", "read ticket body from a file ('-' for stdin)")
 	pipeline := fs.String("pipeline", "", "set pipeline (pass \"\" or \"none\" to clear)")
@@ -798,7 +802,7 @@ func readBodyFile(path string) (string, error) {
 }
 
 func cmdDelete() {
-	fs := flag.NewFlagSet("delete", flag.ExitOnError)
+	fs := newFlagSet("delete")
 	configPath, ticketsDir := addStoreFlags(fs)
 	force := fs.Bool("f", false, "confirm deletion (required)")
 	yes := fs.Bool("yes", false, "confirm deletion (required)")
@@ -832,7 +836,7 @@ func cmdDelete() {
 }
 
 func cmdRun() {
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	fs := newFlagSet("run")
 	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
@@ -873,7 +877,7 @@ func runOutcome(blockers []string) string {
 // cmdSchedule sets or clears a ticket's pickup time. --after is resolved to an
 // instant here, so the delay is measured from when the command was typed.
 func cmdSchedule() {
-	fs := flag.NewFlagSet("schedule", flag.ExitOnError)
+	fs := newFlagSet("schedule")
 	configPath, ticketsDir := addStoreFlags(fs)
 	at := fs.String("at", "", "pickup time as an instant, e.g. 2099-09-01T09:00:00+02:00 or \"2099-09-01 09:00\"")
 	after := fs.String("after", "", "pickup time this long from now, e.g. 90m, 24h, 3d, 2w")
@@ -921,7 +925,7 @@ func cmdSchedule() {
 }
 
 func cmdNote() {
-	fs := flag.NewFlagSet("note", flag.ExitOnError)
+	fs := newFlagSet("note")
 	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	authorFlag := fs.String("author", "", "name to sign the note with (default: $KONTORA_AGENT, else the config's author)")
@@ -932,6 +936,9 @@ func cmdNote() {
 
 	if fs.NArg() < 1 {
 		log.Fatal("ticket ID is required: kontora note TICKET_ID [TEXT]")
+	}
+	if word := flagAfterText(fs, fs.Args()[1:]); word != "" {
+		log.Fatalf("%s comes after the ticket ID: put flags before it (kontora note [flags] TICKET_ID [TEXT]), or pass the text on stdin", word)
 	}
 	taskID := fs.Arg(0)
 
@@ -983,7 +990,7 @@ func cmdNote() {
 }
 
 func cmdSummary() {
-	fs := flag.NewFlagSet("summary", flag.ExitOnError)
+	fs := newFlagSet("summary")
 	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
@@ -992,6 +999,9 @@ func cmdSummary() {
 
 	if fs.NArg() < 1 {
 		log.Fatal("ticket ID is required: kontora summary TICKET_ID [TEXT]")
+	}
+	if word := flagAfterText(fs, fs.Args()[1:]); word != "" {
+		log.Fatalf("%s comes after the ticket ID: put flags before it (kontora summary [flags] TICKET_ID [TEXT]), or pass the text on stdin", word)
 	}
 	taskID := fs.Arg(0)
 
@@ -1036,7 +1046,7 @@ func cmdSummary() {
 }
 
 func cmdAction(action string) {
-	fs := flag.NewFlagSet(action, flag.ExitOnError)
+	fs := newFlagSet(action)
 	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
@@ -1107,7 +1117,7 @@ var relationPastTense = map[string]string{
 // resolved before the request goes out, so a prefix means the same thing in
 // local and remote mode.
 func cmdRelation(verb string) {
-	fs := flag.NewFlagSet(verb, flag.ExitOnError)
+	fs := newFlagSet(verb)
 	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	args := parseArgs(fs, os.Args[2:], -1)
@@ -1182,7 +1192,7 @@ func daemonClient(configPath, urlFlag, tokenFlag string) *remote.Client {
 }
 
 func cmdWorkflow(action string) {
-	fs := flag.NewFlagSet(action, flag.ExitOnError)
+	fs := newFlagSet(action)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	var executionID, revision string
@@ -1222,7 +1232,7 @@ func cmdWorkflow(action string) {
 }
 
 func cmdStats() {
-	fs := flag.NewFlagSet("stats", flag.ExitOnError)
+	fs := newFlagSet("stats")
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	rng := fs.String("range", "90d", "window to report on: 1d, 1w, 30d, 90d or all")
 	project := fs.String("project", "", "only count tickets for this configured project")
@@ -1244,7 +1254,7 @@ func cmdStats() {
 func cmdEstimateCompaction() {
 	rejectInRemoteMode("estimate-compaction")
 
-	fs := flag.NewFlagSet("estimate-compaction", flag.ExitOnError)
+	fs := newFlagSet("estimate-compaction")
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	logsDirFlag := fs.String("logs-dir", "", "path to logs directory (overrides config logs_dir)")
 	stage := fs.String("stage", "implement", "pipeline stage to analyze")
@@ -1279,7 +1289,7 @@ func cmdEstimateCompaction() {
 // writes to the sidecar named by KONTORA_CHECKPOINT_FILE and nothing else, so
 // it reads no config and talks to no daemon.
 func cmdPhaseComplete() {
-	fs := flag.NewFlagSet("phase-complete", flag.ExitOnError)
+	fs := newFlagSet("phase-complete")
 	completed := fs.String("completed", "", "the phase that just finished")
 	next := fs.String("next", "", "the phase to begin next")
 	if taskID := parseTicketFlags(fs, os.Args[2:]); taskID == "" {
@@ -1292,7 +1302,7 @@ func cmdPhaseComplete() {
 }
 
 func cmdWait() {
-	fs := flag.NewFlagSet("wait", flag.ExitOnError)
+	fs := newFlagSet("wait")
 	var opts cli.WaitOptions
 	fs.StringVar(&opts.Check, "check", "", "repeatable condition command")
 	fs.StringVar(&opts.Poll, "poll", "", "positive Go polling duration")
@@ -1314,9 +1324,9 @@ func cmdWait() {
 // cmdResult publishes a stage result using only the daemon-supplied invocation
 // environment. It deliberately reads no config and performs no ticket resolution.
 func cmdResult() {
-	fs := flag.NewFlagSet("result", flag.ExitOnError)
+	fs := newFlagSet("result")
 	inputFile := fs.String("input-file", "", "absolute path to result JSON (default: stdin)")
-	verdict := fs.String("verdict", "", "declared workflow verdict (result version 2)")
+	verdict := fs.String("verdict", "", "declared workflow verdict (result version 2 or 3)")
 	ticketID := parseTicketFlags(fs, os.Args[2:])
 	if ticketID == "" {
 		log.Fatal("ticket ID is required: kontora result [--input-file /absolute/path/result.json] TICKET_ID")
@@ -1366,7 +1376,7 @@ func (a assistantGateClient) Ask(thread, nonce, tool string, input map[string]an
 }
 
 func cmdChanges() {
-	fs := flag.NewFlagSet("changes", flag.ExitOnError)
+	fs := newFlagSet("changes")
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
@@ -1385,7 +1395,7 @@ func cmdChanges() {
 }
 
 func cmdActivity() {
-	fs := flag.NewFlagSet("activity", flag.ExitOnError)
+	fs := newFlagSet("activity")
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	stage := fs.String("stage", "", "stage to show (defaults to the most recent)")
 	run := fs.Int("run", 0, "run number within the stage (defaults to the latest)")
@@ -1415,7 +1425,7 @@ func cmdActivity() {
 func cmdSessions() {
 	rejectInRemoteMode("sessions")
 
-	fs := flag.NewFlagSet("sessions", flag.ExitOnError)
+	fs := newFlagSet("sessions")
 	configPath, ticketsDir := addStoreFlags(fs)
 	stage := fs.String("stage", "", "only this stage")
 	run := fs.Int("run", -1, "only this run number within the stage")
@@ -1443,7 +1453,7 @@ func cmdSessions() {
 // spawns the binary, so a remote call opens it over there, not on the caller's
 // screen.
 func cmdPlannotator(action string) {
-	fs := flag.NewFlagSet(action, flag.ExitOnError)
+	fs := newFlagSet(action)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
@@ -1471,7 +1481,7 @@ func cmdPlannotator(action string) {
 // status the config allows, which is the only way to reach human_review or a
 // custom status from the CLI.
 func cmdMove() {
-	fs := flag.NewFlagSet("move", flag.ExitOnError)
+	fs := newFlagSet("move")
 	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	args := parseArgs(fs, os.Args[2:], 2)
@@ -1503,7 +1513,7 @@ func cmdArchive() {
 	rejectInRemoteMode("archive")
 	rejectBulkFromStage("archive")
 
-	fs := flag.NewFlagSet("archive", flag.ExitOnError)
+	fs := newFlagSet("archive")
 	configPath, ticketsDir := addStoreFlags(fs)
 	days := fs.Int("days", 0, "required: archive done/cancelled tickets not modified in the last N days")
 	dryRun := fs.Bool("dry-run", false, "list tickets that would be archived without writing")
@@ -1536,7 +1546,7 @@ func cmdArchive() {
 func cmdSearch() {
 	rejectInRemoteMode("search")
 
-	fs := flag.NewFlagSet("search", flag.ExitOnError)
+	fs := newFlagSet("search")
 	configPath, ticketsDir := addStoreFlags(fs)
 	ignoreCase := fs.Bool("i", false, "case-insensitive match (default is smart-case)")
 	matchCase := fs.Bool("s", false, "case-sensitive match")
@@ -1582,7 +1592,7 @@ func cmdSearch() {
 }
 
 func cmdSkip() {
-	fs := flag.NewFlagSet("skip", flag.ExitOnError)
+	fs := newFlagSet("skip")
 	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
@@ -1610,7 +1620,7 @@ func cmdSkip() {
 }
 
 func cmdSetStage() {
-	fs := flag.NewFlagSet("set-stage", flag.ExitOnError)
+	fs := newFlagSet("set-stage")
 	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	args := parseArgs(fs, os.Args[2:], 2)
@@ -1639,7 +1649,7 @@ func cmdSetStage() {
 }
 
 func cmdLogs() {
-	fs := flag.NewFlagSet("logs", flag.ExitOnError)
+	fs := newFlagSet("logs")
 	configPath, ticketsDir := addStoreFlags(fs)
 	stage := fs.String("stage", "", "specific stage to show")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
@@ -1674,7 +1684,7 @@ func cmdLogs() {
 }
 
 func cmdAttach() {
-	fs := flag.NewFlagSet("attach", flag.ExitOnError)
+	fs := newFlagSet("attach")
 	configPath, ticketsDir := addStoreFlags(fs)
 	rw := fs.Bool("rw", false, "attach in read-write mode")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
@@ -1719,7 +1729,7 @@ func cmdConfig() {
 		return
 	}
 
-	fs := flag.NewFlagSet("config", flag.ExitOnError)
+	fs := newFlagSet("config")
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
@@ -1746,7 +1756,7 @@ func cmdConfig() {
 // reloads as part of the save. In local mode it opens the on-disk config file
 // in the editor directly, and the daemon's config watcher picks up the save.
 func cmdConfigEdit() {
-	fs := flag.NewFlagSet("config edit", flag.ExitOnError)
+	fs := newFlagSet("config edit")
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[3:]); err != nil {
@@ -1817,11 +1827,12 @@ func remoteConfigEdit(rc *remote.Client) error {
 }
 
 func cmdCompletion() {
-	if len(os.Args) < 3 {
+	shells := parseArgs(newFlagSet("completion"), os.Args[2:], 1)
+	if len(shells) == 0 {
 		fmt.Fprintf(os.Stderr, "%s kontora completion <shell>\n\n%s %s\n", helpBold.Render("Usage:"), helpFaint.Render("Supported shells:"), strings.Join(cli.SupportedShells, ", "))
 		os.Exit(1)
 	}
-	if err := cli.Completion(os.Args[2], os.Stdout); err != nil {
+	if err := cli.Completion(shells[0], os.Stdout); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -1829,7 +1840,7 @@ func cmdCompletion() {
 func cmdDoctor() {
 	rejectInRemoteMode("doctor")
 
-	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	fs := newFlagSet("doctor")
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
@@ -1839,6 +1850,13 @@ func cmdDoctor() {
 	}
 }
 
+// newFlagSet is flag.NewFlagSet with the command table's usage text for -h.
+func newFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	fs.Usage = func() { cli.WriteUsage(fs) }
+	return fs
+}
+
 // parseArgs parses a command's flags and up to max positionals, allowing flags
 // to appear before, between, and after the positionals. Go's flag parser stops
 // at the first positional, so we keep re-parsing the remainder to pick up any
@@ -1846,7 +1864,8 @@ func cmdDoctor() {
 // rejected with a clear error instead of silently swallowing a trailing flag.
 //
 // Commands whose last positional is free-form text (note, summary, new) do not
-// use this: a flag-looking word inside the text belongs to the text.
+// use this: a flag-looking word inside the text belongs to the text, unless it
+// names one of the command's own flags (see flagAfterText).
 func parseArgs(fs *flag.FlagSet, args []string, maxPositional int) []string {
 	var positional []string
 	for {
@@ -1872,6 +1891,23 @@ func parseArgs(fs *flag.FlagSet, args []string, maxPositional int) []string {
 func parseTicketFlags(fs *flag.FlagSet, args []string) string {
 	if got := parseArgs(fs, args, 1); len(got) > 0 {
 		return got[0]
+	}
+	return ""
+}
+
+// flagAfterText returns the first word that names one of fs's flags, or "".
+// Without this check `new "Title" --status open` queues a ticket titled
+// "Title --status open" instead of keeping it open.
+func flagAfterText(fs *flag.FlagSet, words []string) string {
+	for _, word := range words {
+		name, ok := strings.CutPrefix(word, "-")
+		if !ok {
+			continue
+		}
+		name, _, _ = strings.Cut(strings.TrimPrefix(name, "-"), "=")
+		if name == "h" || name == "help" || (name != "" && fs.Lookup(name) != nil) {
+			return word
+		}
 	}
 	return ""
 }

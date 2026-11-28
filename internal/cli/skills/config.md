@@ -13,7 +13,8 @@ then an existing `./.kontora/config.yaml`, then `$XDG_CONFIG_HOME/kontora/config
 (or `~/.config/kontora/config.yaml` when `XDG_CONFIG_HOME` is unset).
 Kontora reads one file, without merging.
 
-Only the fields worth knowing when answering a question about a board are here.
+This topic names every top-level field. Nested blocks, such as `hooks` and
+`web`, have their own sections.
 Read `kontora config` for what a particular board actually runs.
 
 ## Top-level fields
@@ -34,6 +35,16 @@ Read `kontora config` for what a particular board actually runs.
 | `tmux_session` | `kontora` | The tmux session agent windows go in. |
 | `statuses` | — | Extra statuses for parking or a step's `running_status`. |
 | `environment` | — | Environment variables set for every agent process. |
+| `secondary_tickets_dirs` | none | Extra ticket folders the dashboard shows beside the primary board. See Secondary ticket folders. |
+| `author` | the OS user | Name a person's notes are signed with. An agent's notes use `$KONTORA_AGENT`. |
+| `editor` | `$EDITOR`, then `vi` | Editor for `kontora edit` and `kontora config edit`. |
+| `pager` | none | Pager for `view`, `logs` and `activity` on a terminal. `$KONTORA_PAGER`, `$TICKET_PAGER` and `$PAGER` win over it. |
+| `system_prompt`, `resume_prompt`, `annotation_prompt` | built-in | Prompt overrides. See Prompts and summaries. |
+| `summary_model`, `summary_effort` | none | Model and effort of the ticket summary pass. See Prompts and summaries. |
+| `hooks` | none | Shell commands at worktree and stage events. See hooks. |
+| `automations` | none | Scheduled agent runs without tickets. See automations. |
+| `agents`, `stages`, `pipelines`, `projects` | none | See their sections. |
+| `notifications`, `web`, `assistant`, `plannotator`, `metrics` | see section | See their sections. |
 
 For `tickets_dir` alone the environment beats the file: `--tickets-dir`, then
 `$KONTORA_TICKETS_DIR`, then `$TICKETS_DIR`, then the config. Every other
@@ -211,6 +222,126 @@ initialization can fill the blank unless the caller opts out again. Project
 Browser inheritance omits `pipeline`; standalone sends `none`. The backend resolves
 current defaults at submission, independently of the preview snapshot.
 
+## hooks
+
+Hooks run shell commands at three events in a ticket's life. A typical use is
+to copy a gitignored file, such as `.env`, into a fresh worktree before the
+agent starts.
+
+```yaml
+hooks:
+  worktree_created:
+    - name: copy env file
+      run: cp "$KONTORA_REPO_PATH/.env" .env
+      timeout: 30s
+projects:
+  myrepo:
+    path: ~/projects/myrepo
+    hooks:
+      stage_start:
+        - run: make deps
+          on_failure: warn
+```
+
+| Event | When it runs |
+|-------|--------------|
+| `worktree_created` | After the daemon creates a worktree, before the agent starts. It does not run for a worktree that a stage reuses, unless an earlier hook failure left that worktree half prepared. |
+| `stage_start` | Before each stage agent starts, including a resume after a daemon restart. Make it safe to run twice. |
+| `stage_end` | After each stage agent exits, before the pipeline chooses the next step. |
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `run` | required | Command line for `/bin/sh -c`. It runs in the ticket's worktree. |
+| `name` | `<event>[<index>]` | Label in the logs and in a recorded failure. |
+| `timeout` | `5m` | The command stops after this long. |
+| `on_failure` | `pause`, or `warn` for `stage_end` | `pause` pauses the ticket and skips the rest of the event's hooks. `warn` logs the failure and continues. |
+
+Top-level hooks run first, then the hooks of the project that matches the
+ticket's path. Hooks in one list run in order, one at a time. An annotation run
+fires no stage hooks.
+
+Every hook gets the daemon's environment plus `KONTORA_EVENT`,
+`KONTORA_TICKET_ID`, `KONTORA_TICKET_FILE`, `KONTORA_WORKTREE`,
+`KONTORA_REPO_PATH`, `KONTORA_BRANCH`, `KONTORA_STAGE`, `KONTORA_AGENT`,
+`KONTORA_PROJECT` and `KONTORA_RUN_OUTCOME`. `stage_end` also gets
+`KONTORA_EXIT_CODE`, the runner's exit status. An automation hook also gets
+`KONTORA_AUTOMATION_ID` and `KONTORA_RUN_NUMBER`. Its ticket variables are
+empty. The top-level `environment:` map does not apply to hooks. `run` is not a
+template.
+
+When a `stage_end` hook fails under `pause`, Kontora records the stage's
+history and next stage as the pipeline decided, then sets the status to
+`paused`. Hook output goes to
+`<logs_dir>/<ticket-id>/hooks/hooks.log`, not to the stage log, so it cannot
+match an agent's `failure_patterns`. A hook runs with the same trust as an
+agent binary: anyone who can edit the config can run commands as you.
+
+## automations
+
+An automation runs an agent on a saved prompt, repository and schedule. It
+creates no ticket and uses no pipeline, but it shares agent capacity with
+tickets. Schedules and manual runs also work with `auto_pick_up: false`. The
+CLI, the dashboard and the API all edit this block through the daemon. See
+`kontora skills show cli 'kontora automation'`.
+
+```yaml
+automations:
+  morning-report:
+    name: Morning repository report
+    prompt: |
+      Inspect recent changes in {{ .Automation.Path }}.
+      Write a report for run {{ .Run.Number }}.
+      {{ if .LastRun.Number }}Previous result: {{ .LastRun.Result }}{{ end }}
+    path: ~/projects/app
+    agent: claude
+    schedule: "0 9 * * 1-5"
+    timezone: Europe/Berlin
+    workspace: worktree
+    overlap: skip
+    timeout: 30m
+    enabled: false
+```
+
+The key is lowercase kebab-case. Kontora also assigns an ID: `aut-` plus 32
+lowercase hexadecimal characters. `name`, `prompt`, `path` and `schedule` are
+required. `agent` defaults to `default_agent`. `enabled` defaults to `false`, so
+a new definition does not run on its schedule until you enable it.
+
+`schedule` is numeric five-field cron, such as `0 9 * * 1-5`, or a whole-minute
+interval, such as `90m` or `2h`. Seconds, named fields and descriptors such as
+`@daily` are invalid. `timezone` takes an IANA name and defaults to `UTC`;
+`Local` is invalid. A slot that the daemon reaches more than one minute late is
+recorded as skipped, and missed slots are not replayed. A run accepted at its
+slot can still wait for agent capacity.
+
+| `overlap` | What happens to a new request while a run is unfinished |
+|-----------|---------------------------------------------------------|
+| `skip` (default) | It is recorded as skipped. |
+| `queue` | It waits as the one pending run. Further requests are skipped. |
+| `replace` | The current run stops, and the newest request runs. |
+
+`workspace: worktree` (default) creates a fresh worktree on branch
+`auto/<key>-<n>`. Kontora removes it after the run if it has no commits or
+changes. `workspace: repo` runs in the repository checkout, and the changes stay
+there.
+
+The prompt is a Go template with three contexts:
+
+| Context | Fields |
+|---------|--------|
+| `.Automation` | `ID`, `Key`, `Name`, `Path`, `Agent`, `Model`, `Schedule`, `Timezone`, `Workspace`, `Overlap`, `Timeout`, `Enabled` |
+| `.Run` | `Number`, `InvocationID`, `Branch`, `Date`, `Trigger`, `ScheduledFor`, `AcceptedAt`, `StartedAt`, `CompletedAt`, `Outcome`, `Result`, `ExitCode`, `Cost` |
+| `.LastRun` | The same fields for the previous executed run. Zero values before the first run. |
+
+`{{ file "NAME" }}` and `{{ fileOptional "NAME" }}` read from the run's working
+directory. Ticket fields are not available.
+
+The agent must publish a result with
+`kontora result --input-file /absolute/path/result.json AUTOMATION_ID`. A zero
+exit without a result is a failed run. So are a `blocked` result, a nonzero
+exit and a timeout. A prompt does not limit what the agent can do, so configure
+the agent's own permissions for unattended runs.
+
 ## notifications
 
 Status defaults and delivery routes are separate:
@@ -257,6 +388,59 @@ Routes still use ticket `notify_channels`, project `notify_channels`, then
 `enabled` controls delivery; `all_changes` includes command/API/dashboard/file status changes.
 Neither switch changes status defaults. Defaults validate without channels, but delivery needs a route.
 `waiting` covers only live Pi questions, not Claude questions or durable workflow wakes.
+Channels are in `kontora skills show config 'Notification channels'`.
+
+## Notification channels
+
+A channel is a named delivery target under `notifications.channels`. Ticket and
+project `notify_channels` and `notifications.default` refer to these names.
+
+```yaml
+notifications:
+  channels:
+    tg:
+      type: telegram
+      secret_env: KONTORA_TELEGRAM_TOKEN
+      chat_id: "123456789"
+    mm:
+      type: mattermost
+      secret_file: ~/.config/kontora/mattermost-webhook
+    ops:
+      type: webhook
+      url: https://ops.example.com/kontora
+      headers:
+        X-Team: platform
+  default: [tg]
+```
+
+| Field | Applies to | Description |
+|-------|-----------|-------------|
+| `type` | all | `telegram`, `mattermost` or `webhook`. |
+| `secret_env` | all | Environment variable that holds the credential. |
+| `secret_file` | all | File that holds the credential. Set at most one of `secret_env` and `secret_file`. |
+| `chat_id` | telegram | Chat the bot posts to. Required. |
+| `channel` | mattermost | Overrides the channel of the incoming webhook. |
+| `url` | webhook | `http` or `https` endpoint. Required. |
+| `method` | webhook | `POST` (default), `PUT` or `PATCH`. |
+| `headers` | webhook | Extra request headers. |
+
+The credential is the bot token for `telegram`, the whole incoming-webhook URL
+for `mattermost`, and an optional bearer token for `webhook`. The config cannot
+hold a credential itself: `secret:` is rejected at load. `kontora doctor`
+checks that each channel's credential resolves, without printing it.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | `false` builds no channels. |
+| `all_changes` | `false` | Also notify for status changes made by commands, the API, the dashboard and file edits. |
+| `default` | `[]` | Channels used when neither the ticket nor its project names one. |
+| `timeout` | `10s` | Limit for one delivery attempt. |
+| `attempts` | `3` | Attempts per notification, from 1 to 10. |
+| `backoff` | `1s` | Wait before the second attempt, doubled after each further attempt. |
+
+A transport error, a `429` or a `5xx` is retried. Other `4xx` responses are
+not. Delivery is best effort: Kontora persists nothing and replays nothing, so a
+notification can be lost.
 
 ## statuses
 
@@ -285,6 +469,16 @@ Upgrade all CLI and daemon binaries sharing the store before enabling the settin
 Older config loaders reject the new key and older clients treat custom activity
 as parked work. Existing parked tickets are not activated or migrated.
 
+## Prompts and summaries
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `system_prompt` | built-in brief | Added to the system prompt of every `claude` and `pi` stage agent. It replaces the built-in brief and is not a template. |
+| `resume_prompt` | built-in | Sent instead of the stage prompt when a daemon restart interrupted the stage and the agent resumes its conversation. Same template fields as a stage prompt. |
+| `annotation_prompt` | built-in | Prompt of the run that rewrites a ticket from Plannotator annotations. Same template fields as a stage prompt. |
+| `summary_model` | none | Model of the pass that writes `final_summary`, resolved for the agent that ran the last stage. One value or a per-agent map, as for a stage `model`. |
+| `summary_effort` | none | Reasoning effort of the same pass, in the same two forms. |
+
 ## web
 
 ```yaml
@@ -298,6 +492,71 @@ web:
 
 The dashboard and the HTTP API the client commands use in remote mode.
 `KONTORA_WEB_TOKEN` overrides `token` on the daemon side.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | Start the dashboard and the HTTP API with the daemon. |
+| `host` | `127.0.0.1` | Bind address. |
+| `port` | `8080` | Listen port. |
+| `token` | `""` | Shared bearer token for `/api/*` and `/ws/*`. Empty leaves the API open. |
+| `allowed_hosts` | `[]` | Extra `Host` header values the server answers. |
+| `theme` | `system` | Dashboard theme: `system`, `light` or `dark`. |
+
+Local CLI commands that need the daemon, such as `run`, `changes` and
+`activity`, call this server at `host` and `port`. With `enabled: false` they
+cannot reach the daemon.
+
+## plannotator
+
+```yaml
+plannotator:
+  binary: plannotator
+  timeout: 30m
+  reviews_dir: ~/.kontora/plannotator-reviews
+```
+
+`kontora review` opens the branch diff of a `human_review` ticket in
+Plannotator. `kontora annotate` opens the markdown of an `open` ticket. The
+daemon resolves `binary` on its own `PATH`. `timeout` is how long a session
+can stay open before Kontora cancels it. Submitted review feedback moves the
+ticket to the built-in
+`rework` stage, whose prompt reads it with `{{ plannotatorReview }}`. Submitted
+annotations queue one run with `annotation_prompt`, which reads them with
+`{{ plannotatorAnnotations }}`. Graph pipelines refuse both.
+
+## metrics
+
+```yaml
+metrics:
+  enabled: true
+  endpoint: localhost:4318
+  insecure: true
+  interval: 60s
+```
+
+Metrics are off by default. When enabled, the daemon pushes OTLP/HTTP metrics
+to `endpoint`: stage runs and durations, pipeline transitions, agent failures,
+token spend and scheduler state. There is no `/metrics` scrape route. An empty
+`endpoint` uses `OTEL_EXPORTER_OTLP_ENDPOINT`. With a bare `host:port`,
+`insecure: true` sends plain HTTP. A scheme in `endpoint` decides the transport
+by itself. `headers` adds request headers for a collector that needs them. A
+collector that is down never blocks ticket work.
+
+## Secondary ticket folders
+
+```yaml
+tickets_dir: ~/.kontora/tickets
+secondary_tickets_dirs:
+  - ~/shared/team-tickets
+```
+
+`tickets_dir` is the primary board. The dashboard shows the tickets of each
+secondary folder beside it, labelled with their folder. The daemon never runs,
+recovers, schedules or derives epic statuses in a secondary folder. Agent
+counts use only `tickets_dir`. A primary dependency whose ID is not in the
+primary folder can resolve to a unique ticket in a secondary folder. Discovery
+is not recursive. A missing folder shows as unavailable and does not stop the
+primary board.
 
 ## assistant
 

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -18,7 +17,7 @@ import (
 // cmdRelease has no offline mode. Deployment receipts deliberately take no
 // ticket: one accepted event may release multiple present or future waits.
 func cmdRelease() {
-	fs := flag.NewFlagSet("release", flag.ExitOnError)
+	fs := newFlagSet("release")
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	executionID := fs.String("execution-id", "", "inspected execution ID")

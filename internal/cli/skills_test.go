@@ -33,6 +33,25 @@ func TestSkillTopicsMatchFiles(t *testing.T) {
 	assert.Empty(t, files, "embedded files no topic names")
 }
 
+// Every `-h` names its verb's section, so the section must exist and name the
+// verb's own flags. Automation children are covered below.
+func TestCLISkillCoversCommandTable(t *testing.T) {
+	for _, cmd := range Commands {
+		if cmd.Name == "automation" {
+			continue
+		}
+		section := "kontora " + cmd.Name
+		t.Run(cmd.Name, func(t *testing.T) {
+			var out bytes.Buffer
+			require.NoError(t, Skills(&out, []string{"show", "cli", section}))
+			assert.True(t, strings.HasPrefix(out.String(), "## "+section+"\n"))
+			for _, f := range cmd.Flags {
+				assert.Contains(t, out.String(), dashed(f.Name), "%s does not document %s", section, dashed(f.Name))
+			}
+		})
+	}
+}
+
 func TestAutomationSkillReference(t *testing.T) {
 	var parent Command
 	for _, cmd := range Commands {

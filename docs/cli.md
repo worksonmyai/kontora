@@ -13,7 +13,9 @@ New to Kontora? Follow [Getting started](getting-started.md) for your first tick
 | `--url URL` | every command that can drive a daemon | Remote daemon URL. A non-empty value switches the command into [remote mode](#remote-mode). Defaults to `$KONTORA_URL`. |
 | `--token TOKEN` | the same commands | Bearer token for the remote daemon. Defaults to `$KONTORA_TOKEN`. |
 
-Put flags before the ticket ID, title, or other positional arguments. Both `-flag` and `--flag` work.
+Put flags before the ticket ID, title, or other positional arguments. Both `-flag` and `--flag` work. `new`, `note` and `summary` check the words of their text: a word that names one of the command's own flags, such as `--status`, makes the command fail instead of becoming part of the title or note.
+
+`kontora COMMAND -h` prints the command's synopsis, description and flags, and names its section in [`kontora skills show cli`](#kontora-skills).
 
 ## Ticket IDs
 
@@ -412,7 +414,7 @@ The daemon can reject a stage change while teardown continues, even after status
 
 ### `kontora note TICKET_ID [TEXT]` / `kontora summary TICKET_ID [TEXT]`
 
-Append a note, or set the ticket's summary. Positional text remains supported. Without text arguments, both commands read stdin and remove trailing LF characters.
+Append a note, or set the ticket's summary. Positional text remains supported. Without text arguments, both commands read stdin and remove trailing LF characters. Put flags before the ticket ID: a word after it that names one of the command's flags is refused.
 
 Prefer Pi's `kontora_note({text: string})` and `kontora_summary({text: string})` tools when available. Kontora's injected extension binds both tools to the current ticket, regardless of checkpoint settings. Tool restrictions still apply. Other agents and the dashboard assistant use stdin.
 
@@ -1015,10 +1017,10 @@ Prints the agent-facing reference topics embedded in the binary: `cli`, `tickets
 kontora skills list                 # the topics, one line each
 kontora skills list cli             # that topic's section headings
 kontora skills show tickets         # the whole topic as markdown
-kontora skills show cli new         # one section of it
+kontora skills show cli "kontora new"   # one section of it
 ```
 
-The section argument matches a `##` or `###` heading: exactly first, then as a unique case-insensitive substring, so `show cli new` prints `## kontora new`. An ambiguous name prints the candidates and exits 1, as does an unknown topic.
+The section argument matches a `##` or `###` heading: exactly first, then as a unique case-insensitive substring, so `show cli "kontora new"` prints `## kontora new`. An ambiguous name prints the candidates and exits 1, as does an unknown topic. A bare `new` is ambiguous because it also matches `kontora automation new`.
 
 ### `kontora completion <shell>`
 

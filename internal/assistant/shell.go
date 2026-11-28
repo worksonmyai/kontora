@@ -86,7 +86,7 @@ func classifyCall(call *syntax.CallExpr) Decision {
 	case effect == DecisionUnknown:
 		return DecisionUnknown
 	case len(fields) == 3 && (fields[2] == "-h" || fields[2] == "--help"):
-		// note, summary and new treat flags after a positional as text, not help.
+		// note, summary and new do not treat a help flag after a positional as help.
 		return DecisionRead
 	case verb == "config" && slices.Contains(fields[2:], "edit"):
 		return DecisionWrite

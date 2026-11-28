@@ -153,6 +153,54 @@ func TestRenderUsage(t *testing.T) {
 	assert.Equal(t, descColumn["ls"], descColumn["estimate-compaction"])
 }
 
+// skills -h lists its topics and version has nothing to explain. Automation
+// help has TestAutomationHelpOffline.
+func TestVerbHelp(t *testing.T) {
+	names := []string{"config edit"}
+	for _, cmd := range cli.Commands {
+		if !slices.Contains([]string{"automation", "skills", "version"}, cmd.Name) {
+			names = append(names, cmd.Name)
+		}
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			cmd, ok := cli.LookupCommand(name)
+			require.True(t, ok)
+			out, err := runCLIInDir(t, t.TempDir(), nil, nil, append(strings.Fields(name), "-h")...)
+			require.NoError(t, err, out)
+			assert.Contains(t, out, "Usage: kontora "+name)
+			assert.Contains(t, out, cmd.Desc)
+			verb, _, _ := strings.Cut(name, " ")
+			assert.Contains(t, out, `Reference: kontora skills show cli "kontora `+verb+`"`)
+		})
+	}
+}
+
+func TestFlagAfterText(t *testing.T) {
+	fs := newFlagSet("new")
+	fs.String("status", "", "")
+	fs.Bool("quiet", false, "")
+	for _, tc := range []struct {
+		name  string
+		words []string
+		want  string
+	}{
+		{"plain title", []string{"Add", "a", "health", "check"}, ""},
+		{"long flag after the title", []string{"Title", "--status", "open"}, "--status"},
+		{"single-dash flag", []string{"Title", "-quiet"}, "-quiet"},
+		{"flag with a value", []string{"Title", "--status=open"}, "--status=open"},
+		{"short help", []string{"Title", "-h"}, "-h"},
+		{"long help", []string{"Title", "--help"}, "--help"},
+		{"unknown flag-like word stays text", []string{"Fix", "the", "-race", "flake"}, ""},
+		{"quoted text containing a flag", []string{"Support --status in update"}, ""},
+		{"bare dashes", []string{"-", "--"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, flagAfterText(fs, tc.words))
+		})
+	}
+}
+
 func TestEstimateCompactionCommand(t *testing.T) {
 	for _, cmd := range cli.Commands {
 		if cmd.Name == "estimate-compaction" {
@@ -342,6 +390,11 @@ func TestCreateViewListEndToEnd(t *testing.T) {
 	assert.Equal(t, body, out, "view --body prints the file after the closing delimiter")
 	assert.Contains(t, out, "# Replacement smoke test")
 	assert.Contains(t, out, "Smoke test.")
+
+	// The single-ticket listing below proves the refused command created nothing.
+	out, err = runCLI(t, nil, "new", "--config", configPath, "--path", repo, "Trailing flag", "--status", "open")
+	require.Error(t, err, out)
+	assert.Contains(t, out, "--status comes after the title")
 
 	out, err = runCLI(t, nil, "ls", "--config", configPath, "--json")
 	require.NoError(t, err, out)

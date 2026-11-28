@@ -57,7 +57,7 @@ func TestClassify(t *testing.T) {
 
 		{name: "the usage of a write verb", tool: "Bash", input: cmd("kontora new -h"), want: DecisionRead},
 		{name: "the long help flag", tool: "Bash", input: cmd("kontora new --help"), want: DecisionRead},
-		{name: "a help flag after a positional would append a note", tool: "Bash", input: cmd("kontora note kon-1 -h"), want: DecisionWrite},
+		{name: "a help flag after a positional is not help for note", tool: "Bash", input: cmd("kontora note kon-1 -h"), want: DecisionWrite},
 		{name: "help does not excuse what follows it in a chain", tool: "Bash", input: cmd("kontora new -h && rm -rf x"), want: DecisionUnknown},
 
 		{name: "config prints", tool: "Bash", input: cmd("kontora config"), want: DecisionRead},

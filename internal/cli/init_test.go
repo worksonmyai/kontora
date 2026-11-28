@@ -121,6 +121,10 @@ func TestInit_EpicStartUsesDaemon(t *testing.T) {
 			svc := app.New(app.Static(cfg), store.NewDiskRepo(dir), runtime)
 			calls := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && r.URL.Path == "/api/config" {
+					_ = json.NewEncoder(w).Encode(web.ConfigInfo{TicketsDir: dir})
+					return
+				}
 				calls++
 				assert.Equal(t, http.MethodPost, r.Method)
 				assert.Equal(t, "/api/tickets/epic/init", r.URL.Path)

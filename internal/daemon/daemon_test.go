@@ -1601,7 +1601,7 @@ func TestAgentEnvironmentOverride(t *testing.T) {
 	// The config file alone does not say which store the daemon settled on once
 	// the environment or --tickets-dir has had its say, so the resolved dir is
 	// exported too.
-	assert.Equal(t, config.ExpandTilde(h.cfg.TicketsDir), captured.Env[config.TicketsDirEnvVar])
+	assert.Equal(t, mustEvalDir(t, h.tasksDir), captured.Env[config.TicketsDirEnvVar])
 	// The agent and stage it signs a note with, and the ticket the CLI refuses a
 	// lifecycle command against.
 	assert.Equal(t, "agent1", captured.Env[config.AgentEnvVar])

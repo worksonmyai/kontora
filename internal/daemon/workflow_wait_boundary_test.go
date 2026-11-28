@@ -74,6 +74,10 @@ func TestWorkflowControlTimeoutFrozenRecovery(t *testing.T) {
 	require.NoError(t, err)
 	var journal workflowControlTransition
 	require.NoError(t, json.Unmarshal(data, &journal))
+	journal.Path = journalTicketAlias(t, path)
+	data, err = json.Marshal(journal)
+	require.NoError(t, err)
+	require.NoError(t, atomicWriteFile(workflowControlPath(h.cfg, "tst-control"), data, 0600))
 	require.Equal(t, ticket.StatusDone, journal.Status)
 	require.NotNil(t, journal.CompletedAt)
 	require.Equal(t, ticket.StatusPaused, h.readTask("tst-control.md").Status)

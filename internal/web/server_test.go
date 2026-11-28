@@ -49,6 +49,22 @@ func TestServer_StartShutdown(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestServer_BindAddress(t *testing.T) {
+	for _, tc := range []struct{ host, address string }{
+		{"127.0.0.1", "127.0.0.1:8080"},
+		{"::", "[::]:8080"},
+		{"[::]", "[::]:8080"},
+		{"::1", "[::1]:8080"},
+		{"[::1]", "[::1]:8080"},
+	} {
+		t.Run(tc.host, func(t *testing.T) {
+			srv, err := New(&mockService{}, NewSSEBroker(), tc.host, 8080, "", nil, tmux.DefaultSessionName, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			require.NoError(t, err)
+			assert.Equal(t, tc.address, srv.httpSrv.Addr)
+		})
+	}
+}
+
 // startTestServer builds a server, starts it on a loopback port and shuts it
 // down with the test. The named helpers around the package each vary one
 // argument of it.

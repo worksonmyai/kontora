@@ -5,6 +5,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"slices"
@@ -119,19 +120,29 @@ func splitAuthority(authority string) (string, string) {
 	return strings.TrimSuffix(strings.TrimPrefix(authority, "["), "]"), ""
 }
 
+// UnbracketHost accepts IPv6 literals with the brackets used in URLs.
+func UnbracketHost(host string) string {
+	if len(host) > 2 && host[0] == '[' && host[len(host)-1] == ']' {
+		inner := host[1 : len(host)-1]
+		if ip, err := netip.ParseAddr(inner); err == nil && ip.Is6() {
+			return inner
+		}
+	}
+	return host
+}
+
 // UnspecifiedHost reports whether a bind address names every interface. Such
 // an address is not a name any client can send in Host, so it cannot be an
 // allowed host; every other name the daemon is then reached by has to be
 // listed in web.allowed_hosts.
 func UnspecifiedHost(host string) bool {
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsUnspecified()
+	return net.ParseIP(UnbracketHost(host)).IsUnspecified()
 }
 
 // LoopbackHost reports whether a hostname or address names this machine over
 // the loopback interface.
 func LoopbackHost(host string) bool {
-	return strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()
+	return strings.EqualFold(host, "localhost") || net.ParseIP(UnbracketHost(host)).IsLoopback()
 }
 
 // sameLocalOrigin reports whether origin names a host this daemon answers to,

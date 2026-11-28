@@ -277,9 +277,19 @@ See `kontora skills show cli Compatibility` before enabling waits.
 
 ## Remote mode
 
-`KONTORA_URL` (or `--url`) points every client command at a daemon over HTTP
-instead of at local files. Paths in `--path` then name directories on the
-daemon host.
+`KONTORA_URL` (or `--url`) points client commands at a daemon over HTTP.
+Remote mode does not check local `tickets_dir`. Paths in `--path` name
+directories on the daemon host.
+
+Without a URL, commands that need the daemon, such as `run` and `changes`,
+require `web.enabled` and connect over loopback. They use `web.token` if set.
+Before acting, they check `/api/config` for the same ticket directory. A symlink
+to the same directory counts as a match. If verification fails, the command
+exits instead of falling back to ticket files.
+
+For a daemon listening only on a non-loopback address, set `--url` or
+`KONTORA_URL`, even on the daemon host. If the daemon requires a bearer token,
+supply it with `--token` or `KONTORA_TOKEN`.
 
 Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `schedule`,
 `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`,

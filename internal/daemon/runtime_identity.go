@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"path/filepath"
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
@@ -15,6 +16,18 @@ func (d *Daemon) freezeStoreIdentity(dir string) {
 		identity, _ := config.DirectoryIdentity(dir)
 		d.storeIdentity.Store(&identity)
 	})
+}
+
+// Older workflow journals can store a ticket path through a directory symlink.
+func sameJournalTicketPath(saved, current string) bool {
+	if saved == current {
+		return true
+	}
+	if filepath.Base(saved) != filepath.Base(current) {
+		return false
+	}
+	same, err := config.SameDirectory(filepath.Dir(saved), filepath.Dir(current))
+	return err == nil && same
 }
 
 // discoverTmuxSocket runs outside request handlers and stops with the daemon.

@@ -61,22 +61,9 @@ func newSource(cfg *config.Config) Source {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	identity, err := client.ConfigContext(ctx)
+	identity, err := remote.VerifyBoard(ctx, client, cfg.TicketsDir)
 	if err != nil {
-		fallback.diagnostic = "cannot verify daemon: " + err.Error() + "; actions and attachment disabled"
-		return fallback
-	}
-	if !filepath.IsAbs(identity.TicketsDir) {
-		fallback.diagnostic = "daemon directory identity missing; actions and attachment disabled"
-		return fallback
-	}
-	matches, err := config.SameDirectory(cfg.TicketsDir, identity.TicketsDir)
-	if err != nil {
-		fallback.diagnostic = fmt.Sprintf("cannot compare daemon board %q with requested board %q: %v; actions and attachment disabled", identity.TicketsDir, cfg.TicketsDir, err)
-		return fallback
-	}
-	if !matches {
-		fallback.diagnostic = fmt.Sprintf("daemon board %q does not match requested board %q; actions and attachment disabled", identity.TicketsDir, cfg.TicketsDir)
+		fallback.diagnostic = err.Error() + "; actions and attachment disabled"
 		return fallback
 	}
 	return &apiSource{client: client, identity: identity}

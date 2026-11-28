@@ -40,7 +40,7 @@ func TestAcceptedReleaseKeepsAuthorityPastDeadline(t *testing.T) {
 			f.d.tickets[f.tkt.ID] = newTicketState(f.tkt, f.path)
 			receipt := &ticket.WorkflowReceipt{ID: workflowEventKey(kind, "accepted"), AcceptedAt: clock.Now().UTC(),
 				Repository: s.Wait.Repository, Commit: s.Wait.RequiredCommit, Environment: s.Wait.Environment}
-			application, err := f.d.releaseApplication(f.tkt, f.path, receipt)
+			application, err := f.d.releaseApplication(f.tkt, journalTicketAlias(t, f.path), receipt)
 			require.NoError(t, err)
 			event := &workflowEvent{Version: 1, Kind: kind, TicketID: f.tkt.ID, Receipt: receipt, Applications: []*workflowEventApplication{application}}
 			if kind == "human" {

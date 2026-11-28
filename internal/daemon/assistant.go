@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/assistant"
-	"github.com/worksonmyai/kontora/internal/companion"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/process"
@@ -298,8 +297,7 @@ func (d *Daemon) assistantStore(cfg *config.Config) *assistant.Store {
 // evidence and hook lookups.
 func (d *Daemon) assistantThreadStore(cfg *config.Config, id string) *assistant.Store {
 	if strings.HasPrefix(id, "k") {
-		root := filepath.Join(expandTilde(cfg.LogsDir), "companion",
-			companion.Scope(expandTilde(d.lockPath), expandTilde(cfg.TicketsDir)), "assistant")
+		root := filepath.Join(d.companionRoot(cfg.LogsDir), "assistant")
 		// Agents run in the thread cwd, not necessarily the daemon cwd. Both
 		// runtimes must receive an absolute session location for relative logs_dir.
 		if absolute, err := filepath.Abs(root); err == nil {

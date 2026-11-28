@@ -173,7 +173,7 @@ func TestHooksEnvironment(t *testing.T) {
 		wtPath,
 		"worktree_created",
 		"tst-h02",
-		filepath.Join(h.tasksDir, "tst-h02.md"),
+		filepath.Join(mustEvalDir(t, h.tasksDir), "tst-h02.md"),
 		wtPath,
 		h.repoDir,
 		got.Branch,

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -38,6 +39,10 @@ func TestLocalManagedRoutingRefusesAnotherDaemon(t *testing.T) {
 	dir := t.TempDir()
 	var writes atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/config" {
+			_ = json.NewEncoder(w).Encode(web.ConfigInfo{TicketsDir: dir})
+			return
+		}
 		if r.Method != http.MethodGet {
 			writes.Add(1)
 			if err := ticket.WithOfflineWrite(dir, func() error { return nil }); err != nil {
@@ -56,7 +61,8 @@ func TestLocalManagedRoutingRefusesAnotherDaemon(t *testing.T) {
 	require.NoError(t, err)
 	cfg := &config.Config{TicketsDir: dir}
 	cfg.Web.Host, cfg.Web.Port = host, portNumber
-	client := LocalClient(cfg)
+	client, err := LocalClient(cfg)
+	require.NoError(t, err)
 	require.NoError(t, client.Summary("same-id", "ordinary"))
 	require.Equal(t, int32(1), writes.Load())
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".kontora", "authority.json"), []byte("persisted ownership"), 0o600))

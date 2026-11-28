@@ -2166,7 +2166,7 @@ func TestInit_EpicStartRequiresDaemon(t *testing.T) {
 			require.NoError(t, readErr)
 			require.Error(t, err)
 			if status == "todo" {
-				assert.Contains(t, err.Error(), "daemon not reachable")
+				assert.ErrorContains(t, err, "cannot verify daemon board: GET http://127.0.0.1:0/api/config:")
 			}
 			assert.True(t, tkt.IsPassiveEpic())
 			assert.Equal(t, ticket.StatusOpen, tkt.Status)

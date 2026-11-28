@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +31,72 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
+
+func TestLocalRunChecksBoard(t *testing.T) {
+	const sharedID, boardOnlyID = "tst-run", "tst-board-only"
+	board, other := t.TempDir(), t.TempDir()
+	writeTicket := func(dir, id string) {
+		content := fmt.Appendf(nil, "---\nid: %s\nstatus: open\nkontora: true\n---\n# Test\n", id)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, id+".md"), content, 0o600))
+	}
+	writeTicket(board, sharedID)
+	writeTicket(other, sharedID)
+	writeTicket(board, boardOnlyID)
+	alias := filepath.Join(t.TempDir(), "alias")
+	require.NoError(t, os.Symlink(board, alias))
+	child := filepath.Join(board, "child")
+	require.NoError(t, os.Mkdir(child, 0o755))
+	childAlias := filepath.Join(other, "child-link")
+	require.NoError(t, os.Symlink(child, childAlias))
+	for _, tc := range []struct {
+		name, requested, advertised, id string
+		wantPost                        bool
+	}{
+		{name: "other board", requested: board, advertised: other, id: sharedID},
+		{name: "same board through symlink", requested: board, advertised: alias, id: sharedID, wantPost: true},
+		{name: "symlink with a parent component", requested: childAlias + "/..", advertised: board, id: boardOnlyID, wantPost: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gets, posts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					posts.Add(1)
+				}
+				switch r.Method + " " + r.URL.Path {
+				case "GET /api/config":
+					gets.Add(1)
+					_ = json.NewEncoder(w).Encode(web.ConfigInfo{TicketsDir: tc.advertised})
+				case "POST /api/tickets/" + tc.id + "/run":
+					assert.EqualValues(t, 1, gets.Load())
+					_ = json.NewEncoder(w).Encode(web.TicketInfo{ID: tc.id})
+				default:
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			cfg := filepath.Join(t.TempDir(), "config.yaml")
+			content := fmt.Sprintf("tickets_dir: %q\nagents:\n  claude:\n    binary: true\nweb:\n  host: 127.0.0.1\n  port: %d\n", tc.requested, srv.Listener.Addr().(*net.TCPAddr).Port)
+			require.NoError(t, os.WriteFile(cfg, []byte(content), 0o600))
+
+			out, err := runCLI(t, nil, "run", "--config", cfg, tc.id)
+			assert.EqualValues(t, 1, gets.Load())
+			if tc.wantPost {
+				require.NoError(t, err, out)
+				assert.Contains(t, out, "queued")
+				assert.EqualValues(t, 1, posts.Load())
+				assert.FileExists(t, filepath.Join(board, ".kontora", "board.lock"))
+				assert.NoFileExists(t, filepath.Join(other, ".kontora", "board.lock"))
+				return
+			}
+			require.Error(t, err)
+			for _, want := range []string{srv.URL, other, board, "does not match requested board"} {
+				assert.Contains(t, out, want)
+			}
+			assert.Zero(t, posts.Load())
+		})
+	}
+}
 
 func TestResolveConfigPath(t *testing.T) {
 	cases := []struct {

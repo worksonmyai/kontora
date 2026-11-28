@@ -318,24 +318,34 @@ func TestAutomationNewStdin(t *testing.T) {
 
 func TestAutomationAttachmentRouting(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		args         []string
-		local, exact bool
-		ticketID     string
+		name                   string
+		args                   []string
+		local, exact, override bool
+		ticketID               string
 	}{
-		{"top-level remote", []string{"attach", testAutomationID}, false, false, ""},
-		{"top-level local", []string{"attach", testAutomationID}, true, false, ""},
-		{"automation current", []string{"automation", "attach", testAutomationID}, false, false, ""},
-		{"automation exact deleted", []string{"automation", "attach", testAutomationID, "--run", "7"}, false, true, ""},
-		{"ticket remote", []string{"attach", "kon-1234"}, false, false, "kon-1234"},
-		{"ticket automation-like ID", []string{"attach", "aut-1234"}, false, false, "aut-1234"},
+		{name: "top-level remote", args: []string{"attach", testAutomationID}},
+		{name: "top-level local", args: []string{"attach", testAutomationID}, local: true},
+		{name: "top-level local directory override", args: []string{"attach", testAutomationID}, local: true, override: true},
+		{name: "automation current", args: []string{"automation", "attach", testAutomationID}},
+		{name: "automation exact deleted", args: []string{"automation", "attach", testAutomationID, "--run", "7"}, exact: true},
+		{name: "ticket remote", args: []string{"attach", "kon-1234"}, ticketID: "kon-1234"},
+		{name: "ticket automation-like ID", args: []string{"attach", "aut-1234"}, ticketID: "aut-1234"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
 			gets, handshakes := 0, 0
+			board := t.TempDir()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.Equal(t, "operator", r.Header.Get(web.OperatorTokenHeader))
 				assert.Equal(t, "Bearer bearer", r.Header.Get("Authorization"))
+				if r.Method == http.MethodGet && r.URL.Path == "/api/config" {
+					assert.True(t, tc.local)
+					mu.Lock()
+					gets++
+					mu.Unlock()
+					_ = json.NewEncoder(w).Encode(web.ConfigInfo{TicketsDir: board})
+					return
+				}
+				assert.Equal(t, "operator", r.Header.Get(web.OperatorTokenHeader))
 				if strings.HasPrefix(r.URL.Path, "/api/") {
 					mu.Lock()
 					gets++
@@ -376,7 +386,12 @@ func TestAutomationAttachmentRouting(t *testing.T) {
 				cfg := filepath.Join(t.TempDir(), "config.yaml")
 				address := strings.TrimPrefix(srv.URL, "http://")
 				host, port, _ := strings.Cut(address, ":")
-				require.NoError(t, os.WriteFile(cfg, fmt.Appendf(nil, "agents:\n  claude:\n    binary: true\nweb:\n  host: %s\n  port: %s\n  token: bearer\n", host, port), 0600))
+				configured := board
+				if tc.override {
+					configured = t.TempDir()
+					args = append(args, "--tickets-dir", board)
+				}
+				require.NoError(t, os.WriteFile(cfg, fmt.Appendf(nil, "tickets_dir: %q\nagents:\n  claude:\n    binary: true\nweb:\n  host: %s\n  port: %s\n  token: bearer\n", configured, host, port), 0600))
 				args = append(args, "--config", cfg)
 			} else {
 				args = append(args, "--url", srv.URL, "--token", "bearer")
@@ -395,7 +410,7 @@ func TestAutomationAttachmentRouting(t *testing.T) {
 					defer mu.Unlock()
 					if tc.exact {
 						assert.Zero(t, gets)
-					} else if tc.ticketID != "" {
+					} else if tc.ticketID != "" || tc.local {
 						assert.Equal(t, 2, gets)
 					} else {
 						assert.Equal(t, 1, gets)

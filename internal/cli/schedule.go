@@ -56,5 +56,9 @@ func Schedule(cfg *config.Config, taskID string, req web.ScheduleTicketRequest) 
 	if err != nil {
 		return err
 	}
-	return LocalClient(cfg).Schedule(resolvedID, req)
+	client, err := LocalClient(cfg)
+	if err != nil {
+		return err
+	}
+	return client.Schedule(resolvedID, req)
 }

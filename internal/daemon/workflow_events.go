@@ -393,7 +393,7 @@ func (d *Daemon) applyWorkflowEvent(event *workflowEvent, application *workflowE
 		return nil
 	}
 	s := t.GraphState
-	if s == nil || s.Wait == nil || path != application.FilePath || t.Path != application.RepoPath ||
+	if s == nil || s.Wait == nil || !sameJournalTicketPath(application.FilePath, path) || t.Path != application.RepoPath ||
 		t.Branch != application.Branch || t.Pipeline != application.Pipeline || t.Stage != application.Stage ||
 		s.ExecutionID != application.ExecutionID || s.Wait.ID != application.WaitID || s.Revision != application.Revision ||
 		s.DefinitionFingerprint != application.Fingerprint || s.Wait.Disarmed || s.Wait.Phase != "pending" {

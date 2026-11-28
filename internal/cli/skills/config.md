@@ -450,7 +450,7 @@ web:
   allowed_hosts: []
 ```
 
-The dashboard and the HTTP API the client commands use in remote mode.
+The daemon's dashboard and HTTP API.
 `KONTORA_WEB_TOKEN` overrides `token` on the daemon side.
 
 | Field | Default | Description |
@@ -462,9 +462,19 @@ The dashboard and the HTTP API the client commands use in remote mode.
 | `allowed_hosts` | `[]` | Extra `Host` header values the server answers. |
 | `theme` | `system` | Dashboard theme: `system`, `light` or `dark`. |
 
-Local CLI commands that need the daemon, such as `run`, `changes` and
-`activity`, call this server at `host` and `port`. With `enabled: false` they
-cannot reach the daemon.
+Local commands such as `run` and `changes` require `web.enabled`. They connect
+to `web.port` over loopback and use `web.token` if set. If `web.host` is
+`0.0.0.0`, the CLI connects to `127.0.0.1`. If `web.host` is `::`, the daemon
+listens on the IPv6 wildcard and the local CLI connects to `::1`.
+
+Before acting, the CLI reads `/api/config` and checks that the daemon serves
+the same directory as the CLI's effective `tickets_dir`. A symlink to the same
+directory counts as a match. The daemon keeps using the directory it resolved
+at startup, even if the configured symlink points elsewhere later.
+
+For a daemon listening only on a non-loopback address, set `--url` or
+`KONTORA_URL`, even on the daemon host. If the daemon requires a bearer token,
+supply it with `--token` or `KONTORA_TOKEN`.
 
 ## plannotator
 

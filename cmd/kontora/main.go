@@ -1183,12 +1183,20 @@ func cmdRelation(verb string) {
 // daemonClient returns the client for whichever daemon the command targets: the
 // remote one when a URL is set, else the local one this config describes. It is
 // used by the verbs that only the daemon can answer — it owns the queue, the
-// worktrees, and the run records.
+// worktrees, and the run records. It exits if the local board check fails.
 func daemonClient(configPath, urlFlag, tokenFlag string) *remote.Client {
 	if rc := remoteClient(urlFlag, tokenFlag); rc != nil {
 		return rc
 	}
-	return cli.LocalClient(mustLoadConfig(configPath))
+	return mustLocalClient(mustLoadConfig(configPath))
+}
+
+func mustLocalClient(cfg *config.Config) *remote.Client {
+	rc, err := cli.LocalClient(cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return rc
 }
 
 func cmdWorkflow(action string) {
@@ -1691,14 +1699,11 @@ func cmdAttach() {
 	operator := fs.String("operator-token", os.Getenv("KONTORA_OPERATOR_TOKEN"), "operator credential (or KONTORA_OPERATOR_TOKEN)")
 	taskID := parseTicketFlags(fs, os.Args[2:])
 
-	if automation.IsID(taskID) {
-		rc := daemonClient(*configPath, *urlFlag, *tokenFlag).WithOperatorToken(*operator)
-		if err := remote.Attach(context.Background(), rc, taskID, *rw); err != nil {
-			log.Fatal(err)
-		}
-		return
+	rc := remoteClient(*urlFlag, *tokenFlag)
+	if rc == nil && automation.IsID(taskID) {
+		rc = mustLocalClient(mustLoadStoreConfig(*configPath, *ticketsDir))
 	}
-	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+	if rc != nil {
 		rc = rc.WithOperatorToken(*operator)
 		if taskID == "" {
 			log.Fatal("ticket ID is required: kontora attach TICKET_ID")
@@ -1937,6 +1942,10 @@ func addStoreFlags(fs *flag.FlagSet) (configPath, ticketsDir *string) {
 func mustLoadStoreConfig(configPath, ticketsDir string) *config.Config {
 	cfg := mustLoadConfig(configPath)
 	cfg.SetTicketsDir(ticketsDir)
+	// Resolve symlinks before filepath.Join can clean away a parent component.
+	if dir, err := config.DirectoryIdentity(cfg.TicketsDir); err == nil {
+		cfg.TicketsDir = dir
+	}
 	return cfg
 }
 

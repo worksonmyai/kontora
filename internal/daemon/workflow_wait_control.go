@@ -67,7 +67,7 @@ func (d *Daemon) persistControlTransition(before, after *ticket.Ticket) error {
 	return atomicWriteFile(path, data, 0600)
 }
 func (j *workflowControlTransition) matches(t *ticket.Ticket, path string) bool {
-	return path == j.Path && t.Path == j.RepoPath && t.Branch == j.Branch && t.Pipeline == j.Pipeline && t.GraphState != nil && t.GraphState.ExecutionID == j.ExecutionID
+	return sameJournalTicketPath(j.Path, path) && t.Path == j.RepoPath && t.Branch == j.Branch && t.Pipeline == j.Pipeline && t.GraphState != nil && t.GraphState.ExecutionID == j.ExecutionID
 }
 
 func (d *Daemon) reconcileControlTransitions() {

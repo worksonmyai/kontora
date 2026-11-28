@@ -33,7 +33,11 @@ func Attach(cfg *config.Config, taskID string, readWrite bool) error {
 		return attachInteractive(cfg, readWrite)
 	}
 	if automation.IsID(taskID) {
-		return remote.Attach(context.Background(), LocalClient(cfg), taskID, readWrite)
+		client, err := LocalClient(cfg)
+		if err != nil {
+			return err
+		}
+		return remote.Attach(context.Background(), client, taskID, readWrite)
 	}
 	target, err := resolveAttach(cfg.TmuxSessionName(), cfg.TicketsDir, taskID)
 	if err != nil {

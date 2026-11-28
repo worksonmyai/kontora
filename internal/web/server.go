@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -167,7 +168,7 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token stri
 		return nil, err
 	}
 	s.httpSrv = &http.Server{
-		Addr:              fmt.Sprintf("%s:%d", host, port),
+		Addr:              net.JoinHostPort(UnbracketHost(host), strconv.Itoa(port)),
 		Handler:           securityMiddleware(resolved, authenticated),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

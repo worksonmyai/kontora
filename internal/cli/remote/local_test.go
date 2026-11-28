@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -23,10 +25,10 @@ func TestNewLocal(t *testing.T) {
 		want string
 	}{
 		{"", "127.0.0.1"}, {"localhost", "127.0.0.1"}, {"LOCALHOST", "127.0.0.1"},
-		{"0.0.0.0", "127.0.0.1"}, {"::", "::1"},
-		{"127.0.0.1", "127.0.0.1"}, {"127.0.0.2", "127.0.0.2"}, {"::1", "::1"},
-		{"example.com", ""}, {"192.168.1.2", ""}, {"8.8.8.8", ""},
-		{"localhost.example.com", ""}, {"[::1]", ""},
+		{"0.0.0.0", "127.0.0.1"}, {"::", "::1"}, {"[::]", "::1"},
+		{"127.0.0.1", "127.0.0.1"}, {"127.0.0.2", "127.0.0.2"}, {"::1", "::1"}, {"[::1]", "::1"},
+		{"example.com", ""}, {"192.168.1.2", ""}, {"8.8.8.8", ""}, {"[2001:db8::1]", ""},
+		{"localhost.example.com", ""}, {"[localhost]", ""},
 	} {
 		t.Run(tc.host, func(t *testing.T) {
 			client, err := NewLocal(tc.host, 8080, "secret")
@@ -40,6 +42,53 @@ func TestNewLocal(t *testing.T) {
 			assert.Nil(t, transport.Proxy)
 			_, err = transport.DialContext(t.Context(), "tcp", "example.com:80")
 			require.ErrorContains(t, err, "refusing non-loopback")
+		})
+	}
+}
+
+func TestVerifyBoard(t *testing.T) {
+	board := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	require.NoError(t, os.Symlink(board, alias))
+	other := t.TempDir()
+	for _, tc := range []struct {
+		name       string
+		advertised string
+		wantError  string
+	}{
+		{name: "same directory", advertised: board},
+		{name: "directory alias", advertised: alias},
+		{name: "other board", advertised: other, wantError: `daemon board "` + other + `" does not match requested board "` + board + `"`},
+		{name: "missing identity", wantError: "daemon directory identity missing"},
+		{name: "relative identity", advertised: ".", wantError: "daemon directory identity missing"},
+		{name: "deadline", advertised: board, wantError: "cannot verify daemon:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			identity := web.ConfigInfo{TicketsDir: tc.advertised, TmuxSession: "board-session"}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "GET /api/config", r.Method+" "+r.URL.Path)
+				_ = json.NewEncoder(w).Encode(identity)
+			}))
+			defer srv.Close()
+			client, err := NewLocal("localhost", srv.Listener.Addr().(*net.TCPAddr).Port, "")
+			require.NoError(t, err)
+			ctx := t.Context()
+			if tc.name == "deadline" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 0)
+				defer cancel()
+			}
+			got, err := VerifyBoard(ctx, client, board)
+			switch {
+			case tc.name == "deadline":
+				require.ErrorContains(t, err, tc.wantError)
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+			case tc.wantError != "":
+				require.EqualError(t, err, tc.wantError)
+			default:
+				require.NoError(t, err)
+				assert.Equal(t, identity, got)
+			}
 		})
 	}
 }

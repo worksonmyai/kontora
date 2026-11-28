@@ -328,8 +328,9 @@ func TestAnnotate_SubmittedFeedbackParksTicket(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("spawner should be invoked")
 	}
-	assert.Equal(t, []string{"annotate", filepath.Join(h.tasksDir, "tst-an02.md"), "--gate", "--json"}, params.Args)
-	assert.Equal(t, h.tasksDir, params.Dir, "the annotate target is in tickets_dir, not a review worktree")
+	board := mustEvalDir(t, h.tasksDir)
+	assert.Equal(t, []string{"annotate", filepath.Join(board, "tst-an02.md"), "--gate", "--json"}, params.Args)
+	assert.Equal(t, board, params.Dir, "the annotate target is in tickets_dir, not a review worktree")
 	assert.NoDirExists(t, filepath.Join(h.wtDir, h.repoName, "tst-an02")+".plannotator",
 		"annotating a ticket must not build a review worktree")
 
@@ -631,8 +632,8 @@ func TestAnnotate_RewritesTicketAndRestoresStatus(t *testing.T) {
 	require.Len(t, spawns, 1)
 	prompt := renderedPrompt(spawns[0])
 	assert.Contains(t, prompt, "sharpen the goal", "the annotations reach the agent")
-	assert.Contains(t, prompt, filePath, "the prompt names the exact ticket file")
-	assert.Contains(t, prompt, "Edit only "+filePath)
+	resolvedPath := filepath.Join(mustEvalDir(t, h.tasksDir), filepath.Base(filePath))
+	assert.Contains(t, prompt, "Edit only "+resolvedPath)
 	assert.Contains(t, prompt, "temporary files outside the repository solely for note and summary submission")
 	assert.Contains(t, prompt, "Do not modify other project files")
 	assert.Contains(t, prompt, "Do not add replies to reviewer annotations in the ticket text")
@@ -819,7 +820,7 @@ func TestAnnotate_WorkDir(t *testing.T) {
 				assert.Equal(t, wtPath, spawns[0].Dir)
 				assert.Equal(t, "kontora/tst-an08", got.Branch)
 			case tc.noPath:
-				assert.Equal(t, h.tasksDir, spawns[0].Dir, "no repository means the ticket's own directory")
+				assert.Equal(t, mustEvalDir(t, h.tasksDir), spawns[0].Dir, "no repository means the ticket's own directory")
 				assert.Empty(t, got.Branch)
 			default:
 				assert.Equal(t, h.repoDir, spawns[0].Dir, "no worktree means the repository itself")

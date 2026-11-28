@@ -849,7 +849,7 @@ func TestPlannotator_ReloadKeepsStartingSettings(t *testing.T) {
 
 	// Reload to a config pointing elsewhere while the subprocess still runs.
 	movedDir := t.TempDir()
-	next := *h.cfg
+	next := *d.config()
 	next.Plannotator.ReviewsDir = movedDir
 	next.Plannotator.Timeout = config.Duration{Duration: time.Hour}
 	d.cfg.Store(&next)

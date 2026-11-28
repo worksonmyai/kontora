@@ -431,7 +431,7 @@ projects:
 
 ## web
 
-Optional HTTP server for monitoring and controlling tickets from a browser. The example listens only on this machine. See [Remote access](remote.md) before changing the bind address.
+HTTP server for the dashboard and CLI commands that need the daemon. The example listens only on this machine. See [Remote access](remote.md) before changing the bind address.
 
 ```yaml
 web:
@@ -448,6 +448,20 @@ web:
 | `theme` | no | `system` | Dashboard theme preference. Accepts `system`, `light`, or `dark` (lowercase). Reloads live. |
 | `allowed_hosts` | no | `[]` | Extra `Host` header values the server answers. |
 | `token` | no | `""` | Shared bearer token. When set, `/api/*` and `/ws/*` require it (via `Authorization: Bearer`, a `kontora_token` cookie, or a `token` query param); empty leaves the API open. `GET /health` and the static UI stay public. |
+
+Local commands such as `run` and `changes` require `web.enabled`. They connect
+to `web.port` over loopback and use `web.token` if set. If `web.host` is
+`0.0.0.0`, the CLI connects to `127.0.0.1`. If `web.host` is `::`, the daemon
+listens on the IPv6 wildcard and the local CLI connects to `::1`.
+
+Before acting, the CLI reads `/api/config` and checks that the daemon serves
+the same directory as the CLI's effective `tickets_dir`. A symlink to the same
+directory counts as a match. The daemon keeps using the directory it resolved
+at startup, even if the configured symlink points elsewhere later.
+
+For a daemon listening only on a non-loopback address, set `--url` or
+`KONTORA_URL`, even on the daemon host. If the daemon requires a bearer token,
+supply it with `--token` or `KONTORA_TOKEN`.
 
 The dashboard saves the theme preference to `web.theme` in `config.yaml`, so
 it is shared by all browsers connected to the daemon. With `system`, each

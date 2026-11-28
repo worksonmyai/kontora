@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -37,39 +38,93 @@ func startIdentityDiscovery(t *testing.T, d *Daemon, interval, timeout time.Dura
 	})
 }
 
-func TestGetConfigKeepsLoadedStoreIdentityAfterSymlinkRetarget(t *testing.T) {
-	for _, source := range []string{"config", "environment"} {
-		t.Run(source, func(t *testing.T) {
+func TestDaemonUsesTheBoardItAdvertises(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		environment bool
+		parent      bool
+	}{
+		{name: "retargeted config symlink"},
+		{name: "retargeted environment symlink", environment: true},
+		{name: "symlink with a parent component", parent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			h := newReloadHarness(t)
-			h.writeTicket("tst-original.md", "---\nid: tst-original\nstatus: open\n---\n# Original store\n")
-			original := h.tasksDir
+			const id = "tst-original"
+			const originalText = "---\nid: tst-original\nstatus: open\nkontora: true\npipeline: one-stage\nstage: step1\ndeps: [tst-blocker]\n---\n# Original store\n"
+			originalFile := h.writeTicket(id+".md", originalText)
+			h.writeTicket("tst-blocker.md", "---\nid: tst-blocker\nstatus: open\n---\n# Blocker\n")
 			replacement := t.TempDir()
-			alias := filepath.Join(t.TempDir(), "tickets")
-			require.NoError(t, os.Symlink(original, alias))
+			replacementFile := filepath.Join(replacement, id+".md")
+			replacementText := strings.Replace(originalText, "Original store", "Other store", 1)
+			require.NoError(t, os.WriteFile(replacementFile, []byte(replacementText), 0o600))
+			alias := filepath.Join(replacement, "tickets")
+			target, configured := h.tasksDir, alias
+			if tc.parent {
+				target = filepath.Join(target, "child")
+				require.NoError(t, os.Mkdir(target, 0o755))
+				configured += "/.."
+			}
+			require.NoError(t, os.Symlink(target, alias))
 			initial := h.yaml(configOpts{})
-			if source == "environment" {
-				t.Setenv(config.TicketsDirEnvVar, alias)
+			if tc.environment {
+				t.Setenv(config.TicketsDirEnvVar, configured)
 			} else {
-				initial = strings.Replace(initial, "tickets_dir: "+original, "tickets_dir: "+alias, 1)
+				initial = strings.Replace(initial, "tickets_dir: "+h.tasksDir, "tickets_dir: "+configured, 1)
 			}
 			d := h.newDaemonWithConfig(t, initial)
-			require.NoError(t, d.initialScan(d.config().TicketsDir))
+			companionDir := d.companionDir()
+			ctx, cancel := context.WithCancel(t.Context())
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			defer func() {
+				cancel()
+				require.NoError(t, <-errCh)
+			}()
+			require.Eventually(t, func() bool {
+				_, err := d.GetTicket(id)
+				return err == nil
+			}, 5*time.Second, 10*time.Millisecond)
 
-			require.NoError(t, os.Remove(alias))
-			require.NoError(t, os.Symlink(replacement, alias))
-			assert.Equal(t, mustEvalDir(t, original), d.GetConfig().TicketsDir,
-				"the first config request must identify the scanned store, not the new symlink target")
-			loaded, err := d.GetTicket("tst-original")
+			if !tc.parent {
+				require.NoError(t, os.Remove(alias))
+				require.NoError(t, os.Symlink(replacement, alias))
+			}
+			require.Equal(t, mustEvalDir(t, h.tasksDir), d.GetConfig().TicketsDir)
+			assert.Equal(t, companionDir, d.companionDir(), "startup must preserve the companion state directory")
+			assert.Equal(t, filepath.Join(companionDir, "assistant"), d.assistantThreadStore(d.config(), "k").Root())
+			loaded, err := d.GetTicket(id)
 			require.NoError(t, err)
 			assert.Equal(t, "Original store", loaded.Title)
 
-			h.writeConfig(t, strings.Replace(initial, "branch_prefix: kontora", "branch_prefix: reloaded", 1))
+			h.writeConfigAtomic(t, strings.Replace(initial, "branch_prefix: kontora", "branch_prefix: reloaded", 1))
 			require.NoError(t, d.reloadConfig())
-			assert.Equal(t, alias, d.config().TicketsDir, "reload keeps the configured path spelling")
 			assert.Equal(t, "reloaded", d.GetConfig().BranchPrefix)
-			assert.Equal(t, mustEvalDir(t, original), d.GetConfig().TicketsDir)
+			assert.Equal(t, mustEvalDir(t, h.tasksDir), d.GetConfig().TicketsDir)
+			assert.NotContains(t, h.logBuf.String(), "field=tickets_dir")
+
+			at := ticket.FormatSchedule(time.Now().Add(time.Hour))
+			require.NoError(t, d.ScheduleTicket(id, web.ScheduleTicketRequest{ScheduledAt: at}))
+			scheduled, err := ticket.ParseFile(originalFile)
+			require.NoError(t, err)
+			assert.Equal(t, at, scheduled.ScheduledAt)
+			require.NoError(t, d.RunTicket(id))
+			queued, err := ticket.ParseFile(originalFile)
+			require.NoError(t, err)
+			assert.Equal(t, ticket.StatusTodo, queued.Status)
+			assert.Empty(t, queued.ScheduledAt)
+			other, err := os.ReadFile(replacementFile)
+			require.NoError(t, err)
+			assert.Equal(t, replacementText, string(other))
 		})
 	}
+}
+
+func journalTicketAlias(t *testing.T, path string) string {
+	t.Helper()
+	alias := filepath.Join(t.TempDir(), "board")
+	require.NoError(t, os.Symlink(filepath.Dir(path), alias))
+	return filepath.Join(alias, filepath.Base(path))
 }
 
 func TestGetConfigDoesNotWaitForUnresponsiveTmux(t *testing.T) {

@@ -182,6 +182,8 @@ func TestWorkflowWaitProbeResultJournalRecovery(t *testing.T) {
 				journal := readWorkflowWaitTestProbeJournal(t, h)
 				require.Equal(t, "result", journal.Phase)
 				require.NotNil(t, journal.After)
+				journal.Path = journalTicketAlias(t, path)
+				require.NoError(t, saveWorkflowProbe(h.cfg, journal))
 				frozen := journal.After.Clone()
 				require.Equal(t, 1, frozen.Wait.PollCount)
 				require.Equal(t, "saved probe evidence ✓", frozen.Wait.Output)

@@ -53,6 +53,16 @@ The tickets dir is resolved `--tickets-dir` → `$KONTORA_TICKETS_DIR` → `$TIC
 
 Note that unlike every other setting, the environment beats the config file for the tickets dir. A stray export therefore changes which store every command reads, and a daemon that cannot see the variable — one started by launchd or systemd, which pass a minimal environment — keeps reading the file. `kontora doctor` names the source that won and warns when the two disagree.
 
+## Local daemon connections
+
+Without a remote URL, commands that need the daemon require `web.enabled` and
+connect over loopback. They use `web.token` if set. On the initial connection,
+the CLI checks `/api/config` to verify that the daemon serves the requested
+`tickets_dir`. If verification fails, the command exits instead of falling
+back to ticket files.
+
+Explicit [remote mode](#remote-mode) does not check local `tickets_dir`.
+
 ## Tickets
 
 ### `kontora ls`
@@ -247,7 +257,7 @@ For ordinary tickets in remote mode, `--pipeline` and `--path` are both required
 
 ### `kontora run TICKET_ID`
 
-Enqueues an `open` or `todo` ticket. Needs a running daemon. When the ticket's dependencies are not all closed it reports it as blocked, naming them, rather than saying it was queued: the daemon will not pick it up until they close. See [dependency-aware scheduling](tickets.md#dependency-aware-scheduling).
+Enqueues an `open` or `todo` ticket. Requires a running daemon; see [local daemon connections](#local-daemon-connections). If any dependencies are not closed, the command lists the blockers and the daemon waits for them to close. See [dependency-aware scheduling](tickets.md#dependency-aware-scheduling).
 
 On a passive epic, `run` explicitly activates a supervisor and writes `epic_execution: agent`. Activation requires one Git repository for the epic and every child. The supervisor runs standalone without a pipeline, using its own branch and worktree; children retain theirs. Successful completion goes to `human_review`.
 
@@ -262,7 +272,7 @@ to commit or publish. See [Epics](tickets.md#epics) for review, Git and approval
 
 ### `kontora schedule TICKET_ID`
 
-Sets or clears the time the daemon moves an `open` ticket to `todo`. Needs a running daemon. See [scheduled pickup](tickets.md#scheduled-pickup).
+Sets or clears the time the daemon moves an `open` ticket to `todo`. Requires a running daemon; see [local daemon connections](#local-daemon-connections) and [scheduled pickup](tickets.md#scheduled-pickup).
 
 | Flag | Description |
 |------|-------------|

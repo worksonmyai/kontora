@@ -323,7 +323,7 @@ func (d *Daemon) recoverWorkflowProbes() {
 		w := workflowWait(t)
 		var j workflowProbeJournal
 		decoded := err == nil && json.Unmarshal(data, &j) == nil && j.TicketID == id && j.Active != nil && j.Active.Wait != nil
-		valid := decoded && t.GraphState != nil && j.ExecutionID == t.GraphState.ExecutionID && j.Path == ts.filePath && j.RepoPath == t.Path && j.Branch == t.Branch && j.Fingerprint == t.GraphState.DefinitionFingerprint
+		valid := decoded && t.GraphState != nil && j.ExecutionID == t.GraphState.ExecutionID && sameJournalTicketPath(j.Path, ts.filePath) && j.RepoPath == t.Path && j.Branch == t.Branch && j.Fingerprint == t.GraphState.DefinitionFingerprint
 		if w == nil {
 			if decoded && j.Result != nil && j.Result.Stopped {
 				_ = os.Remove(workflowProbePath(d.config(), id))

@@ -29,8 +29,13 @@ type companionState struct {
 func newCompanionState() *companionState { return &companionState{wake: make(chan struct{}, 1)} }
 
 func (d *Daemon) companionDir() string {
-	cfg := d.config()
-	return filepath.Join(expandTilde(cfg.LogsDir), "companion", companion.Scope(expandTilde(d.lockPath), expandTilde(cfg.TicketsDir)))
+	return d.companionRoot(d.config().LogsDir)
+}
+
+func (d *Daemon) companionRoot(logsDir string) string {
+	// Existing companion state is keyed by the configured board path.
+	scope := companion.Scope(expandTilde(d.lockPath), expandTilde(d.configuredTicketsDir))
+	return filepath.Join(expandTilde(logsDir), "companion", scope)
 }
 
 func (d *Daemon) wakeCompanion() {

@@ -49,7 +49,11 @@ func Run(cfg *config.Config, taskID string) ([]string, error) {
 		return nil, err
 	}
 
-	info, err := LocalClient(cfg).Run(resolvedID)
+	client, err := LocalClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	info, err := client.Run(resolvedID)
 	if err != nil {
 		return nil, err
 	}

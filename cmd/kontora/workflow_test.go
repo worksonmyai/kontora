@@ -22,8 +22,14 @@ func TestWorkflowCommandsUseDaemon(t *testing.T) {
 	for _, mode := range []string{"remote", "local"} {
 		for _, action := range []string{"restart", "recover"} {
 			t.Run(mode+"/"+action, func(t *testing.T) {
+				board := t.TempDir()
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
+					if r.Method == http.MethodGet && r.URL.Path == "/api/config" {
+						assert.Equal(t, "local", mode)
+						_ = json.NewEncoder(w).Encode(web.ConfigInfo{TicketsDir: board})
+						return
+					}
 					if r.Method == http.MethodGet && r.URL.Path == "/api/tickets" {
 						_, _ = fmt.Fprint(w, `{"tickets":[{"id":"graph-123","title":"Graph"}]}`)
 						return
@@ -57,7 +63,7 @@ func TestWorkflowCommandsUseDaemon(t *testing.T) {
 					cfg := filepath.Join(t.TempDir(), "config.yaml")
 					// No ticket files exist locally. Even prefix resolution must
 					// use the daemon's store rather than guessing from local files.
-					content := fmt.Sprintf("tickets_dir: %q\nagents:\n  claude:\n    binary: true\nweb:\n  host: 127.0.0.1\n  port: %d\n", t.TempDir(), srv.Listener.Addr().(*net.TCPAddr).Port)
+					content := fmt.Sprintf("tickets_dir: %q\nagents:\n  claude:\n    binary: true\nweb:\n  host: 127.0.0.1\n  port: %d\n", board, srv.Listener.Addr().(*net.TCPAddr).Port)
 					require.NoError(t, os.WriteFile(cfg, []byte(content), 0o600))
 					args = append(args, "--config", cfg)
 				}

@@ -65,6 +65,11 @@ func (e *httpError) Error() string {
 	return fmt.Sprintf("HTTP %d", e.status)
 }
 
+// IsUnauthorized recognizes HTTP 401 through wrapped errors.
+func IsUnauthorized(err error) bool {
+	return isHTTPStatus(err, http.StatusUnauthorized)
+}
+
 func isHTTPStatus(err error, status int) bool {
 	var target *httpError
 	return errors.As(err, &target) && target.status == status
@@ -83,6 +88,7 @@ func New(base, token string) *Client {
 // NewLocal restricts automatic discovery to loopback, without proxies or redirects.
 // Explicit remote clients continue to use New.
 func NewLocal(host string, port int, token string) (*Client, error) {
+	host = web.UnbracketHost(host)
 	if host == "" || strings.EqualFold(host, "localhost") {
 		host = "127.0.0.1"
 	}

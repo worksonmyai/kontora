@@ -16,21 +16,37 @@ import (
 // WorkflowRestart requires the daemon: only it can inspect invocation journals
 // and release execution reservations safely. There is no disk-only fallback.
 func WorkflowRestart(cfg *config.Config, id string) error {
-	return LocalClient(cfg).WorkflowRestart(id)
+	client, err := LocalClient(cfg)
+	if err != nil {
+		return err
+	}
+	return client.WorkflowRestart(id)
 }
 
 func WorkflowRecover(cfg *config.Config, id, executionID string, revision uint64) error {
-	return LocalClient(cfg).WorkflowRecover(id, executionID, revision)
+	client, err := LocalClient(cfg)
+	if err != nil {
+		return err
+	}
+	return client.WorkflowRecover(id, executionID, revision)
 }
 
 // Releases never fall back to offline ticket writes: receipt acceptance and
 // per-wait replay belong to the daemon, even when it is on localhost.
 func WorkflowRelease(cfg *config.Config, id string, req web.WorkflowReleaseRequest) (*ticket.WorkflowReceipt, error) {
-	return LocalClient(cfg).WorkflowRelease(id, req)
+	client, err := LocalClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return client.WorkflowRelease(id, req)
 }
 
 func DeploymentRelease(cfg *config.Config, req web.DeploymentReleaseRequest) (*ticket.WorkflowReceipt, error) {
-	return LocalClient(cfg).DeploymentRelease(req)
+	client, err := LocalClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return client.DeploymentRelease(req)
 }
 
 func ParseWorkflowRelease(executionID, waitID, revision, requestID, reason string) (web.WorkflowReleaseRequest, error) {

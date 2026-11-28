@@ -163,7 +163,11 @@ func enableEpic(cfg *config.Config, t *ticket.Ticket, opts EnableOpts, w io.Writ
 		return fmt.Errorf("%w: epics cannot have a stage", app.ErrInvalidState)
 	}
 	if start {
-		err = LocalClient(cfg).Init(t.ID, req)
+		client, clientErr := LocalClient(cfg)
+		if clientErr != nil {
+			return clientErr
+		}
+		err = client.Init(t.ID, req)
 	} else {
 		svc := app.New(app.Static(cfg), store.NewDiskRepo(cfg.TicketsDir), app.NoopRuntime{})
 		_, err = svc.Init(t.ID, app.InitRequest{

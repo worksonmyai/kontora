@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,11 +22,37 @@ import (
 // that need daemon state — the queue, live runs, a ticket's worktree — go
 // through the same HTTP API in local mode as in remote mode, rather than
 // keeping a second implementation that reads behind the daemon's back.
-func LocalClient(cfg *config.Config) *remote.Client {
-	base := "http://" + net.JoinHostPort(cfg.Web.Host, strconv.Itoa(cfg.Web.Port))
-	return remote.New(base, cfg.Web.Token).GuardMutations(func(run func() error) error {
-		return ticket.WithOrdinaryRouting(config.ExpandTilde(cfg.TicketsDir), run)
-	})
+// Before returning a client, LocalClient checks over loopback that the daemon
+// serves cfg.TicketsDir.
+func LocalClient(cfg *config.Config) (*remote.Client, error) {
+	const remoteWarning = "Use --url with --token only if you intend to use the daemon's board. Explicit remote mode does not check local tickets_dir."
+	if cfg.Web.Enabled != nil && !*cfg.Web.Enabled {
+		return nil, fmt.Errorf("local daemon API disabled: web.enabled is false")
+	}
+	client, err := remote.NewLocal(cfg.Web.Host, cfg.Web.Port, cfg.Web.Token)
+	if err != nil {
+		address := net.JoinHostPort(web.UnbracketHost(cfg.Web.Host), strconv.Itoa(cfg.Web.Port))
+		return nil, fmt.Errorf("web.host %q: %w. %s Example: --url http://%s with --token", cfg.Web.Host, err, remoteWarning, address)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	identity, err := remote.VerifyBoard(ctx, client, cfg.TicketsDir)
+	if err != nil {
+		if remote.IsUnauthorized(err) {
+			return nil, fmt.Errorf("daemon at %s returned HTTP 401. Set web.token in the local config and retry. %s", client.Base(), remoteWarning)
+		}
+		if probe, ok := errors.AsType[*remote.BoardProbeError](err); ok {
+			return nil, fmt.Errorf("cannot verify daemon board: GET %s/api/config: %w", client.Base(), probe.Cause())
+		}
+		return nil, fmt.Errorf("%s: %w", client.Base(), err)
+	}
+	dir, err := config.DirectoryIdentity(identity.TicketsDir)
+	if err != nil {
+		return nil, fmt.Errorf("%s: cannot resolve verified board %q: %w", client.Base(), identity.TicketsDir, err)
+	}
+	return client.GuardMutations(func(run func() error) error {
+		return ticket.WithOrdinaryRouting(dir, run)
+	}), nil
 }
 
 // PrintStats renders the throughput figures the Stats page shows.

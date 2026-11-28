@@ -18,6 +18,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 func TestLocalStageActions(t *testing.T) {
@@ -69,6 +70,10 @@ func TestRunSurfacesDaemonErrorWithoutReachabilityPrefix(t *testing.T) {
 		[]byte("---\nid: abc123\nstatus: todo\nkontora: true\n---\n# Test\n"), 0o644))
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/config" {
+			_ = json.NewEncoder(w).Encode(web.ConfigInfo{TicketsDir: ticketsDir})
+			return
+		}
 		assert.Equal(t, "/api/tickets/abc123/run", r.URL.Path)
 		w.WriteHeader(http.StatusConflict)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid state transition"})

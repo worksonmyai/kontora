@@ -29,7 +29,13 @@ For a container, publish the port on loopback unless you have configured remote 
 
 ## Connect from the CLI
 
-Set `KONTORA_URL` to the daemon URL and `KONTORA_TOKEN` to the same secret. The client token variable is different from the daemon's `KONTORA_WEB_TOKEN`.
+If the daemon listens only on a tailnet address, set `--url` or `KONTORA_URL`
+even on the daemon host. Automatic local connections use loopback only.
+Remote mode does not check local `tickets_dir`.
+
+If the daemon requires a bearer token, supply it with `--token` or
+`KONTORA_TOKEN`. The client token variable is different from the daemon's
+`KONTORA_WEB_TOKEN`.
 
 With those variables set:
 

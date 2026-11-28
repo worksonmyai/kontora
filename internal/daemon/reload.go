@@ -61,7 +61,7 @@ func (d *Daemon) reloadConfigSnapshot() (*config.Config, error) {
 	}
 
 	cur := d.config()
-	pinRestartOnly(cur, next, d.log)
+	pinRestartOnly(cur, next, d.configuredTicketsDir, d.log)
 	// Clock adjustments must not move revisions backwards within a daemon.
 	next.RuntimeRevision = max(d.configRevision(cur)+1, time.Now().UnixMicro())
 	if err := d.publishAutomationConfig(next); err != nil {
@@ -112,7 +112,7 @@ func (d *Daemon) reloadConfigSnapshot() (*config.Config, error) {
 // change would strand every existing log file. Applying half of one of these
 // settings, writing new tickets to a directory nothing watches for example, is
 // worse than ignoring it.
-func pinRestartOnly(cur, next *config.Config, log *slog.Logger) {
+func pinRestartOnly(cur, next *config.Config, configuredTicketsDir string, log *slog.Logger) {
 	warn := func(field string, running, onDisk any) {
 		log.Warn("config field needs a daemon restart, keeping the running value",
 			"field", field, "running", running, "on_disk", onDisk)
@@ -121,10 +121,10 @@ func pinRestartOnly(cur, next *config.Config, log *slog.Logger) {
 		log.Warn("config field needs a daemon restart, keeping the running value", "field", field)
 	}
 
-	if next.TicketsDir != cur.TicketsDir {
+	if next.TicketsDir != configuredTicketsDir {
 		warn("tickets_dir", cur.TicketsDir, next.TicketsDir)
-		next.TicketsDir = cur.TicketsDir
 	}
+	next.TicketsDir = cur.TicketsDir
 	if !slices.Equal(next.SecondaryTicketsDirs, cur.SecondaryTicketsDirs) {
 		warn("secondary_tickets_dirs", cur.SecondaryTicketsDirs, next.SecondaryTicketsDirs)
 	}

@@ -437,9 +437,10 @@ type Daemon struct {
 	version      string
 	log          *slog.Logger
 
-	storeIdentityOnce sync.Once
-	storeIdentity     atomic.Pointer[string]
-	tmuxSocket        atomic.Pointer[string]
+	configuredTicketsDir string
+	storeIdentityOnce    sync.Once
+	storeIdentity        atomic.Pointer[string]
+	tmuxSocket           atomic.Pointer[string]
 
 	// metrics is never nil: New installs a no-op-backed recorder so no call
 	// site needs an enabled check. Run replaces it when the config turns
@@ -674,6 +675,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 	if d.configOverride != nil {
 		d.configOverride(cfg)
 	}
+	d.configuredTicketsDir = cfg.TicketsDir
 	d.queueCond = sync.NewCond(&d.mu)
 	// An injected provider wins over the config: a test that passes one must
 	// see its own reader, not an exporter Run would build. Everything else
@@ -750,12 +752,20 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Startup snapshot. The values read here are frozen for the daemon's
 	// lifetime, which is why reloadConfig pins them (see pinRestartOnly).
-	cfg := d.config()
+	startup := *d.config()
+	cfg := &startup
 
 	tasksDir := expandTilde(cfg.TicketsDir)
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		return fmt.Errorf("creating tickets dir: %w", err)
 	}
+	// Resolve before scanning or watching so a symlink cannot redirect later writes.
+	tasksDir, err = config.DirectoryIdentity(tasksDir)
+	if err != nil {
+		return fmt.Errorf("resolving tickets dir: %w", err)
+	}
+	cfg.TicketsDir = tasksDir
+	d.cfg.Store(cfg)
 	if err := discoverControlAuthority(tasksDir); err != nil {
 		return err
 	}
@@ -813,7 +823,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.cleanOrphanedWindows()
 	}
 
-	stopAutomations := d.startAutomations(tasksDir)
+	stopAutomations := d.startAutomations(expandTilde(d.configuredTicketsDir))
 	defer stopAutomations()
 	d.recoverAutomationRuns()
 

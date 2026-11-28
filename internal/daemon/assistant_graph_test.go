@@ -65,12 +65,20 @@ func TestAssistantBoardDescribesGraph(t *testing.T) {
 	assert.Equal(t, lines, assistantBoard(cfg), "declaration order is not traversal order")
 }
 
+func TestAssistantGraphDescribesCommandCondition(t *testing.T) {
+	graph := &config.WorkflowGraph{Version: 2, Entry: "tests", Nodes: []config.WorkflowNode{
+		{ID: "ready", Type: "condition", Command: "test -f \"ready\"", Timeout: config.Duration{Duration: 3 * time.Second}},
+	}}
+	assert.Contains(t, assistantGraph(graph), `ready [condition command="test -f \"ready\"" timeout=3s]`)
+}
+
 func TestDocumentedGraphConfigs(t *testing.T) {
-	for _, tc := range []struct{ path, heading string }{
-		{"../../docs/configuration.md", "### Workflow graphs"},
-		{"../cli/skills/pipelines.md", "## Workflow graphs"},
+	for _, tc := range []struct{ path, heading, entry string }{
+		{"../../docs/configuration.md", "### Workflow graphs", "tests"},
+		{"../../docs/configuration.md", "### Command conditions", "write-notes"},
+		{"../cli/skills/pipelines.md", "## Workflow graphs", "tests"},
 	} {
-		t.Run(tc.path, func(t *testing.T) {
+		t.Run(tc.path+"/"+strings.TrimLeft(tc.heading, "# "), func(t *testing.T) {
 			data, err := os.ReadFile(tc.path)
 			require.NoError(t, err)
 			_, section, ok := strings.Cut(string(data), tc.heading+"\n")
@@ -83,8 +91,16 @@ func TestDocumentedGraphConfigs(t *testing.T) {
 			require.NoError(t, err)
 			graph := cfg.Pipelines[cfg.DefaultPipeline].Graph
 			require.NotNil(t, graph)
-			assert.Equal(t, "tests", graph.Entry)
-			assert.Contains(t, assistantBoard(cfg)[0], "budget.repeat -> fix-code")
+			assert.Equal(t, tc.entry, graph.Entry)
+			if tc.heading == "### Command conditions" {
+				condition, ok := graph.Node("has-notes")
+				require.True(t, ok)
+				assert.True(t, condition.CommandCondition())
+				assert.Equal(t, "test -s CHANGELOG.md", condition.Command)
+				assert.Equal(t, time.Minute, condition.Timeout.Duration)
+			} else {
+				assert.Contains(t, assistantBoard(cfg)[0], "budget.repeat -> fix-code")
+			}
 		})
 	}
 }

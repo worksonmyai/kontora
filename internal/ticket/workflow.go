@@ -193,11 +193,12 @@ func (h *GraphHandoff) Clone() *GraphHandoff {
 }
 
 type GraphTransition struct {
-	From      string `yaml:"from" json:"from"`
-	Port      string `yaml:"port" json:"port"`
-	To        string `yaml:"to" json:"to"`
-	LoopCount int    `yaml:"loop_count,omitempty" json:"loop_count,omitempty"`
-	Revision  uint64 `yaml:"revision" json:"revision"`
+	From         string `yaml:"from" json:"from"`
+	Port         string `yaml:"port" json:"port"`
+	To           string `yaml:"to" json:"to"`
+	LoopCount    int    `yaml:"loop_count,omitempty" json:"loop_count,omitempty"`
+	Revision     uint64 `yaml:"revision" json:"revision"`
+	EvaluationID string `yaml:"evaluation_id,omitempty" json:"evaluation_id,omitempty"`
 }
 
 func (s *GraphState) Clone() *GraphState {

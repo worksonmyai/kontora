@@ -1,5 +1,10 @@
 package cli
 
+const (
+	WorkflowScenarioHelp  = "Path to JSON scenario (command condition events require node and exit_code only)"
+	WorkflowPreflightHelp = "Check modeled routes for rejections (command condition exits: 0 and 1)"
+)
+
 // Commands is the CLI's command table: the one description of every verb
 // and the flags it takes. Both the usage text and the shell completions
 // are generated from it, so a new command cannot appear in one and be missing
@@ -178,8 +183,8 @@ var Commands = []Command{
 	{Name: "workflow-simulate", Group: "Getting started", Desc: "Simulate or preflight a workflow graph offline", Config: true, Flags: []Flag{
 		{Name: "recipe", Desc: "Built-in graph recipe name", Value: "name", Choices: []string{graphRecipeName}},
 		{Name: "pipeline", Desc: "Graph pipeline name in the explicit config", Value: "pipeline"},
-		{Name: "scenario", Desc: "Path to JSON scenario", Value: "path"},
-		{Name: "preflight", Desc: "Explore normal outcomes for incompatible condition inputs"},
+		{Name: "scenario", Desc: WorkflowScenarioHelp, Value: "path"},
+		{Name: "preflight", Desc: WorkflowPreflightHelp},
 	}},
 	{Name: "doctor", Group: "Getting started", Desc: "Validate prerequisites and configuration", Config: true},
 	{Name: "config", Group: "Other", Desc: "Show effective configuration", Config: true, Remote: true, Subcommands: []Command{{Name: "edit", Desc: "Edit configuration", Config: true, Remote: true}}},

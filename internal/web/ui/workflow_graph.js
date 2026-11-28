@@ -89,7 +89,7 @@ function declaredWaitPorts(execution, routing) {
   return ports;
 }
 
-function recordedVisits(execution, runs, running, runCost, now, routing) {
+function recordedVisits(execution, runs, liveExecutable, runCost, now, routing) {
   const groups = new Map();
   if (!execution?.execution_id) return groups;
   for (const row of runs) {
@@ -103,7 +103,7 @@ function recordedVisits(execution, runs, running, runCost, now, routing) {
       seconds: seconds > 0 ? seconds : 0, usd: usd != null && Number.isFinite(Number(usd)) ? Number(usd) : null,
     });
   }
-  if (running && execution.visit_id) {
+  if (liveExecutable && execution.visit_id) {
     const a = (execution.attempt || 0) + 1;
     addVisit(groups, execution.current_node, execution.visit_id, execution.visit_id).attempts.push({
       key: 'live', number: a, continuation: execution.continuation, outcome: 'running', state: 'current', result: 'attempt ' + a,
@@ -152,6 +152,7 @@ export function conditionLabel(node) {
 }
 
 function description(node, released) {
+  if (node.type === 'condition' && node.command) return 'Runs the command. Exit code 0 selects true, and exit code 1 selects false. Other exits, timeouts, and runner errors pause without taking an edge.';
   if (node.type === 'end') return 'Ends the workflow with ticket status ' + node.status + '.';
   if (node.type === 'wait') {
     if (node.mode === 'human') return 'Waits for a person to release it.' + (released ? ' Release from the band above the tabs.' : '');
@@ -160,7 +161,7 @@ function description(node, released) {
   return descriptions[node.type] || '';
 }
 
-export function buildWorkflowGraph(definition, execution, runs, { now, running, runCost, releaseAvailable }) {
+export function buildWorkflowGraph(definition, execution, runs, { now, running, paused, runCost, releaseAvailable }) {
   const configured = definition?.nodes || [];
   const byID = new Map(configured.map(node => [node.id, node]));
   const transitions = execution?.transitions || [];
@@ -175,7 +176,8 @@ export function buildWorkflowGraph(definition, execution, runs, { now, running, 
     if (!routing.has(e.from)) routing.set(e.from, []);
     routing.get(e.from).push(e);
   }
-  const visits = recordedVisits(execution, runs, running, runCost, now, routing);
+  const liveExecutable = running && ['agent', 'check'].includes(byID.get(execution?.current_node)?.type);
+  const visits = recordedVisits(execution, runs, liveExecutable, runCost, now, routing);
   const collapsed = new Map();
   const edges = [], visibleEdges = new Set();
   const left = workflowDeadline(wait, now, true);
@@ -203,6 +205,8 @@ export function buildWorkflowGraph(definition, execution, runs, { now, running, 
   const nodes = configured.map(node => {
     const current = node.id === execution?.current_node;
     const waiting = current && wait?.node_id === node.id;
+    const atCommandCondition = current && node.type === 'condition' && !!node.command;
+    const evaluating = atCommandCondition && running;
     const loop = loops.get(node.id);
     const decisions = routing.get(node.id) || [];
     const lastEdge = decisions.at(-1);
@@ -215,15 +219,16 @@ export function buildWorkflowGraph(definition, execution, runs, { now, running, 
     const routeState = lastEdge ? (failurePorts.has(lastEdge.port) ? 'failed' : 'done') : null;
     const sink = node.type === 'end' && node.status === 'paused';
     const visited = reached.has(node.id) || !!nodeVisits.length || !!loop?.used;
-    const state = waiting ? (wait.disarmed ? 'disarmed' : 'current') : loop?.exhausted ? 'failed' :
-      node.type === 'end' && visited ? (sink ? 'failed' : 'done') :
+    const state = waiting ? (wait.disarmed ? 'disarmed' : 'current') : evaluating ? 'current' : atCommandCondition ? 'reached' :
+      loop?.exhausted ? 'failed' : node.type === 'end' && visited ? (sink ? 'failed' : 'done') :
       (last?.state !== 'idle' && last?.state) || routeState || (visited ? 'reached' : 'idle');
     const status = waiting ? (wait.disarmed ? 'disarmed' : wait.phase === 'pending' ? 'waiting' : wait.phase || 'waiting') :
+      evaluating ? 'evaluating' : atCommandCondition ? (paused ? 'paused · no edge taken' : 'at cursor') :
       node.type === 'loop' && visited ? (loop?.exhausted ? 'exhausted' : usedLabel) :
       node.type === 'condition' && lastEdge ? 'took ' + lastEdge.port :
       nodeVisits.length > 1 ? nodeVisits.length + ' visits' : last?.verdict || last?.outcome.replaceAll('_', ' ') || (visited ? current && node.type !== 'end' ? 'at cursor' : 'reached' : 'not reached');
     const details = waiting ? [wait.kind, workflowDeadline(wait, now, true)].filter(Boolean).join(' · ') :
-      node.type === 'loop' ? usedLabel : node.type === 'condition' ? conditionLabel(node) : node.type === 'end' ? (!sink ? node.status : '') :
+      node.type === 'loop' ? usedLabel : node.type === 'condition' ? (node.command || conditionLabel(node)) : node.type === 'end' ? (!sink ? node.status : '') :
       [nodeVisits.length > 1 ? nodeVisits.length + ' visits' : last?.verdict,
         metrics(last?.verdict && nodeVisits.length === 1 ? 0 : visitDuration(attempts), measuredCost(attempts))].filter(Boolean).join(' · ');
     return { ...node, typeLabel: types[node.type] || node.type, state, statusLabel: status,
@@ -236,7 +241,8 @@ export function buildWorkflowGraph(definition, execution, runs, { now, running, 
       })),
       decisions: ['condition', 'loop'].includes(node.type) ? decisions.map((e, i) => ({
         key: i, revision: e.revision, port: e.port, to: e.to, tone: failurePorts.has(e.port) ? 'failed' : 'done',
-        result: node.type === 'loop' && Number.isInteger(e.loop_count) ? `${e.loop_count} used` : '',
+        result: node.type === 'loop' && Number.isInteger(e.loop_count) ? `${e.loop_count} used` :
+          e.evaluation_id ? `evaluation ${e.evaluation_id}` : '',
       })) : [],
     };
   });

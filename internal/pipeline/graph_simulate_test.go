@@ -13,6 +13,77 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
+func commandConditionSimulationGraph() *config.WorkflowGraph {
+	return &config.WorkflowGraph{Version: 2, Entry: "check", Nodes: []config.WorkflowNode{
+		{ID: "check", Type: "check"},
+		{ID: "probe", Type: "condition", Command: "exit 1"},
+		{ID: "by-code", Type: "condition", When: &config.WorkflowCondition{Field: "exit_code", Equals: 42}},
+		{ID: "needs-verdict", Type: "condition", When: &config.WorkflowCondition{Field: "verdict", Equals: "approved"}},
+		{ID: "yes", Type: "end", Status: "done"},
+		{ID: "no", Type: "end", Status: "paused"},
+	}, Edges: []config.WorkflowEdge{
+		graphEdge("check", "pass", "no"), graphEdge("check", "fail", "probe"),
+		graphEdge("probe", "true", "by-code"), graphEdge("probe", "false", "no"),
+		graphEdge("by-code", "true", "needs-verdict"), graphEdge("by-code", "false", "yes"),
+		graphEdge("needs-verdict", "true", "yes"), graphEdge("needs-verdict", "false", "no"),
+	}}
+}
+
+func TestSimulateGraphCommandCondition(t *testing.T) {
+	graph := commandConditionSimulationGraph()
+	for _, tc := range []struct {
+		name                 string
+		code                 *int
+		cursor, stop, reason string
+		status               ticket.Status
+		ports                []string
+	}{
+		{name: "no event", cursor: "probe", stop: "missing input", status: ticket.StatusTodo},
+		{name: "true", code: new(0), cursor: "yes", stop: "end", status: ticket.StatusDone, ports: []string{"true", "false"}},
+		{name: "false", code: new(1), cursor: "no", stop: "end", status: ticket.StatusPaused, ports: []string{"false"}},
+		{name: "other exit", code: new(2), cursor: "probe", stop: "rejected", reason: "event 2: condition probe exited with code 2", status: ticket.StatusPaused},
+		{name: "negative exit", code: new(-1), cursor: "probe", stop: "rejected", reason: "event 2: condition probe exited with code -1", status: ticket.StatusPaused},
+		{name: "exit above check range", code: new(256), cursor: "probe", stop: "rejected", reason: "event 2: condition probe exited with code 256", status: ticket.StatusPaused},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []GraphScenarioEvent{{Node: "check", ExitCode: new(1)}}
+			if tc.code != nil {
+				events = append(events, GraphScenarioEvent{Node: "probe", ExitCode: tc.code})
+			}
+			report := SimulateGraph(graph, events)
+			require.Equal(t, tc.cursor, report.Cursor)
+			require.Equal(t, tc.stop, report.Stop)
+			require.Equal(t, tc.status, report.Status)
+			require.Equal(t, tc.reason, report.Reason)
+			var ports []string
+			for _, edge := range report.Transitions {
+				ports = append(ports, edge.Port)
+			}
+			require.Equal(t, append([]string{"fail"}, tc.ports...), ports)
+			if len(tc.ports) != 0 {
+				edge := report.Transitions[1]
+				require.Equal(t, "probe", edge.From)
+				require.NotEmpty(t, edge.EvaluationID)
+			}
+		})
+	}
+}
+
+func TestPreflightGraphCommandCondition(t *testing.T) {
+	report := PreflightGraph(commandConditionSimulationGraph(), GraphPreflightLimit)
+	require.False(t, report.Inconclusive)
+	require.Equal(t, 8, report.Explored) // Entry, three check results, then two exits for each of the two failing checks.
+	require.Len(t, report.Diagnostics, 1)
+	diagnostic := report.Diagnostics[0]
+	require.Equal(t, "needs-verdict", diagnostic.Node)
+	require.NotNil(t, diagnostic.Producer)
+	require.Equal(t, "check", diagnostic.Producer.NodeID)
+	require.Equal(t, new(42), diagnostic.Producer.ExitCode)
+	require.Len(t, diagnostic.Path, 3)
+	require.Equal(t, "probe", diagnostic.Path[1].From)
+	require.Equal(t, "true", diagnostic.Path[1].Port)
+}
+
 func TestPreflightMixedProducersCrossWait(t *testing.T) {
 	graph := &config.WorkflowGraph{Version: 2, Entry: "review",
 		Nodes: []config.WorkflowNode{

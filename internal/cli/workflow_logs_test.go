@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
@@ -92,6 +94,57 @@ func TestLogPathIsolation(t *testing.T) {
 					assert.Empty(t, out.String())
 				}
 			}
+		})
+	}
+}
+
+func TestLatestConditionLogUsesEvaluationID(t *testing.T) {
+	logDir := t.TempDir()
+	dir := filepath.Join(logDir, "conditions")
+	require.NoError(t, os.Mkdir(dir, 0o700))
+	for name, content := range map[string]string{
+		"choose.00000000000000000010-a.log":      "older",
+		"choose.00000000000000000011-a.log":      "same timestamp",
+		"choose.00000000000000000011-b.log":      "latest",
+		"choose.00000000000000000099-b.log.tmp":  "partial file",
+		"choose.uncorrelated.log":                "invalid ID",
+		"choose.more.00000000000000000021-a.log": "different node",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600))
+	}
+	future := time.Now().Add(time.Hour)
+	require.NoError(t, os.Chtimes(filepath.Join(dir, "choose.00000000000000000010-a.log"), future, future))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "choose.00000000000000000020-a.log"), 0o700))
+	outside := filepath.Join(t.TempDir(), "outside.log")
+	require.NoError(t, os.WriteFile(outside, []byte("outside"), 0o600))
+	require.NoError(t, os.Symlink(outside, filepath.Join(dir, "choose.00000000000000000021-a.log")))
+
+	graph := &config.WorkflowGraph{Nodes: []config.WorkflowNode{
+		{ID: "choose", Type: "condition", Command: "true"},
+		{ID: "missing", Type: "condition", Command: "true"},
+		{ID: "plain", Type: "condition"},
+		{ID: "../choose", Type: "condition", Command: "true"},
+	}}
+	for _, tc := range []struct {
+		stage, want        string
+		condition, invalid bool
+		err                error
+	}{
+		{stage: "choose", want: "latest", condition: true},
+		{stage: "missing", condition: true, err: os.ErrNotExist},
+		{stage: "plain"},
+		{stage: "unknown"},
+		{stage: "../choose", condition: true, invalid: true},
+	} {
+		t.Run(tc.stage, func(t *testing.T) {
+			data, condition, err := ReadConditionLog(logDir, graph, tc.stage)
+			if tc.invalid {
+				assert.ErrorContains(t, err, "invalid condition node")
+			} else {
+				assert.ErrorIs(t, err, tc.err)
+			}
+			assert.Equal(t, tc.condition, condition)
+			assert.Equal(t, tc.want, string(data))
 		})
 	}
 }

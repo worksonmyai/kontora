@@ -1108,14 +1108,20 @@ export function kontoraTickets() {
     },
 
     workflowTransitionText(edge) {
-      return edge ? 'r' + edge.revision + ': ' + edge.from + '.' + edge.port + ' -> ' + edge.to : '';
+      if (!edge) return '';
+      return 'r' + edge.revision + ': ' + edge.from + '.' + edge.port + ' -> ' + edge.to +
+        (edge.evaluation_id ? ' · evaluation ' + edge.evaluation_id : '');
     },
 
     workflowCursorText(t) {
       const x = t?.graph_execution;
       if (!x) return '';
-      const lines = ['Current node: ' + x.current_node + (x.current_template ? ' · template ' + x.current_template : ''),
-        'Execution ' + x.execution_id + ' · revision ' + x.revision + ' · visit ' + x.visit + ' · attempt ' + ((x.attempt || 0) + 1)];
+      const node = t.graph_definition?.nodes?.find(n => n.id === x.current_node);
+      const condition = node?.type === 'condition';
+      const attempt = condition ? '' : ' · attempt ' + ((x.attempt || 0) + 1);
+      const evaluating = condition && node.command && this.executionActive(t) ? ' · evaluating' : '';
+      const lines = ['Current node: ' + x.current_node + (x.current_template ? ' · template ' + x.current_template : '') + evaluating,
+        'Execution ' + x.execution_id + ' · revision ' + x.revision + ' · visit ' + x.visit + attempt];
       const last = x.transitions?.at(-1);
       if (last) lines.push('Latest transition: ' + this.workflowTransitionText(last));
       const result = x.last_result;
@@ -1156,13 +1162,14 @@ export function kontoraTickets() {
       const definition = this.workflowCurrentDefinition(t);
       const x = t?._graphDetailPending ? null : t?.graph_execution;
       const running = !!x && this.executionActive(t);
+      const paused = t?.status === 'paused';
       const cost = this.currentTicketCost();
       const releaseAvailable = !this.isMobile && !!this.workflowReleaseForm?.();
       const now = x?.wait ? this.now : null;
-      const inputs = [definition, x, t?.history, running, cost, releaseAvailable, now];
+      const inputs = [definition, x, t?.history, running, paused, cost, releaseAvailable, now];
       if (graphMemo && inputs.every((value, i) => value === graphMemo.inputs[i])) return graphMemo.value;
       const value = buildWorkflowGraph(definition, x, this.workflowRunRows(t, x), {
-        now: now || Date.now(), running, releaseAvailable, runCost: index => this.ticketRunCost(index),
+        now: now || Date.now(), running, paused, releaseAvailable, runCost: index => this.ticketRunCost(index),
       });
       graphMemo = { inputs, value };
       return value;

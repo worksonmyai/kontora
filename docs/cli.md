@@ -37,7 +37,7 @@ Commands that take a `TICKET_ID` accept a unique prefix, except for `result`, wh
 | `KONTORA_RESULT_VERSION` | `result`, `wait` | Bound protocol: `1` for legacy supervised runs, `2` for graph agents, `3` for wake-enabled graph agents. |
 | `KONTORA_WAKE_MAX` | `result`, `wait` | Captured positive wake allowance for version 3. |
 | `KONTORA_CHECK_TIMEOUT` | `result`, `wait` | Captured positive probe timeout as a Go duration for version 3. |
-| `KONTORA_WORKFLOW_EXECUTION_ID` | graph results | Current workflow execution identity. |
+| `KONTORA_WORKFLOW_EXECUTION_ID` | graph results and command conditions | Current workflow execution identity. |
 | `KONTORA_NODE_VISIT_ID` | graph results | Current executable visit identity, retained on retry. |
 | `KONTORA_DEFINITION_FINGERPRINT` | graph results | Bound effective workflow definition fingerprint. |
 | `KONTORA_RESULT_VERDICTS` | graph results | JSON array of this node's declared verdicts. |
@@ -52,6 +52,25 @@ Commands that take a `TICKET_ID` accept a unique prefix, except for `result`, wh
 The tickets dir is resolved `--tickets-dir` → `$KONTORA_TICKETS_DIR` → `$TICKETS_DIR` → `tickets_dir:` → `~/.kontora/tickets`, and the pager `$KONTORA_PAGER` → `$TICKET_PAGER` → `$PAGER` → `pager:` → none.
 
 Note that unlike every other setting, the environment beats the config file for the tickets dir. A stray export therefore changes which store every command reads, and a daemon that cannot see the variable — one started by launchd or systemd, which pass a minimal environment — keeps reading the file. `kontora doctor` names the source that won and warns when the two disagree.
+
+### Command condition environment
+
+The daemon sets `KONTORA_WORKFLOW_EXECUTION_ID` and the following variables for
+[command conditions](configuration.md#command-conditions). The `KONTORA_LAST_*`
+values refer to the latest agent or check result, not a prior condition evaluation.
+Unavailable `KONTORA_LAST_*` values are empty strings.
+
+| Variable | Value |
+|----------|-------|
+| `KONTORA_WORKTREE` | Path to the existing ticket worktree. |
+| `KONTORA_REPO_PATH` | Path to the source repository. |
+| `KONTORA_BRANCH` | Ticket branch. |
+| `KONTORA_BASE_BRANCH` | Ticket base branch, otherwise the detected repository default, or empty if detection fails. |
+| `KONTORA_LAST_NODE` | Producer node ID. |
+| `KONTORA_LAST_OUTCOME` | Producer outcome. |
+| `KONTORA_LAST_EXIT_CODE` | Producer exit code, if available. |
+| `KONTORA_LAST_VERDICT` | Accepted agent verdict, if available. |
+| `KONTORA_LAST_LOG` | Expected absolute producer log path. The file may not exist. |
 
 ## Local daemon connections
 
@@ -314,7 +333,13 @@ is refused; use workflow restart for a new traversal. Refused for tickets in `in
 For a durable graph wait, retry re-arms the same wait after required recovery,
 without resetting its deadline. It does not bypass release conditions.
 
-For other work, local mode only updates the ticket file. With `auto_pick_up: false`,
+For a paused command condition, use remote mode or the dashboard/API. Retry
+reruns the command with the same producer evidence. The daemon refuses Retry
+while a condition journal exists. Inspect the pause reason and the log at
+`<logs_dir>/<id>/conditions/<node>.<evaluation_id>.log`. Use `workflow-recover`
+only if the ticket asks you to acknowledge termination.
+
+In local mode, retry only updates the ticket file. With `auto_pick_up: false`,
 follow retry with `kontora run TICKET_ID`. Remote mode and dashboard/API retry
 queue dependency-ready work even with automatic pickup off.
 
@@ -354,9 +379,10 @@ revision the operator inspected. Before acknowledgement:
    the new state rather than automatically repeating the request.
 
 Recovery does not launch work or reset loop counts. Use `retry` separately for
-an eligible executable visit. Ordinary retry preserves execution and visit
-identity, while each physical invocation gets a fresh invocation ID. Restart
-creates a new execution identity. Neither operation erases old history.
+an eligible executable visit or command condition. Ordinary retry preserves
+execution and visit identity. Each physical invocation gets a fresh invocation
+ID. Workflow restart creates a new execution identity. Neither operation erases
+old history.
 
 `skip` and `set-stage` are refused for graphs, including stopped graphs.
 Graph annotations and Plannotator rework are deferred and refused. Upgrade all
@@ -920,8 +946,8 @@ A conflicting terminal result cannot replace the accepted one.
 
 After commitment, an agent stays at the same executable visit. Timer, readiness,
 error or deadline starts a fresh invocation with frozen wake context and continuation instructions.
-This consumes neither failure retry nor loop allowance. Condition commands must be trusted
-and safe to repeat; daemon subprocess permissions apply, without a sandbox.
+This consumes neither failure retry nor loop allowance. Wait probe commands must
+be trusted and safe to repeat. They run with the daemon's permissions, without a sandbox.
 See [configuration and probe outcomes](configuration.md#durable-waits).
 Upgrade sharing clients and daemons before wait configuration, result v3, or state v2.
 Existing no-wait fingerprints and v1/v2 result contracts remain compatible.
@@ -995,9 +1021,28 @@ kontora workflow-simulate --recipe implement-test-review --preflight
 kontora workflow-simulate --config /path/to/config.yaml --pipeline implement-test-review --preflight
 ```
 
-Choose either the built-in graph recipe (validated with a synthetic agent) or an explicit, complete config and graph pipeline. Choose exactly one mode: `--scenario FILE` or `--preflight`. The command is offline even with `KONTORA_URL` set. It does not invoke agents, checks, hooks, or Git; contact the daemon; or create a config, tickets, worktrees, or logs.
+Choose the built-in graph recipe (validated with a synthetic agent) or an explicit,
+complete config and graph pipeline. Choose exactly one mode: `--scenario FILE` or
+`--preflight`. The command is offline even with `KONTORA_URL` set. It never runs
+agents, checks, condition commands, hooks, or Git. It does not contact the daemon
+or create a config, tickets, worktrees, or logs.
 
-A scenario is a JSON array of ordered events. Each event names an executable node or declared wait in `node`. Executables accept `outcome: complete` or `failed` and an integer `exit_code` from `0` to `255`. Checks require an exit code; agents default to zero. Omitted outcome defaults to `complete` for zero and `failed` otherwise. Checks route by exit code, reject `failed` with zero, and cannot supply a verdict. An agent verdict must be declared. A successful agent must supply one if the node declares verdicts. Wait events use `wait: released` or, when configured, `wait: timeout`, with no completion fields.
+A scenario is a JSON array of ordered events. Each event names an executable node,
+command condition, or declared wait in `node`.
+
+- Agent and check events accept `outcome: complete` or `failed` and an integer
+  `exit_code` from `0` to `255`. Checks require an exit code; agents default to
+  zero. If omitted, `outcome` defaults to `complete` for zero and `failed` otherwise.
+- Check events route by exit code, reject `failed` with zero, and cannot supply a
+  verdict.
+- Agent verdicts must be declared. A successful agent event must include a verdict
+  if the node declares any.
+- Wait events use `wait: released` or, when configured, `wait: timeout`, with no
+  completion fields.
+
+A command condition event supplies only `node` and `exit_code`, for example
+`{"node":"has-notes","exit_code":0}`. Do not supply `outcome`, `verdict`, or
+`wait`. A `when` condition needs no event.
 
 For example, save this as `scenario.json` to try one repair and a human release:
 
@@ -1012,9 +1057,19 @@ For example, save this as `scenario.json` to try one repair and a human release:
 ]
 ```
 
-The trace prints ordered transitions and the final cursor. An end, a wait with no supplied outcome, and an executable missing its next event are distinct stops and exit zero. A rejected transition, including an unexpected node or extra event after an end, exits nonzero.
+The trace prints ordered transitions and the final cursor. An end, a wait with
+no supplied outcome, and an executable or command condition missing its next
+event exit zero. A rejected transition, including an unexpected node or extra
+event after an end, exits nonzero.
 
-Preflight explores agent verdicts that can fit in a result file, normal agent failures, representative shell exits in `0..255`, and declared release/timeout paths. It reports incompatible condition inputs with the preceding result (if any) and a witness path from entry. It exits nonzero when it finds a rejected path or when exploration is **inconclusive** (more work remains after 4,096 interpreter steps). This is a routing check, not a test of actual commands, prompts, runtime failures, agent suspension, or release authority. It does not change config acceptance by the daemon.
+Preflight explores agent verdicts that can fit in a result file and ordinary
+agent failures. It explores representative check exits in `0..255`, both
+command condition exits `0` and `1`, and declared release and timeout paths.
+Preflight reports incompatible condition inputs with the preceding result (if any)
+and a witness path from entry. It exits nonzero for a rejected path or if more
+work remains after 4,096 interpreter steps (**inconclusive**). Preflight checks
+the route through the graph. It does not test commands, prompts, runtime failures,
+agent suspension, or release authority. It does not change which configs the daemon accepts.
 
 ### `kontora doctor`
 

@@ -405,11 +405,16 @@ func defaultAgentLookup(binary string) (string, error) {
 // windowOps is the tmux surface startup cleanup needs. Tests substitute it to
 // run cleanup without a tmux server.
 type windowOps struct {
-	list func(session string) ([]string, error)
-	kill func(session, window string) error
+	list            func(session string) ([]string, error)
+	kill            func(session, window string) error
+	inspectIdentity func(tmux.WindowIdentity) (bool, error)
+	killIdentity    func(tmux.WindowIdentity) error
 }
 
-var defaultWindowOps = windowOps{list: tmux.ListWindows, kill: tmux.KillWindow}
+var defaultWindowOps = windowOps{
+	list: tmux.ListWindows, kill: tmux.KillWindow,
+	inspectIdentity: tmux.InspectWindowIdentity, killIdentity: tmux.KillWindowIdentity,
+}
 
 type Daemon struct {
 	cfg                       atomic.Pointer[config.Config]
@@ -943,6 +948,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 		case <-removals.C:
 			d.reconcileRegisteredRemovals()
+			d.reconcileConditionFinalizations()
 
 		case <-ctx.Done():
 			d.log.Info("shutting down")
@@ -1092,7 +1098,7 @@ func (d *Daemon) initialScan(dir string) error {
 			continue
 		}
 		_, journalErr := os.Stat(executionPath(cfg, t.ID))
-		if journalErr != nil {
+		if journalErr != nil && !workflowConditionJournalExists(cfg, t.ID) {
 			if t.IsPassiveEpic() {
 				continue
 			}

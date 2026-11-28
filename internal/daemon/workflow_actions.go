@@ -69,6 +69,9 @@ func (d *Daemon) workflowRetryService(id string, rearmWait bool) *app.Service {
 				if d.workflowProbeActiveLocked(id) {
 					return fmt.Errorf("%w: wait for the workflow probe to stop before retry", app.ErrInvalidState)
 				}
+				if workflowConditionJournalExists(d.config(), id) {
+					return fmt.Errorf("%w: cannot retry while a workflow condition journal exists", app.ErrInvalidState)
+				}
 				if state := st.Ticket.GraphState; state != nil && state.Wait != nil {
 					if !rearmWait {
 						return fmt.Errorf("%w: use retry to re-arm the workflow wait", app.ErrInvalidState)
@@ -98,7 +101,7 @@ func (d *Daemon) WorkflowRestart(id string) error {
 			return fmt.Errorf("%w: acknowledge workflow probe recovery before restart", web.ErrInvalidState)
 		}
 		cfg := d.config()
-		if _, err := loadExecution(cfg, id); !errors.Is(err, os.ErrNotExist) || t.InvocationID != "" {
+		if _, err := loadExecution(cfg, id); !errors.Is(err, os.ErrNotExist) || t.InvocationID != "" || workflowConditionJournalExists(cfg, id) {
 			return fmt.Errorf("%w: acknowledge interrupted workflow recovery before restart", web.ErrInvalidState)
 		}
 		graph := cfg.Pipelines[t.Pipeline].Graph
@@ -155,6 +158,10 @@ func (d *Daemon) WorkflowRecover(id, executionID string, revision uint64) error 
 	}
 	defer release()
 	err = d.withTicketMutation(func(repo app.MutationRepository) error {
+		cfg := d.config()
+		if workflowConditionJournalExists(cfg, id) {
+			return d.recoverWorkflowConditionLocked(repo, id, executionID, revision)
+		}
 		st, err := d.workflowActionTicket(repo, id, true)
 		if err != nil {
 			return err
@@ -164,7 +171,6 @@ func (d *Daemon) WorkflowRecover(id, executionID string, revision uint64) error 
 		if state == nil || executionID == "" || state.ExecutionID != executionID || state.Revision != revision || revision == math.MaxUint64 {
 			return fmt.Errorf("%w: stale workflow recovery identity or revision", web.ErrInvalidState)
 		}
-		cfg := d.config()
 		fingerprint, err := workflowFingerprint(cfg, t, cfg.Pipelines[t.Pipeline].Graph)
 		if err != nil || fingerprint != state.DefinitionFingerprint {
 			return fmt.Errorf("%w: workflow definition changed; restore the execution configuration before recovery", web.ErrInvalidState)
@@ -213,6 +219,36 @@ func (d *Daemon) WorkflowRecover(id, executionID string, revision uint64) error 
 		d.broadcastTicketUpdateLocking(id)
 	}
 	return mapAppError(err)
+}
+
+func (d *Daemon) recoverWorkflowConditionLocked(repo app.MutationRepository, id, executionID string, revision uint64) error {
+	st, err := repo.Get(id)
+	if err != nil {
+		return err
+	}
+	t, cfg := st.Ticket, d.config()
+	state := t.GraphState
+	if !t.Kontora || t.HasOwnershipMetadata() || state == nil || executionID == "" || state.ExecutionID != executionID || state.Revision != revision || revision == math.MaxUint64 {
+		return fmt.Errorf("%w: stale workflow recovery identity or revision", web.ErrInvalidState)
+	}
+	reservation, retained := d.recoveredReservations[id]
+	if d.plannotator[id] != nil || ((d.running[id] != nil || t.IsRunning()) && (!retained || reservation.finishing)) {
+		return fmt.Errorf("%w: wait for execution and review to stop", web.ErrInvalidState)
+	}
+	j, err := loadWorkflowCondition(cfg, id)
+	if err != nil {
+		return fmt.Errorf("%w: read workflow condition journal: %v", web.ErrInvalidState, err)
+	}
+	if (j.Phase != "recovery_required" && j.Phase != "acknowledged") || j.Instance != d.instanceName || !sameJournalTicketPath(j.Path, st.FilePath) {
+		return fmt.Errorf("%w: workflow condition journal is not awaiting acknowledgement on this instance", web.ErrInvalidState)
+	}
+	if j.Phase != "acknowledged" {
+		j.Phase = "acknowledged"
+		if err := saveWorkflowCondition(cfg, j); err != nil {
+			return err
+		}
+	}
+	return d.finishConditionAcknowledgementLocked(cfg, t, st.FilePath, j)
 }
 
 func installRecoveryAcknowledgement(t *ticket.Ticket, rec *executionRecord) error {

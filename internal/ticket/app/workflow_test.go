@@ -64,6 +64,37 @@ func TestWorkflowRetryPreservesExecution(t *testing.T) {
 	}
 }
 
+func TestWorkflowRetryCommandConditionPreservesProducer(t *testing.T) {
+	cfg, repo, runtime, svc := workflowFixture(t)
+	graph := cfg.Pipelines["graph"].Graph
+	graph.Nodes = append(graph.Nodes, config.WorkflowNode{ID: "decide", Type: "condition", Command: "test -f ready"})
+	tkt := repo.tickets["graph-1"].Ticket
+	require.NoError(t, tkt.SetField("stage", "decide"))
+	state := tkt.GraphState.Clone()
+	state.LastResult.Outcome, state.LastResult.ExitCode = "complete", new(0)
+	state.Handoff = &ticket.GraphHandoff{
+		ExecutionID: state.ExecutionID, NodeID: state.LastResult.NodeID, VisitID: state.VisitID,
+		InvocationID: state.LastResult.InvocationID, Summary: "producer evidence",
+	}
+	require.NoError(t, tkt.SetField("graph_state", state))
+	before := tkt.Clone()
+
+	_, err := svc.Retry(tkt.ID)
+	require.NoError(t, err)
+	got := repo.tickets[tkt.ID].Ticket
+	want := before.GraphState.Clone()
+	want.Revision++
+	assert.Equal(t, want, got.GraphState)
+	assert.Equal(t, before.Stage, got.Stage)
+	assert.Equal(t, before.History, got.History)
+	assert.Equal(t, before.Summary, got.Summary)
+	assert.Equal(t, ticket.StatusTodo, got.Status)
+	assert.Zero(t, got.Attempt)
+	assert.Empty(t, got.LastError)
+	assert.Empty(t, got.InvocationID)
+	assert.Equal(t, []string{tkt.ID}, runtime.enqueued)
+}
+
 func TestWorkflowControlsRefuseUnsafeChanges(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -72,7 +103,7 @@ func TestWorkflowControlsRefuseUnsafeChanges(t *testing.T) {
 		message string
 	}{
 		{"retry end", func(t *ticket.Ticket) { _ = t.SetField("stage", "stop") }, func(s *Service) (Result, error) { return s.Retry("graph-1") }, "workflow-restart"},
-		{"retry control", func(t *ticket.Ticket) { _ = t.SetField("stage", "budget") }, func(s *Service) (Result, error) { return s.Retry("graph-1") }, "executable"},
+		{"retry control", func(t *ticket.Ticket) { _ = t.SetField("stage", "budget") }, func(s *Service) (Result, error) { return s.Retry("graph-1") }, "workflow-restart"},
 		{"retry unresolved", func(t *ticket.Ticket) { _ = t.SetField("invocation_id", "unfinished") }, func(s *Service) (Result, error) { return s.Retry("graph-1") }, "workflow-recover"},
 		{"retry overflow", func(t *ticket.Ticket) {
 			state := t.GraphState.Clone()

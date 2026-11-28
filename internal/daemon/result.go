@@ -667,6 +667,9 @@ func (d *Daemon) reconcileClaimedExecutionLocked(cfg *config.Config, t *ticket.T
 		rec.GraphBefore != nil && rec.HookTermination == "pending" {
 		d.reserveRecoveredExecutionLocked(t)
 	}
+	if j, err := loadWorkflowCondition(cfg, t.ID); err == nil && j.Instance == d.instanceName && (j.Phase == "launched" || j.Phase == "recovery_required") {
+		d.reserveRecoveredExecutionLocked(t)
+	}
 	return true
 }
 
@@ -674,10 +677,14 @@ func (d *Daemon) reconcileClaimedExecutionLocked(cfg *config.Config, t *ticket.T
 // A false result leaves ordinary and inactive journal-less recovery to the caller.
 func (d *Daemon) reconcileGraphExecutionLocked(cfg *config.Config, t *ticket.Ticket, path string, rec *executionRecord, err error) bool {
 	if err != nil {
+		missing := errors.Is(err, os.ErrNotExist)
+		if missing && d.reconcileWorkflowConditionLocked(cfg, t, path) {
+			return true
+		}
 		if t.GraphState == nil {
 			return false
 		}
-		if errors.Is(err, os.ErrNotExist) {
+		if missing {
 			if !t.IsRunning() && t.InvocationID == "" {
 				return false
 			}
@@ -1004,10 +1011,11 @@ func (d *Daemon) confirmRecoveryTerminationLocked(t *ticket.Ticket) bool {
 }
 
 type recoveredReservation struct {
-	pool      *slotPool
-	branchKey string
-	finishing bool
-	token     bool
+	pool                  *slotPool
+	branchKey             string
+	finishing             bool
+	token                 bool
+	conditionFinalization bool
 }
 
 func (d *Daemon) reserveUnparsedExecutionLocked(path string) {
@@ -1015,12 +1023,15 @@ func (d *Daemon) reserveUnparsedExecutionLocked(path string) {
 	if !ticket.IsSafeID(id) || !ticket.IsCanonicalPath(path, id) {
 		return
 	}
-	rec, err := loadExecution(d.config(), id)
-	if err != nil || rec.Instance != d.instanceName {
+	cfg := d.config()
+	if rec, err := loadExecution(cfg, id); err == nil && rec.Instance == d.instanceName {
+		d.reserveRecoveredExecutionLocked(&ticket.Ticket{ID: id})
 		return
 	}
 	// The journal protects resources, but an unreadable ticket cannot authorize termination or writes.
-	d.reserveRecoveredExecutionLocked(&ticket.Ticket{ID: id})
+	if j, err := loadWorkflowCondition(cfg, id); err == nil && j.Instance == d.instanceName && sameJournalTicketPath(j.Path, path) {
+		d.reserveRecoveredExecutionLocked(&ticket.Ticket{ID: id})
+	}
 }
 
 func (d *Daemon) reserveRecoveredExecutionLocked(t *ticket.Ticket, transferredToken ...bool) {
@@ -1035,6 +1046,9 @@ func (d *Daemon) reserveRecoveredExecutionLocked(t *ticket.Ticket, transferredTo
 		if rec.EpicID == rec.Invocation.TicketID {
 			pool = d.epicSem
 		}
+	} else if j, err := loadWorkflowCondition(d.config(), t.ID); err == nil {
+		repoPath, branch = j.RepoPath, j.Branch
+		pool = d.sem
 	}
 	if commonDir == "" {
 		commonDir, _ = worktree.CommonDir(expandTilde(repoPath))

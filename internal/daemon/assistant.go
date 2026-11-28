@@ -907,7 +907,9 @@ func assistantGraph(graph *config.WorkflowGraph) string {
 		case "check":
 			detail += fmt.Sprintf(" command=%q timeout=%s", node.Command, node.Timeout.Duration)
 		case "condition":
-			if node.When != nil {
+			if node.CommandCondition() {
+				detail += fmt.Sprintf(" command=%q timeout=%s", node.Command, node.Timeout.Duration)
+			} else if node.When != nil {
 				operator, values := node.When.Comparison()
 				if operator == "in" {
 					operands := make([]string, 0, len(values))

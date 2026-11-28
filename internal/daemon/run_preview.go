@@ -125,6 +125,8 @@ func previewGraphRun(cfg *config.Config, t *ticket.Ticket, definition config.Pip
 			preview.Kind = "check"
 		}
 		preview.Agent = resolved.Agent
+	case after.Condition != nil:
+		preview.Kind = "condition"
 	case after.Wait != nil:
 		preview.Kind = "wait"
 	default:

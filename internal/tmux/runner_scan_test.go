@@ -38,6 +38,32 @@ func TestRunScanPreparationFailure(t *testing.T) {
 	}
 }
 
+func TestRunDoesNotStartBeforeWindowCreation(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		cancel       bool
+	}{
+		{name: "cancelled before entry", cancel: true, reason: "context canceled"},
+		{name: "cannot create exit file", reason: "creating exit file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.cancel {
+				cancel()
+			} else {
+				path := filepath.Join(t.TempDir(), "not-a-directory")
+				require.NoError(t, os.WriteFile(path, nil, 0o600))
+				t.Setenv("TMPDIR", path)
+			}
+			result, err := Run(ctx, RunParams{Binary: "must-not-run", RequireTermination: true})
+			require.ErrorContains(t, err, tc.reason)
+			require.Equal(t, process.TerminationNotStarted, result.Termination)
+			require.True(t, result.StartedAt.IsZero())
+		})
+	}
+}
+
 func TestRunFailurePatterns(t *testing.T) {
 	skipIfNoTmux(t)
 	for _, tc := range []struct {

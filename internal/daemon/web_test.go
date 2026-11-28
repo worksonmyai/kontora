@@ -2311,6 +2311,34 @@ history:
 	}
 }
 
+func TestDaemon_GetLatestConditionLog(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Pipelines["workflow"] = config.PipelineDefinition{Graph: &config.WorkflowGraph{
+		Nodes: []config.WorkflowNode{{ID: "choose", Type: "condition", Command: "test -f ready"}},
+	}}
+	d := h.newDaemon(h.cfg)
+	path := h.writeTicket("tst-condition.md", "---\nid: tst-condition\npipeline: workflow\nstatus: paused\nstage: choose\n---\n# Condition logs\n")
+	tk, err := ticket.ParseFile(path)
+	require.NoError(t, err)
+	d.tickets[tk.ID] = newTicketState(tk, path)
+	dir := filepath.Join(h.logsDir, tk.ID, "conditions")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	// Exact named logs use the daemon's tracked ticket and never fall back.
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "..", "unrelated.log"), []byte("unrelated output"), 0o600))
+	for _, stageOnly := range []bool{false, true} {
+		q := web.LogQuery{ID: tk.ID, Stage: "choose", StageOnly: stageOnly}
+		_, err := d.GetLogs(q)
+		require.ErrorIs(t, err, web.ErrLogNotFound)
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "choose.00000000000000000001-a.log"), []byte("condition output"), 0o600))
+	for _, stageOnly := range []bool{false, true} {
+		got, err := d.GetLogs(web.LogQuery{ID: tk.ID, Stage: "choose", StageOnly: stageOnly})
+		require.NoError(t, err)
+		assert.Equal(t, "condition output", got)
+	}
+}
+
 func TestDaemon_ActivityPreviewAndExactIdentity(t *testing.T) {
 	h := newHarness(t)
 	d := h.newDaemon(h.cfg)

@@ -268,8 +268,8 @@ func cmdWorkflowSimulate() {
 	fs.StringVar(&opts.Recipe, "recipe", "", "built-in graph recipe name")
 	fs.StringVar(&opts.Config, "config", "", "explicit config file path (requires --pipeline)")
 	fs.StringVar(&opts.Pipeline, "pipeline", "", "graph pipeline name in --config")
-	fs.StringVar(&opts.Scenario, "scenario", "", "path to JSON scenario")
-	fs.BoolVar(&opts.Preflight, "preflight", false, "explore normal outcomes for incompatible condition inputs")
+	fs.StringVar(&opts.Scenario, "scenario", "", cli.WorkflowScenarioHelp)
+	fs.BoolVar(&opts.Preflight, "preflight", false, cli.WorkflowPreflightHelp)
 	_ = fs.Parse(os.Args[2:])
 	if fs.NArg() != 0 {
 		log.Fatalf("unexpected argument %q: workflow-simulate takes no positional arguments", fs.Arg(0))
@@ -1690,9 +1690,10 @@ func cmdLogs() {
 	}
 
 	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
+	id := mustResolveLocal(cfg, taskID)
 
 	err := cli.Page(cli.PagerCommand(cfg.Pager), func(w io.Writer) error {
-		return cli.Logs(cfg.TicketsDir, cfg.LogsDir, taskID, *stage, w)
+		return cli.LogsExactWithConfig(cfg, id, *stage, w)
 	})
 	if err != nil {
 		log.Fatal(err)

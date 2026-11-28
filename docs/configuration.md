@@ -837,14 +837,13 @@ pipelines:
 | `agent` | `stage` names a prompt template; `agent` names a configured agent. Optional `verdicts` declares allowed result strings; `wake` permits suspension; `handoff: previous` supplies predecessor evidence. | `complete`, `failed` |
 | `wait` | `mode: human` or `deployment`; deployment requires `environment`. Optional positive `timeout`. | `released`; also `timeout` when a timeout is configured |
 | `check` | `command` runs in the worktree; `timeout` must be positive. | `pass` (exit zero), `fail` (nonzero) |
-| `condition` | `when` names a `field` (`verdict` or `exit_code`) and gives one comparison (`equals`, `not_equals`, or `in`) a non-null value. | `true`, `false` |
+| `condition` | Exactly one of `when` (compare the latest result) or a nonblank `command`. Only `command` accepts an optional positive `timeout`; the default is `1m`. | `true`, `false` |
 | `loop` | Positive `max`, the total allowance of `repeat` transitions for this loop in one execution. | `repeat`, `exhausted` |
 | `end` | `status`: `done`, `human_review`, `paused`, or a declared custom parked status. | None |
 
-A condition reads only the latest executable result on the current path.
-It never falls back to an earlier result. Consecutive conditions read the same
-result until another executable node replaces it. A missing, stale, or
-incompatible result pauses execution.
+A `when` condition reads only the latest executable result on the current path.
+It never falls back to an earlier result. Conditions do not replace that result.
+A missing, stale, or incompatible result pauses execution.
 
 In each `when`, give exactly one of `equals`, `not_equals`, or `in` a non-null
 value. A `null` value counts as omitted.
@@ -886,8 +885,9 @@ stored in `graph_state`; history retains provenance across retries and restarts.
 A changed effective graph, stage, agent or relevant execution configuration
 pauses an existing execution rather than silently adopting the new definition.
 Use [workflow controls](cli.md#kontora-workflow-restart-ticket_id) after inspection.
-`retry` keeps the same executable visit and loop counts; it is refused at an
-`end` node. `skip` and `set-stage` are refused for graph workflows.
+`retry` keeps the same executable visit and loop counts, or repeats a paused
+command condition. Retry refuses at an `end` node. `skip` and `set-stage` are
+refused for graph workflows.
 
 Graph annotations and Plannotator rework are deferred and refused; graph
 workflows do not support epic supervisors. Use YAML for graph authoring, not a
@@ -895,13 +895,73 @@ legacy stage-list editor. Upgrade all CLI and daemon binaries that read the
 config or share the ticket store together before enabling graphs. Older loaders
 and clients cannot interpret graph definitions or cursor state.
 
-Upgrade the daemon and every CLI that reads the config before adding
-`not_equals` or `in`, even to an existing graph. Older versions accept only
-`equals`.
+Upgrade the daemon and every CLI that reads the config before adding command
+conditions to a graph. Older versions reject `command` on a `condition` node.
+Versions that support only `equals` also reject `not_equals` and `in`.
 
 Recovery does not promise exactly-once shell or hook
 effects, host-power-loss durability, or containment of arbitrary detached
 processes. A missing tmux window alone does not prove termination.
+
+### Command conditions
+
+A fresh execution cannot reach a command condition before running an agent or
+check. Before the first executable, validation follows only a loop's `repeat`
+edge. A loop or declared wait can come between the producer and the condition.
+A command condition is a control node. It does not satisfy the executable node
+requirement for a cycle.
+
+This example sends the ticket to review if `CHANGELOG.md` exists and is nonempty
+after the agent completes. The agent's `failed` edge and condition exit `1`
+lead to `inspect`. A condition timeout or runner error pauses at `has-notes`.
+
+```yaml
+default_pipeline: release-notes
+agents:
+  claude: {binary: claude}
+stages:
+  document:
+    prompt: |
+      {{ .Ticket.Description }}
+      Update CHANGELOG.md for this ticket. Do not commit or push.
+    timeout: 30m
+pipelines:
+  release-notes:
+    version: 2
+    entry: write-notes
+    nodes:
+      - {id: write-notes, type: agent, stage: document, agent: claude}
+      - {id: has-notes, type: condition, command: "test -s CHANGELOG.md"}
+      - {id: review, type: end, status: human_review}
+      - {id: inspect, type: end, status: paused}
+    edges:
+      - {from: {node: write-notes, port: complete}, to: has-notes}
+      - {from: {node: write-notes, port: failed}, to: inspect}
+      - {from: {node: has-notes, port: "true"}, to: review}
+      - {from: {node: has-notes, port: "false"}, to: inspect}
+```
+
+The daemon runs `/bin/sh -c` in the existing ticket worktree. Each evaluation
+uses one worker slot. Exit `0` takes the `"true"` edge and exit `1` takes the
+`"false"` edge. Other exits, timeouts, and runner errors pause at the condition
+without taking either edge. Set a positive `timeout`, such as `15s`, to override `1m`.
+
+Run only trusted commands that do not change anything. Kontora does not apply
+an agent sandbox such as `nono`. Keep the script outside the worktree. It still
+runs with daemon permissions and can read repository-controlled files. Even
+read-only Git commands read the repository's `.git/config`.
+
+Retry reruns the command, and a workflow restart can reach it again. After a
+daemon restart, the daemon requeues an interrupted evaluation once it confirms
+termination.
+
+The condition preserves the latest executable result and handoff evidence. A
+released wait can lead to a command condition without replacing its producer.
+When condition evaluation itself takes the graph to an `end`, it does not start
+a final summary. A later agent follows the normal summary rules.
+
+See the [environment variables](cli.md#command-condition-environment) and
+[ticket lifecycle](tickets.md#command-conditions) for logs and recovery.
 
 ### Predecessor evidence
 
@@ -955,7 +1015,7 @@ An agent node opts into suspension with `wake`:
 ```
 
 `wake.max` is required and positive. It limits wakes within one executable visit,
-not condition polls. `check_timeout` limits each probe; omission or zero uses `60s`.
+not wait polls. `check_timeout` limits each probe; omission or zero uses `60s`.
 Negative values are invalid. Another wait is refused after the visit exhausts its wake allowance.
 Use [kontora wait](cli.md#kontora-wait) or Pi's `kontora_wait` to publish an invocation-bound request.
 The daemon commits suspension only after successful execution, confirmed termination, and required `stage_end` hooks.
@@ -982,7 +1042,7 @@ Release or timeout follows the corresponding edge and preserves the preceding ex
 Declared waits create no executable visit or agent history row. They can register without an execution slot.
 A deployment wait requires an existing worktree and freezes its repository identity and HEAD commit at entry.
 
-Idle waits consume no worker slot. Condition probes run `/bin/sh -c` in the
+Idle waits consume no worker slot. Wait probes run `/bin/sh -c` in the
 retained worktree and share ordinary worker capacity. Exit `0` wakes with `ready`;
 exit `1` schedules another poll from completion time. Other exits, confirmed probe
 timeout, or runner failure wake with `error`. Timer waits wake with `timer`;

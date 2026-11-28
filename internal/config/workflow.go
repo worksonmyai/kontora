@@ -107,6 +107,10 @@ type WorkflowNode struct {
 	Environment string             `yaml:"environment,omitempty" json:"environment,omitempty"`
 }
 
+func (n WorkflowNode) CommandCondition() bool {
+	return n.Type == "condition" && n.Command != ""
+}
+
 // WorkflowWake opts an agent visit into durable suspension.
 type WorkflowWake struct {
 	Max          int      `yaml:"max" json:"max"`
@@ -178,7 +182,7 @@ func (n *WorkflowNode) UnmarshalYAML(value *yaml.Node) error {
 	case "check":
 		fields = []string{"command", "timeout"}
 	case "condition":
-		fields = []string{"when"}
+		fields = []string{"when", "command", "timeout"}
 	case "loop":
 		fields = []string{"max"}
 	case "end":
@@ -196,6 +200,18 @@ func (n *WorkflowNode) UnmarshalYAML(value *yaml.Node) error {
 		}
 		if key == "handoff" && n.Handoff != WorkflowHandoffPrevious {
 			return fmt.Errorf("node %q: handoff must be previous when configured", n.ID)
+		}
+		if n.Type == "condition" {
+			switch {
+			case key == "when" && n.When == nil && n.CommandCondition():
+				return fmt.Errorf("node %q: condition requires exactly one of when or command", n.ID)
+			case key == "command" && strings.TrimSpace(n.Command) == "":
+				return fmt.Errorf("node %q: command must not be blank", n.ID)
+			case key == "timeout" && !n.CommandCondition():
+				return fmt.Errorf("node %q: timeout requires command", n.ID)
+			case key == "timeout" && n.Timeout.Duration <= 0:
+				return fmt.Errorf("node %q: timeout must be positive", n.ID)
+			}
 		}
 	}
 	return nil
@@ -383,6 +399,9 @@ func (c *Config) validateWorkflow(g *WorkflowGraph) error {
 		if wake := g.Nodes[i].Wake; wake != nil && wake.CheckTimeout.Duration == 0 {
 			wake.CheckTimeout.Duration = time.Minute
 		}
+		if g.Nodes[i].CommandCondition() && g.Nodes[i].Timeout.Duration == 0 {
+			g.Nodes[i].Timeout.Duration = time.Minute
+		}
 	}
 	nodes, err := c.validateWorkflowNodes(g)
 	if err != nil {
@@ -398,7 +417,35 @@ func (c *Config) validateWorkflow(g *WorkflowGraph) error {
 	if err := validateWorkflowReachability(g, adjacent); err != nil {
 		return err
 	}
-	return validateWorkflowCycles(g, nodes, adjacent)
+	if err := validateWorkflowCycles(g, nodes, adjacent); err != nil {
+		return err
+	}
+	return validateWorkflowConditionEntry(g.Entry, nodes, adjacent)
+}
+
+func validateWorkflowConditionEntry(entry string, nodes map[string]WorkflowNode, adjacent map[string][]WorkflowEdge) error {
+	visited := make(map[string]bool)
+	var visit func(string) error
+	visit = func(id string) error {
+		node := nodes[id]
+		if visited[id] || executableWorkflowNode(node) || node.Type == "end" {
+			return nil
+		}
+		if node.CommandCondition() {
+			return fmt.Errorf("node %q: command condition requires an agent or check before it", id)
+		}
+		visited[id] = true
+		for _, edge := range adjacent[id] {
+			if node.Type == "loop" && edge.From.Port != "repeat" {
+				continue
+			}
+			if err := visit(edge.To); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return visit(entry)
 }
 
 func (c *Config) validateWorkflowNodes(g *WorkflowGraph) (map[string]WorkflowNode, error) {
@@ -522,8 +569,8 @@ func executableWorkflowNode(node WorkflowNode) bool {
 func validateWorkflowNodeFields(node WorkflowNode) error {
 	// In-memory definitions need the same kind restrictions as decoded YAML.
 	if node.Type != "agent" && (node.Stage != "" || node.Agent != "" || len(node.Verdicts) != 0 || node.Wake != nil || node.Handoff != "") ||
-		node.Type != "check" && node.Command != "" ||
-		node.Type != "check" && node.Type != "wait" && node.Timeout.Duration != 0 ||
+		node.Type != "check" && node.Type != "condition" && node.Command != "" ||
+		node.Type != "check" && node.Type != "wait" && node.Type != "condition" && node.Timeout.Duration != 0 ||
 		node.Type != "wait" && (node.Mode != "" || node.Environment != "") ||
 		node.Type != "condition" && node.When != nil || node.Type != "loop" && node.Max != 0 ||
 		node.Type != "end" && node.Status != "" {
@@ -574,7 +621,7 @@ func (c *Config) validateWorkflowNode(node WorkflowNode) error {
 			return fmt.Errorf("timeout must be positive")
 		}
 	case "condition":
-		return validateWorkflowCondition(node.When)
+		return validateWorkflowCondition(node)
 	case "loop":
 		if node.Max <= 0 {
 			return fmt.Errorf("max must be positive")
@@ -616,7 +663,25 @@ func (c *Config) validateWorkflowAgent(node WorkflowNode) error {
 	return nil
 }
 
-func validateWorkflowCondition(when *WorkflowCondition) error {
+func validateWorkflowCondition(node WorkflowNode) error {
+	when := node.When
+	if (when != nil) == node.CommandCondition() {
+		return fmt.Errorf("condition requires exactly one of when or command")
+	}
+	if node.CommandCondition() {
+		switch {
+		case strings.TrimSpace(node.Command) == "":
+			return fmt.Errorf("command must not be blank")
+		case strings.ContainsRune(node.Command, '\x00'):
+			return fmt.Errorf("command contains NUL")
+		case node.Timeout.Duration <= 0:
+			return fmt.Errorf("timeout must be positive")
+		}
+		return nil
+	}
+	if node.Timeout.Duration != 0 {
+		return fmt.Errorf("timeout requires command")
+	}
 	if when == nil {
 		return fmt.Errorf("when is required")
 	}

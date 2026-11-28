@@ -102,15 +102,24 @@ template. A loop's positive `max` bounds its repeat transitions for the whole
 execution. Every port needs one destination; every cycle must cross `loop.repeat`
 and include an executable. Graph aliases, merge keys and unknown fields are refused.
 
-A condition reads only the latest executable result on the current path.
-It never falls back to an earlier result. A missing, stale, or incompatible
-result pauses execution. `verdict` requires a successful agent result with a
-declared verdict. `exit_code` requires a check result and integer comparison values.
+A condition takes exactly one of `when` or `command`. A `when` condition reads
+only the latest executable result on the current path. A missing, stale, or
+incompatible result pauses execution. `verdict` requires a successful agent result
+with a declared verdict. `exit_code` requires a check result and integer comparison values.
 
 In each `when`, give exactly one of `equals`, `not_equals`, or `in` a non-null
 value. A `null` value counts as omitted. Use nonblank strings for `verdict`
 comparisons. For `not_equals` and `in`, those strings cannot contain NUL characters.
 An `in` list must be nonempty and cannot contain duplicates.
+
+A command condition takes a nonblank shell command and an optional positive
+`timeout` (default `1m`). A fresh execution cannot reach a command condition
+before running an agent or check. Before the first executable, validation
+follows only a loop's `repeat` edge. A command condition is a control node.
+It does not satisfy the executable requirement for cycles. Exit `0` takes
+`"true"`, exit `1` takes `"false"`, and other exits, timeouts, or runner errors
+pause. The command must not change anything.
+See `kontora skills show pipelines 'Command conditions'` for permissions and recovery.
 
 See `kontora skills show pipelines 'Workflow graphs'` for complete YAML and
 node fields. Do not use a legacy stage-list editor to author graphs.
@@ -123,6 +132,9 @@ The ticket's `stage` is a node ID. The daemon stores the execution, revision,
 fingerprint, visits and loop counts in `graph_state`.
 Changed effective definitions pause rather than silently changing live traversal.
 `retry` preserves executable identity and loop counts and is refused at `end`.
+At a paused command condition, `retry` preserves producer evidence and reruns
+only the command. The daemon refuses Retry while a condition journal exists.
+Use `workflow-recover` only if the ticket asks you to acknowledge termination.
 `skip` and `set-stage` are refused for graphs.
 
 `kontora workflow-restart ID` creates a new execution at entry with fresh visit
@@ -133,7 +145,7 @@ worktree first; recovery does not start work. Both controls require the daemon.
 Graph annotations and Plannotator rework are deferred and refused.
 
 See `kontora skills show config Compatibility` before enabling graphs or adding
-`not_equals` or `in` to a graph.
+command conditions, `not_equals`, or `in`.
 
 ## Durable waits
 
@@ -654,7 +666,8 @@ naming each ignored field. A file that fails to load leaves the running configur
 - Epic activation: See `kontora skills show tickets Compatibility` for mixed versions.
 - Workflow graphs and durable waits: See `kontora skills show pipelines Compatibility`.
 - Graph conditions: Upgrade the daemon and every CLI that reads the config before
-  adding `not_equals` or `in`, even to an existing graph. Older versions accept only `equals`.
+  adding command conditions. Older versions reject `command` on `condition` nodes.
+  Versions that support only `equals` also reject `not_equals` and `in`.
 - Custom `running_status`: Upgrade every CLI and daemon sharing the store before enabling the setting.
   Older config loaders reject the key. Older clients treat custom-active tickets as parked work.
   Existing parked tickets are not activated or migrated.

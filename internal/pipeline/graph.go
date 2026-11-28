@@ -17,10 +17,17 @@ type GraphCompletion struct {
 	Interrupted, TimedOut, InfrastructureError, TerminationUncertain bool
 }
 
+type GraphConditionResult struct {
+	NodeID, EvaluationID                                             string
+	ExitCode                                                         int
+	Interrupted, TimedOut, InfrastructureError, TerminationUncertain bool
+}
+
 type GraphAdvance struct {
-	Stage string
-	State *ticket.GraphState
-	Next  *config.WorkflowNode
+	Stage     string
+	State     *ticket.GraphState
+	Next      *config.WorkflowNode
+	Condition *config.WorkflowNode
 	// Wait is a declared control wait for the daemon to register. Traversal does
 	// not assign a wait identity or any timing or workspace evidence.
 	Wait     *config.WorkflowNode
@@ -103,6 +110,50 @@ func ReleaseGraphWait(graph *config.WorkflowGraph, stage string, state *ticket.G
 	return a.traverse(graph)
 }
 
+func ResolveGraphCondition(graph *config.WorkflowGraph, stage string, state *ticket.GraphState, result GraphConditionResult) GraphAdvance {
+	a := GraphAdvance{Stage: stage, State: state.Clone(), Status: ticket.StatusTodo}
+	if reason := a.validateInput(graph); reason != "" {
+		return a.pause(reason)
+	}
+	s := a.State
+	if s.Wait != nil {
+		return a.pause("graph has an active wait; release or wake it before advancing")
+	}
+	node, ok := graph.Node(stage)
+	if !ok || !node.CommandCondition() || result.NodeID != stage || result.EvaluationID == "" {
+		return a.pause("result does not match the current command condition")
+	}
+	var port string
+	switch {
+	case result.TerminationUncertain:
+		return a.pause(fmt.Sprintf("condition %s termination is uncertain", stage))
+	case result.Interrupted:
+		return a.pause(fmt.Sprintf("condition %s interrupted", stage))
+	case result.TimedOut:
+		return a.pause(fmt.Sprintf("condition %s timed out", stage))
+	case result.InfrastructureError:
+		return a.pause(fmt.Sprintf("condition %s infrastructure error", stage))
+	case result.ExitCode == 0:
+		port = "true"
+	case result.ExitCode == 1:
+		port = "false"
+	default:
+		return a.pause(fmt.Sprintf("condition %s exited with code %d", stage, result.ExitCode))
+	}
+	if !a.follow(graph, stage, port, 0) {
+		return a.pause(fmt.Sprintf("condition %s is missing its %s transition", stage, port))
+	}
+	a.Edges[0].EvaluationID = result.EvaluationID
+	s.Transitions[len(s.Transitions)-1].EvaluationID = result.EvaluationID
+	continuation, wake := s.Continuation, s.Wake
+	s.Continuation, s.Wake = false, nil
+	a = a.traverse(graph)
+	if a.Next != nil || a.Condition != nil {
+		s.Continuation, s.Wake = continuation, wake
+	}
+	return a
+}
+
 func validateDeclaredWait(graph *config.WorkflowGraph, node config.WorkflowNode) string {
 	if (node.Mode != "human" && node.Mode != "deployment") || node.Timeout.Duration < 0 ||
 		(node.Mode == "human" && node.Environment != "") ||
@@ -122,6 +173,7 @@ func validateDeclaredWait(graph *config.WorkflowGraph, node config.WorkflowNode)
 func (a GraphAdvance) pause(reason string) GraphAdvance {
 	a.Rejected = true
 	a.Next = nil
+	a.Condition = nil
 	a.Wait = nil
 	a.Status = ticket.StatusPaused
 	a.Reason = reason
@@ -316,6 +368,10 @@ func (a GraphAdvance) traverse(graph *config.WorkflowGraph) GraphAdvance {
 			a.Wait = cloneWorkflowNode(node)
 			return a
 		case "condition":
+			if node.CommandCondition() {
+				a.Condition = cloneWorkflowNode(node)
+				return a
+			}
 			port, reason := graphCondition(graph, node, s)
 			if reason != "" {
 				return a.pause(reason)

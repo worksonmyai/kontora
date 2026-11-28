@@ -117,6 +117,9 @@ func (d *Daemon) initializeWorkflow(cfg *config.Config, t *ticket.Ticket, graph 
 			return pause("workflow invocation journal requires recovery before another invocation")
 		}
 	}
+	if workflowConditionJournalExists(cfg, t.ID) {
+		return pause("resolve the workflow condition journal before another evaluation can start")
+	}
 	state, stage, err := workflowPickupCursor(t, graph, fingerprint, newSessionID)
 	if err != nil {
 		return pause(err.Error())
@@ -133,7 +136,7 @@ func (d *Daemon) initializeWorkflow(cfg *config.Config, t *ticket.Ticket, graph 
 	if err := d.finishControlAdvance(t, after); err != nil {
 		return err
 	}
-	if after.Next == nil {
+	if after.Next == nil && after.Condition == nil {
 		if after.Status == ticket.StatusDone {
 			_ = t.SetField("completed_at", time.Now())
 		}
@@ -218,7 +221,7 @@ func installGraphAdvance(t *ticket.Ticket, after pipeline.GraphAdvance) error {
 		return err
 	}
 	status := after.Status
-	if after.Next != nil {
+	if after.Next != nil || after.Condition != nil {
 		status = ticket.StatusTodo
 	}
 	if err := t.SetField("status", string(status)); err != nil {
@@ -267,14 +270,21 @@ func graphLogPath(cfg *config.Config, t *ticket.Ticket) string {
 }
 
 func (d *Daemon) runGraphTicket(root, task context.Context, cfg *config.Config, log *slog.Logger, t *ticket.Ticket, path string) {
-	definition := cfg.Pipelines[t.Pipeline]
-	graph := definition.Graph
-	node, ok := graph.Node(t.Stage)
-	if !ok || (node.Type != "agent" && node.Type != "check") || t.GraphState == nil {
+	node, ok := cfg.Pipelines[t.Pipeline].Graph.Node(t.Stage)
+	switch {
+	case !ok || t.GraphState == nil:
+		d.pauseExecution(task, t, path, "workflow admission selected an invalid node")
+	case node.CommandCondition():
+		d.runGraphCondition(root, task, cfg, log, t, path, node)
+	case node.Type == "agent" || node.Type == "check":
+		d.runGraphExecutable(root, task, cfg, log, t, path, node)
+	default:
 		d.pauseExecution(task, t, path, "workflow admission selected an invalid executable node")
-		return
 	}
-	resolved, err := definition.Resolve(t.Stage, t.Agent)
+}
+
+func (d *Daemon) runGraphExecutable(root, task context.Context, cfg *config.Config, log *slog.Logger, t *ticket.Ticket, path string, node config.WorkflowNode) {
+	resolved, err := cfg.Pipelines[t.Pipeline].Resolve(t.Stage, t.Agent)
 	if err != nil {
 		d.pauseExecution(task, t, path, err.Error())
 		return

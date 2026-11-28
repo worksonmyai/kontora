@@ -252,8 +252,11 @@ func (d *Daemon) applyWaitReason(t *ticket.Ticket, reason string) error {
 		if after.Rejected {
 			return fmt.Errorf("release wait: %s", after.Reason)
 		}
-		if after.Next != nil {
+		if after.Next != nil || after.Condition != nil {
 			after.State.Continuation = true
+		}
+		if after.Condition != nil {
+			after.State.Wake = &ticket.WakeContext{Reason: reason, WaitID: w.ID}
 		}
 		return d.finishControlAdvance(t, after)
 	}

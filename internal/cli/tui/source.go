@@ -218,8 +218,12 @@ func (s *fileSource) FetchTask(id string) (web.TicketInfo, error) {
 }
 
 func (s *fileSource) FetchLogs(id, stage string) (string, error) {
+	resolved, err := cli.ResolveTicketID(s.cfg.TicketsDir, id)
+	if err != nil {
+		return "", err
+	}
 	var buf bytes.Buffer
-	if err := cli.Logs(s.cfg.TicketsDir, s.cfg.LogsDir, id, stage, &buf); err != nil {
+	if err := cli.LogsExactWithConfig(s.cfg, resolved, stage, &buf); err != nil {
 		return "", err
 	}
 	return buf.String(), nil

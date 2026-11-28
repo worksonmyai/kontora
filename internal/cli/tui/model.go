@@ -42,6 +42,7 @@ type (
 	logsMsg struct {
 		content, id string
 		target      logTarget
+		seq         uint64
 	}
 	tickMsg          struct{}
 	errMsg           struct{ err error }
@@ -85,6 +86,9 @@ type model struct {
 	listObsolete bool
 	listRetry    bool
 	listTouched  map[string]bool
+
+	conditionLogsSeq     uint64
+	conditionLogsPending bool
 }
 
 func newModel(src Source) model {
@@ -135,7 +139,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleTaskUpdated(web.TicketEvent(msg))
 
 	case taskRefreshedMsg:
-		return m.handleTaskRefreshed(msg), nil
+		return m.handleTaskRefreshed(msg)
 
 	case taskDetailMsg:
 		return m.openDetail(web.TicketInfo(msg))
@@ -144,13 +148,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.logTargetCurrent(msg.id, msg.target) {
 			return m, nil
 		}
-		return m, m.fetchLogsCmd(msg.id, msg.target)
+		cmd := m.startLogsFetch()
+		return m, cmd
 
 	case logsMsg:
-		if !m.logTargetCurrent(msg.id, msg.target) {
-			return m, nil
+		if msg.target.condition {
+			if msg.seq != m.conditionLogsSeq {
+				return m, nil
+			}
+			m.conditionLogsPending = false
 		}
-		m.detail.setLogs(msg.content)
+		if m.logTargetCurrent(msg.id, msg.target) {
+			m.detail.setLogs(msg.content)
+		}
 		return m, nil
 
 	case tickMsg:
@@ -230,6 +240,13 @@ func (m model) handleTick() (model, tea.Cmd) {
 		m.refreshSeq++
 		m.detailRetry = false
 		cmds = append(cmds, m.refreshTaskCmd(m.detail.ticket.ID, m.refreshSeq))
+	}
+	if m.view == viewDetail && m.detail.tab == tabLogs && !m.conditionLogsPending && m.detail.ticket.IsRunning() {
+		target := m.detail.selectedLogTarget()
+		if target.condition && target.stage == m.detail.ticket.Stage {
+			// The runner can create the log after the ticket starts running.
+			cmds = append(cmds, m.startLogsFetch())
+		}
 	}
 	return m, tea.Batch(append(cmds, tickCmd())...)
 }
@@ -543,12 +560,21 @@ func (m model) refreshTaskCmd(id string, seq int) tea.Cmd {
 	}
 }
 
+func (m *model) startLogsFetch() tea.Cmd {
+	target := m.detail.selectedLogTarget()
+	if target.condition {
+		m.conditionLogsSeq++
+		m.conditionLogsPending = true
+	}
+	return m.fetchLogsCmd(m.detail.ticket.ID, target)
+}
+
 func (m model) fetchLogsCmd(id string, target logTarget) tea.Cmd {
 	src := m.source
 	return func() tea.Msg {
 		var content string
 		var err error
-		if target.graph {
+		if target.graph && !target.condition {
 			reader, ok := src.(interface {
 				FetchRunLogs(string, string, int) (string, error)
 			})
@@ -560,9 +586,12 @@ func (m model) fetchLogsCmd(id string, target logTarget) tea.Cmd {
 			content, err = src.FetchLogs(id, target.stage)
 		}
 		if err != nil {
-			return errMsg{err: err}
+			if !target.condition {
+				return errMsg{err: err}
+			}
+			content = err.Error()
 		}
-		return logsMsg{content: content, id: id, target: target}
+		return logsMsg{content: content, id: id, target: target, seq: m.conditionLogsSeq}
 	}
 }
 
@@ -614,30 +643,43 @@ func (m model) openDetail(info web.TicketInfo) (model, tea.Cmd) {
 	if isGraph(info) && len(m.detail.logTargets) == 0 {
 		return m, nil
 	}
-	return m, m.fetchLogsCmd(info.ID, m.detail.selectedLogTarget())
+	cmd := m.startLogsFetch()
+	return m, cmd
 }
 
-func (m model) handleTaskRefreshed(msg taskRefreshedMsg) model {
-	// HTTP responses can finish out of order or after another ticket opens.
-	if msg.seq != m.refreshSeq {
-		return m
+func (m *model) updateDetailTicket(info web.TicketInfo) tea.Cmd {
+	if !m.detail.setTicket(info) {
+		return nil
 	}
-	if m.view != viewDetail {
-		return m
+	if m.detail.tab == tabLogs {
+		return m.startLogsFetch()
+	}
+	m.conditionLogsSeq++
+	m.conditionLogsPending = false
+	return nil
+}
+
+func (m model) handleTaskRefreshed(msg taskRefreshedMsg) (model, tea.Cmd) {
+	// HTTP responses can finish out of order or after another ticket opens.
+	if msg.seq != m.refreshSeq || m.view != viewDetail {
+		return m, nil
 	}
 	if msg.err != nil {
 		m.detail.err = msg.err
 		m.detailRetry = true
-	} else if m.detail.ticket.ID == msg.info.ID {
-		if msg.info.Status == string(ticket.StatusArchived) {
-			m.view = viewList
-		} else {
-			m.detail.setTicket(msg.info)
-		}
-		m.detail.err = nil
-		m.detailRetry = false
+		return m, nil
 	}
-	return m
+	if m.detail.ticket.ID != msg.info.ID {
+		return m, nil
+	}
+	m.detail.err = nil
+	m.detailRetry = false
+	if msg.info.Status == string(ticket.StatusArchived) {
+		m.view = viewList
+		return m, nil
+	}
+	cmd := m.updateDetailTicket(msg.info)
+	return m, cmd
 }
 
 func (m model) handleTaskUpdated(ev web.TicketEvent) (model, tea.Cmd) {
@@ -689,10 +731,10 @@ func (m model) handleTaskUpdated(ev web.TicketEvent) (model, tea.Cmd) {
 			// notes appended mid-run, which live in the body.
 			info := ev.Ticket
 			info.Body = m.detail.ticket.Body
-			m.detail.setTicket(info)
+			logCmd := m.updateDetailTicket(info)
 			m.refreshSeq++
 			m.detailRetry = false
-			cmd = m.refreshTaskCmd(ev.Ticket.ID, m.refreshSeq)
+			cmd = tea.Batch(m.refreshTaskCmd(ev.Ticket.ID, m.refreshSeq), logCmd)
 		}
 	}
 	m.countRunning()
@@ -738,9 +780,9 @@ func (m model) handleAgentUpdated(msg agentUpdatedMsg) (tea.Model, tea.Cmd) {
 		m.detail.err = msg.err
 		return m, nil
 	}
-	m.detail.setTicket(msg.ticket)
+	cmd := m.updateDetailTicket(msg.ticket)
 	m.list.updateTicket(msg.ticket)
-	return m, nil
+	return m, cmd
 }
 
 func (m model) fetchConfigForAgentCmd() tea.Cmd {

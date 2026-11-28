@@ -77,6 +77,7 @@ test('run preview shows daemon selection and never enables a broken pipeline', a
   const cases = [
     ['legacy', savedPreview, ''],
     ['check', { ...savedPreview, kind: 'check', stages: ['resume-check'], agent: undefined }, 'Workflow graph · check (no agent)'],
+    ['condition', { ...savedPreview, kind: 'condition', stages: ['choose'], agent: undefined }, 'Workflow graph · next: command condition'],
     ['rework', { ...savedPreview, kind: 'rework', stages: ['rework'], agent: 'review-agent' }, 'Plannotator rework'],
     ['missing pipeline', { error: 'unknown pipeline' }, ''],
   ];

@@ -544,6 +544,29 @@ clients and daemons sharing config or ticket storage together.
 Neither recovery nor restart guarantees exactly-once
 shell effects or containment of arbitrary detached processes.
 
+### Command conditions
+
+A [command condition](configuration.md#command-conditions) keeps the latest
+agent or check result and any handoff evidence. Releasing a declared wait can
+continue to a command condition with the same evidence.
+
+The daemon writes command output to
+`<logs_dir>/<id>/conditions/<node>.<evaluation_id>.log`, where `<id>` is the ticket
+ID. The graph trace records the selected edge. In ticket detail,
+`graph_execution.transitions[].evaluation_id` matches `<evaluation_id>` in the
+log filename. A paused evaluation that takes no edge has no transition entry.
+
+The evaluation leaves the producer's run record intact and adds no run history
+row. When condition evaluation itself takes the graph to an `end`, it does not
+start a final summary. A later agent follows the normal summary rules.
+
+If the command pauses the ticket, inspect the log and pause reason before retry.
+The daemon refuses Retry while a condition journal exists at
+`<logs_dir>/<id>/workflow-condition.json`. Use `workflow-recover` only if the
+ticket asks you to acknowledge termination. Inspect the processes and journal
+before acknowledging termination, then retry separately. Retry reruns the
+condition with the same producer evidence. It does not rerun the agent or check.
+
 ### Durable workflow waits
 
 [Wait-enabled graphs](configuration.md#durable-waits) can park an agent at the same
@@ -553,7 +576,7 @@ Waiting uses `status: paused` with `graph_state.wait`, not a new status.
 The API exposes wait kind, phase, deadline, next poll, wake allowance, and diagnostics.
 Probe output keeps a UTF-8-safe excerpt up to 16 KiB, a truncation flag and log reference.
 The dashboard and TUI also show release instructions. Idle waits use no execution slot.
-Active condition probes share worker capacity and do not call an agent.
+Active wait probes share worker capacity and do not call an agent.
 
 Wait state retains absolute times, poll identity/count, continuation instructions,
 workspace identity, and accepted receipts. A wake queues a fresh physical invocation;

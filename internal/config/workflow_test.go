@@ -138,7 +138,6 @@ func TestWorkflowValidation(t *testing.T) {
 		{"missing timeout", ", timeout: 1m", "", "timeout must be positive"},
 		{"negative timeout", "timeout: 1m", "timeout: -1s", "timeout must be positive"},
 		{"bad timeout", "timeout: 1m", "timeout: tomorrow", "invalid duration"},
-		{"missing condition", ", when: {field: verdict, equals: approve}", "", "when is required"},
 		{"unknown condition", "field: verdict", "field: summary", "unknown condition field"},
 		{"missing operator", ", equals: approve", "", `node "approved": when must set exactly one`},
 		{"null equals", "equals: approve", "equals: null", "when must set exactly one"},

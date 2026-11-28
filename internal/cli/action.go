@@ -1,7 +1,13 @@
 package cli
 
 import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/ticket/store"
@@ -14,10 +20,37 @@ func Pause(cfg *config.Config, taskID string) error {
 
 // Retry resets a ticket to todo with attempt=0 for re-processing.
 func Retry(cfg *config.Config, taskID string) error {
-	repo := store.NewDiskRepo(cfg.TicketsDir)
+	repo := retryRepo{store.NewDiskRepo(cfg.TicketsDir), config.ExpandTilde(cfg.LogsDir)}
 	svc := app.New(app.Static(cfg), repo, app.NoopRuntime{})
 	_, err := svc.Retry(taskID)
 	return err
+}
+
+type retryRepo struct {
+	*store.DiskRepo
+	logsDir string
+}
+
+func (r retryRepo) WithMutation(fn func(app.MutationRepository) error) error {
+	return r.DiskRepo.WithMutation(func(scoped app.MutationRepository) error {
+		return fn(retryMutationRepo{scoped, r.logsDir})
+	})
+}
+
+type retryMutationRepo struct {
+	app.MutationRepository
+	logsDir string
+}
+
+func (r retryMutationRepo) Save(st *app.StoredTicket) error {
+	// Check the resolved ticket's journal under the board mutation lock.
+	path := filepath.Join(session.TicketDir(r.logsDir, st.Ticket.ID), "workflow-condition.json")
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("%w: retry blocked by workflow condition journal %s; use workflow-recover only if the ticket asks you to acknowledge termination", app.ErrInvalidState, path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: cannot check workflow condition journal: %v", app.ErrInvalidState, err)
+	}
+	return r.MutationRepository.Save(st)
 }
 
 // Cancel sets a ticket's status to cancelled.

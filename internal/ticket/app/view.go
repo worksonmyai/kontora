@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"time"
@@ -186,7 +187,7 @@ type GraphExecutionView struct {
 	CurrentTemplate       string                   `json:"current_template,omitempty"`
 	VisitID               string                   `json:"visit_id,omitempty"`
 	Visit                 uint64                   `json:"visit"`
-	Attempt               int                      `json:"attempt"`
+	Attempt               int                      `json:"-"`
 	LastResult            *ticket.GraphResult      `json:"last_result,omitempty"`
 	SelectedEdges         []ticket.GraphTransition `json:"selected_edges,omitempty"`
 	Loops                 []GraphLoopView          `json:"loops,omitempty"`
@@ -198,6 +199,37 @@ type GraphExecutionView struct {
 	Continuation       bool                     `json:"continuation,omitempty"`
 	Transitions        []ticket.GraphTransition `json:"transitions,omitempty"`
 	PreviousExecutions []ticket.GraphEvidence   `json:"previous_executions,omitempty"`
+	omitAttempt        bool
+}
+
+func (v GraphExecutionView) HasAttempt() bool { return !v.omitAttempt }
+
+type graphExecutionJSON GraphExecutionView
+
+type graphExecutionWire struct {
+	*graphExecutionJSON
+	Attempt *int `json:"attempt,omitempty"`
+}
+
+func (v GraphExecutionView) MarshalJSON() ([]byte, error) {
+	wire := graphExecutionWire{graphExecutionJSON: (*graphExecutionJSON)(&v)}
+	if v.HasAttempt() {
+		wire.Attempt = &v.Attempt
+	}
+	return json.Marshal(wire)
+}
+
+func (v *GraphExecutionView) UnmarshalJSON(data []byte) error {
+	wire := graphExecutionWire{graphExecutionJSON: (*graphExecutionJSON)(v)}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	v.omitAttempt = wire.Attempt == nil
+	v.Attempt = 0
+	if wire.Attempt != nil {
+		v.Attempt = *wire.Attempt
+	}
+	return nil
 }
 
 func BuildGraphDefinition(graph *config.WorkflowGraph) *GraphDefinitionView {
@@ -228,15 +260,18 @@ func BuildGraphDefinition(graph *config.WorkflowGraph) *GraphDefinitionView {
 	return v
 }
 
-func buildGraphExecution(t *ticket.Ticket, detail bool) *GraphExecutionView {
+func buildGraphExecution(t *ticket.Ticket, detail, commandCondition bool) *GraphExecutionView {
 	s := t.GraphState
 	if s == nil {
 		return nil
 	}
 	v := &GraphExecutionView{Version: s.Version, ExecutionID: s.ExecutionID, Revision: s.Revision,
 		DefinitionFingerprint: s.DefinitionFingerprint, CurrentNode: t.Stage, CurrentTemplate: s.NodeTemplates[t.Stage], VisitID: s.VisitID,
-		Visit: s.Visit, Attempt: graphVisitAttempt(t), LastResult: s.LastResult,
+		Visit: s.Visit, LastResult: s.LastResult, omitAttempt: commandCondition,
 		Wait: s.Wait, Wake: s.Wake, WakeCount: s.WakeCount, Continuation: graphVisitContinuation(t)}
+	if v.HasAttempt() {
+		v.Attempt = graphVisitAttempt(t)
+	}
 	selected := make(map[GraphPortView]int)
 	exhausted := make(map[string]bool)
 	for _, edge := range s.Transitions {
@@ -386,6 +421,7 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 	v.Agent = ResolveViewAgent(cfg, t)
 	v.AgentOverride = t.Agent != ""
 
+	var commandCondition bool
 	if pipelineCfg, ok := cfg.Pipelines[t.Pipeline]; ok {
 		stages := make([]string, len(pipelineCfg.Legacy))
 		for i, step := range pipelineCfg.Legacy {
@@ -395,6 +431,9 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		if pipelineCfg.Graph != nil {
 			v.Stages = nil
 			v.GraphDefinition = BuildGraphDefinition(pipelineCfg.Graph)
+			if node, ok := pipelineCfg.Graph.Node(t.Stage); ok {
+				commandCondition = node.CommandCondition()
+			}
 		}
 	}
 	// A passive epic gets neither the default agent nor a stage ribbon: it has no
@@ -406,7 +445,7 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		}
 	}
 
-	v.GraphExecution = buildGraphExecution(t, detail)
+	v.GraphExecution = buildGraphExecution(t, detail, commandCondition)
 
 	if detail {
 		if len(t.History) > 0 {

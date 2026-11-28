@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/session"
@@ -53,6 +56,11 @@ type graphSource struct {
 	mockSource
 	calls    []int
 	restarts int
+	logsErr  error
+}
+
+func (s *graphSource) FetchLogs(_, _ string) (string, error) {
+	return s.logs, s.logsErr
 }
 
 func (s *graphSource) FetchRunLogs(_, _ string, run int) (string, error) {
@@ -94,6 +102,106 @@ func TestGraphTUIFetchesExactRunAndDropsOvertakenLogResponse(t *testing.T) {
 	response = m.fetchLogsCmd(m.detail.ticket.ID, m.detail.selectedLogTarget())().(logsMsg)
 	next, _ = m.Update(response)
 	assert.Equal(t, "visit-specific transcript", next.(model).detail.logContent)
+}
+
+func TestGraphTUIShowsLatestConditionLogWithoutAnAttempt(t *testing.T) {
+	info := tuiGraphTicket()
+	info.Stage, info.Status = "choose", "in_progress"
+	info.Attempt = 2
+	info.GraphExecution.CurrentNode = info.Stage
+	condition := config.WorkflowNode{ID: "choose", Type: "condition", Command: "test -f ready"}
+	plain := config.WorkflowNode{ID: "plain", Type: "condition"}
+	graph := &config.WorkflowGraph{Nodes: []config.WorkflowNode{condition, plain}}
+	info.GraphDefinition = app.BuildGraphDefinition(graph)
+	cfg := &config.Config{TicketsDir: t.TempDir(), LogsDir: t.TempDir(), Pipelines: map[string]config.PipelineDefinition{
+		"workflow": {Graph: graph},
+	}}
+	require.NoError(t, os.WriteFile(filepath.Join(cfg.TicketsDir, "graph.md"), []byte(`---
+id: graph
+pipeline: workflow
+stage: choose
+status: in_progress
+graph_state: {execution_id: exec, visit: 2, visit_id: exec.2}
+---
+`), 0o600))
+	var out bytes.Buffer
+	require.NoError(t, cli.View(cfg, info.ID, &out))
+	assert.Contains(t, out.String(), "node:      choose")
+	assert.Contains(t, out.String(), "visit:     2 (exec.2)")
+	assert.NotContains(t, out.String(), "attempt:")
+	logDir := filepath.Join(cfg.LogsDir, info.ID, "conditions")
+	require.NoError(t, os.MkdirAll(logDir, 0o700))
+	require.NoError(t, os.WriteFile(session.LogPath(cfg.LogsDir, info.ID, "work"), []byte("unrelated log"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(logDir, "choose.00000000000000000011-a.log"), []byte("evaluation output"), 0o600))
+
+	m := newModel(&fileSource{cfg: cfg})
+	m, _ = m.openDetail(info)
+	assert.Contains(t, m.detail.View(), "Evaluating")
+	assert.NotContains(t, m.detail.View(), "attempt")
+	assert.Contains(t, m.detail.ticketContent(), "command test -f ready")
+	require.Len(t, m.detail.logTargets, len(info.History)+1)
+	m.detail.logStage = len(info.History)
+	target := m.detail.selectedLogTarget()
+	assert.Equal(t, "choose · latest evaluation", target.label)
+	assert.Equal(t, "evaluation output", m.fetchLogsCmd(info.ID, target)().(logsMsg).content)
+	require.NoError(t, os.Remove(filepath.Join(logDir, "choose.00000000000000000011-a.log")))
+	_, cmd := m.detail.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	request := cmd().(fetchLogsRequest)
+	assert.True(t, target.same(request.target))
+	assert.Equal(t, "No condition log found.\n", m.fetchLogsCmd(request.id, request.target)().(logsMsg).content)
+}
+
+func TestGraphTUIRefreshesSelectedConditionLogOnRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name, initial string
+		logErr        error
+	}{
+		{"prior output", "first evaluation", nil},
+		{"no local log yet", "No condition log found.\n", nil},
+		{"no remote log yet", "log not found", errors.New("log not found")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			info := tuiGraphTicket()
+			info.Stage = "choose"
+			info.GraphExecution.CurrentNode = info.Stage
+			info.GraphDefinition.Nodes = append(info.GraphDefinition.Nodes, app.GraphNodeView{ID: info.Stage, Type: "condition", Command: "test -f ready"})
+			src := &graphSource{}
+			src.connected, src.logs, src.logsErr = true, tc.initial, tc.logErr
+			m := newModel(src)
+			m, _ = m.openDetail(info)
+			m.detail.logStage = len(info.History)
+			runReconcileCmd(&m, applyReconcileMsg(&m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}}))
+			require.Equal(t, tc.initial, m.detail.logContent)
+
+			info.Status = "in_progress"
+			src.detail = info
+			cmd := applyReconcileMsg(&m, taskUpdatedMsg{Type: "ticket_updated", Ticket: info})
+			require.Empty(t, m.detail.logContent)
+			runReconcileCmd(&m, cmd)
+			require.Equal(t, tc.initial, m.detail.logContent)
+
+			src.logs, src.logsErr = "retry output", nil
+			cmd = applyReconcileMsg(&m, tickMsg{})
+			batch := cmd().(tea.BatchMsg)
+			require.Len(t, batch, 3, "config, condition log, next tick")
+			runReconcileCmd(&m, batch[1])
+			require.Equal(t, "retry output", m.detail.logContent)
+
+			cmd = applyReconcileMsg(&m, tickMsg{})
+			older := cmd().(tea.BatchMsg)[1]()
+			cmd = applyReconcileMsg(&m, tickMsg{})
+			require.Len(t, cmd().(tea.BatchMsg), 2, "do not start another poll while the log read is pending")
+			info.Status = "paused"
+			src.logs = "retry output with final lines"
+			runReconcileCmd(&m, applyReconcileMsg(&m, taskRefreshedMsg{info: info, seq: m.refreshSeq}))
+			require.Equal(t, "retry output with final lines", m.detail.logContent)
+			applyReconcileMsg(&m, older)
+			require.Equal(t, "retry output with final lines", m.detail.logContent)
+			require.Equal(t, "choose · latest evaluation", m.detail.selectedLogTarget().label)
+			cmd = applyReconcileMsg(&m, tickMsg{})
+			require.Len(t, cmd().(tea.BatchMsg), 2, "paused conditions do not poll")
+		})
+	}
 }
 
 func TestGraphCreatePreviewUsesEntryNotFirstDefinitionNode(t *testing.T) {

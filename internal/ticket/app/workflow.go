@@ -92,14 +92,16 @@ func retryWorkflow(cfg *config.Config, t *ticket.Ticket) error {
 		cursor = definition.Graph.Entry
 	}
 	node, ok := definition.Graph.Node(cursor)
-	if !ok || (node.Type != "agent" && node.Type != "check") {
-		return fmt.Errorf("%w: retry requires an executable graph node; use workflow-restart", ErrInvalidState)
+	if !ok || (node.Type != "agent" && node.Type != "check" && !node.CommandCondition()) {
+		return fmt.Errorf("%w: retry requires an executable graph node or command condition; use workflow-restart", ErrInvalidState)
 	}
 	if t.GraphState == nil {
 		return nil
 	}
 	state := t.GraphState.Clone()
-	state.LastResult = nil
+	if !node.CommandCondition() {
+		state.LastResult = nil
+	}
 	state.Revision++
 	return t.SetField("graph_state", state)
 }

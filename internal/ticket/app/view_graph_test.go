@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -84,6 +85,63 @@ func TestBuildGraphDefinitionConditions(t *testing.T) {
 			require.NoError(t, err)
 			require.JSONEq(t, tc.want, string(data))
 		})
+	}
+}
+
+func TestBuildView_GraphAttemptJSON(t *testing.T) {
+	for _, node := range []config.WorkflowNode{
+		{ID: "work", Type: "agent", Stage: "code"},
+		{ID: "work", Type: "check", Command: "true"},
+		{ID: "work", Type: "condition", When: &config.WorkflowCondition{Field: "exit_code", Equals: 0}},
+	} {
+		t.Run(node.Type, func(t *testing.T) {
+			cfg, tk := graphViewFixture()
+			cfg.Pipelines[tk.Pipeline].Graph.Nodes[2] = node
+			for _, detail := range []bool{false, true} {
+				execution := BuildView(cfg, tk, detail).GraphExecution
+				data, err := json.Marshal(execution)
+				require.NoError(t, err)
+				assert.Contains(t, string(data), `"attempt":0`)
+				var decoded GraphExecutionView
+				require.NoError(t, json.Unmarshal(data, &decoded))
+				assert.True(t, decoded.HasAttempt())
+				assert.Zero(t, decoded.Attempt)
+			}
+		})
+	}
+}
+
+func TestBuildView_CommandConditionCursor(t *testing.T) {
+	cfg, tk := graphViewFixture()
+	graph := cfg.Pipelines[tk.Pipeline].Graph
+	graph.Nodes = append(graph.Nodes, config.WorkflowNode{
+		ID: "choose", Type: "condition", Command: "test -f ready", Timeout: config.Duration{Duration: 3 * time.Second},
+	})
+	tk.Stage, tk.Status = "choose", ticket.StatusInProgress
+	// Reuse the producer’s visit ID to catch leaked attempt counts.
+	tk.GraphState.VisitID = "exec.1"
+	tk.GraphState.Transitions = append(tk.GraphState.Transitions, ticket.GraphTransition{
+		From: "choose", Port: "true", To: "work", Revision: 5, EvaluationID: "00000000000000000001-previous",
+	})
+	for _, detail := range []bool{false, true} {
+		view := BuildView(cfg, tk, detail)
+		node, err := json.Marshal(view.GraphDefinition.Nodes[len(graph.Nodes)-1])
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"id":"choose","type":"condition","command":"test -f ready","timeout":"3s"}`, string(node))
+		execution, err := json.Marshal(view.GraphExecution)
+		require.NoError(t, err)
+		assert.NotContains(t, string(execution), `"attempt"`)
+		var decoded GraphExecutionView
+		require.NoError(t, json.Unmarshal(execution, &decoded))
+		assert.False(t, decoded.HasAttempt())
+		assert.Zero(t, decoded.Attempt)
+		roundTrip, err := json.Marshal(decoded)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(execution), string(roundTrip))
+		assert.Equal(t, "00000000000000000001-previous", view.GraphExecution.SelectedEdges[1].EvaluationID)
+		if detail {
+			assert.Equal(t, "00000000000000000001-previous", view.GraphExecution.Transitions[2].EvaluationID)
+		}
 	}
 }
 

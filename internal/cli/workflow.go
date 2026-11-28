@@ -98,7 +98,9 @@ func PrintWorkflow(w io.Writer, definition *app.GraphDefinitionView, execution *
 		fmt.Fprintf(w, "template:  %s\n", execution.CurrentTemplate)
 	}
 	fmt.Fprintf(w, "visit:     %d (%s)\n", execution.Visit, execution.VisitID)
-	fmt.Fprintf(w, "attempt:   %d (within this visit)\n", execution.Attempt+1)
+	if execution.HasAttempt() {
+		fmt.Fprintf(w, "attempt:   %d (within this visit)\n", execution.Attempt+1)
+	}
 	printWorkflowWait(w, definition, execution)
 	printWorkflowTrace(w, execution)
 }

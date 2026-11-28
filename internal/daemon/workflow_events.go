@@ -185,7 +185,7 @@ func (d *Daemon) releaseApplication(t *ticket.Ticket, path string, receipt *tick
 	if after.Rejected {
 		return nil, workflowReleaseConflict(after.Reason)
 	}
-	if after.Next != nil {
+	if after.Next != nil || after.Condition != nil {
 		after.State.Continuation = true
 		after.State.Wake = &ticket.WakeContext{Reason: "released", WaitID: w.ID, Receipt: receipt.Clone()}
 	}

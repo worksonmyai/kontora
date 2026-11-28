@@ -3,6 +3,7 @@ const runKinds = {
   rework: 'Plannotator rework',
   graph: 'Workflow graph',
   check: 'Workflow graph · check (no agent)',
+  condition: 'Workflow graph · next: command condition',
   wait: 'Workflow graph · wait',
   end: 'Workflow graph · finish without an agent',
 };

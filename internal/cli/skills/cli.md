@@ -261,6 +261,24 @@ A conflicting result cannot replace the first terminal publication.
 See `kontora skills show pipelines 'Durable waits'` for probe permissions, outcomes and recovery.
 See `kontora skills show cli Compatibility` before enabling waits.
 
+## Command condition environment
+
+For a command condition, the daemon exports:
+
+- `KONTORA_WORKTREE`, `KONTORA_REPO_PATH`: existing ticket worktree and source repository paths.
+- `KONTORA_BRANCH`: ticket branch.
+- `KONTORA_BASE_BRANCH`: ticket base branch, otherwise the detected repository
+  default, or empty if detection fails.
+- `KONTORA_WORKFLOW_EXECUTION_ID`: current execution identity.
+- `KONTORA_LAST_NODE`, `KONTORA_LAST_OUTCOME`: latest agent or check node and its outcome.
+- `KONTORA_LAST_EXIT_CODE`, `KONTORA_LAST_VERDICT`: that producer's exit code and
+  accepted verdict, when available.
+- `KONTORA_LAST_LOG`: expected absolute producer log path. The file may not exist.
+
+Unavailable `KONTORA_LAST_*` values are empty strings.
+
+See `kontora skills show pipelines 'Command conditions'` for command permissions and routing.
+
 ## Common flags
 
 - `--config PATH` — config file. Defaults to `$KONTORA_CONFIG`, then
@@ -714,7 +732,12 @@ epics, and your own ticket.
 Graph retry preserves execution/visit identity and loop counts, with a fresh invocation;
 retry at `end` is refused. For an active wait, retry re-arms the same wait after required recovery,
 without resetting its deadline or bypassing release conditions.
-For other work, local mode only updates the ticket file. With `auto_pick_up: false`, follow retry
+For a paused command condition, use remote mode or the dashboard/API. Retry
+reruns the command with the same producer evidence. The daemon refuses Retry
+while a condition journal exists. Inspect the pause reason and the log at
+`<logs_dir>/<id>/conditions/<node>.<evaluation_id>.log`. Use `workflow-recover`
+only if the ticket asks you to acknowledge termination.
+In local mode, retry only updates the ticket file. With `auto_pick_up: false`, follow retry
 with `kontora run TICKET_ID`. Remote mode and dashboard/API retry queue dependency-ready work.
 
 ## kontora workflow-restart
@@ -1249,25 +1272,27 @@ pipeline, select it by its new name.
 
 Choose one source (the built-in graph recipe or an explicit config and graph
 pipeline) and one mode (`--scenario FILE` or `--preflight`). The command is
-read-only and offline, ignoring `KONTORA_URL`. It never runs checks, hooks, Git,
-or agents, and never opens a ticket store or makes worktrees or logs.
+read-only and offline, ignoring `KONTORA_URL`. It never runs checks, condition
+commands, hooks, Git, or agents. It never opens a ticket store or makes worktrees or logs.
 
-A scenario is a JSON array. Each event names an executable node or declared wait
-in `node`. Executables accept `outcome: complete` or `failed` and an integer
+A scenario is a JSON array. Each event names an executable node, command condition,
+or declared wait in `node`. Executables accept `outcome: complete` or `failed` and an integer
 `exit_code` from `0` to `255`. Checks require an exit code; agents default to
 zero. Omitted outcome defaults to `complete` for zero and `failed` otherwise.
 Checks route by exit code, reject `failed` with zero, and cannot supply a verdict.
 An agent verdict must be declared. A successful agent must supply one if the node
 declares verdicts. Wait events use `wait: released` or, when configured,
-`wait: timeout`, with no completion fields.
+`wait: timeout`, with no completion fields. A command condition event supplies
+only `node` and `exit_code`, for example `{"node":"has-notes","exit_code":0}`.
+A `when` condition needs no event.
 
 The final line distinguishes end, waiting, missing input, and rejection. Only
 rejection exits nonzero among those stops.
 
 Preflight reports reachable incompatible condition inputs with a witness path.
 Rejections and inconclusive exploration (more than 4,096 interpreter steps
-needed) exit nonzero. It models normal completions and declared waits, not real
-execution, suspension, or release authority. See the `pipelines` skill for a
+needed) exit nonzero. It models normal completions, command condition exits `0`
+and `1`, and declared waits. It does not test real execution, suspension, or release authority. See the `pipelines` skill for a
 starter scenario.
 
 ## kontora doctor
@@ -1327,6 +1352,8 @@ ID.
 - Supervised results and local delivery: Upgrade the CLI and daemon together. Before enabling local commits
   without per-commit approval, check that the prompt each supervised Pi or Claude run receives contains the
   local-delivery rules in Epic supervision. Do not restart live epics or migrate ticket state during the upgrade.
+- Command conditions: Older versions reject `command` on `condition` nodes.
+  Upgrade the daemon and every CLI that reads the config before adding them.
 - Durable waits: See `kontora skills show pipelines Compatibility` for result v3 and graph-state v2.
 - Notification defaults and Off: See `kontora skills show config Compatibility`.
 - Epic activation: See `kontora skills show tickets Compatibility`.

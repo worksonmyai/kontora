@@ -162,6 +162,88 @@ pipelines:
 	require.Len(t, entries, 2, "no runtime artifacts or command side effects")
 }
 
+func TestWorkflowSimulateCommandCondition(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	scenario := filepath.Join(dir, "scenario.json")
+	marker := filepath.Join(dir, "condition-ran")
+	data := fmt.Sprintf(`default_agent: fake
+agents:
+  fake: {binary: does-not-exist}
+pipelines:
+  probe:
+    version: 2
+    entry: tests
+    nodes:
+      - {id: tests, type: check, command: 'exit 1', timeout: 1m}
+      - {id: decision, type: condition, command: %q}
+      - {id: yes, type: end, status: done}
+      - {id: no, type: end, status: paused}
+    edges:
+      - {from: {node: tests, port: pass}, to: decision}
+      - {from: {node: tests, port: fail}, to: no}
+      - {from: {node: decision, port: 'true'}, to: yes}
+      - {from: {node: decision, port: 'false'}, to: no}
+`, fmt.Sprintf("touch %q", marker))
+	require.NoError(t, os.WriteFile(path, []byte(data), 0o644))
+	args := []string{"workflow-simulate", "--config", path, "--pipeline", "probe"}
+	stdout, stderr, err := runCLISeparated(t, nil, nil, append(args, "--preflight")...)
+	require.NoError(t, err, stderr)
+	assert.Contains(t, stdout, "Preflight uses only synthetic exit codes 0 and 1 for command conditions.")
+	assert.Contains(t, stdout, "Preflight found no rejected paths in 5 interpreter steps.")
+	assert.NoFileExists(t, marker)
+
+	const (
+		check = `{"node":"tests","exit_code":0}`
+		shape = "event 2: command condition requires exit_code without outcome, verdict, or wait"
+	)
+	for _, tc := range []struct {
+		name, event, want string
+		reject            bool
+	}{
+		{name: "missing input", want: "Final: decision (missing input, status=todo)"},
+		{name: "true", event: `{"node":"decision","exit_code":0}`, want: "decision --true--> yes\nFinal: yes (end, status=done)"},
+		{name: "false", event: `{"node":"decision","exit_code":1}`, want: "decision --false--> no\nFinal: no (end, status=paused)"},
+		{name: "wrong node", event: `{"node":"no","exit_code":0}`, want: `event 2: expected node "decision", got "no"`, reject: true},
+		{name: "other exit", event: `{"node":"decision","exit_code":2}`, want: "event 2: condition decision exited with code 2", reject: true},
+		{name: "missing exit code", event: `{"node":"decision"}`, want: shape, reject: true},
+		{name: "null exit code", event: `{"node":"decision","exit_code":null}`, want: shape, reject: true},
+		{name: "outcome", event: `{"node":"decision","exit_code":0,"outcome":"complete"}`, want: shape, reject: true},
+		{name: "null outcome", event: `{"node":"decision","exit_code":0,"outcome":null}`, want: shape, reject: true},
+		{name: "verdict", event: `{"node":"decision","exit_code":0,"verdict":"approved"}`, want: shape, reject: true},
+		{name: "empty verdict", event: `{"node":"decision","exit_code":0,"verdict":""}`, want: shape, reject: true},
+		{name: "wait", event: `{"node":"decision","exit_code":0,"wait":"released"}`, want: shape, reject: true},
+		{name: "null wait", event: `{"node":"decision","exit_code":0,"wait":null}`, want: shape, reject: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []string{check}
+			if tc.event != "" {
+				events = append(events, tc.event)
+			}
+			require.NoError(t, os.WriteFile(scenario, []byte("["+strings.Join(events, ",")+"]"), 0o644))
+			stdout, stderr, err := runCLISeparated(t, nil, nil, append(args, "--scenario", scenario)...)
+			if tc.reject {
+				require.Error(t, err)
+				assert.Contains(t, stderr, "scenario transition rejected")
+				assert.Contains(t, stdout, "Final: decision (rejected, status=paused)")
+				assert.NotContains(t, stdout, "decision --")
+			} else {
+				require.NoError(t, err, stderr)
+			}
+			assert.Contains(t, stdout, "tests --pass--> decision")
+			assert.Contains(t, stdout, tc.want)
+			assert.NoFileExists(t, marker)
+		})
+	}
+}
+
+func TestWorkflowSimulateConditionHelp(t *testing.T) {
+	out, err := runCLI(t, nil, "workflow-simulate", "--help")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "Path to JSON scenario (command condition events require node and exit_code only)")
+	assert.Contains(t, out, "Check modeled routes for rejections (command condition exits: 0 and 1)")
+}
+
 func TestWorkflowSimulateInvalidInput(t *testing.T) {
 	dir := t.TempDir()
 	scenario := filepath.Join(dir, "scenario.json")

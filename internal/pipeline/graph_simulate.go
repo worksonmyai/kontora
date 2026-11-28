@@ -13,8 +13,8 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
-// GraphScenarioEvent describes one synthetic result at the named executable or
-// declared wait. It never represents an invocation or a real release receipt.
+// GraphScenarioEvent supplies synthetic input to an executable, command
+// condition, or declared wait.
 type GraphScenarioEvent struct {
 	Node     string `json:"node"`
 	Outcome  string `json:"outcome,omitempty"`
@@ -22,8 +22,9 @@ type GraphScenarioEvent struct {
 	Verdict  string `json:"verdict,omitempty"`
 	Wait     string `json:"wait,omitempty"`
 
-	hasCompletion bool
-	hasWait       bool
+	hasOutcomeOrVerdict bool
+	hasExitCode         bool
+	hasWait             bool
 }
 
 func (e *GraphScenarioEvent) UnmarshalJSON(data []byte) error {
@@ -40,9 +41,10 @@ func (e *GraphScenarioEvent) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	event := GraphScenarioEvent{
-		Node:          fields.Node,
-		hasCompletion: fields.Outcome != nil || fields.ExitCode != nil || fields.Verdict != nil,
-		hasWait:       fields.Wait != nil,
+		Node:                fields.Node,
+		hasOutcomeOrVerdict: fields.Outcome != nil || fields.Verdict != nil,
+		hasExitCode:         fields.ExitCode != nil,
+		hasWait:             fields.Wait != nil,
 	}
 	for _, field := range []struct {
 		name string
@@ -87,7 +89,7 @@ func SimulateGraph(graph *config.WorkflowGraph, events []GraphScenarioEvent) Gra
 				result.Reason = fmt.Sprintf("event %d: %s", i, a.Reason)
 			}
 			return result
-		case a.Next == nil && a.Wait == nil:
+		case a.Next == nil && a.Wait == nil && a.Condition == nil:
 			result.Stop = "end"
 			if i < len(events) {
 				result.Stop = "rejected"
@@ -117,8 +119,18 @@ func simulationStep(graph *config.WorkflowGraph, a GraphAdvance, event GraphScen
 		return a.pause(fmt.Sprintf("expected node %q, got %q", a.Stage, event.Node))
 	}
 	s := a.State
+	hasOutcomeOrVerdict := event.hasOutcomeOrVerdict || event.Outcome != "" || event.Verdict != ""
+	hasWait := event.hasWait || event.Wait != ""
+	if a.Condition != nil {
+		if event.ExitCode == nil || hasOutcomeOrVerdict || hasWait {
+			return a.pause("command condition requires exit_code without outcome, verdict, or wait")
+		}
+		return trimSimulationHistory(ResolveGraphCondition(graph, a.Stage, s, GraphConditionResult{
+			NodeID: a.Stage, EvaluationID: fmt.Sprintf("condition-%d", s.Revision), ExitCode: *event.ExitCode,
+		}))
+	}
 	if a.Wait != nil {
-		if event.Wait == "" || event.hasCompletion || event.Outcome != "" || event.ExitCode != nil || event.Verdict != "" {
+		if event.Wait == "" || hasOutcomeOrVerdict || event.hasExitCode || event.ExitCode != nil {
 			return a.pause("expected a wait outcome (released or timeout) without completion fields")
 		}
 		state := *s
@@ -128,7 +140,7 @@ func simulationStep(graph *config.WorkflowGraph, a GraphAdvance, event GraphScen
 		}
 		return trimSimulationHistory(ReleaseGraphWait(graph, a.Stage, &state, event.Wait))
 	}
-	if event.hasWait || event.Wait != "" {
+	if hasWait {
 		return a.pause("wait is only valid at a declared wait")
 	}
 	if a.Next.Type == "check" && event.ExitCode == nil {
@@ -209,7 +221,7 @@ func PreflightGraph(graph *config.WorkflowGraph, limit int) GraphPreflightResult
 			}
 			return
 		}
-		if a.Next == nil && a.Wait == nil {
+		if a.Next == nil && a.Wait == nil && a.Condition == nil {
 			return
 		}
 		key := preflightCursorKey(a)
@@ -331,6 +343,9 @@ func representativeCheckCodes(graph *config.WorkflowGraph) map[string][]int {
 }
 
 func preflightEvents(a GraphAdvance, codes []int) []GraphScenarioEvent {
+	if a.Condition != nil {
+		return []GraphScenarioEvent{{Node: a.Stage, ExitCode: new(0)}, {Node: a.Stage, ExitCode: new(1)}}
+	}
 	if a.Wait != nil {
 		events := []GraphScenarioEvent{{Node: a.Stage, Wait: "released"}}
 		if a.Wait.Timeout.Duration > 0 {

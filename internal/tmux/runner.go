@@ -146,6 +146,10 @@ func (p RunParams) compactChannel() string {
 	return CompactChannelName(p.session(), p.WindowName(), "")
 }
 
+func notStartedResult() process.Result {
+	return process.Result{ExitCode: -1, ExitedAt: time.Now(), Termination: process.TerminationNotStarted}
+}
+
 func (p RunParams) session() string {
 	if p.SessionName != "" {
 		return p.SessionName
@@ -159,12 +163,12 @@ func (p RunParams) session() string {
 // cancellation the window is killed.
 func Run(ctx context.Context, p RunParams) (process.Result, error) {
 	if err := ctx.Err(); err != nil {
-		return process.Result{ExitCode: -1}, err
+		return notStartedResult(), err
 	}
 	if p.WaitForLog || len(p.FailurePatterns) > 0 {
 		scan, err := newPaneLogScan(p.FailurePatterns)
 		if err != nil {
-			return process.Result{ExitCode: -1, ExitedAt: time.Now(), Termination: process.TerminationNotStarted}, fmt.Errorf("preparing PTY failure scan: %w", err)
+			return notStartedResult(), fmt.Errorf("preparing PTY failure scan: %w", err)
 		}
 		p.logScan = scan
 		defer scan.close()
@@ -265,7 +269,7 @@ func runInteractive(ctx context.Context, p RunParams) (process.Result, error) {
 func runStandard(ctx context.Context, p RunParams) (process.Result, error) {
 	exitFile, err := os.CreateTemp("", "kontora-exit-*")
 	if err != nil {
-		return process.Result{}, fmt.Errorf("creating exit file: %w", err)
+		return notStartedResult(), fmt.Errorf("creating exit file: %w", err)
 	}
 	exitPath := exitFile.Name()
 	exitFile.Close()
@@ -276,7 +280,7 @@ func runStandard(ctx context.Context, p RunParams) (process.Result, error) {
 	if p.LogFile != "" || p.stableIdentity() {
 		g, err := os.CreateTemp("", "kontora-gate-*")
 		if err != nil {
-			return process.Result{}, fmt.Errorf("creating gate file: %w", err)
+			return notStartedResult(), fmt.Errorf("creating gate file: %w", err)
 		}
 		gateFile = g.Name()
 		g.Close()
@@ -285,7 +289,7 @@ func runStandard(ctx context.Context, p RunParams) (process.Result, error) {
 
 	scriptPath, err := writeStandardWrapper(cmd, exitPath, gateFile, p.Env, p.PathDirs, p.RequireTermination)
 	if err != nil {
-		return process.Result{}, fmt.Errorf("writing wrapper: %w", err)
+		return notStartedResult(), fmt.Errorf("writing wrapper: %w", err)
 	}
 
 	startedAt := time.Now()

@@ -27,7 +27,7 @@ When the web server is enabled, the following endpoints are exposed:
 | `DELETE /api/tickets/{id}` | Delete the ticket markdown file without worktree cleanup. Requires `X-Kontora-Confirm: delete-ticket-file`. Only deletes files inside `tickets_dir`. |
 | `POST /api/tickets/{id}/run` | Queue a ticket. On a passive epic, explicitly activate a supervisor. See [Epics](#epics). |
 | `POST /api/tickets/{id}/pause` | Pause a running ticket. On an agent epic, stop only its supervisor; running children continue. |
-| `POST /api/tickets/{id}/retry` | Retry eligible stopped work. Graph retry keeps the executable visit and loop counts; refused at an `end` node. |
+| `POST /api/tickets/{id}/retry` | Retry eligible stopped work. Graph retry keeps the executable visit and loop counts, or repeats a paused command condition. A condition journal blocks retry. Refused at an `end` node. |
 | `POST /api/tickets/{id}/workflow-restart` | Start a new graph execution at entry (`{}` body), retaining history and worktree. |
 | `POST /api/tickets/{id}/workflow-recover` | Acknowledge inspected termination for graph state (`{"execution_id":"ID","revision":N}` body). |
 | `POST /api/tickets/{id}/workflow-release` | Release a declared human wait using inspected execution/wait identity and revision. See [durable releases](#durable-wait-releases). |
@@ -454,6 +454,20 @@ invocation, preserving execution ID, visit ID and loop counts. Retry at an `end`
 node is refused. `skip` and `set-stage` are refused for graphs even when stopped.
 Graph annotations and Plannotator rework are deferred and refused.
 
+On a paused [command condition](configuration.md#command-conditions), retry
+reruns the command without repeating the preceding agent or check. The daemon
+refuses Retry while a condition journal exists. Use `workflow-recover` only if
+the ticket asks you to acknowledge termination. Retry separately after acknowledgement.
+
+Command conditions preserve `last_result` and handoff evidence. A declared wait
+release can lead to a command condition without replacing that evidence. The
+evaluation adds no run history row. When evaluation itself takes the graph to
+an `end`, it does not start a final summary. Its log is
+`<logs_dir>/<id>/conditions/<node>.<evaluation_id>.log` on the daemon host.
+In ticket detail, `graph_execution.transitions[].evaluation_id` matches
+`<evaluation_id>` in the log filename. A paused evaluation that takes no edge
+has no transition entry.
+
 On a pending wait, pause disarms automatic progress and retry re-arms the same wait.
 Neither resets its absolute deadline. Run, move, schedule, init and done cannot bypass it.
 Cancel invalidates wake authority and stops the probe; restart invalidates old wait IDs.
@@ -545,7 +559,8 @@ Do not discard recovery journals as ordinary disposable output.
 Existing daemon authentication and access controls apply; there is no new approval identity model.
 The server records `OperatorIdentity` when available. Clients cannot supply `operator`.
 Shared-token or unauthenticated access must not be presented as verified named approval.
-Condition commands must be trusted and idempotent; daemon subprocess permissions apply without a sandbox.
+Wait probe commands must be trusted and safe to repeat. They run with the
+daemon's permissions, without a sandbox.
 Recovery covers daemon-process interruption, not exactly-once shell effects or host-power-loss durability.
 
 ### Activity previews and export
@@ -586,10 +601,16 @@ Activity tapes or shared stage or graph visit logs for exact export. Invalid
 values or duplicate selectors return 400. Imported occurrences and occurrences
 without a retained capture return 404, even if Activity shows a preview.
 
-Omitting `run` keeps CLI selection. If `stage` resolves to a graph log, a
-missing file returns 404. Otherwise, the server tries the named stage, then
-the newest ticket log by modification time, then ticket history. The newest
-log can belong to another stage. If none exists, `content` says `no logs found`.
+To export the latest evaluation log for a command condition, pass its node ID
+as `stage` and omit `run`. With or without `stage_only=true`, the server returns
+200 if the log exists and 404 if it is missing. The server does not fall back
+to other logs or ticket history.
+
+For other log requests that omit both `run` and `stage_only`, the server uses
+CLI selection. If `stage` resolves to a graph log, a missing file returns 404.
+Otherwise, the server tries the named stage, then the newest ticket log by
+modification time, then ticket history. The newest log can belong to another
+stage. If none exists, `content` says `no logs found`.
 Pass `stage` and `run` for an exact export instead of using a truncated
 Activity preview.
 

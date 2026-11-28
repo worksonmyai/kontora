@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/worksonmyai/kontora/internal/config"
@@ -31,6 +32,9 @@ func WorkflowSimulate(out io.Writer, opts WorkflowSimulationOptions) error {
 	var report strings.Builder
 	var resultErr error
 	if opts.Preflight {
+		if slices.ContainsFunc(graph.Nodes, config.WorkflowNode.CommandCondition) {
+			report.WriteString("Preflight uses only synthetic exit codes 0 and 1 for command conditions.\n")
+		}
 		result := pipeline.PreflightGraph(graph, pipeline.GraphPreflightLimit)
 		for _, d := range result.Diagnostics {
 			fmt.Fprintf(&report, "Rejected at %q: %s\n", d.Node, d.Reason)

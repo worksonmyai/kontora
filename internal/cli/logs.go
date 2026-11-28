@@ -36,11 +36,25 @@ func Logs(tasksDir, logsDir, taskID, stage string, w io.Writer) error {
 // LogsExact reads an already resolved ticket without scanning the ticket store.
 // Named-stage misses keep the CLI newest-log and history fallback.
 func LogsExact(tasksDir, logsDir, resolvedID, stage string, w io.Writer) error {
-	tasksDir = config.ExpandTilde(tasksDir)
-	logsDir = config.ExpandTilde(logsDir)
+	return LogsExactWithConfig(&config.Config{TicketsDir: tasksDir, LogsDir: logsDir}, resolvedID, stage, w)
+}
+
+// Like LogsExact, but selects the latest evaluation log when stage names a configured command condition.
+func LogsExactWithConfig(cfg *config.Config, resolvedID, stage string, w io.Writer) error {
+	tasksDir := config.ExpandTilde(cfg.TicketsDir)
+	logsDir := config.ExpandTilde(cfg.LogsDir)
 	logDir := filepath.Join(logsDir, resolvedID)
 	if stage != "" {
 		if t, err := ticket.ParseFile(filepath.Join(tasksDir, resolvedID+".md")); err == nil {
+			if data, condition, err := ReadConditionLog(logDir, cfg.Pipelines[t.Pipeline].Graph, stage); condition {
+				switch {
+				case errors.Is(err, os.ErrNotExist):
+					_, err = fmt.Fprintln(w, "No condition log found.")
+				case err == nil:
+					_, err = w.Write(data)
+				}
+				return err
+			}
 			if path, _, graph := GraphRunLog(t, logsDir, stage, -1); graph {
 				return printFile(logDir, path, w)
 			}

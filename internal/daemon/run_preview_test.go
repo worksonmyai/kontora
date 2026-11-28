@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -116,10 +117,12 @@ func TestGetTicketRunPreviewSavedSettings(t *testing.T) {
 func TestGetTicketRunPreviewWorkflow(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.cfg
+	marker := filepath.Join(t.TempDir(), "condition-ran")
 	graph := &config.WorkflowGraph{Version: 2, Entry: "implement", Nodes: []config.WorkflowNode{
 		{ID: "implement", Type: "agent", Stage: "step1", Agent: "agent1"},
 		{ID: "verify", Type: "check", Command: "true", Timeout: config.Duration{Duration: time.Second}},
 		{ID: "passed", Type: "condition", When: &config.WorkflowCondition{Field: "exit_code", Equals: 0}},
+		{ID: "probe", Type: "condition", Command: fmt.Sprintf("touch %q", marker), Timeout: config.Duration{Duration: time.Second}},
 		{ID: "again", Type: "loop", Max: 1},
 		{ID: "review", Type: "agent", Stage: "step2", Agent: "agent2"},
 		{ID: "approval", Type: "wait", Mode: "human"},
@@ -129,8 +132,10 @@ func TestGetTicketRunPreviewWorkflow(t *testing.T) {
 		{From: config.WorkflowPort{Node: "implement", Port: "failed"}, To: "finish"},
 		{From: config.WorkflowPort{Node: "verify", Port: "pass"}, To: "passed"},
 		{From: config.WorkflowPort{Node: "verify", Port: "fail"}, To: "passed"},
-		{From: config.WorkflowPort{Node: "passed", Port: "true"}, To: "again"},
+		{From: config.WorkflowPort{Node: "passed", Port: "true"}, To: "probe"},
 		{From: config.WorkflowPort{Node: "passed", Port: "false"}, To: "finish"},
+		{From: config.WorkflowPort{Node: "probe", Port: "true"}, To: "again"},
+		{From: config.WorkflowPort{Node: "probe", Port: "false"}, To: "finish"},
 		{From: config.WorkflowPort{Node: "again", Port: "repeat"}, To: "review"},
 		{From: config.WorkflowPort{Node: "again", Port: "exhausted"}, To: "approval"},
 		{From: config.WorkflowPort{Node: "review", Port: "complete"}, To: "finish"},
@@ -143,7 +148,7 @@ func TestGetTicketRunPreviewWorkflow(t *testing.T) {
 	const id = "tst-graph-preview"
 	for _, tc := range []struct {
 		name, stage, override, wantNode, kind, agent, errPart string
-		saved, exhausted, stale, waiting                      bool
+		saved, passed, exhausted, stale, waiting              bool
 	}{
 		{name: "new execution starts at entry", wantNode: "implement", kind: "graph", agent: "agent1"},
 		{name: "resume a saved agent node", saved: true, stage: "review", wantNode: "review", kind: "graph", agent: "agent2"},
@@ -151,6 +156,8 @@ func TestGetTicketRunPreviewWorkflow(t *testing.T) {
 		{name: "control cursor advances to its next agent", saved: true, stage: "again", wantNode: "review", kind: "graph", agent: "agent2"},
 		{name: "exhausted loop reaches a wait without an agent", saved: true, exhausted: true, stage: "again", wantNode: "approval", kind: "wait"},
 		{name: "condition uses saved check result to terminate without an agent", saved: true, stage: "passed", wantNode: "finish", kind: "end"},
+		{name: "saved command condition ignores agent override", saved: true, passed: true, stage: "probe", override: "agent2", wantNode: "probe", kind: "condition"},
+		{name: "control cursor stops at command condition", saved: true, passed: true, stage: "passed", wantNode: "probe", kind: "condition"},
 		{name: "active wait does not start an agent", saved: true, waiting: true, stage: "approval", kind: "wait", errPart: "before continuation"},
 		{name: "new graph cannot start at a saved non-entry stage", stage: "review", kind: "graph", errPart: "must start at its entry"},
 		{name: "unknown saved node", saved: true, stage: "removed", kind: "graph", errPart: `workflow node "removed": unknown graph cursor`},
@@ -166,8 +173,12 @@ func TestGetTicketRunPreviewWorkflow(t *testing.T) {
 				if tc.exhausted {
 					state.LoopCounts = map[string]int{"again": 1}
 				}
-				if tc.stage == "passed" {
-					state.LastResult = &ticket.GraphResult{NodeID: "verify", VisitID: state.VisitID, InvocationID: "prior", Outcome: "failed", ExitCode: new(1)}
+				if tc.stage == "passed" || tc.stage == "probe" {
+					outcome, code := "failed", 1
+					if tc.passed {
+						outcome, code = "complete", 0
+					}
+					state.LastResult = &ticket.GraphResult{NodeID: "verify", VisitID: state.VisitID, InvocationID: "prior", Outcome: outcome, ExitCode: &code}
 				}
 				if tc.stale {
 					state.DefinitionFingerprint = "different"
@@ -207,6 +218,7 @@ func TestGetTicketRunPreviewWorkflow(t *testing.T) {
 			assert.Equal(t, ticket.StatusOpen, tk.Status)
 			assert.Empty(t, d.running)
 			assert.Empty(t, d.executions)
+			assert.NoFileExists(t, marker)
 			_, err = loadExecution(cfg, id)
 			assert.ErrorIs(t, err, os.ErrNotExist)
 		})

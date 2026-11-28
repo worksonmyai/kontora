@@ -22,18 +22,19 @@ const (
 )
 
 type logTarget struct {
-	stage   string
-	run     int
-	visit   string
-	attempt int
-	graph   bool
-	label   string
+	stage     string
+	run       int
+	visit     string
+	attempt   int
+	graph     bool
+	condition bool
+	label     string
 }
 
 func (t logTarget) same(other logTarget) bool {
 	// The live label changes when a visit enters history, but its identity does not.
 	return t.stage == other.stage && t.run == other.run && t.visit == other.visit &&
-		t.attempt == other.attempt && t.graph == other.graph
+		t.attempt == other.attempt && t.graph == other.graph && t.condition == other.condition
 }
 
 type detailModel struct {
@@ -89,12 +90,14 @@ func (m *detailModel) setSize(w, h int) {
 	m.viewport.Height = m.contentHeight()
 }
 
-func (m *detailModel) setTicket(info web.TicketInfo) {
+func (m *detailModel) setTicket(info web.TicketInfo) bool {
 	old, next := m.ticket.GraphExecution, info.GraphExecution
-	if info.IsRunning() || old == nil || next == nil || old.ExecutionID != next.ExecutionID || old.Revision != next.Revision {
+	cursorChanged := (old == nil) != (next == nil) || old != nil && next != nil &&
+		(old.ExecutionID != next.ExecutionID || old.Revision != next.Revision)
+	if info.IsRunning() || next == nil || cursorChanged {
 		m.choosingEntry = false
 	}
-	previous, id := m.selectedLogTarget(), m.ticket.ID
+	previous, prior := m.selectedLogTarget(), m.ticket
 	m.ticket = info
 	m.setLogTargets(info)
 	if previous.graph && isGraph(info) {
@@ -108,12 +111,17 @@ func (m *detailModel) setTicket(info web.TicketInfo) {
 	} else if m.logStage >= len(m.logTargets) {
 		m.logStage = 0
 	}
-	if id != info.ID || !previous.same(m.selectedLogTarget()) {
+	target := m.selectedLogTarget()
+	selectionChanged := prior.ID != info.ID || !previous.same(target)
+	refreshCondition := target.condition && (selectionChanged || cursorChanged || prior.Stage != info.Stage ||
+		prior.Status != info.Status || prior.IsRunning() != info.IsRunning())
+	if selectionChanged || refreshCondition {
 		m.setLogs("")
 	}
 	if m.tab == tabTicket {
 		m.viewport.SetContent(m.ticketContent())
 	}
+	return refreshCondition
 }
 
 func (m *detailModel) setLogs(content string) {
@@ -142,6 +150,11 @@ func (m detailModel) updateKeys(msg tea.KeyMsg) (detailModel, tea.Cmd) {
 		m.tab = tabLogs
 		m.viewport.SetContent(m.logContent)
 		m.viewport.GotoTop()
+		if target, id := m.selectedLogTarget(), m.ticket.ID; target.condition {
+			return m, func() tea.Msg {
+				return fetchLogsRequest{id: id, target: target}
+			}
+		}
 	case isKey(msg, "l"):
 		if len(m.logTargets) > 0 {
 			previous := m.selectedLogTarget()
@@ -166,15 +179,22 @@ func (m detailModel) updateKeys(msg tea.KeyMsg) (detailModel, tea.Cmd) {
 	return m, nil
 }
 
+func (m detailModel) statusLabel(nodeType, command string) string {
+	if isWaiting(m.ticket) {
+		return "Waiting"
+	}
+	if m.ticket.IsRunning() && nodeType == "condition" && command != "" {
+		return "Evaluating"
+	}
+	return styledStatus(m.ticket.Status)
+}
+
 func (m detailModel) View() string {
 	var b strings.Builder
 
 	// Header: ID + status + back hint
-	status := styledStatus(m.ticket.Status)
-	if isWaiting(m.ticket) {
-		status = "Waiting"
-	}
-	header := fmt.Sprintf(" %s · %s", m.ticket.ID, status)
+	currentType, currentCommand := graphNode(m.ticket, m.ticket.Stage)
+	header := fmt.Sprintf(" %s · %s", m.ticket.ID, m.statusLabel(currentType, currentCommand))
 	if !m.ticket.Kontora {
 		header += styleFaint.Render(" · not a kontora ticket")
 	}
@@ -215,7 +235,11 @@ func (m detailModel) View() string {
 	if x := m.ticket.GraphExecution; x != nil {
 		writeMeta(&b, "node", x.CurrentNode)
 		writeMeta(&b, "template", x.CurrentTemplate)
-		writeMeta(&b, "visit", fmt.Sprintf("%s · attempt %d", x.VisitID, x.Attempt+1))
+		visit := x.VisitID
+		if currentType != "condition" {
+			visit = fmt.Sprintf("%s · attempt %d", visit, x.Attempt+1)
+		}
+		writeMeta(&b, "visit", visit)
 	}
 	if m.choosingEntry && m.ticket.GraphDefinition != nil {
 		writeMeta(&b, "restart", m.ticket.GraphDefinition.Entry+" · fresh execution and counters · enter confirm · esc cancel")
@@ -243,7 +267,7 @@ func (m detailModel) View() string {
 	} else if m.ticket.StartedAt != nil {
 		writeMeta(&b, "started", cli.FormatTimestamp(m.ticket.StartedAt))
 	}
-	if m.ticket.Attempt > 0 {
+	if m.ticket.Attempt > 0 && currentType != "condition" {
 		writeMeta(&b, "attempt", fmt.Sprintf("%d", m.ticket.Attempt))
 	}
 	if m.ticket.LastError != "" {
@@ -333,6 +357,17 @@ func canSkipStage(t web.TicketInfo) bool {
 
 func isGraph(t web.TicketInfo) bool { return t.GraphDefinition != nil || t.GraphExecution != nil }
 
+func graphNode(info web.TicketInfo, id string) (nodeType, command string) {
+	if info.GraphDefinition != nil {
+		for _, n := range info.GraphDefinition.Nodes {
+			if n.ID == id {
+				return n.Type, n.Command
+			}
+		}
+	}
+	return "", ""
+}
+
 func isWaiting(t web.TicketInfo) bool {
 	return t.Status == string(ticket.StatusPaused) && t.GraphExecution != nil && t.GraphExecution.Wait != nil
 }
@@ -364,7 +399,8 @@ func (m *detailModel) setLogTargets(info web.TicketInfo) {
 			label: label,
 		})
 	}
-	if info.IsRunning() && info.Stage != "" {
+	nodeType, _ := graphNode(info, info.Stage)
+	if info.IsRunning() && info.Stage != "" && (nodeType == "agent" || nodeType == "check" || info.GraphDefinition == nil) {
 		run := 0
 		for _, h := range info.History {
 			if h.Stage == info.Stage {
@@ -388,6 +424,15 @@ func (m *detailModel) setLogTargets(info web.TicketInfo) {
 			label: label + " · live",
 		})
 	}
+	if info.GraphDefinition != nil {
+		for _, n := range info.GraphDefinition.Nodes {
+			if n.Type == "condition" && n.Command != "" {
+				m.logTargets = append(m.logTargets, logTarget{
+					stage: n.ID, graph: true, condition: true, label: n.ID + " · latest evaluation",
+				})
+			}
+		}
+	}
 }
 
 func (m detailModel) selectedLogTarget() logTarget {
@@ -409,6 +454,9 @@ func (m detailModel) ticketContent() string {
 			fmt.Fprintf(&b, "%s [%s] template=%s", n.ID, n.Type, n.Template)
 			if n.Mode != "" {
 				fmt.Fprintf(&b, " · mode %s · environment %s", n.Mode, n.Environment)
+			}
+			if n.Type == "condition" && n.Command != "" {
+				fmt.Fprintf(&b, " · command %s", n.Command)
 			}
 			if n.Timeout != "" {
 				fmt.Fprintf(&b, " · timeout %s", n.Timeout)
@@ -452,7 +500,7 @@ func (m detailModel) ticketContent() string {
 			fmt.Fprintf(&b, "loop %s: %d / %s exhausted=%t\n", l.NodeID, l.Used, limit, l.Exhausted)
 		}
 		for _, e := range x.Transitions {
-			fmt.Fprintf(&b, "r%d: %s.%s -> %s\n", e.Revision, e.From, e.Port, e.To)
+			writeTransition(&b, e)
 		}
 		for _, previous := range x.PreviousExecutions {
 			fmt.Fprintf(&b, "previous execution: %s\n", previous.ExecutionID)
@@ -463,11 +511,19 @@ func (m detailModel) ticketContent() string {
 				writeWait(&b, "historical wait", &previous.WaitHistory[i])
 			}
 			for _, e := range previous.Transitions {
-				fmt.Fprintf(&b, "r%d: %s.%s -> %s\n", e.Revision, e.From, e.Port, e.To)
+				writeTransition(&b, e)
 			}
 		}
 	}
 	return b.String()
+}
+
+func writeTransition(b *strings.Builder, e ticket.GraphTransition) {
+	fmt.Fprintf(b, "r%d: %s.%s -> %s", e.Revision, e.From, e.Port, e.To)
+	if e.EvaluationID != "" {
+		fmt.Fprintf(b, " · evaluation %s", e.EvaluationID)
+	}
+	b.WriteByte('\n')
 }
 
 func writeWait(b *strings.Builder, label string, w *ticket.WorkflowWait) {

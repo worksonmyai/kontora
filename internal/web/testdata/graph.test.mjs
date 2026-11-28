@@ -97,6 +97,67 @@ for (const [when, label] of [
   });
 }
 
+test('a command condition shows its command and evaluation without a live attempt', () => {
+  const t = graphTicket();
+  const command = 'test -f ready';
+  t.graph_definition = { ...definition, nodes: [...definition.nodes,
+    { id: 'choose', type: 'condition', command, timeout: '3s' },
+    { id: 'stop', type: 'end', status: 'done' },
+  ], edges: [...definition.edges,
+    { from: { node: 'work', port: 'complete' }, to: 'choose' },
+    { from: { node: 'choose', port: 'true' }, to: 'again' },
+    { from: { node: 'choose', port: 'false' }, to: 'stop' },
+    { from: { node: 'again', port: 'exhausted' }, to: 'stop' },
+  ] };
+  t.stage = 'choose';
+  t.status = 'in_progress';
+  t.execution_active = true;
+  t.graph_execution = { ...t.graph_execution, current_node: 'choose', current_template: '', transitions: [
+    { from: 'work', port: 'complete', to: 'choose', revision: 1 },
+    { from: 'choose', port: 'true', to: 'again', revision: 2, evaluation_id: '00000000000000000001-previous' },
+    { from: 'again', port: 'repeat', to: 'work', revision: 2 },
+    { from: 'work', port: 'complete', to: 'choose', revision: 3 },
+  ] };
+  delete t.graph_execution.attempt;
+  const s = state(t);
+  const choose = t => s.workflowGraph(t).nodes.find(n => n.id === 'choose');
+  const node = choose(t);
+  assert.equal(node.sub, command);
+  assert.deepEqual(node.config.slice(0, 2), [['command', command], ['timeout', '3s']]);
+  assert.match(node.description, /Exit code 0 selects true/);
+  assert.match(node.description, /Other exits, timeouts, and runner errors pause without taking an edge\./);
+  assert.equal(node.state, 'current');
+  assert.equal(node.statusLabel, 'evaluating');
+  assert.deepEqual(node.visits, []);
+  assert.match(s.workflowCursorText(t), /Current node: choose · evaluating/);
+  assert.doesNotMatch(s.workflowCursorText(t), /attempt/);
+  assert.match(s.workflowTraceText(t.graph_execution), /evaluation 00000000000000000001-previous/);
+  assert.equal(s.runningRun(), null);
+  assert.equal(node.decisions[0].result, 'evaluation 00000000000000000001-previous');
+  const queued = { ...t, status: 'todo', execution_active: false };
+  assert.equal(choose(queued).statusLabel, 'at cursor');
+  const paused = choose({ ...queued, status: 'paused' });
+  assert.equal(paused.statusLabel, 'paused · no edge taken');
+  assert.equal(paused.state, 'reached');
+  assert.deepEqual(paused.decisions, node.decisions);
+  const later = { ...queued, stage: 'work', graph_execution: { ...t.graph_execution, current_node: 'work' } };
+  assert.equal(choose(later).statusLabel, 'took true');
+});
+
+for (const type of ['agent', 'check', 'condition', 'loop', 'wait', 'end']) {
+  test(`a running graph adds a live attempt only for executable nodes: ${type}`, () => {
+    const t = graphTicket();
+    t.history = [];
+    t.execution_active = true;
+    t.graph_definition = { entry: 'work', nodes: [{ id: 'work', type, max: 2, status: 'done' }], edges: [] };
+    const s = state(t);
+    const [node] = s.workflowGraph(t).nodes;
+    const live = ['agent', 'check'].includes(type);
+    assert.deepEqual(node.visits.flatMap(v => v.attempts.map(a => a.key)), live ? ['live'] : []);
+    assert.notEqual(node.statusLabel, 'evaluating');
+  });
+}
+
 test('graph output navigation separates visits from retries and preserves artifact run indexes', () => {
   const s = state();
   const rows = s.outputRuns();

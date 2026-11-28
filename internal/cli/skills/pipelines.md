@@ -186,10 +186,9 @@ are `complete`/`failed`; check ports are `pass`/`fail`; condition ports are
 and select `done`, `human_review`, `paused`, or a declared custom parked status.
 Checks require a nonempty command and positive timeout.
 
-A condition reads only the latest executable result on the current path.
-It never falls back to an earlier result. Consecutive conditions read the same
-result until another executable node replaces it. A missing, stale, or
-incompatible result pauses execution.
+A condition takes exactly one of `when` or `command`. A `when` condition reads
+only the latest executable result on the current path. It never falls back to
+an earlier result. A missing, stale, or incompatible result pauses execution.
 
 In each `when`, give exactly one of `equals`, `not_equals`, or `in` a non-null
 value. A `null` value counts as omitted. For example:
@@ -225,7 +224,7 @@ Timeout, interruption, provider or infrastructure errors, and uncertain terminat
 pause rather than taking ordinary failure edges.
 
 Graph controls are listed below. Restart and recovery require a daemon.
-Local CLI retry only updates the ticket file.
+For an executable visit, local CLI retry only updates the ticket file.
 
 - `kontora retry ID` repeats the same executable visit with a fresh invocation;
   execution identity, visit identity and loop counts stay unchanged. Refused at
@@ -310,6 +309,48 @@ kontora workflow-simulate --config /path/to/config.yaml --pipeline implement-tes
 Verify the real test command separately; neither mode runs it. Create a draft
 with `kontora new --status open --pipeline implement-test-review "TITLE"`.
 
+## Command conditions
+
+For example, route to review if `CHANGELOG.md` is nonempty:
+
+```yaml
+- {id: has-notes, type: condition, command: "test -s CHANGELOG.md", timeout: 15s}
+```
+
+A fresh execution cannot reach a command condition before running an agent or
+check. Before the first executable, validation follows only a loop's `repeat`
+edge. A command condition is a control node. It does not satisfy the executable
+requirement for cycles.
+
+Add one `"true"` edge and one `"false"` edge. On a `condition` node, `timeout` is
+valid only with `command`. Omit it for `1m`, or set a positive duration.
+
+The daemon runs `/bin/sh -c` in the existing ticket worktree, using one worker
+slot. Exit `0` takes `"true"`; exit `1` takes `"false"`. Other exits, timeouts, and
+runner errors pause the ticket at the condition.
+
+The command runs with daemon permissions and no agent sandbox such as `nono`.
+Use only trusted commands that never change anything. Keep the script outside
+the worktree. It still runs with daemon permissions and can read
+repository-controlled files. Even read-only Git commands read the repository's
+`.git/config`.
+
+The command preserves the producer result and handoff, including after a wait
+release. The evaluation adds no run history row. When evaluation itself takes
+the graph to an `end`, it does not start a final summary. Output goes to
+`<logs_dir>/<id>/conditions/<node>.<evaluation_id>.log`.
+
+Retry reruns the condition, not the agent or check. A workflow restart can reach
+it again. After a daemon restart, the daemon requeues an interrupted evaluation
+once it confirms termination. The daemon refuses Retry while a condition journal
+exists at `<logs_dir>/<id>/workflow-condition.json`. Use `workflow-recover` only
+if the ticket asks you to acknowledge termination. Inspect the processes and
+journal before acknowledging termination, then retry separately.
+
+See `kontora skills show cli 'Command condition environment'` for variables.
+Simulation takes a condition event with only `node` and `exit_code`. Preflight
+explores `0` and `1`. Neither mode runs the command.
+
 ## Durable waits
 
 Waits are graph-only. Legacy lists, automations and epic supervisors cannot use them.
@@ -343,7 +384,7 @@ Use Go durations (`168h`, not `7d`). Declared waits create no executable visit o
 Release or timeout preserves the preceding executable result for conditions.
 Registration uses no execution slot. Deployment entry requires an existing worktree and freezes its HEAD commit and repository identity.
 
-Idle waits consume no slot. Condition probes run `/bin/sh -c` in the retained worktree,
+Idle waits consume no slot. Wait probes run `/bin/sh -c` in the retained worktree,
 sharing ordinary worker capacity without an LLM call:
 
 | Probe result | Action |
@@ -569,7 +610,8 @@ or prove reported completion. See `kontora skills show pipelines Compatibility` 
 
 - Workflow graphs: Upgrade all clients and daemons sharing config or tickets together before enabling graphs.
 - Graph conditions: Upgrade the daemon and every CLI that reads the config before
-  adding `not_equals` or `in`, even to an existing graph. Older versions accept only `equals`.
+  adding command conditions. Older versions reject `command` on `condition` nodes.
+  Versions that support only `equals` also reject `not_equals` and `in`.
 - Durable waits: Upgrade all sharing clients and daemons before wait configuration, result v3 or graph-state v2.
   Fingerprints stay unchanged for workflows without waits.
   Version 1 graph state, version 1 and 2 results, and existing recovery contracts remain compatible.

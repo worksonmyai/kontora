@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"container/heap"
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -488,6 +489,10 @@ func (d *Daemon) DeleteTicket(id string) error {
 		d.mu.Unlock()
 		return fmt.Errorf("%w: cancel the active workflow wait before deleting ticket %s", web.ErrInvalidState, id)
 	}
+	if err := d.conditionDeleteBlockLocked(ts.ticket); err != nil {
+		d.mu.Unlock()
+		return err
+	}
 	fresh, err := ticket.ParseFile(filePath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		d.mu.Unlock()
@@ -498,7 +503,6 @@ func (d *Daemon) DeleteTicket(id string) error {
 		return fmt.Errorf("%w: cancel the active workflow wait before deleting ticket %s", web.ErrInvalidState, id)
 	}
 	kind := ts.ticket.Kind
-	cancel, running := d.running[id]
 	d.mu.Unlock()
 
 	if err := d.guardDeletePath(filePath); err != nil {
@@ -514,6 +518,21 @@ func (d *Daemon) DeleteTicket(id string) error {
 		}
 	}
 
+	d.mu.Lock()
+	var cancel context.CancelFunc
+	defer func() {
+		d.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	}()
+	ts, ok = d.tickets[id]
+	if !ok {
+		return nil
+	}
+	if err := d.conditionDeleteBlockLocked(ts.ticket); err != nil {
+		return err
+	}
 	if err := os.Remove(filePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -522,18 +541,7 @@ func (d *Daemon) DeleteTicket(id string) error {
 	if err := ticket.RemoveNoteSidecar(filepath.Dir(filePath), id); err != nil {
 		return err
 	}
-
-	if running {
-		cancel()
-	}
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	ts, ok = d.tickets[id]
-	if !ok {
-		return nil
-	}
+	cancel = d.running[id]
 	parent := ts.ticket.Parent
 	d.removeQueuedLocked(id)
 	d.broadcastTicketDeleted(ts)
@@ -546,6 +554,21 @@ func (d *Daemon) DeleteTicket(id string) error {
 	// what reopens it.
 	if parent != "" {
 		d.rederiveEpicLocked(parent, "")
+	}
+	return nil
+}
+
+func (d *Daemon) conditionDeleteBlockLocked(t *ticket.Ticket) error {
+	cfg := d.config()
+	if workflowConditionJournalExists(cfg, t.ID) {
+		return fmt.Errorf("%w: cannot delete ticket %s while a workflow condition journal exists", web.ErrInvalidState, t.ID)
+	}
+	if claim := d.executions[t.ID]; claim != nil {
+		if graph := cfg.Pipelines[claim.expected.pipeline].Graph; graph != nil {
+			if node, ok := graph.Node(claim.expected.stage); ok && node.CommandCondition() {
+				return fmt.Errorf("%w: wait for the workflow condition to stop before deleting ticket %s", web.ErrInvalidState, t.ID)
+			}
+		}
 	}
 	return nil
 }
@@ -1268,21 +1291,30 @@ func applyTicketUpdate(cfg *config.Config, t2 *ticket.Ticket, req web.UpdateTick
 func (d *Daemon) GetLogs(q web.LogQuery) (string, error) {
 	cfg := d.config()
 	logsDir := expandTilde(cfg.LogsDir)
-	if q.Run == nil && !q.StageOnly {
-		d.mu.Lock()
-		_, ok := d.tickets[q.ID]
-		d.mu.Unlock()
-		if !ok {
-			return "", web.ErrTicketNotFound
-		}
-		var buf bytes.Buffer
-		err := cli.LogsExact(cfg.TicketsDir, cfg.LogsDir, q.ID, q.Stage, &buf)
-		return rawLogResult(buf.String(), err)
-	}
-
-	if !session.ValidLogStage(q.Stage) || q.Run != nil && (*q.Run < 0 || q.StageOnly) {
+	if (q.Run != nil || q.StageOnly) && (!session.ValidLogStage(q.Stage) || q.Run != nil && (*q.Run < 0 || q.StageOnly)) {
 		return "", fmt.Errorf("%w: invalid raw log selection", web.ErrInvalidConfig)
 	}
+	if q.Run == nil {
+		d.mu.Lock()
+		ts := d.tickets[q.ID]
+		var graph *config.WorkflowGraph
+		if ts != nil {
+			graph = cfg.Pipelines[ts.ticket.Pipeline].Graph
+		}
+		d.mu.Unlock()
+		if ts == nil {
+			return "", web.ErrTicketNotFound
+		}
+		if data, condition, err := cli.ReadConditionLog(session.TicketDir(logsDir, q.ID), graph, q.Stage); condition {
+			return rawLogResult(string(data), err)
+		}
+		if !q.StageOnly {
+			var buf bytes.Buffer
+			err := cli.LogsExact(cfg.TicketsDir, logsDir, q.ID, q.Stage, &buf)
+			return rawLogResult(buf.String(), err)
+		}
+	}
+
 	if q.StageOnly {
 		snapshot, err := d.snapshotStageRun(q.ID, q.Stage, -1)
 		if err != nil {

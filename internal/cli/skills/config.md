@@ -5,9 +5,6 @@ being ignored. `kontora config` prints the effective configuration with
 defaults applied and `web.token` masked; in remote mode it prints the daemon's
 pipelines, agents and custom statuses.
 
-Upgrade all clients and daemon binaries that read the config before adding
-`epic_child_pipeline`. Older strict-YAML loaders reject the key.
-
 `--config` selects the file explicitly. Otherwise Kontora uses `$KONTORA_CONFIG`,
 then an existing `./.kontora/config.yaml`, then `$XDG_CONFIG_HOME/kontora/config.yaml`
 (or `~/.config/kontora/config.yaml` when `XDG_CONFIG_HOME` is unset).
@@ -58,8 +55,7 @@ chooses the oldest eligible ticket whose pool has capacity. Unconfirmed
 termination retains the reservation in the pool that started the process.
 Creation leaves epics passive. Activate explicitly with `kontora run EPIC_ID`
 or init with `--status todo`. The epic and children must share one Git repository.
-Upgrade every daemon and client sharing the ticket directory before activation;
-older versions can overwrite supervisor status. See `kontora skills show tickets Epics`.
+See `kontora skills show config Compatibility` before activating epics.
 
 ## agents
 
@@ -123,46 +119,30 @@ termination for inspected state. Inspect processes, journals, results and
 worktree first; recovery does not start work. Both controls require the daemon.
 Graph annotations and Plannotator rework are deferred and refused.
 
-Upgrade every CLI and daemon sharing config or tickets together before enabling
-graphs. Recovery does not promise exactly-once shell
-effects or arbitrary detached-process containment. A missing tmux window alone
-does not prove termination.
+See `kontora skills show config Compatibility` before enabling graphs.
 
 ## Durable waits
 
-Waits work only in version 2 graphs, not legacy lists, automations or epic supervisors.
-Agent nodes opt in with `wake: {max: 12, check_timeout: 60s}`.
+Agent nodes in version 2 graphs opt in with `wake: {max: 12, check_timeout: 60s}`.
 `wake.max` is required and positive; it bounds wakes within one executable visit, not polls.
 Omitted or zero `check_timeout` uses `60s`; negative values are invalid.
-Wake-enabled invocations require result version 3. Use `kontora wait` or Pi's `kontora_wait`,
-not lifecycle writes. Publication alone does not confirm committed suspension.
 
 Declared nodes use `type: wait`, `mode: human` or `deployment`, and optional `timeout`.
 Deployment requires `environment`; human waits cannot set it.
 Every wait needs a `released` edge. A positive timeout also requires a `timeout` edge;
 omitted or zero timeout has no deadline or timeout edge. Negative timeouts are invalid.
 Durations use Go units: `168h`, not `7d`.
-Deployment entry freezes the existing worktree's repository identity and HEAD commit.
 
-Idle waits release worker capacity but retain branch ownership. Probes share worker capacity.
-Commands run through `/bin/sh -c` with daemon permissions; trust them and make them safe to repeat.
-A worktree is not a sandbox. Missing or changed worktrees block progress.
-Waits use `paused` plus graph metadata, shown as Waiting. Notifications remain `paused` subscriptions;
-`waiting` remains for live Pi questions. Same-status changes and every wake may be silent.
-
-Templates can use `{{ with .Wake }}` … `{{ end }}` to read `.Reason`, `.Output`,
-`.Count`, `.Next`, `.WaitID`, and `.Receipt`. Kontora appends the wake handoff automatically.
+Use `{{ with .Wake }}` … `{{ end }}` to read `.Reason`, `.Output`, `.Count`, `.Next`, and `.WaitID`.
+`.Receipt` is optional and is absent on timer and probe wakes. Guard receipt fields separately
+inside the `.Wake` block: `{{ with .Receipt }}{{ .ID }}{{ end }}`.
+Kontora appends the wake handoff automatically.
 Context stays frozen for the continuation and its retries, not unrelated later nodes.
 `{{ fileOptional "RESULTS.md" }}` returns empty text only for an absent file;
 other read errors fail rendering, as with `file`.
 
-Upgrade all sharing clients and daemons before wait configuration, result v3 or graph-state v2.
-Unchanged no-wait fingerprints and existing v1 state/v1-v2 result/recovery contracts remain compatible.
-Changed effective configuration blocks probes and continuation without resetting saved times.
-Restore matching configuration or inspect and explicitly restart.
-See `kontora skills show pipelines 'Durable waits'` for outcomes and storage,
-and `kontora skills show cli 'kontora release'` for daemon-only releases.
-Recovery does not promise exactly-once shell effects or host-power-loss durability.
+See `kontora skills show pipelines 'Durable waits'` for wait behavior, recovery and storage.
+For shared boards, see `kontora skills show config Compatibility`.
 
 ## projects
 
@@ -193,34 +173,17 @@ The name is what `--project` on `ls`, `search`, `archive` and `stats` matches.
 Two projects may not resolve to the same directory. Matching is lexical after
 `~` expansion and cleaning; linked worktrees and symlinks do not gain a match.
 
-For ordinary tickets, pipeline precedence is:
-
-1. Explicit request, including `none` for standalone execution.
-2. Stored nonempty pipeline, during initialization only.
-3. Project `epic_child_pipeline`, when the resolved parent is an actual epic.
-4. Project `pipeline`.
-5. Global `default_pipeline`.
-6. Standalone execution.
-
-Missing or ordinary-ticket parents do not qualify for the child default. Epics
-never get a pipeline; supervisors run standalone. Pipeline and agent resolution
-are independent, including when the caller passes `--pipeline none`.
+See `kontora skills show pipelines "Default selection"` for pipeline precedence and stored assignments.
 
 A project's `agent` becomes a ticket-level override for every pipeline step.
 Leave it unset to keep each step's configured agent.
 
-Kontora stamps defaults into frontmatter at creation or initialization. Existing
-assignments are not migrated. Config reloads, reparenting and detail-path edits do
-not replace stored pipelines; operators must retarget existing tickets explicitly.
-Raw uploads and daemon startup do not apply defaults.
-
-`none` is a ticket-level opt-out for this request, not durable provenance. A later
-initialization can fill the blank unless the caller opts out again. Project
-`pipeline` and `epic_child_pipeline` must name configured pipelines; neither accepts
+Project `pipeline` and `epic_child_pipeline` must name configured pipelines; neither accepts
 `none`. No pipeline or agent may be named `none`.
 
 Browser inheritance omits `pipeline`; standalone sends `none`. The backend resolves
 current defaults at submission, independently of the preview snapshot.
+See `kontora skills show config Compatibility` before adding `epic_child_pipeline`.
 
 ## hooks
 
@@ -379,9 +342,8 @@ Channel-only edits keep unset statuses unset.
 There is no dashboard reset-to-default action. Remove stored `notify` manually to restore default eligibility.
 
 `notify: []` stays Off across starts and returns `[]` through the ticket API.
-Older versions deleted Off choices, so those tickets inherit at their next explicit
-start unless the user selects Off again. Upgrade all participating clients and daemons;
-older writers can delete the empty-list marker, and older loaders reject `default_statuses`.
+See `kontora skills show config Compatibility` before rolling out notification defaults or persistent Off
+on a shared board, or to restore a deleted Off choice.
 
 Routes still use ticket `notify_channels`, project `notify_channels`, then
 `notifications.default`. `notify_channels: []` removes an override; `[none]` silences it.
@@ -465,9 +427,7 @@ agent, use graph durable waits instead.
 
 Active runs keep their captured status after reload. Removed declarations leave
 only display-only fallback columns; they do not authorize new move destinations.
-Upgrade all CLI and daemon binaries sharing the store before enabling the setting.
-Older config loaders reject the new key and older clients treat custom activity
-as parked work. Existing parked tickets are not activated or migrated.
+See `kontora skills show config Compatibility` before enabling `running_status`.
 
 ## Prompts and summaries
 
@@ -662,3 +622,16 @@ These need a restart: `tickets_dir`, `secondary_tickets_dirs`, `worktrees_dir`,
 `logs_dir`, `instance_name`, `tmux_session`, `plannotator.reviews_dir`, and the whole
 `web` and `metrics` blocks. A reload keeps the running value and logs a warning
 naming each ignored field. A file that fails to load leaves the running configuration in place.
+
+## Compatibility
+
+- Epic defaults: Upgrade all clients and daemon binaries that read the config before adding
+  `epic_child_pipeline`. Older strict-YAML loaders reject the key.
+- Epic activation: See `kontora skills show tickets Compatibility` for mixed versions.
+- Workflow graphs and durable waits: See `kontora skills show pipelines Compatibility`.
+- Custom `running_status`: Upgrade every CLI and daemon sharing the store before enabling the setting.
+  Older config loaders reject the key. Older clients treat custom-active tickets as parked work.
+  Existing parked tickets are not activated or migrated.
+- Notification defaults and Off: Upgrade all participating clients and daemons.
+  Older writers can delete the empty-list marker. Older loaders reject `default_statuses`.
+  Tickets whose Off choice was deleted inherit at their next explicit start unless the user selects Off again.

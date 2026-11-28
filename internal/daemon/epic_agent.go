@@ -19,7 +19,9 @@ func epicSupervisorRole(id string) string {
 
 ## Epic supervisor
 You supervise epic %s using ordinary coding-agent execution.
-Read the installed epic reference with kontora skills show tickets Epics.
+Read the installed epic reference by running these commands separately:
+  kontora skills show tickets Epics
+  kontora skills show tickets "Epic supervision"
 Read the epic brief, complete child set, dependencies, history, and existing results through the CLI.
 Choose child order and parallelism. Create necessary children as open, then explicitly start selected work.
 Create children with --parent and omit --path to inherit the epic's repository path and its project defaults.

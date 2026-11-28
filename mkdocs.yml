@@ -38,8 +38,6 @@ nav:
       - Configuration: configuration.md
       - Tickets: tickets.md
       - API: api.md
-  - Development:
-      - Orchestrator components (disabled): orchestrator.md
 
 exclude_docs: |
   /README.md

@@ -219,7 +219,7 @@ emulation for required real-device evidence. When no authorized work remains,
 submit blocked and stop. Retry requires explicit operator action; saving an
 answer, reading a notification, or dismissing attention does not restart work.
 On Retry inspect saved decisions, current children, worktrees, dirty files, and
-interrupted Git operations. Upgrade CLI and daemon together.
+interrupted Git operations. See `kontora skills show cli Compatibility` for supervised results.
 
 ## kontora wait
 
@@ -258,11 +258,8 @@ successful publication prevents later tool calls. The acknowledgement confirms i
 Successful runner termination and required hooks must finish before the daemon parks the wait.
 A conflicting result cannot replace the first terminal publication.
 
-Wakes start fresh invocations at the same executable visit without failure retry or loop consumption.
-Commands must be trusted and safe to repeat; daemon permissions apply without a sandbox.
-See `kontora skills show pipelines 'Durable waits'` for probe outcomes and recovery.
-Upgrade sharing clients/daemons before wait config, result v3 or state v2;
-existing no-wait fingerprints and v1/v2 contracts remain compatible.
+See `kontora skills show pipelines 'Durable waits'` for probe permissions, outcomes and recovery.
+See `kontora skills show cli Compatibility` before enabling waits.
 
 ## Common flags
 
@@ -434,9 +431,9 @@ then `notifications.default_statuses` (initially unset). Lists do not merge.
 Defaults also apply at explicit initialization/starts of unset older or imported tickets.
 Saved choices, including `notify: []` for Off, survive default changes.
 
-Older versions deleted Off choices; select Off again where needed and upgrade all
-participating clients and daemons. See `kontora skills show config notifications`
-for start operations, compatibility, and Pi-only `waiting`.
+See `kontora skills show config notifications` for start operations and Pi-only `waiting`.
+See `kontora skills show config Compatibility` before rolling out notification defaults or persistent Off
+on a shared board, or to restore a deleted Off choice.
 
 - `--path PATH` — repository the ticket works in.
 - `--pipeline NAME` — pipeline to run, or `none` for a standalone ticket.
@@ -634,17 +631,9 @@ and every child must use the same Git repository. The supervisor uses its own
 branch and worktree, without a pipeline, while children keep theirs. Success parks
 the epic in `human_review`.
 
-Supervisor prompts prohibit changing, clearing or replacing child pipelines and
-editing pipeline definitions, stage definitions or project pipeline defaults.
-Create children without `--pipeline`. Do not bypass workflows through `init`,
-stage skipping, direct file edits or pause/retry sequences. If configured work
-conflicts with your authority, report the conflict, request an operator decision
-and leave that work unstarted. Do not substitute another pipeline. These are
-prompt instructions, not runtime enforcement; operator commands remain available.
-Pipeline defaults do not authorize commits or publication.
-
-See `kontora skills show tickets Epics` for review, rework,
-Git and approval limits, capacity and mixed-version upgrade requirements.
+See `kontora skills show tickets Epics` for review, rework and capacity, and
+`kontora skills show tickets "Epic supervision"` for workflow rules and authority limits.
+See `kontora skills show cli Compatibility` before activation.
 
 ## kontora schedule
 
@@ -703,7 +692,7 @@ Inspect processes, journals, results and worktree first. Send only the inspected
 Stale state requires fresh inspection, not automatic retry. A missing window does not prove descendants stopped.
 Acknowledgement does not launch work or reset counts; use retry separately.
 Uncertain probe termination requires this acknowledgement before re-arming a wait, even after its deadline.
-Recovery does not promise exactly-once shell effects or host-power-loss durability.
+See `kontora skills show pipelines 'Workflow graphs'` for recovery limits.
 
 ## kontora release
 
@@ -741,8 +730,7 @@ Historical receipts can satisfy later waits and several tickets. They do not pro
 Acceptance is persisted before acknowledgement, not proof of immediate continuation.
 Existing daemon access controls apply; shared-token/unauthenticated access is not verified named approval.
 
-Receipts/application journals live in `<tickets_dir>/.workflow-events/`, outside logs and reserved `.kontora`, without automatic expiry.
-Keep wait state and invocation/probe journals for recovery. See `kontora skills show tickets 'Durable workflow waits'`.
+See `kontora skills show pipelines 'Durable waits'` for receipt and recovery storage.
 
 ## kontora done
 
@@ -1295,3 +1283,12 @@ synopsis, description, flags and section name in this topic, and exits without
 doing anything. Put `-h` right after the verb: `kontora note kon-1 -h` fails
 because `-h` comes after the ticket ID. Use `kontora note -h`, without a ticket
 ID.
+
+## Compatibility
+
+- Supervised results and local delivery: Upgrade the CLI and daemon together. Before enabling local commits
+  without per-commit approval, check that the prompt each supervised Pi or Claude run receives contains the
+  local-delivery rules in Epic supervision. Do not restart live epics or migrate ticket state during the upgrade.
+- Durable waits: See `kontora skills show pipelines Compatibility` for result v3 and graph-state v2.
+- Notification defaults and Off: See `kontora skills show config Compatibility`.
+- Epic activation: See `kontora skills show tickets Compatibility`.

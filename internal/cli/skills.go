@@ -30,7 +30,6 @@ var skillTopics = []skillTopic{
 	{"tickets", "The ticket file: frontmatter fields, statuses and relations", "skills/tickets.md"},
 	{"pipelines", "Stages, pipelines, runs, and where logs and worktrees live", "skills/pipelines.md"},
 	{"config", "Config fields, including hooks, automations and notification channels", "skills/config.md"},
-	{"orchestrator", "Disabled objective components, retained work, and operator authority", "skills/orchestrator.md"},
 }
 
 // Skills prints the built-in reference topics. It reads neither the config file

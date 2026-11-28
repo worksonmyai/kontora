@@ -342,7 +342,10 @@ func TestEpicAgentRoleSurvivesFreshAndCustomResumePrompts(t *testing.T) {
 			require.Len(t, spawns, 1)
 			got := renderedPrompt(spawns[0])
 			assert.Contains(t, got, "## Epic supervisor")
-			assert.Contains(t, got, "kontora skills show")
+			assert.Contains(t, got, `
+  kontora skills show tickets Epics
+  kontora skills show tickets "Epic supervision"
+`)
 			assert.Contains(t, got, "## Supervised local delivery")
 			assert.Contains(t, got, "## Mandatory supervised result")
 			assert.Contains(t, got, "## Prerequisites and escalation")
@@ -393,6 +396,7 @@ func TestSupervisedInstructions(t *testing.T) {
 		"Narrower user, ticket, and stage instructions win",
 		"current branch equals the current ticket's branch", "HEAD is not detached",
 		"worktree named in this invocation", "main, master, or the repository's default branch",
+		"If any check fails or ownership is unclear, ask before writing.",
 		"rebase only your own verified branch onto its base_branch",
 		"A supervisor may merge child branches into its own verified branch",
 		"A child may merge the epic's branch or its own base_branch into its own verified branch",

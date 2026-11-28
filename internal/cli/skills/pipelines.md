@@ -5,11 +5,12 @@ graph. A ticket selects it by name in its `pipeline` frontmatter field.
 Legacy steps name stages, agents, and success/failure policies. Graphs use
 explicit nodes and edges; YAML list order does not determine execution order.
 
-An ordinary ticket with no pipeline runs standalone: one agent invocation with
-the default agent, no stages. An epic has no pipeline. A passive epic never
-runs; an explicitly activated agent epic runs a standalone supervisor in its own worktree.
-
 ## Default selection
+
+An ordinary ticket with no pipeline runs standalone: one agent invocation with no configured stages.
+It uses the ticket's `agent`, including a project override, or `default_agent` if unset.
+An epic has no pipeline. Passive epics never run.
+Activated epic supervisors run standalone in their own worktrees.
 
 For ordinary tickets, creation and initialization resolve pipelines in this order:
 
@@ -18,17 +19,18 @@ For ordinary tickets, creation and initialization resolve pipelines in this orde
 3. Project `epic_child_pipeline`, for a child of any actual epic, passive or agent.
 4. Project `pipeline`.
 5. Global `default_pipeline`.
-6. Standalone execution.
+6. Standalone execution at creation. If no pipeline resolves, local `init` opens the pipeline picker
+   or errors if no pipelines are configured. Pass `--pipeline none` to request standalone execution.
 
 Missing or ordinary-ticket parents do not qualify for the child default.
 Kontora writes the result into frontmatter. Existing assignments are not migrated
 after config changes, reparenting or detail-path edits. Operators must retarget
-them explicitly. `none` is not durable provenance: later initialization can fill
-the blank unless the caller opts out again. Agent resolution stays independent.
+them explicitly. `none` is not durable provenance: later initialization can fill the blank
+unless the caller opts out again. Agent resolution stays independent.
+Raw uploads and daemon startup do not apply defaults.
 
-Upgrade all clients and daemon binaries that read the config before adding
-`epic_child_pipeline`. Older strict-YAML loaders reject the key. The setting must
-name a configured pipeline; `none` remains a ticket-level opt-out.
+`epic_child_pipeline` must name a configured pipeline; `none` remains a ticket-level opt-out.
+See `kontora skills show pipelines Compatibility` before adding `epic_child_pipeline`.
 
 ## Stages
 
@@ -138,9 +140,7 @@ leaves a display-only column, not an allowed move destination. Subsequent claims
 use current configuration. Restart follows existing recovery and conversation
 resume; an interrupted shell sleep does not continue.
 
-Upgrade every CLI and daemon sharing the ticket store before enabling the new
-setting. Older loaders reject it and older clients mistake custom-active tickets
-for parked ones. Existing parked tickets need no migration and are not activated.
+See `kontora skills show pipelines Compatibility` before enabling `running_status`.
 
 ## Workflow graphs
 
@@ -233,11 +233,10 @@ stage-pair accounting for legacy rows. Failed runs still cost tokens; annotation
 rows contribute spend but not stage quality.
 
 Graph annotations and Plannotator rework are deferred and refused; epic
-supervisors cannot use graphs. Upgrade all clients and daemons sharing config
-or tickets together. No exactly-once shell or
-hook effects, host-power-loss durability, or arbitrary detached-process
-containment is promised. Graph participation grants no commit or publication
-authority.
+supervisors cannot use graphs. Recovery does not promise exactly-once shell or
+hook effects, host-power-loss durability, or arbitrary detached-process containment.
+Graph participation grants no commit or publication authority.
+See `kontora skills show pipelines Compatibility` before enabling graphs.
 
 ## Starter graph and offline simulation
 
@@ -346,33 +345,35 @@ but timer/deadline reconciliation needs no slot. Output keeps a UTF-8-safe excer
 a truncation flag and a log reference. Commands must be trusted and idempotent;
 daemon permissions apply, and a worktree is not a sandbox.
 
-A wake starts a fresh physical invocation without failure retry or loop consumption.
-The prompt receives `.Wake.Reason`, `.Output`, `.Count`, `.Next`, `.WaitID`, and optional `.Receipt`.
-Kontora appends a handoff automatically. Context stays frozen for the continuation and its retries,
-not unrelated later nodes. Use `{{ if .Wake }}` around optional template access.
+A wake starts a fresh invocation of the same executable visit without failure retry or loop consumption.
+See `kontora skills show config 'Durable waits'` for wake template data.
 
-Waiting is `paused` plus graph metadata, displayed as Waiting. Notifications use `paused` subscriptions;
-`waiting` and `waiting_for_input` remain for live Pi questions. Same-status changes and every wake may be silent.
-Pause disarms; retry re-arms the same wait without resetting its deadline.
-Run, move, schedule, init and done cannot bypass it. Cancel invalidates wake authority;
-restart creates new execution/wait IDs. Delete and transfer require cancellation first.
-Upload strips resumable wait authority. Uncertain probe termination needs inspected `workflow-recover`, then retry.
-An elapsed deadline does not bypass recovery.
+See `kontora skills show tickets 'Durable workflow waits'` for ticket status and controls.
+Subscribe to `paused` for parking notifications. A `paused` notification includes wait details when the ticket has a wait.
+Same-status changes do not send notifications, and a wake has no dedicated notification.
+`waiting` is for live Pi questions.
+The API exposes wait kind, phase, deadline, next poll, wake allowance and diagnostics.
+The dashboard and TUI show release instructions.
+
+If probe termination is uncertain, inspect processes, worktree, results and journals.
+Run `kontora workflow-recover --execution-id EXECUTION_ID --revision N TICKET_ID` for the inspected state.
+Acknowledgement does not start work. Retry separately to re-arm a surviving wait.
+A cancelled workflow stays cancelled. An elapsed deadline does not bypass recovery.
 
 Branch reservations survive parking and queued continuation. Changed/missing worktrees block progress;
 Kontora does not silently recreate them. Queued continuations survive restarts and dependency blocking,
 even with `auto_pick_up: false`. Dependencies and ownership still apply.
-Changed effective configuration blocks progress without resetting timestamps.
+A config mismatch blocks wait progress without resetting the saved wake time, deadline, or next poll time.
+Restore the matching config and retry if Kontora paused the wait or continuation.
+Complete any required recovery before retrying. To use the new config, inspect the saved state
+and explicitly restart the workflow.
 
 Human release requires inspected execution/wait identity, revision, request ID and reason.
 Deployment release requires repository, exact environment, full deployed commit and event ID.
-Both are daemon-only; see `kontora skills show cli 'kontora release'`.
-Historical deployment receipts can satisfy later waits and several tickets.
-They prove a deployment occurred, not current environment state after a rollback.
-Local Git matching requires equal/descendant commits, without fetch or cherry-pick equivalence.
-Missing objects, unsupported options and uncertain ancestry fail closed.
+Both are daemon-only. See `kontora skills show cli 'kontora release'` for flags and matching rules.
 
 Keep ticket state, invocation/finalization journals and `<logs_dir>/<ticket>/workflow-probe.json` for recovery.
+`<logs_dir>/<ticket>/workflow-control.json` freezes a released or timed-out control wait before the ticket update.
 Probe logs are `<logs_dir>/<ticket>/waits/<wait-id>/<poll-id>.log`.
 Receipts and application journals live under `<tickets_dir>/.workflow-events/`, outside logs and reserved `.kontora`.
 Receipts have no automatic expiry. Do not discard recovery journals as disposable output.
@@ -381,9 +382,8 @@ Waiting history uses `run_outcome: waiting`, retaining `next_step`, wait/wake ev
 It contributes run totals, time and tokens, but not success, failure, unverified or first-pass judgments.
 Intentional continuation is not a failure retry. Declared waits and probes add no agent run rows.
 
-Upgrade all sharing clients and daemons before wait configuration, result v3 or graph-state v2.
-No-wait fingerprints and existing v1 state/v1-v2 result/recovery contracts remain compatible.
-Recovery covers daemon-process restarts, not exactly-once shell effects or host-power-loss durability.
+Recovery covers daemon-process restarts. See `kontora skills show pipelines 'Workflow graphs'` for recovery limits.
+See `kontora skills show pipelines Compatibility` before enabling waits.
 
 ## What a run is
 
@@ -405,22 +405,15 @@ pipelines, branches and worktrees. Pausing the epic stops only its supervisor.
 A complete supervisor result with clean execution, confirmed termination, and
 successful final validation goes to `human_review`; Plannotator feedback starts
 supervisor rework. The epic records supervisor history, logs, activity and sessions.
-See `kontora skills show tickets Epics` for Git and approval limits and upgrade requirements.
+See `kontora skills show tickets "Epic supervision"` for Git and approval limits,
+and `kontora skills show tickets Compatibility` before activation.
 
 An assistant chat turn is not a run: it is a headless process, takes no
 concurrency slot, and belongs to no ticket.
 
 ## Moving a ticket by hand
 
-Supervisor prompts prohibit changing, clearing or replacing child pipelines and
-editing pipeline definitions, stage definitions or project pipeline defaults.
-Supervisors must create children without `--pipeline`. They must not bypass a
-workflow through `init`, stage skipping, direct file edits or pause/retry sequences.
-If configured work conflicts with their authority, they must report the conflict,
-request an operator decision and leave that work unstarted. They must not substitute
-another pipeline. These are prompt instructions, not runtime enforcement.
-A pipeline default does not authorize commits or publication; `commit-no-push`
-still contains a commit stage.
+See `kontora skills show tickets "Epic supervision"` for supervisor workflow rules.
 
 For legacy pipelines, the following commands remain available to ordinary operators.
 Graph controls and refusals are described above:
@@ -555,7 +548,14 @@ operator action and inspection of saved decisions, child state, branches,
 worktrees, dirty files, and interrupted Git operations. Do not silently weaken
 requirements or replace required real-device evidence with emulation.
 
-Upgrade CLI and daemon together and verify effective Pi/Claude instructions
-before enabling autonomous local commits. Do not restart live epics or migrate
-ticket state as part of rollout. Authority limits are agent instructions, not an
-OS publication boundary or independent proof of reported completion.
+Authority limits are agent instructions. They do not enforce publication limits at the OS level
+or prove reported completion. See `kontora skills show pipelines Compatibility` before enabling supervision.
+
+## Compatibility
+
+- Workflow graphs: Upgrade all clients and daemons sharing config or tickets together before enabling graphs.
+- Durable waits: Upgrade all sharing clients and daemons before wait configuration, result v3 or graph-state v2.
+  Fingerprints stay unchanged for workflows without waits.
+  Version 1 graph state, version 1 and 2 results, and existing recovery contracts remain compatible.
+- Epic defaults and custom `running_status`: See `kontora skills show config Compatibility`.
+- Supervised results and local delivery: See `kontora skills show cli Compatibility`.

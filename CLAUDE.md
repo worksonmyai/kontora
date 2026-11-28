@@ -57,6 +57,8 @@ Kontora is an agent orchestration daemon that coordinates AI coding agents throu
 
 **Daemon** (`internal/daemon`) — acquires a file lock (single instance), recovers from crashes (resets `in_progress` → `todo`, cleans tmux windows orphaned by its own previous run), schedules via FIFO min-heap bounded by semaphore. Self-write tracking (`selfWrites`) skips its own file change events from the watcher.
 
+Do not create an orchestrator authority registry on a live board. Daemon startup refuses boards that have one.
+
 **Runner abstraction** — `RunnerFunc` injected via `WithRunner()`. Production uses `tmuxRunner` (detached tmux sessions). Tests use `DirectRunner` (wraps `process.Run`).
 
 **Inter-stage communication** — stages share a git worktree. Artifacts are passed as files (e.g., plan stage writes `PLAN.md`, code stage reads it via `{{ file "PLAN.md" }}` in its prompt template).

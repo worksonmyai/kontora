@@ -26,7 +26,16 @@ func TestSkillTopicsMatchFiles(t *testing.T) {
 			assert.NotEmpty(t, topic.Desc)
 			doc, err := skillDoc(topic.Name)
 			require.NoError(t, err)
-			assert.NotEmpty(t, skillSections(doc), "topic has no ## sections")
+			sections := skillSections(doc)
+			require.NotEmpty(t, sections, "topic has no ## sections")
+			compatibilityCount := 0
+			for _, section := range sections {
+				if strings.EqualFold(section.title, "Compatibility") {
+					compatibilityCount++
+				}
+			}
+			assert.Equal(t, 1, compatibilityCount, "topic must have exactly one Compatibility section")
+			assert.True(t, strings.HasPrefix(sections[len(sections)-1].body, "## Compatibility\n"), "the final section must be ## Compatibility")
 			delete(files, topic.File)
 		})
 	}
@@ -116,9 +125,10 @@ func TestSkills(t *testing.T) {
 			want: []string{"cli", "tickets", "pipelines", "config"},
 		},
 		{
-			name: "list names every topic",
-			args: []string{"list"},
-			want: []string{"cli", "tickets", "pipelines", "config"},
+			name:    "list omits the disabled orchestrator topic",
+			args:    []string{"list"},
+			want:    []string{"cli", "tickets", "pipelines", "config"},
+			notWant: []string{"orchestrator"},
 		},
 		{
 			name:    "list of one topic prints its headings only",
@@ -127,10 +137,13 @@ func TestSkills(t *testing.T) {
 			notWant: []string{"--description-file"},
 		},
 		{
-			name:    "show prints the whole topic",
-			args:    []string{"show", "tickets"},
-			want:    []string{"# Tickets", "## Status lifecycle", "## Relations", "## Epics"},
-			notWant: []string{"No command writes it", "`parent` names an epic and is read-only"},
+			name: "show prints the whole topic",
+			args: []string{"show", "tickets"},
+			want: []string{"# Tickets", "## Status lifecycle", "## Relations", "## Epics"},
+			notWant: []string{
+				"No command writes it", "`parent` names an epic and is read-only",
+				"Run, retry, pause, skip, init", "ls --json` omits", "must not publish or make off-machine writes",
+			},
 		},
 		{
 			name: "epic reference is available as a section",
@@ -138,19 +151,34 @@ func TestSkills(t *testing.T) {
 			want: []string{"## Epics", "kind: epic", "--kind epic", "--parent", "human_review", "children", "display order", "every status", "kontora view --body EPIC_ID", "not inlined",
 				"epic_execution: agent", "kontora run EPIC_ID", "--status todo", "same Git repository",
 				"stops only its", "supervisor", "Children already running continue", "rework", "history", "session",
+				"base_branch", "max_concurrent_epic_supervisors", "four additional agent processes", "Cancelled and archived",
+				"epic_child_pipeline", "standalone, without a pipeline", "ephemeral preview snapshot",
+				`kontora skills show pipelines "Default selection"`, "may name another repository for a passive epic",
+				"Remote and API creation still require a daemon-host path", "kontora skills show tickets Compatibility",
+				`kontora skills show tickets "Epic supervision"`},
+			notWant: []string{
+				"## Body", "## Epic supervision", "per-operation approval", "may merge child branches", "Publication requires explicit user approval",
+				"Existing assignments are not migrated", "integration worktree",
+			},
+		},
+		{
+			name: "epic supervision reference names the authority and its limits",
+			args: []string{"show", "tickets", "Epic supervision"},
+			want: []string{"## Epic supervision", "The run prompt is the authority", "kontora skills show tickets Epics",
 				"base_branch", "does not rebase", "without\nper-operation approval", "`main`, `master`", "default branch",
-				"detached HEAD", "published or shared history", "investigate questions", "safe, reversible defaults",
+				"detached HEAD", "If any check fails or ownership is unclear, ask before writing.",
+				"published or shared history", "investigate questions", "safe, reversible defaults",
 				"Publication requires explicit user approval", "specific off-machine action", "children, scripts, or tools",
-				"Reuse", "recorded approval", "Read-only lookups", "mixed versions",
+				"Reuse", "recorded approval", "Read-only lookups",
 				"Use approved CI", "intermediate stages", "exact commit or tree", "verification handoff, not acceptance",
-				"max_concurrent_epic_supervisors", "four additional agent processes", "Cancelled and archived",
-				"epic_child_pipeline", "passive or agent", "standalone, without a pipeline",
 				"Do not change, clear or replace a child's pipeline", "pipeline definitions, stage definitions or project pipeline defaults",
 				"without `--pipeline`", "`init`, stage skipping, direct file edits or pause/retry sequences",
-				"do not start it", "Report the conflict and request an operator decision", "Do not substitute another pipeline",
+				"do not start it", "Record the conflict and request an operator decision", "Do not substitute another pipeline",
 				"prompt instructions, not runtime enforcement", "`commit-no-push` still contains a commit stage",
-				"Existing assignments are not migrated", "detail-path edits", "ephemeral preview snapshot", "older strict-YAML loaders"},
-			notWant: []string{"## Body", "Run, retry, pause, skip, init", "ls --json` omits", "must not publish or make off-machine writes"},
+				"may merge child branches", "A child may merge the epic's branch", "Retry requires explicit operator action",
+				"the epic's stored repository path, not your integration worktree",
+			},
+			notWant: []string{"## Body", "## Epics", "Resolve detached HEAD", "Report the conflict", "must not publish or make off-machine writes"},
 		},
 		{
 			name: "show of a section prints that section only",
@@ -160,6 +188,7 @@ func TestSkills(t *testing.T) {
 				"`--pipeline` wins", "epic_child_pipeline", "project `pipeline`, global `default_pipeline`",
 				"Passive and agent epics both qualify", "ordinary-ticket parent does not qualify",
 				"independent agent resolution", "lexical matching",
+				"kontora skills show config Compatibility` before rolling out notification defaults or persistent Off",
 			},
 			notWant: []string{"## kontora view"},
 		},
@@ -262,12 +291,9 @@ func TestSkills(t *testing.T) {
 			args: []string{"show", "cli", "kontora run"},
 			want: []string{
 				"epic_execution: agent", "same Git repository", "human_review", "Creation and draft edits never activate",
-				"without a pipeline", "changing, clearing or replacing child pipelines",
-				"pipeline definitions, stage definitions or project pipeline defaults", "without `--pipeline`",
-				"`init`,\nstage skipping, direct file edits or pause/retry sequences", "report the conflict",
-				"leave that work unstarted", "Do not substitute another pipeline",
-				"prompt instructions, not runtime enforcement", "operator commands remain available",
+				"without a pipeline", `kontora skills show tickets "Epic supervision"`, "workflow rules",
 			},
+			notWant: []string{"report the conflict", "changing, clearing or replacing child pipelines"},
 		},
 		{
 			name: "pause reference limits epic cancellation to the supervisor",
@@ -280,31 +306,51 @@ func TestSkills(t *testing.T) {
 			want: []string{
 				"max_concurrent_agents", "max_concurrent_epic_supervisors", "`4`", "negative values are rejected",
 				"Reloads live without stopping running workers", "Reloads live without stopping running supervisors",
-				"four agent processes", "oldest eligible", "Unconfirmed", "Upgrade every daemon",
+				"four agent processes", "oldest eligible", "Unconfirmed", "kontora skills show config Compatibility` before activating epics",
 				"auto_pick_up", "explicit runs, pipeline continuations, recovery, or scheduled automations",
 			},
 			notWant: []string{"Requires restart"},
 		},
 		{
-			name: "project reference exposes epic child defaults and request precedence",
+			name: "project reference links to pipeline precedence",
 			args: []string{"show", "config", "projects"},
 			want: []string{
-				"epic_child_pipeline", "passive or agent", "1. Explicit request", "2. Stored nonempty pipeline",
-				"3. Project `epic_child_pipeline`, when the resolved parent is an actual epic",
-				"4. Project `pipeline`", "5. Global `default_pipeline`", "6. Standalone execution",
-				"Missing or ordinary-ticket parents", "supervisors run standalone", "resolution\nare independent",
-				"Existing\nassignments are not migrated", "detail-path edits", "Raw uploads and daemon startup",
-				"not durable provenance", "later\ninitialization can fill the blank", "neither accepts\n`none`",
-				"inheritance omits `pipeline`; standalone sends `none`", "lexical",
+				"epic_child_pipeline", "passive or agent", `kontora skills show pipelines "Default selection"`,
+				"neither accepts\n`none`", "inheritance omits `pipeline`; standalone sends `none`", "lexical",
 				"ticket-level override for every pipeline step", "Leave it unset to keep each step's configured agent",
+				"kontora skills show config Compatibility` before adding `epic_child_pipeline`",
+			},
+			notWant: []string{"1. Explicit request", "2. Stored nonempty pipeline"},
+		},
+		{
+			name:    "ticket fields link to pipeline precedence",
+			args:    []string{"show", "tickets", "User-set fields"},
+			want:    []string{`kontora skills show pipelines "Default selection"`},
+			notWant: []string{"stored nonempty pipeline"},
+		},
+		{
+			name: "ticket waits describe status and controls",
+			args: []string{"show", "tickets", "Durable workflow waits"},
+			want: []string{"status: paused", "graph_state.wait", "waiting_for_input", "Cannot bypass the wait", "kontora skills show pipelines 'Durable waits'"},
+		},
+		{
+			name: "config waits describe fields and template data",
+			args: []string{"show", "config", "Durable waits"},
+			want: []string{
+				"wake.max", "check_timeout", "type: wait", "{{ with .Wake }}", "kontora skills show pipelines 'Durable waits'",
+				"`.Receipt` is optional", "absent on timer and probe wakes",
 			},
 		},
 		{
-			name: "config reference requires compatible strict YAML readers",
+			name: "notification configuration points to rollout guidance",
+			args: []string{"show", "config", "notifications"},
+			want: []string{"kontora skills show config Compatibility` before rolling out notification defaults or persistent Off"},
+		},
+		{
+			name: "config reference explains config selection",
 			args: []string{"show", "config"},
 			want: []string{
-				"Upgrade all clients and daemon binaries", "before adding\n`epic_child_pipeline`",
-				"Older strict-YAML loaders reject the key", "`default_pipeline` |",
+				"`default_pipeline` |",
 				"`--config` selects the file explicitly", "`$KONTORA_CONFIG`",
 				"when `XDG_CONFIG_HOME` is unset", "without merging",
 			},
@@ -329,20 +375,63 @@ func TestSkills(t *testing.T) {
 				"1. Explicit request", "2. Stored nonempty pipeline",
 				"3. Project `epic_child_pipeline`, for a child of any actual epic, passive or agent",
 				"4. Project `pipeline`", "5. Global `default_pipeline`", "6. Standalone execution",
-				"Existing assignments are not migrated", "not durable provenance", "Agent resolution stays independent",
-				"before adding", "Older strict-YAML loaders reject the key", "ticket-level opt-out",
+				"Missing or ordinary-ticket parents", "Existing assignments are not migrated", "detail-path edits",
+				"Raw uploads and daemon startup", "not durable provenance", "later initialization can fill the blank",
+				"supervisors run standalone", "Agent resolution stays independent", "or `default_agent` if unset",
+				"local `init` opens the pipeline picker",
+				"kontora skills show pipelines Compatibility", "ticket-level opt-out",
 			},
 			notWant: []string{"## Stages"},
 		},
 		{
-			name: "pipeline reference preserves supervisor workflows without restricting operators",
-			args: []string{"show", "pipelines", "Moving a ticket by hand"},
+			name: "pipeline waits describe recovery and link to status and template data",
+			args: []string{"show", "pipelines", "Durable waits"},
 			want: []string{
-				"changing, clearing or replacing child pipelines", "pipeline definitions, stage definitions or project pipeline defaults",
-				"without `--pipeline`", "`init`, stage skipping, direct file edits or pause/retry sequences",
-				"report the conflict", "operator decision and leave that work unstarted", "must not substitute",
-				"prompt instructions, not runtime enforcement", "ordinary operators", "commit stage",
+				"kontora skills show tickets 'Durable workflow waits'", "kontora skills show config 'Durable waits'",
+				"workflow-probe.json", "workflow-control.json", "An elapsed deadline does not bypass recovery.",
+				"Same-status changes do not send notifications", "a wake has no dedicated notification",
+				"Restore the matching config and retry if Kontora paused the wait or continuation",
+				"kontora skills show pipelines 'Workflow graphs'", "kontora skills show pipelines Compatibility",
 			},
+			notWant: []string{"exactly-once", "host-power-loss"},
+		},
+		{
+			name: "config compatibility explains strict YAML readers and older writers",
+			args: []string{"show", "config", "Compatibility"},
+			want: []string{
+				"Upgrade all clients and daemon binaries", "before adding\n  `epic_child_pipeline`",
+				"Older strict-YAML loaders reject the key", "Older clients treat custom-active tickets as parked work",
+				"Older writers can delete the empty-list marker", "Older loaders reject `default_statuses`",
+				"Epic activation: See `kontora skills show tickets Compatibility`",
+			},
+		},
+		{
+			name: "ticket compatibility prohibits mixed versions for activated epics",
+			args: []string{"show", "tickets", "Compatibility"},
+			want: []string{"Upgrade every daemon", "can overwrite supervisor status", "Do not run mixed versions", "kontora skills show config Compatibility"},
+		},
+		{
+			name: "pipeline compatibility explains versioned graphs and waits",
+			args: []string{"show", "pipelines", "Compatibility"},
+			want: []string{
+				"before enabling graphs", "result v3 or graph-state v2", "Fingerprints stay unchanged for workflows without waits",
+				"Version 1 graph state, version 1 and 2 results, and existing recovery contracts remain compatible",
+			},
+		},
+		{
+			name: "cli compatibility describes supervised rollout and links to wait requirements",
+			args: []string{"show", "cli", "Compatibility"},
+			want: []string{
+				"Upgrade the CLI and daemon together", "the prompt each supervised Pi or Claude run receives",
+				"local-delivery rules in Epic supervision", "Do not restart live epics or migrate ticket state",
+				"kontora skills show pipelines Compatibility", "Epic activation: See `kontora skills show tickets Compatibility`",
+			},
+		},
+		{
+			name:    "pipeline reference links to supervisor rules without restricting operators",
+			args:    []string{"show", "pipelines", "Moving a ticket by hand"},
+			want:    []string{`kontora skills show tickets "Epic supervision"`, "workflow rules", "ordinary operators"},
+			notWant: []string{"report the conflict", "changing, clearing or replacing child pipelines"},
 		},
 		{
 			name: "reload reference applies both capacities live",

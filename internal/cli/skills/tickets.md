@@ -51,12 +51,7 @@ hand before the ticket runs.
 | `children` | no | An epic's preferred display order of child ids. Membership comes from each child's `parent`. |
 
 For ordinary tickets, creation and initialization store resolved defaults in
-frontmatter. Pipeline precedence is explicit request, stored nonempty pipeline
-(initialization only), project `epic_child_pipeline` for an actual epic child,
-project `pipeline`, global `default_pipeline`, then standalone. Agent resolution
-is independent, including when `--pipeline none` opts out of pipeline defaults.
-`none` stores a blank, not durable opt-out provenance; later initialization can
-fill it unless the caller opts out again.
+frontmatter. See `kontora skills show pipelines "Default selection"` for pipeline precedence and opt-outs.
 Passive epics skip these defaults at creation. They reject pipelines but accept an explicit agent without starting it.
 Activation resolves the supervisor agent, but never assigns a pipeline.
 
@@ -159,33 +154,16 @@ lifecycle, not proof of process liveness or completed teardown. Actual status
 continues to determine columns and filters. An active snapshot remains recognized
 if its declaration disappears; its fallback column is display-only.
 
-Upgrade every CLI and daemon sharing the store before enabling the step setting.
-Older binaries cannot recognize custom activity. Existing parked tickets are not
-activated or migrated.
+See `kontora skills show tickets Compatibility` before enabling `running_status`.
 
 The daemon picks up ordinary tickets and agent epics with `kontora: true` and
 `status: todo`. A passive epic is never picked up, even if its file says `todo`.
 
 ## Durable workflow waits
 
-Waits work only in version 2 graphs. Legacy lists, automations and epic supervisors cannot use them.
-Agent nodes opt in with positive `wake.max`; per-probe `check_timeout` defaults to `60s`.
-Declared `type: wait` nodes use `mode: human` or `deployment` and optional timeout.
-See `kontora skills show pipelines 'Durable waits'` for configuration and probe outcomes.
-
 A wait stores `status: paused` plus `graph_state.wait`, shown as Waiting.
 It does not use `waiting_for_input`, which remains for live agent questions.
-Notifications remain status-based `paused` subscriptions, enriched with eligible wait context.
-The `waiting` subscription remains for Pi questions; same-status changes and every wake may be silent.
-The API exposes wait kind, phase, deadline, next poll, wake allowance and diagnostics.
-Probe output keeps a UTF-8-safe excerpt up to 16 KiB, a truncation flag and log reference.
-The dashboard and TUI also show release instructions.
-
-Idle waits release worker capacity but retain the branch reservation.
-A wake resumes the same executable visit with a fresh invocation, not a failure retry or loop traversal.
-Queued continuation intent survives restarts and dependency blocking, even with `auto_pick_up: false`.
-Dependencies and workspace ownership still apply. Missing or changed worktrees block progress.
-Commands must be trusted and safe to repeat; daemon permissions apply without a sandbox.
+See `kontora skills show pipelines 'Durable waits'` for wait behavior, release and recovery.
 
 | Control | Active-wait behavior |
 |---------|----------------------|
@@ -197,30 +175,7 @@ Commands must be trusted and safe to repeat; daemon permissions apply without a 
 | Delete or transfer | Refuse until cancellation. |
 | Upload | Strip resumable graph/wait authority; import an open draft. |
 
-For uncertain probe termination, inspect processes, worktree, results and journals.
-Use `kontora workflow-recover --execution-id EXECUTION_ID --revision N TICKET_ID` for the inspected state.
-Acknowledgement does not start work. If the wait survives, retry separately to re-arm it;
-a cancelled workflow remains cancelled and needs no re-arming. Deadlines cannot bypass recovery.
-Changed effective configuration blocks progress without resetting saved times.
-
-Human release needs inspected ticket/execution/wait identity, revision, request ID and reason.
-Deployment release records repository, exact environment, full commit actually deployed and event ID.
-Both require the daemon; see `kontora skills show cli 'kontora release'`.
-Historical deployment receipts can satisfy later waits and multiple tickets.
-They prove a deployment occurred, not current environment state after a rollback.
-Matching uses local equal/descendant commit evidence, without fetch, deployment or cherry-pick equivalence.
-Identical retries return stored receipts; conflicts and new stale requests fail.
-Acceptance does not promise immediate continuation. Existing access controls apply;
-shared-token/unauthenticated access is not verified named approval.
-
-Keep ticket wait/wake state, invocation/finalization journals and `<logs_dir>/<ticket>/workflow-probe.json` for recovery.
-`<logs_dir>/<ticket>/workflow-control.json` freezes a released or timed-out control wait before the ticket update.
-Probe output is `<logs_dir>/<ticket>/waits/<wait-id>/<poll-id>.log`.
-Receipts/application journals are `<tickets_dir>/.workflow-events/`, outside logs and reserved `.kontora`.
-Receipts have no automatic expiry. Do not discard journals needed for recovery.
-Upgrade all sharing clients and daemons before wait config, result v3 or graph-state v2.
-Unchanged no-wait fingerprints and existing v1 state/v1-v2 result/recovery contracts remain compatible.
-Recovery covers daemon-process restart, not exactly-once shell effects or host-power-loss durability.
+See `kontora skills show tickets Compatibility` before enabling waits on a shared board.
 
 ## Relations
 
@@ -261,11 +216,8 @@ Use an epic for a shared brief spanning separately executable tickets. Its body
 holds the goal, design, decisions and success criteria. Each child remains an
 ordinary ticket with its own agent and pipeline.
 
-Project `epic_child_pipeline` applies to ordinary children of any actual epic,
-passive or agent, independently of supervisor activation. Missing or ordinary-ticket
-parents do not qualify. Initialization resolves actual membership before filling
-a blank pipeline. Existing assignments are not migrated after config changes,
-reparenting or detail-path edits; operators must retarget them explicitly.
+See `kontora skills show pipelines "Default selection"` for `epic_child_pipeline` eligibility
+and what happens to stored assignments after reparenting.
 
 API `epic_child` is an ephemeral preview snapshot, not frontmatter or authoritative
 default resolution. Browser inheritance omits `pipeline`; standalone sends `none`.
@@ -290,10 +242,10 @@ Replace `EPIC_ID` with the id returned by the first command. Do not pass
 `--pipeline`, `--at`, `--after` or `--parent` when creating an epic.
 The children remain open until explicitly queued.
 
-Supervisors creating children locally should pass `--parent` and omit `--path`
-and `--pipeline`, so Kontora selects the configured default.
-The child inherits the resolved parent epic's stored `path`, not the current git root.
-An explicit `--path` wins; use the epic's stored repository path, not its integration worktree.
+When local child creation uses `--parent` without `--path`, the child inherits
+its epic's stored `path`, not the current Git root. An explicit `--path` wins
+and may name another repository for a passive epic.
+Omit `--pipeline` to use the configured default.
 Remote and API creation still require a daemon-host path, even with a parent.
 
 The daemon derives a passive epic's status whenever its children change.
@@ -323,10 +275,7 @@ in the epic's own branch and worktree. It reads the brief and children, creates 
 work, monitors progress and integrates results. Children keep their own
 pipelines, branches, worktrees and commits. Pausing the epic stops only its
 supervisor. Children already running continue; pause them separately if needed.
-Retry requires explicit operator action and must inspect saved decisions,
-existing child results, worktrees, dirty files, and interrupted merges or rebases
-before continuing. Saving an answer, reading a notification, or dismissing
-attention does not restart work. Agent epics use ordinary edit restrictions while running or terminal.
+Agent epics use ordinary edit restrictions while running or terminal.
 
 A complete supervisor result with clean execution, confirmed termination, and
 successful final validation parks the epic in `human_review`, never directly
@@ -337,13 +286,46 @@ Review the combined epic diff. Plannotator feedback starts supervisor rework.
 Every supervisor run records history, summaries, logs, activity and session
 references on the epic.
 
+Supervisors use `max_concurrent_epic_supervisors`, default `4`, separately from
+`max_concurrent_agents`. This allows four additional agent processes. The queue
+chooses the oldest eligible ticket whose pool has capacity.
+
+See `kontora skills show tickets Compatibility` before configuring epic defaults or activating an epic.
+For supervisor and child authority, see `kontora skills show tickets "Epic supervision"`.
+
+The web UI provides these relation operations. The API equivalents are:
+
+- `POST /api/tickets/{id}/parent` with `{"parent":"EPIC_ID"}` sets a child's parent.
+- `POST /api/tickets/{id}/unparent` clears a child's parent.
+- `PUT /api/tickets/{id}/children` with `{"children":["CHILD_ID"]}` sets an epic's display order.
+
+The parent must exist and be an epic. Reordering does not modify child tickets
+or create dependencies. Deleting an epic through the daemon keeps its children
+and clears their parent references. Local `kontora delete` only removes the
+epic file; use remote mode for that cleanup.
+
+On desktop, create an epic from New ticket by choosing Kind: epic. Epics appear
+above Projects in the sidebar, not in board columns. The sidebar defaults to
+hidden, and its Epics section is hidden when the board has no epics.
+`kontora ls --json` includes `kind`, `epic_execution`, `execution_active`,
+`child_order`, `branch` and `base_branch`. `child_order` is the stored display order, not child membership.
+Use `kontora ls --json --closed --archived` without additional filters or a limit.
+Inspect each ticket's `parent` to find every child.
+
+## Epic supervision
+
+The run prompt is the authority for supervisor and child execution. See
+`kontora skills show tickets Epics` for activation, child membership and review.
+If you supply `--path` when creating a child, use the epic's stored repository path, not your integration worktree.
+
 Supervisor prompts require workflow preservation:
 
 - Do not change, clear or replace a child's pipeline.
 - Do not edit pipeline definitions, stage definitions or project pipeline defaults.
 - Create children without `--pipeline` so Kontora selects the configured default.
 - Do not bypass workflows through `init`, stage skipping, direct file edits or pause/retry sequences.
-- If configured work conflicts with your authority, do not start it. Report the conflict and request an operator decision.
+- If configured work conflicts with your authority, do not start it.
+  Record the conflict and request an operator decision.
 - Do not substitute another pipeline.
 
 These are prompt instructions, not runtime enforcement. Ordinary operator commands
@@ -360,16 +342,17 @@ children. Verify `kind: epic` and `epic_execution: agent` in the epic file, and
 `parent` in the child file; a prompt claim is not proof. Do not change fields to
 qualify yourself. Display order and whether the supervisor is running do not
 matter. Annotation-only runs get no implementation or commit authority. Narrower
-user, ticket, and stage instructions win, including “do not commit”.
+user, ticket, and stage instructions win, including “do not commit”. Outside verified
+activated supervision, commits still require per-commit approval.
 
 On its own verified branch a supervisor or child may implement, test, and commit without
 per-operation approval. Before each commit, merge, or rebase, verify the current
-branch equals the current ticket's `branch`, HEAD is not detached, and the working
-directory is the invocation's worktree. Resolve detached HEAD or unclear ownership
-before writing. Never commit, merge, rebase, or reset on `main`, `master`, or the
-default branch. Rebase only your own verified branch onto `base_branch` (or the
-default branch if unset). The supervisor may merge child branches into its own
-branch, not rebase children. A child may merge the epic's branch or its own
+branch equals the current ticket's `branch`, you are not on a detached HEAD, and
+the working directory is the invocation's worktree. Never commit, merge, rebase, or
+reset on `main`, `master`, or the default branch.
+If any check fails or ownership is unclear, ask before writing.
+Rebase only your own verified branch onto `base_branch` (or the default branch if unset).
+The supervisor may merge child branches into its own verified branch. Never rebase children. A child may merge the epic's branch or its own
 `base_branch` into its own verified branch. Never modify a running child's worktree.
 Do not discard, stash, or overwrite work this run did not create. Do not rewrite
 commits present on a remote or the default branch, or published or shared history.
@@ -390,6 +373,10 @@ on the current ticket, preserving selected options and free text and distinguish
 operator answers from assumptions; confirm persistence before continuing. Do not
 silently weaken acceptance requirements or substitute emulation for required
 real-device evidence. If no authorized work remains, submit blocked and stop.
+
+Retry requires explicit operator action. Before continuing, inspect saved decisions,
+child results, branches, worktrees, dirty files, and interrupted merges or rebases.
+Saving an answer, reading a notification, or dismissing attention does not restart work.
 
 Distinguish code or test failures from checks the local environment cannot run.
 Record an environment limitation once; repeat that setup only after it changes.
@@ -419,35 +406,6 @@ applicable recorded approval rather than asking again for the same action. Appro
 to push a work branch or open a draft pull request does not authorize merging,
 deployment, unrelated publication, or another destination. Read-only lookups remain
 allowed.
-
-Supervisors use `max_concurrent_epic_supervisors`, default `4`, separately from
-`max_concurrent_agents`. This allows four additional agent processes. The queue
-chooses the oldest eligible ticket whose pool has capacity.
-
-Upgrade all clients and daemon binaries that read the config before adding
-`epic_child_pipeline`; older strict-YAML loaders reject the key.
-Upgrade every daemon and client sharing the ticket directory before activation.
-Older versions treat all epics as passive and can overwrite supervisor status.
-Do not run mixed versions against activated epics.
-
-The web UI provides these relation operations. The API equivalents are:
-
-- `POST /api/tickets/{id}/parent` with `{"parent":"EPIC_ID"}` sets a child's parent.
-- `POST /api/tickets/{id}/unparent` clears a child's parent.
-- `PUT /api/tickets/{id}/children` with `{"children":["CHILD_ID"]}` sets an epic's display order.
-
-The parent must exist and be an epic. Reordering does not modify child tickets
-or create dependencies. Deleting an epic through the daemon keeps its children
-and clears their parent references. Local `kontora delete` only removes the
-epic file; use remote mode for that cleanup.
-
-On desktop, create an epic from New ticket by choosing Kind: epic. Epics appear
-above Projects in the sidebar, not in board columns. The sidebar defaults to
-hidden, and its Epics section is hidden when the board has no epics.
-`kontora ls --json` includes `kind`, `epic_execution`, `execution_active`,
-`child_order`, `branch` and `base_branch`. `child_order` is the stored display order, not child membership.
-Use `kontora ls --json --closed --archived` without additional filters or a limit.
-Inspect each ticket's `parent` to find every child.
 
 ## Body
 
@@ -544,3 +502,11 @@ Graph logs retain `<node>.<visit-id>.<invocation-id>.log`, with fallback for old
 running as. `session_kind` and `session_ref` name the agent's own session file;
 `kontora sessions` turns them back into paths. Both are absent for an agent
 that is neither claude nor pi.
+
+## Compatibility
+
+- Epic activation: Upgrade every daemon and client sharing the ticket directory before activation.
+  Older versions treat all epics as passive and can overwrite supervisor status.
+  Do not run mixed versions against activated epics.
+- Epic defaults and custom `running_status`: See `kontora skills show config Compatibility`.
+- Durable waits: See `kontora skills show pipelines Compatibility`.

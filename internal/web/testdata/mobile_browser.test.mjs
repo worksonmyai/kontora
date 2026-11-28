@@ -1982,23 +1982,40 @@ async function readableStageLabel(locator) {
   assert.ok(ratio >= 4.5, `Stage label contrast ${ratio.toFixed(2)}:1 must reach 4.5:1`);
 }
 
-for (const width of [390, 1280]) test(`workflow trace and human release / ${width}px`, async t => {
-  const id = 'kon-graph-release';
+const workflowPane = page => page.locator('[data-workflow-graph]:visible');
+const workflowTab = page => page.locator('[data-ticket-tabs]').getByRole('button', { name: /workflow$/i });
+const workflowNode = (pane, id) => pane.getByRole('button', { name: new RegExp(`^${id}, `) });
+const workflowInspector = pane => pane.getByRole('complementary', { name: 'Node inspector' });
+const workflowEdge = (node, port, to) => ({ from: { node, port }, to });
+
+for (const width of [390, 1280]) test(`workflow trace and human release / ${width}px`, { timeout: 45000 }, async t => {
+  const id = 'kon-graph-release', mobile = width < 768;
   const parked = (node, revision) => ({
     execution_id: 'execution', revision, visit_id: 'visit-' + revision, visit: revision, current_node: node,
     wait: { id: 'wait-' + revision, kind: 'human', phase: 'pending', execution_id: 'execution', visit_id: 'visit-' + revision, node_id: node },
-    transitions: [{ revision: 2, from: 'tests', port: 'pass', to: 'first' }],
+    transitions: [{ revision: 2, from: 'tests', port: 'pass', to: 'first' },
+      ...(node === 'second' ? [{ revision, from: 'first', port: 'released', to: 'second' }] : [])],
   });
-  const record = ticket(id, 'Inspect the graph', { status: 'paused', stage: 'first', stages: [],
+  const record = ticket(id, 'Ship the dashboard after local review', { status: 'paused', stage: 'first', stages: [],
     graph_execution: parked('first', 2),
-    graph_definition: { version: 2, entry: 'tests', nodes: [], edges: [{ from: { node: 'tests', port: 'pass' }, to: 'configured' }] },
+    graph_definition: { version: 2, entry: 'tests', nodes: [
+      { id: 'tests', type: 'check', command: 'npm test' }, { id: 'first', type: 'wait', mode: 'human' },
+      { id: 'second', type: 'wait', mode: 'human' }, { id: 'rework', type: 'loop', max: 2 },
+      { id: 'fix', type: 'agent', template: 'implement', agent: 'fixture-agent' },
+      { id: 'inspect', type: 'end', status: 'paused' }, { id: 'shipped', type: 'end', status: 'done' },
+    ], edges: [workflowEdge('tests', 'pass', 'first'), workflowEdge('tests', 'fail', 'rework'),
+      workflowEdge('rework', 'repeat', 'fix'), workflowEdge('rework', 'exhausted', 'inspect'),
+      workflowEdge('fix', 'complete', 'tests'), workflowEdge('fix', 'failed', 'inspect'),
+      workflowEdge('first', 'released', 'second'), workflowEdge('second', 'released', 'shipped')] },
     history: [true, false, false].map((imported, i) => ({
-      stage: 'tests', workflow_execution_id: 'execution', node_visit_id: 'tests-visit', visit_attempt: i + 1, completed_at: stamp, imported,
+      stage: 'tests', workflow_execution_id: 'execution', node_visit_id: 'tests-visit', visit_attempt: i + 1,
+      started_at: new Date(Date.parse(stamp) - (i + 1) * 18000).toISOString(), completed_at: stamp, imported,
       run_outcome: i ? 'failed' : 'complete', exit_code: i, verdict: i === 0 ? 'approved' : undefined,
     })),
   });
   await withPage(t, width, 'dark', async (page, fixture) => {
     const posts = [];
+    let unconfirmedReceipt;
     const path = `/api/tickets/${id}/workflow-release`;
     const server = fixture.records.get('primary/' + id);
     await page.route('**' + path, async route => {
@@ -2008,7 +2025,7 @@ for (const width of [390, 1280]) test(`workflow trace and human release / ${widt
       const receipt = { id: 'receipt-' + posts.length, request_id: body.request_id, reason: body.reason };
       if (posts.length === 1) return route.fulfill({ status: 409, json: { error: 'Wait inspection is stale' } });
       if (posts.length === 2) return route.fulfill({ json: receipt });
-      server.graph_execution.wait.receipt = receipt;
+      unconfirmedReceipt = receipt;
       return route.abort('failed');
     });
     fixture.expectedHTTPFailures.push(base + path);
@@ -2016,23 +2033,59 @@ for (const width of [390, 1280]) test(`workflow trace and human release / ${widt
       stale: true, live: false, source: 'plaintext', content: 'Fallback activity preview',
     } }));
     await openTicket(page, id);
-    if (width < 768) await phoneOutputView(page, 'Activity');
     const trace = page.locator('[data-workflow-trace]:visible');
+    const band = page.getByRole('region', { name: 'Workflow release' });
+    const pane = workflowPane(page);
     const human = trace.getByText('Waiting: human', { exact: true });
-    await expect(human).toBeVisible();
-    await trace.getByText('Current configuration', { exact: true }).click();
-    await expect(trace.getByText(/tests.pass -> configured/)).toBeVisible();
-    await expect(trace.getByText(/Latest transition: r2: tests.pass -> first/)).toBeVisible();
-    await trace.getByText('Current configuration', { exact: true }).click();
-    await trace.getByText('Full trace and runs').click();
-    const runRows = trace.getByRole('listitem');
-    await expect(runRows.nth(0)).toContainText(/complete.*exit 0.*verdict approved/s);
-    await expect(runRows.nth(1)).toContainText(/failed.*exit 1/s);
-    await expect(runRows.nth(2)).toContainText(/failed.*exit 2/s);
-    await expect(trace.getByRole('button', { name: /^Open Activity:/ })).toHaveCount(2);
-    const activity = page.waitForRequest(req => req.url().includes(`/api/tickets/${id}/activity?`));
-    await trace.getByRole('button', { name: /Open Activity: tests .* attempt 3/ }).click();
-    assert.equal(new URL((await activity).url()).searchParams.get('run'), '2');
+    let runs;
+    if (mobile) {
+      await phoneOutputView(page, 'Activity');
+      await expect(human).toBeVisible();
+      await expect(band).toBeHidden();
+      const configuration = trace.getByText('Current configuration', { exact: true });
+      await configuration.click();
+      await expect(trace.getByText(/^Entry: tests.*tests\.pass -> first/s)).toBeVisible();
+      await expect(trace.getByText(/Latest transition: r2: tests\.pass -> first/)).toBeVisible();
+      await configuration.click();
+      await trace.getByText('Full trace and runs').click();
+      runs = trace;
+      const rows = runs.getByRole('listitem');
+      await expect(rows.nth(0)).toContainText(/complete.*exit 0.*verdict approved/s);
+      await expect(rows.nth(1)).toContainText(/failed.*exit 1/s);
+      await expect(rows.nth(2)).toContainText(/failed.*exit 2/s);
+    } else {
+      await expect(trace).toBeHidden();
+      await expect(band).toHaveAttribute('data-state', 'ready');
+      await expect(band.getByText(/Continues to second.*Doesn't approve the diff/)).toBeVisible();
+      await expect(workflowTab(page)).toHaveAttribute('aria-pressed', 'false');
+      await workflowTab(page).click();
+      await expect(workflowTab(page)).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.locator('.ticket-detail-rail')).toBeHidden();
+      const current = workflowNode(pane, 'first'), tests = workflowNode(pane, 'tests');
+      await expect(current).toHaveAttribute('aria-current', 'step');
+      await expect(current).toHaveAttribute('aria-pressed', 'true');
+      runs = workflowInspector(pane);
+      await expect(runs.getByRole('heading', { name: 'first', exact: true })).toBeVisible();
+      await tests.click();
+      await expect(tests).toHaveAttribute('aria-pressed', 'true');
+      await expect(current).toHaveAttribute('aria-pressed', 'false');
+      await expect(runs.getByRole('heading', { name: 'tests', exact: true })).toBeVisible();
+      const attempts = runs.locator('.workflow-attempt');
+      await expect(attempts.nth(0)).toContainText(/attempt 1.*complete.*verdict approved/s);
+      await expect(attempts.nth(1)).toContainText(/attempt 2.*failed.*exit 1/s);
+      await expect(attempts.nth(2)).toContainText(/attempt 3.*failed.*exit 2/s);
+      const screenshot = process.env.KONTORA_WORKFLOW_SCREENSHOT;
+      if (screenshot) await page.screenshot({ path: screenshot, animations: 'disabled' });
+    }
+    await expect(runs.getByRole('button', { name: /^Open Activity:/ })).toHaveCount(2);
+    const [activity] = await Promise.all([
+      page.waitForRequest(req => req.url().includes(`/api/tickets/${id}/activity?`)),
+      runs.getByRole('button', { name: /Open Activity: tests .* attempt 3/ }).click(),
+    ]);
+    const query = new URL(activity.url()).searchParams;
+    assert.equal(query.get('stage'), 'tests');
+    assert.equal(query.get('run'), '2');
+    if (!mobile) await expect(workflowTab(page)).toHaveAttribute('aria-pressed', 'false');
     await expect(page.getByText('Fallback activity preview', { exact: true }).filter({ visible: true })).toBeVisible();
     const raw = page.getByRole('button', { name: /raw/i }).filter({ visible: true });
     await raw.click();
@@ -2046,116 +2099,242 @@ for (const width of [390, 1280]) test(`workflow trace and human release / ${widt
     fixture.rawOutputs.set(`${id}/tests/2`, 'Exact second local run\n');
     await raw.click();
     await expect.poll(() => page.evaluate(() => Promise.all(window.rawExports))).toEqual(['Exact second local run\n']);
-    await trace.getByText('Full trace and runs').click();
-    const reason = trace.getByRole('textbox', { name: 'Release reason' });
-    const release = trace.getByRole('button', { name: 'Release wait', exact: true });
+    if (mobile) await trace.getByText('Full trace and runs').click();
+    const surface = mobile ? trace : band;
+    const reason = surface.getByRole('textbox', { name: 'Release reason' });
+    const release = surface.getByRole('button', { name: 'Release wait', exact: true });
+    const refresh = surface.getByRole('button', { name: /refresh wait/i });
     const submit = async text => { await reason.fill(text); await release.click(); };
+    const accepted = (revision, receipt) => surface.getByText(mobile ? new RegExp(`Release accepted for wait-${revision}`) : `Receipt ${receipt} accepted. Check the execution for progress.`);
     await expect(release).toBeDisabled();
     await submit('First inspection');
-    await expect(trace.getByText(/Release refused/)).toBeVisible();
+    await expect(surface.getByText(/Release refused\. Refresh and inspect the current wait\. Wait inspection is stale/)).toBeVisible();
+    if (!mobile) await expect(band).toHaveAttribute('data-state', 'conflict');
     await expect(release).toBeHidden();
-    await trace.getByRole('button', { name: 'Refresh wait details' }).click();
+    await refresh.click();
     await expect(reason).toHaveValue('');
     await submit('Continue first');
-    await expect(trace.getByText(/Release accepted for wait-2/)).toBeVisible();
-    await expect(human).toBeVisible();
-    await expect(trace.getByText(/^Current node: first/)).toBeVisible();
-    assert.equal(posts[1].wait_id, 'wait-2');
-    assert.equal(posts[1].revision, 2);
+    await expect(accepted(2, 'receipt-2')).toBeVisible();
+    await expect(release).toBeHidden();
+    if (mobile) {
+      await expect(human).toBeVisible();
+      await expect(trace.getByText(/^Current node: first/)).toBeVisible();
+    } else {
+      await expect(band).toHaveAttribute('data-state', 'accepted');
+      await expect(band.getByText('first', { exact: true })).toBeVisible();
+      await workflowTab(page).click();
+      await expect(workflowNode(pane, 'first')).toHaveAttribute('aria-current', 'step');
+      await expect(workflowNode(pane, 'tests')).toHaveAttribute('aria-pressed', 'true');
+    }
 
     server.stage = 'second';
     server.graph_execution = parked('second', 3);
     await page.evaluate(ticket => window.__fixtureSSE.filter(s => !s.closed && s.url === '/api/events').forEach(s => s.emit('ticket_updated', ticket)), server);
     await expect(reason).toHaveValue('');
+    if (!mobile) await expect(workflowNode(pane, 'second')).toHaveAttribute('aria-current', 'step');
+    const lostRead = fixture.holdDetail('primary', id);
     await submit('Continue second');
+    await lostRead.started;
     await expect.poll(() => posts.length).toBe(3);
-    await expect(trace.getByText(/Release accepted for wait-3/)).toBeVisible();
+    const uncertain = surface.getByText(mobile ? /Release acceptance is unknown/ : /The daemon did not confirm request/);
+    await expect(uncertain).toContainText(posts[2].request_id);
+    if (!mobile) await expect(band).toHaveAttribute('data-state', 'uncertain');
     await expect(release).toBeHidden();
-    assert.equal(posts[2].wait_id, 'wait-3');
-    assert.equal(posts[2].revision, 3);
+    assert.deepEqual(posts.map(({ execution_id, wait_id, revision, reason }) => [execution_id, wait_id, revision, reason]), [
+      ['execution', 'wait-2', 2, 'First inspection'], ['execution', 'wait-2', 2, 'Continue first'], ['execution', 'wait-3', 3, 'Continue second'],
+    ]);
     assert.equal(new Set(posts.map(p => p.request_id)).size, 3);
-    await routeTo(page, '#/');
-    await openTicket(page, id);
-    await expect(trace.getByText(/Release accepted for wait-3/)).toBeVisible();
-    await expect(human).toBeVisible();
+
+    const refreshWait = async () => {
+      const response = page.waitForResponse(res => res.url() === base + detailPath('primary', id) && res.request().method() === 'GET');
+      await refresh.click();
+      await (await response).finished();
+    };
+    await settleRead(page, lostRead);
+    await refreshWait();
+    await expect(uncertain).toBeVisible(); // A missing receipt does not authorize a second POST.
     await expect(release).toBeHidden();
+    server.graph_execution.wait.receipt = unconfirmedReceipt;
+    await refreshWait();
+    await expect(accepted(3, 'receipt-3')).toBeVisible();
+    await expect(refresh).toBeHidden();
+    await backToBoard(page);
+    await openTicket(page, id);
+    await expect(accepted(3, 'receipt-3')).toBeVisible();
+    if (mobile) await expect(human).toBeVisible();
+    else await expect(band.getByText('second', { exact: true })).toBeVisible();
+    await expect(release).toBeHidden();
+    assert.equal(posts.length, 3);
     await noPageOverflow(page);
   }, { records: [record], distinctRaw: true, config: { pipeline_infos: [{ name: record.pipeline, graph_definition: record.graph_definition }] } });
 });
 
-test('workflow trace keeps the selected Activity occurrence during a thin refresh', async t => {
+test('workflow release band toggles disarmed evidence and copies the inspected CLI command in light mode', async t => {
+  const id = 'kon-disarmed-graph';
+  const graph_definition = { version: 2, entry: 'wait', nodes: [
+    { id: 'wait', type: 'wait', mode: 'human' }, { id: 'handoff', type: 'end', status: 'human_review' },
+  ], edges: [workflowEdge('wait', 'released', 'handoff')] };
+  const wait = { id: 'wait-one', node_id: 'wait', visit_id: 'exec.1', execution_id: 'exec', kind: 'human', phase: 'pending', disarmed: true };
+  const record = ticket(id, 'Disarmed release wait', { status: 'paused', stage: 'wait', graph_definition,
+    graph_execution: { execution_id: 'exec', revision: 4, visit_id: 'exec.1', current_node: 'wait', wait } });
+  await withPage(t, 1280, 'light', async (page, fixture) => {
+    await openTicket(page, id);
+    const pane = page.locator('[data-ticket-detail]');
+    const band = pane.getByRole('region', { name: 'Workflow release' });
+    await expect(band).toHaveAttribute('data-state', 'disarmed');
+    await expect(band.getByRole('button', { name: 'Release wait', exact: true })).toHaveCount(0);
+    await band.getByRole('button', { name: 'show evidence' }).click();
+    await expect(workflowTab(page)).toHaveAttribute('aria-pressed', 'true');
+    const evidence = workflowInspector(pane).locator('.workflow-wait-evidence');
+    await expect(evidence).toHaveJSProperty('open', true);
+    await expect(evidence.getByText('human · wait-one', { exact: true })).toBeVisible();
+    await band.getByRole('button', { name: 'hide evidence' }).click();
+    await expect(evidence).toHaveJSProperty('open', false);
+    const updated = fixture.records.get(`primary/${id}`);
+    updated.graph_execution = { ...updated.graph_execution, revision: 5, wait: { ...wait, disarmed: false } };
+    await page.evaluate(ticket => window.__fixtureSSE.filter(s => !s.closed && s.url === '/api/events')
+      .forEach(s => s.emit('ticket_updated', ticket)), updated);
+    await expect(band).toHaveAttribute('data-state', 'ready');
+    await band.getByRole('button', { name: /copy CLI command/ }).click();
+    await expect(band.getByRole('button', { name: /copied/ })).toBeVisible();
+    assert.equal(await page.evaluate(() => window.__fixtureCopied),
+      `kontora release ${id} --execution-id exec --wait-id wait-one --revision 5 --request-id <unique-id> --reason <reason>`);
+    assert.deepEqual(fixture.mutations, []);
+  }, { records: [record], config: { pipeline_infos: [{ name: record.pipeline, graph_definition }] } });
+});
+
+test('workflow graph withholds execution path during a thin refresh and preserves selected Activity', { timeout: 30000 }, async t => {
   const record = ticket('kon-thin-graph', 'Parked graph with repeated checks', { status: 'paused', stage: 'wait', stages: [],
-    graph_definition: { entry: 'tests', nodes: [] },
-    graph_execution: { execution_id: 'exec', revision: 3, current_node: 'wait',
-      wait: { id: 'timer', kind: 'timer', phase: 'pending' } },
-    history: [0, 1].map(i => ({ stage: 'tests', workflow_execution_id: 'exec', node_visit_id: `exec.${i + 1}`, completed_at: stamp, exit_code: 0 })),
+    graph_definition: { version: 2, entry: 'tests', nodes: [
+      { id: 'tests', type: 'check', command: 'npm test' }, { id: 'wait', type: 'wait', mode: 'human' },
+      { id: 'finished', type: 'end', status: 'done' },
+    ], edges: [workflowEdge('tests', 'pass', 'wait'), workflowEdge('wait', 'released', 'finished')] },
+    graph_execution: { execution_id: 'exec', revision: 3, current_node: 'wait', visit_id: 'exec.3', visit: 3,
+      wait: { id: 'hold', node_id: 'wait', execution_id: 'exec', visit_id: 'exec.3', kind: 'human', phase: 'pending' },
+      transitions: [{ revision: 3, from: 'tests', port: 'pass', to: 'wait' }] },
+    history: [0, 1].map(i => ({ stage: 'tests', workflow_execution_id: 'exec', node_visit_id: `exec.${i + 1}`, completed_at: stamp, run_outcome: 'complete', exit_code: 0 })),
   });
   await withPage(t, 1280, 'dark', async (page, fixture) => {
     await page.route(`**/api/tickets/${record.id}/activity?*`, route => route.fulfill({ json: {
       live: false, stale: false, source: 'plaintext', content: 'Output for occurrence ' + new URL(route.request().url()).searchParams.get('run'),
     } }));
     await openTicket(page, record.id);
-    const trace = page.locator('[data-workflow-trace]:visible');
-    await trace.getByText('Full trace and runs').click();
-    await trace.getByRole('button', { name: /Open Activity: tests · visit exec\.1/ }).click();
+    const pane = workflowPane(page), inspector = workflowInspector(pane);
+    const activity = page.locator('[data-ticket-tabs]').getByRole('button', { name: 'activity', exact: true });
+    const pending = inspector.getByText('Recorded execution details have not loaded yet');
+    const pass = pane.locator('.workflow-edge').filter({ has: page.getByText('pass', { exact: true }) });
+    const released = pane.locator('.workflow-edge').filter({ has: page.getByText('released', { exact: true }) });
+    await workflowTab(page).click();
+    await expect(pass).toHaveAttribute('data-state', 'taken');
+    await expect(released).toHaveAttribute('data-state', 'next');
+    const tests = workflowNode(pane, 'tests');
+    const wait = workflowNode(pane, 'wait');
+    await tests.click();
+    const selectedRun = inspector.getByRole('button', { name: /Open Activity: tests · visit exec\.1/ });
+    await selectedRun.click();
     const output = page.getByText('Output for occurrence 0', { exact: true }).filter({ visible: true });
     await expect(output).toBeVisible();
 
-    fixture.records.get(`primary/${record.id}`).graph_execution.revision++;
-    const refresh = fixture.holdDetail('primary', record.id);
-    await page.evaluate(() => window.__fixtureSSE.at(-1).dispatchEvent(new Event('open')));
+    const updated = fixture.records.get(`primary/${record.id}`);
+    updated.graph_execution.revision++;
+    const snapshot = fixture.holdSnapshot(), refresh = fixture.holdDetail('primary', record.id);
+    const projection = { ...updated, history: undefined, body: undefined, graph_execution: { ...updated.graph_execution, transitions: undefined } };
+    await page.evaluate(() => window.__fixtureSSE.filter(s => !s.closed && s.url === '/api/events').forEach(s => s.emit('open')));
+    await snapshot.started;
+    snapshot.release({ value: { tickets: [projection], running_agents: 0 } });
     await refresh.started;
-    await expect(trace.getByText('Recorded execution details have not loaded yet')).toBeVisible();
+    await expect(output).toBeVisible();
+    await workflowTab(page).click();
+    await expect(pending).toBeVisible();
+    await expect(tests).toHaveAttribute('aria-pressed', 'true');
+    await expect(wait).not.toHaveAttribute('aria-current', 'step');
+    await expect(pass).toHaveAttribute('data-state', 'idle');
+    await expect(released).toHaveAttribute('data-state', 'idle');
+    await expect(selectedRun).toBeHidden();
+    await activity.click();
     await expect(output).toBeVisible();
     await settleRead(page, refresh);
-    await expect(trace.getByText('Recorded execution details have not loaded yet')).toBeHidden();
     await expect(output).toBeVisible();
-  }, { records: [record], thinLists: true });
+    await workflowTab(page).click();
+    await expect(pending).toBeHidden();
+    await expect(wait).toHaveAttribute('aria-current', 'step');
+    await expect(pass).toHaveAttribute('data-state', 'taken');
+    await expect(released).toHaveAttribute('data-state', 'next');
+    await expect(selectedRun).toBeVisible();
+  }, { records: [record], thinLists: true, config: { pipeline_infos: [{ name: record.pipeline, graph_definition: record.graph_definition }] } });
 });
 
-test('workflow trace updates current configuration after a config-only reload', async t => {
-  const graph = to => ({ entry: 'tests', edges: [{ from: { node: 'tests', port: 'pass' }, to }] });
+test('workflow graph updates configured nodes without rewriting the recorded path after a config-only reload', async t => {
+  const graph = to => ({ version: 2, entry: 'tests', nodes: [
+    { id: 'tests', type: 'check', command: 'npm test' }, { id: to, type: 'end', status: 'done' },
+  ], edges: [workflowEdge('tests', 'pass', to)] });
   const record = ticket('kon-finished-graph', 'Finished graph', { status: 'done', stage: 'original', stages: [],
     graph_definition: graph('original'), graph_execution: { execution_id: 'exec', revision: 2, current_node: 'original',
       transitions: [{ revision: 2, from: 'tests', port: 'pass', to: 'original' }] },
   });
   await withPage(t, 1280, 'dark', async (page, fixture) => {
     await openTicket(page, record.id);
-    await page.getByText('Workflow graph · execution').click();
-    const trace = page.locator('[data-workflow-trace]:visible');
-    await trace.getByText('Current configuration', { exact: true }).click();
-    await expect(trace.getByText(/Entry: tests\s+tests.pass -> original/)).toBeVisible();
+    await workflowTab(page).click();
+    const pane = workflowPane(page), inspector = workflowInspector(pane);
+    const pass = pane.locator('.workflow-edge').filter({ has: page.getByText('pass', { exact: true }) });
+    const historical = pane.getByText(/Latest transition: r2: tests\.pass -> original/);
+    const mismatch = pane.getByText('Some recorded transitions are missing from the current configuration.', { exact: false });
+    await expect(workflowNode(pane, 'original')).toHaveAttribute('aria-current', 'step');
+    await expect(pass).toHaveAttribute('data-state', 'taken');
+    await expect(mismatch).toBeHidden();
+    await pane.getByText('Current configuration', { exact: true }).click();
+    await expect(pane.getByText(/^Entry: tests.*tests\.pass -> original/s)).toBeVisible();
     fixture.config.pipeline_infos = [{ name: record.pipeline, graph_definition: graph('reconfigured') }];
     await emitAutomationEvent(page, 'config_reloaded');
-    await expect(trace.getByText(/Entry: tests\s+tests.pass -> reconfigured/)).toBeVisible();
-    await expect(trace.getByText(/Latest transition: r2: tests.pass -> original/)).toBeVisible();
+    await expect(workflowTab(page)).toHaveAttribute('aria-pressed', 'true');
+    await expect(workflowNode(pane, 'original')).toHaveCount(0);
+    await expect(workflowNode(pane, 'reconfigured')).toHaveAttribute('data-state', 'idle');
+    await expect(pass).toHaveAttribute('data-state', 'idle');
+    await expect(mismatch).toBeVisible();
+    await expect(pane.getByText(/^Entry: tests.*tests\.pass -> reconfigured/s)).toBeVisible();
+    await expect(historical).toBeVisible();
     fixture.config.pipeline_infos = [];
     await emitAutomationEvent(page, 'config_reloaded');
-    await expect(trace.getByText('No graph is configured for this pipeline.')).toBeVisible();
-    await expect(trace.getByText(/Latest transition: r2: tests.pass -> original/)).toBeVisible();
+    await expect(inspector.getByText('No graph is configured for this pipeline.')).toBeVisible();
+    await expect(pane.getByRole('region', { name: 'Workflow nodes' })).toBeHidden();
+    await expect(historical).toBeVisible();
   }, { records: [record], config: { pipeline_infos: [{ name: record.pipeline, graph_definition: record.graph_definition }] } });
 });
 
-test('workflow trace and human release / archive is read-only', async t => {
+for (const width of [390, 1280]) test(`workflow graph archive is read-only / ${width}px`, async t => {
   const record = ticket('kon-archived', 'Archived graph', { status: 'done', archived_at: stamp,
-    graph_definition: { entry: 'new', edges: [{ from: { node: 'tests', port: 'pass' }, to: 'new' }] },
+    graph_definition: { version: 2, entry: 'tests', nodes: [
+      { id: 'tests', type: 'check', command: 'npm test' }, { id: 'new', type: 'end', status: 'done' },
+    ], edges: [workflowEdge('tests', 'pass', 'new')] },
     graph_execution: { execution_id: 'saved', revision: 3, visit: 1, current_node: 'finished',
       transitions: [{ revision: 3, from: 'tests', port: 'pass', to: 'finished' }],
       previous_executions: [{ execution_id: 'older', transitions: [{ revision: 2, from: 'tests', port: 'fail', to: 'inspect' }] }],
     },
+    history: [{ stage: 'tests', workflow_execution_id: 'saved', node_visit_id: 'tests-visit', completed_at: stamp, run_outcome: 'complete', exit_code: 0 }],
   });
-  await withPage(t, 390, 'dark', async page => {
+  await withPage(t, width, 'dark', async (page, fixture) => {
     await routeTo(page, '#/archive/t/kon-archived');
-    const trace = page.locator('[data-workflow-trace]:visible');
-    await expect(trace.getByText('Recorded execution', { exact: true })).toBeVisible();
-    await expect(trace.getByText(/Latest transition: r3: tests.pass -> finished/)).toBeVisible();
-    await trace.getByText('Current configuration', { exact: true }).click();
-    await expect(trace.getByText(/tests.pass -> new/)).toBeVisible();
-    await trace.getByText('Full trace and runs', { exact: true }).click();
-    await trace.getByText('Previous execution: older', { exact: true }).click();
-    await expect(trace.getByText('r2: tests.fail -> inspect', { exact: true })).toBeVisible();
-    await expect(trace.getByRole('button', { name: 'Release wait', exact: true })).toHaveCount(0);
-  }, { records: [record], archiveRows: [record], config: { pipeline_infos: [{ name: record.pipeline, graph_definition: record.graph_definition }] } });
+    const archive = page.locator('.archive-detail:visible');
+    const tab = archive.getByRole('button', { name: 'workflow', exact: true });
+    const pane = workflowPane(page), inspector = workflowInspector(pane);
+    await expect(tab).toHaveAttribute('aria-pressed', 'false');
+    await tab.click();
+    await expect(tab).toHaveAttribute('aria-pressed', 'true');
+    await expect(pane.getByText(/Latest transition: r3: tests\.pass -> finished/)).toBeVisible();
+    await workflowNode(pane, 'new').click();
+    await expect(inspector.getByText('Not reached in this execution.')).toBeVisible();
+    await workflowNode(pane, 'tests').click();
+    await expect(inspector.getByText('tests-visit', { exact: true })).toBeVisible();
+    await pane.getByText('Current configuration', { exact: true }).click();
+    await expect(pane.getByText(/tests\.pass -> new/)).toBeVisible();
+    await pane.getByText('Full trace and runs', { exact: true }).click();
+    await pane.getByText('Previous execution: older', { exact: true }).click();
+    await expect(pane.getByText('r2: tests.fail -> inspect', { exact: true })).toBeVisible();
+    await expect(archive.getByRole('region', { name: 'Workflow release' })).toHaveCount(0);
+    await expect(pane.getByRole('button', { name: /release wait|restart at entry|open activity/i })).toHaveCount(0);
+    await noPageOverflow(page);
+    assert.deepEqual(fixture.mutations, []);
+  }, { records: [record], config: { pipeline_infos: [{ name: record.pipeline, graph_definition: record.graph_definition }] } });
 });
 
 describe('graph execution evidence', () => {
@@ -3858,17 +4037,14 @@ describe('desktop stage ribbon browser regressions', () => {
 
   for (const placement of ['above', 'below']) test(`desktop stage ribbon pointer crosses to the tooltip ${placement}`, async t => {
     const below = placement === 'below';
-    const long = below ? 'unbroken-name-'.repeat(25) : ribbonStages[0];
-    const options = desktopRibbonFixtures(below ? {} : { graph_definition: {
-      entry: long, nodes: ribbonStages.map(id => ({ id, type: 'agent' })),
-    } });
-    if (below) {
-      options.records[0].stages = [long, ...ribbonStages.slice(1)];
-      options.records[0].history[0].stage = long;
-    }
+    // With no graph disclosure above the ribbon, use a shorter clipped name for
+    // the above placement and a multi-line tooltip that cannot fit there for below.
+    const long = below ? 'unbroken-name-'.repeat(25) : 'stage-01-descriptive-name-for-local-review';
+    const options = desktopRibbonFixtures();
+    options.records[0].stages = [long, ...ribbonStages.slice(1)];
+    options.records[0].history[0].stage = long;
     await withPage(t, below ? 960 : 1280, 'dark', async page => {
       await openTicket(page, 'kon-ribbon');
-      if (!below) await page.locator('[data-ticket-detail] summary').getByText('Workflow graph · execution').click();
       await ribbonRevealed(page, ribbonStages[10]);
       await ribbonBoundary(page, 'start');
       await page.clock.install();
@@ -3947,40 +4123,58 @@ describe('desktop stage ribbon browser regressions', () => {
     }, { ...options, sidebar: true, assistantOpen: true });
   });
 
-  test('desktop stage ribbon tooltip follows a collapsing graph and yields Escape when offscreen', async t => {
-    const nodes = [...ribbonStages.map(id => ({ id, type: 'agent' })),
-      ...Array.from({ length: 14 }, (_, i) => ({ id: `next-${i}`, type: 'check' }))];
-    await withPage(t, 1024, 'dark', async page => {
-      await openTicket(page, 'kon-ribbon');
-      const graph = page.locator('[data-ticket-detail] summary').getByText('Workflow graph · execution', { exact: true });
-      const first = ribbonCard(page, ribbonStages[0]);
-      const tooltip = ribbonTooltip(page);
+  test('desktop stage ribbon layout with and without the workflow release band; offscreen tooltip yields Escape', async t => {
+    const long = 'unbroken-name-'.repeat(25), id = 'kon-ribbon';
+    const options = desktopRibbonFixtures({ status: 'paused', stage: 'handoff', graph_definition: {
+      version: 2, entry: long, nodes: [{ id: long, type: 'check' }, { id: 'handoff', type: 'wait', mode: 'human' }],
+      edges: [workflowEdge(long, 'pass', 'handoff')],
+    } });
+    options.records[0].history[0].stage = long;
+    await withPage(t, 960, 'dark', async (page, fixture) => {
+      await openTicket(page, id);
+      await ribbonBoundary(page, 'start');
+      const first = ribbonCard(page, long), tooltip = ribbonTooltip(page);
+      const band = page.getByRole('region', { name: 'Workflow release' });
+      const tabs = page.locator('[data-ticket-tabs]');
       const clip = () => ribbonViewport(page).boundingBox();
-      const setGraph = open => graph.evaluate((el, open) => { el.parentElement.open = open; }, open);
-      await expect(graph).toBeVisible();
-      const collapsedY = (await clip()).y;
-      await setGraph(true);
-      await page.locator('[data-ticket-detail]').getByText('Current configuration', { exact: true })
-        .evaluate(el => { el.parentElement.open = true; });
-      await expect.poll(async () => (await clip()).y).toBeGreaterThan(collapsedY);
-      await first.focus();
-      await expect(tooltip).toBeVisible();
-      const expanded = await clip();
-      await setGraph(false);
+      const emit = () => page.evaluate(ticket => window.__fixtureSSE.filter(s => !s.closed && s.url === '/api/events')
+        .forEach(s => s.emit('ticket_updated', ticket)), fixture.records.get(`primary/${id}`));
+      const record = fixture.records.get(`primary/${id}`);
+      await expect(band).toBeHidden();
+      await ribbonTabBackTo(page, first);
+      await expect(tooltip).toHaveText(long);
+      const initial = await clip(), initialTabs = await tabs.boundingBox(), initialTip = await tooltip.boundingBox();
+
+      record.graph_execution = { execution_id: 'exec', revision: 2, current_node: 'handoff', visit_id: 'visit-2', visit: 2,
+        wait: { id: 'wait-2', node_id: 'handoff', execution_id: 'exec', visit_id: 'visit-2', kind: 'human', phase: 'pending' } };
+      await emit();
+      await expect(band).toBeVisible();
+      await expect.poll(async () => (await tabs.boundingBox()).y).toBeGreaterThan(initialTabs.y);
+      assert.deepEqual(await clip(), initial, 'The band appears below the ribbon; it must not move or resize the stages');
+      await expect(first).toBeFocused();
+      await expect(tooltip).toHaveText(long);
       await expect.poll(async () => {
-        const card = await clip(), tip = await tooltip.boundingBox();
-        const pane = await page.locator('[data-ticket-detail]').boundingBox();
-        return !!tip && tip.y >= pane.y && (tip.y + tip.height <= card.y || tip.y >= card.y + card.height) && tip.y < expanded.y;
-      }).toBe(true);
-      assert.equal((await clip()).height, expanded.height);
-      await setGraph(true);
-      await expect.poll(async () => (await clip()).y).toBe(expanded.y);
-      await page.setViewportSize({ width: 1024, height: Math.floor(collapsedY) - 12 });
+        const tip = await tooltip.boundingBox();
+        if (!tip) return null;
+        const overlaps = box => tip.y < box.y + box.height && tip.y + tip.height > box.y;
+        return { band: overlaps(await band.boundingBox()), tabs: overlaps(await tabs.boundingBox()) };
+      }, { message: 'Tooltip must not cover the release band or tabs' }).toEqual({ band: false, tabs: false });
+
+      delete record.graph_execution.wait;
+      record.graph_execution.revision++;
+      await emit();
+      await expect(band).toBeHidden();
+      await expect.poll(() => tabs.boundingBox()).toEqual(initialTabs);
+      assert.deepEqual(await clip(), initial);
+      await expect(first).toBeFocused();
+      await expect(tooltip).toHaveText(long);
+      await expect.poll(() => tooltip.boundingBox()).toEqual(initialTip);
+      await page.setViewportSize({ width: 960, height: Math.floor(initial.y) - 12 });
       await expect(ribbonViewport(page)).not.toBeInViewport();
       await expect(tooltip).toBeHidden();
       await page.keyboard.press('Escape');
       await expect(first).toHaveCount(0);
-    }, desktopRibbonFixtures({ graph_definition: { entry: ribbonStages[0], nodes } }));
+    }, { ...options, sidebar: true, assistantOpen: true });
   });
 
   test('desktop stage ribbon restores focused disclosure after hover and clears it on a touch click', async t => {

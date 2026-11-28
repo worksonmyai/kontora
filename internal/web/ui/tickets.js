@@ -1,3 +1,5 @@
+import { buildWorkflowGraph } from './workflow_graph.js';
+
 // Ticket store and app lifecycle: the columns, the initial load, the SSE
 // stream that keeps them current, and the per-ticket presentation helpers.
 
@@ -26,12 +28,17 @@ export function kontoraTickets() {
   const reads = new Set();
   const plannotatorStarts = new Map();
   let configGeneration = 0;
+  let graphMemo;
+  let workflowCopyTimer;
 
   return {
     ticketsRefreshing: false,
     ticketsLastLoaded: null,
     ticketsLoadError: null,
     ticketDetailRefreshError: null,
+    workflowSelectedNode: Object.create(null),
+    workflowEvidenceKey: '',
+    workflowCopiedCommand: '',
 
     ticketRead(run, controller = new AbortController()) {
       reads.add(controller);
@@ -134,6 +141,7 @@ export function kontoraTickets() {
         const config = await res.json();
         if (fresh()) {
           this.configCache = config;
+          if (this.activeTab === 'workflow' && !this.showWorkflowGraph(this.selectedTicket)) this.switchTab('ticket');
           this.applyConfigTheme(config);
         }
       } catch (e) {
@@ -750,7 +758,8 @@ export function kontoraTickets() {
           if (this.logTabActive() && !this.showTerminalTab()) {
             this.activeTab = 'ticket';
           }
-          if (this.activeTab === 'summary' && !this.showSummaryTab()) {
+          if ((this.activeTab === 'summary' && !this.showSummaryTab()) ||
+              (this.activeTab === 'workflow' && !this.showWorkflowGraph(this.selectedTicket))) {
             this.activeTab = 'ticket';
           }
           // A stage that just wrote a new summary usually also committed, so
@@ -1068,6 +1077,64 @@ export function kontoraTickets() {
 
     showWorkflowGraph(t) {
       return !!(t?.graph_execution || this.workflowCurrentDefinition(t));
+    },
+
+    workflowPortTarget(t, port) {
+      const wait = t?.graph_execution?.wait;
+      return this.workflowCurrentDefinition(t)?.edges?.find(e => e.from.node === wait?.node_id && e.from.port === port)?.to || '';
+    },
+
+    workflowGraph(t) {
+      const definition = this.workflowCurrentDefinition(t);
+      const x = t?._graphDetailPending ? null : t?.graph_execution;
+      const running = !!x && this.executionActive(t);
+      const cost = this.currentTicketCost();
+      const releaseAvailable = !this.isMobile && !!this.workflowReleaseForm?.();
+      const now = x?.wait ? this.now : null;
+      const inputs = [definition, x, t?.history, running, cost, releaseAvailable, now];
+      if (graphMemo && inputs.every((value, i) => value === graphMemo.inputs[i])) return graphMemo.value;
+      const value = buildWorkflowGraph(definition, x, this.workflowRunRows(t, x), {
+        now: now || Date.now(), running, releaseAvailable, runCost: index => this.ticketRunCost(index),
+      });
+      graphMemo = { inputs, value };
+      return value;
+    },
+
+    workflowInspectedNode(graph) {
+      const selected = this.workflowSelectedNode[this.ticketKey(this.selectedTicket)];
+      return graph.nodes.find(n => n.id === selected) || graph.nodes.find(n => n.id === graph.current) ||
+        graph.nodes.find(n => n.id === graph.entry) || graph.nodes[0];
+    },
+
+    workflowSelectNode(id) {
+      this.workflowSelectedNode[this.ticketKey(this.selectedTicket)] = id;
+    },
+
+    workflowWaitEvidenceOpen() {
+      const x = this.selectedTicket?.graph_execution;
+      return !!x?.wait && this.workflowEvidenceKey === JSON.stringify([this.ticketKey(this.selectedTicket), x.execution_id, x.wait.id]);
+    },
+
+    workflowToggleWaitEvidence() {
+      const x = this.selectedTicket?.graph_execution;
+      if (!x?.wait || this.selectedTicket._graphDetailPending) return;
+      if (this.workflowWaitEvidenceOpen()) { this.workflowEvidenceKey = ''; return; }
+      this.workflowEvidenceKey = JSON.stringify([this.ticketKey(this.selectedTicket), x.execution_id, x.wait.id]);
+      this.workflowSelectNode(x.wait.node_id);
+      this.switchTab('workflow');
+    },
+
+    async workflowCopyReleaseCommand(command) {
+      if (!command || command !== this.workflowReleaseBand()?.command) return;
+      try {
+        await navigator.clipboard.writeText(command);
+      } catch (_) {
+        this.showToast('Could not copy the release command.');
+        return;
+      }
+      clearTimeout(workflowCopyTimer);
+      this.workflowCopiedCommand = command;
+      workflowCopyTimer = setTimeout(() => { this.workflowCopiedCommand = ''; }, 1400);
     },
 
     workflowConfigText(d) {

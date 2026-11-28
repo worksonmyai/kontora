@@ -144,6 +144,7 @@ type GraphNodeView struct {
 	Wake        *GraphWakeView      `json:"wake,omitempty"`
 	Mode        string              `json:"mode,omitempty"`
 	Environment string              `json:"environment,omitempty"`
+	Handoff     string              `json:"handoff,omitempty"`
 }
 
 type GraphWakeView struct {
@@ -206,7 +207,7 @@ func BuildGraphDefinition(graph *config.WorkflowGraph) *GraphDefinitionView {
 	for _, n := range graph.Nodes {
 		node := GraphNodeView{ID: n.ID, Type: n.Type, Template: n.Stage, Agent: n.Agent,
 			Verdicts: slices.Clone(n.Verdicts), Command: n.Command, Max: n.Max, Status: n.Status,
-			Mode: n.Mode, Environment: n.Environment}
+			Mode: n.Mode, Environment: n.Environment, Handoff: n.Handoff}
 		if n.Wake != nil {
 			node.Wake = &GraphWakeView{Max: n.Wake.Max, CheckTimeout: n.Wake.CheckTimeout.String()}
 		}

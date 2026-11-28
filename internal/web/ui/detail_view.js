@@ -16,6 +16,7 @@ export function kontoraDetailView() {
     },
 
     supportedDetailMode(mode, ticket = this.selectedTicket, mobile = this.isMobile) {
+      if (mode === 'workflow') return !mobile && this.showWorkflowGraph(ticket) ? mode : 'ticket';
       if (this.isSecondary(ticket)) {
         if (!mobile && !['ticket', 'notes'].includes(mode)) return 'ticket';
         if (['terminal', 'logs'].includes(mode)) return 'activity';

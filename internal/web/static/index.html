@@ -503,6 +503,173 @@
       background: hsl(var(--st-review));
     }
 
+    .workflow-release, .workflow-pane { --workflow-hue: var(--st-review); }
+    .workflow-release[data-state="accepted"], .workflow-pane [data-state="done"] { --workflow-hue: var(--st-done); }
+    .workflow-release[data-state="conflict"], .workflow-pane [data-state="failed"] { --workflow-hue: var(--st-cancel); }
+    .workflow-release:is([data-state="uncertain"], [data-state="disarmed"]),
+    .workflow-pane [data-state="disarmed"] { --workflow-hue: var(--st-progress); }
+    .workflow-release .waiting-chip, .workflow-pane .waiting-chip {
+      color: hsl(var(--workflow-hue)); background: hsl(var(--workflow-hue) / .12); border-color: hsl(var(--workflow-hue) / .28);
+    }
+    .workflow-release .waiting-dot, .workflow-pane .waiting-dot { background: hsl(var(--workflow-hue)); }
+    .workflow-release {
+      display: flex; flex-direction: column; gap: 10px; padding: 12px 25.5px 13px;
+      border-bottom: 1px solid hsl(var(--workflow-hue) / .26); background: hsl(var(--workflow-hue) / .07);
+    }
+    .workflow-release-status, .workflow-release-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; }
+    .workflow-release-status p { flex: 1 1 420px; font-size: 14px; color: rgb(var(--tx-2)); text-wrap: pretty; }
+    .workflow-release-node { font-size: 12px; font-weight: 700; color: rgb(var(--tx-hi)); }
+    .workflow-release-meta, .workflow-release-copy { font-size: 11px; color: rgb(var(--tx-3)); overflow-wrap: anywhere; }
+    .workflow-release-actions { gap: 8.5px; align-items: center; }
+    .workflow-release-actions input {
+      flex: 0 1 360px; min-width: min(300px, 100%); height: 31px; padding: 0 10px; border-radius: 7px;
+      background: rgb(var(--surface-900)); border: 1px solid rgb(var(--edge-input)); font-size: 12px; color: rgb(var(--tx));
+    }
+    .workflow-release :is(button, input, code, .workflow-release-node, .workflow-release-meta) { font-family: 'JetBrains Mono', monospace; }
+    .workflow-release :is(.workflow-release-submit, .workflow-release-action) {
+      height: 31px; padding: 0 14px; border-radius: 7px; font-size: 11.5px;
+      color: hsl(var(--workflow-hue)); border: 1px solid hsl(var(--workflow-hue) / .42); background: rgb(var(--surface-900));
+    }
+    .workflow-release .workflow-release-submit { font-weight: 700; background: hsl(var(--workflow-hue) / .16); }
+    .workflow-release .workflow-release-action { height: 29.75px; padding: 0 12.75px; }
+    .workflow-release-help { font-size: 12.75px; color: rgb(var(--tx-3)); }
+    .workflow-release-help code { font-size: 11.5px; color: rgb(var(--tx-2)); }
+    .workflow-release-copy { margin-left: auto; }
+    .workflow-release button:enabled:hover { text-decoration: underline; }
+    .workflow-release button:disabled, .workflow-restart:disabled { opacity: .5; }
+    .workflow-tab-dot { width: 5px; height: 5px; border-radius: 50%; background: hsl(var(--st-review)); }
+
+    .workflow-pane {
+      container-type: inline-size; display: flex; flex-direction: column; gap: 16px; min-width: 0;
+      background: rgb(var(--surface-frame)); padding: 17px 25.5px 28px;
+    }
+    .archive-detail .workflow-pane { padding: 0; }
+    .workflow-graph-header, .workflow-legend, .workflow-legend span { display: flex; flex-wrap: wrap; align-items: center; }
+    .workflow-graph-header, .workflow-canvas, .workflow-facts, .workflow-visit, .workflow-inspector-header, .workflow-recorded {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .workflow-graph-header { gap: 10px; font-size: 11px; color: rgb(var(--tx-3)); }
+    .workflow-legend { margin-left: auto; gap: 6px 14px; font-size: 10.5px; }
+    .workflow-legend span { gap: 5px; }
+    .workflow-legend i { width: 7px; height: 7px; border-radius: 2px; }
+    .workflow-legend [data-key="ran"], .workflow-pips [data-state="done"] { background: hsl(var(--st-done)); }
+    .workflow-legend [data-key="failed"], .workflow-pips [data-state="failed"] { background: hsl(var(--st-cancel)); }
+    .workflow-legend [data-key="current"], .workflow-pips [data-state="current"] { border: 1.5px solid hsl(var(--st-review)); }
+    .workflow-legend :is([data-key="idle"], [data-key="next"]) { width: 16px; height: 0; border-top: 1.5px dashed rgb(var(--edge-faint)); }
+    .workflow-legend [data-key="next"] { border-color: hsl(var(--st-review)); }
+    .workflow-restart {
+      height: 26px; padding: 0 10px; border-radius: 7px; white-space: nowrap;
+      border: 1px solid rgba(var(--warn), .3); color: rgb(var(--warn));
+    }
+    .workflow-restart:enabled:hover { background: rgba(var(--warn), .08); }
+    .workflow-graph-body { display: grid; grid-template-columns: 540px minmax(0, 1fr); gap: 20px; align-items: start; }
+    @container (width < 790px) {
+      .workflow-graph-body { grid-template-columns: minmax(0, 1fr); }
+      .workflow-legend { margin-left: 0; }
+    }
+    .workflow-graph-viewport { overflow-x: auto; }
+    .workflow-graph-body[data-empty="true"] .workflow-inspector { grid-column: 1 / -1; }
+    .workflow-canvas { position: relative; }
+    .workflow-edge { pointer-events: none; }
+    .workflow-edge svg { position: absolute; inset: 0 auto auto 0; }
+    .workflow-edge { --edge-ink: rgb(var(--edge-faint)); --edge-width: 1.1; --edge-dash: 2 4; }
+    .workflow-edge[data-state="taken"] { --edge-ink: rgb(var(--tx-3)); --edge-width: 1.6; --edge-dash: none; }
+    .workflow-edge[data-state="fail"] { --edge-ink: hsl(var(--st-cancel) / .8); --edge-width: 1.6; --edge-dash: none; }
+    .workflow-edge[data-state="next"] { --edge-ink: hsl(var(--st-review) / .85); --edge-width: 1.4; --edge-dash: 4 3; }
+    .workflow-edge path { fill: none; stroke: var(--edge-ink); stroke-width: var(--edge-width); stroke-dasharray: var(--edge-dash); stroke-linecap: round; }
+    .workflow-edge polygon { fill: var(--edge-ink); }
+    .workflow-edge-label {
+      position: absolute; padding: 0 5px; border-radius: 4px; border: 1px solid transparent;
+      transform: translate(-50%, calc(-100% - 3px)); color: rgb(var(--tx-faint)); background: rgb(var(--surface-frame));
+      font-size: 10px; line-height: 1.4; white-space: nowrap;
+    }
+    .workflow-edge-label[data-side="below"] { transform: translate(-50%, 4px); }
+    .workflow-edge-label[data-side="center"] { transform: translate(-50%, -50%); }
+    .workflow-edge-label[data-side="right"] { transform: translate(7px, -50%); }
+    .workflow-edge-label[data-side="left"] { transform: translate(calc(-100% - 7px), -50%); }
+    .workflow-edge:not([data-state="idle"]) .workflow-edge-label { background: rgb(var(--surface-850)); }
+    .workflow-edge[data-state="taken"] .workflow-edge-label { color: rgb(var(--tx-2)); border-color: rgb(var(--edge-input)); }
+    .workflow-edge[data-state="fail"] .workflow-edge-label { color: rgb(var(--err)); border-color: rgba(var(--err), .3); }
+    .workflow-edge[data-state="next"] .workflow-edge-label { color: hsl(var(--st-review)); border-color: hsl(var(--st-review) / .3); }
+    .workflow-node { position: absolute; transform: translate(-50%, -50%); text-align: left; color: rgb(var(--tx-hi)); cursor: pointer; }
+    .workflow-node-shape {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border-radius: 8px;
+      border: 1px solid hsl(var(--workflow-hue) / .55); background: rgb(var(--surface-900));
+    }
+    .workflow-node:is([data-state="idle"], [data-state="reached"]) { color: rgb(var(--tx-3)); }
+    .workflow-node[data-state="idle"] .workflow-node-shape { border: 1px dashed rgb(var(--edge-input)); background: transparent; }
+    .workflow-node[data-state="reached"] .workflow-node-shape { border-color: rgb(var(--edge-input)); }
+    .workflow-node:is([data-state="current"], [data-state="disarmed"]) { color: hsl(var(--workflow-hue)); }
+    .workflow-node:is([data-state="current"], [data-state="disarmed"]) .workflow-node-shape {
+      border: 1.5px solid hsl(var(--workflow-hue)); box-shadow: 0 0 0 3px hsl(var(--workflow-hue) / .16); background: hsl(var(--workflow-hue) / .1);
+    }
+    .workflow-node[aria-pressed="true"] .workflow-node-shape { outline: 2px solid rgb(var(--accent)); outline-offset: 2px; }
+    .workflow-release :is(button, input):focus-visible, .workflow-pane :is(button, summary, [tabindex]):focus-visible {
+      outline: 2px solid rgb(var(--accent-bright)); outline-offset: 3px;
+    }
+    .workflow-node-box { align-items: stretch; flex-direction: column; gap: 3px; padding: 6px 10px; }
+    .workflow-node[data-type="check"] .workflow-node-shape { border-radius: 4px; }
+    .workflow-node-row { display: flex; align-items: baseline; gap: 6px; overflow: hidden; }
+    .workflow-node-row strong { font-size: 12px; }
+    .workflow-node-row > :first-child, .workflow-node-end :is(strong, .workflow-node-sub) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .workflow-node-sub { font-size: 10.5px; color: rgb(var(--tx-3)); }
+    .workflow-type { font-size: 8.5px; letter-spacing: .08em; text-transform: uppercase; color: rgb(var(--tx-faint)); }
+    .workflow-node-row > :last-child:not(:first-child) { margin-left: auto; }
+    .workflow-pips, .workflow-pip-group { display: flex; gap: 3px; align-items: center; }
+    .workflow-pip-group { flex: none; gap: 1px; }
+    .workflow-pip-retry { padding: 1px; border: 1px solid rgb(var(--edge-hover)); border-radius: 3px; }
+    .workflow-pips i { width: 6px; height: 6px; border-radius: 2px; border: 1px solid rgb(var(--edge-input)); }
+    .workflow-pips :is([data-state="done"], [data-state="failed"]) { border: 0; }
+    .workflow-node-control { display: contents; }
+    .workflow-node:is([data-type="condition"], [data-type="loop"]):is([data-state="done"], [data-state="failed"]) .workflow-node-shape { background: hsl(var(--workflow-hue) / .16); }
+    .workflow-node[data-type="condition"] .workflow-node-shape { border-radius: 3px; transform: rotate(45deg) scale(.86); }
+    .workflow-node[data-type="condition"][aria-pressed="true"] .workflow-node-shape { outline-offset: 3px; }
+    .workflow-node[data-type="loop"] .workflow-node-shape { border-radius: 50%; font-size: 11px; font-weight: 700; }
+    .workflow-node-end { border-radius: 9999px; gap: 5px; font-size: 10.5px; padding: 0 6px; }
+    .workflow-end-icon { color: hsl(var(--workflow-hue)); }
+    .workflow-node[data-state="idle"] .workflow-end-icon { color: rgb(var(--tx-faint)); }
+    .workflow-node-label, .workflow-exits {
+      position: absolute; display: flex; flex-direction: column; gap: 1px; white-space: nowrap;
+      font-size: 10px; color: rgb(var(--tx-3)); pointer-events: none;
+    }
+    .workflow-node-label strong { font-size: 11px; color: rgb(var(--tx-hi)); }
+    .workflow-node[data-state="idle"] .workflow-node-label strong { color: rgb(var(--tx-3)); }
+    .workflow-node-label[data-side="right"], .workflow-exits { left: calc(100% + 7px); top: 50%; transform: translateY(-50%); }
+    .workflow-node-label[data-side="left"] { right: calc(100% + 8px); top: 50%; transform: translateY(-50%); text-align: right; }
+    .workflow-node-label[data-side="above"] { bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); text-align: center; }
+    .workflow-node-label[data-side="below"] { top: calc(100% + 5px); left: 50%; transform: translateX(-50%); text-align: center; }
+    .workflow-exit { color: rgb(var(--tx-faint)); }
+    .workflow-exit[data-state="next"] { color: hsl(var(--st-review)); }
+
+    .workflow-inspector, .workflow-inspector-content, .workflow-inspector-records { display: flex; flex-direction: column; gap: 12px; }
+    .workflow-inspector { grid-column: -2 / -1; padding: 12px 15px 15px; color: rgb(var(--tx-3)); font-size: 13px; line-height: 1.55; }
+    .workflow-inspector-header, .workflow-visit-header, .workflow-attempt-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+    .workflow-inspector-header h3, .workflow-visit-header strong { font-weight: 700; color: rgb(var(--tx-hi)); overflow-wrap: anywhere; }
+    .workflow-inspector-header .workflow-type { font-size: 9.5px; padding: 0 5px; border: 1px solid rgb(var(--surface-700)); border-radius: 4px; }
+    .workflow-inspector-header .waiting-chip, .workflow-visit-header > :last-child, .workflow-attempt-header button { margin-left: auto; }
+    .workflow-inspector-content:is([data-state="idle"], [data-state="reached"]) .waiting-chip { color: rgb(var(--tx-3)); border-color: rgb(var(--surface-700)); background: transparent; }
+    .workflow-inspector-content:is([data-state="idle"], [data-state="reached"]) .waiting-dot { background: rgb(var(--tx-faint)); }
+    .workflow-inspector-records { border-top: 1px solid rgb(var(--surface-700)); padding-top: 12px; }
+    .workflow-facts { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 5px 10px; font-size: 11px; }
+    .workflow-facts dt { color: rgb(var(--tx-3)); overflow-wrap: anywhere; }
+    .workflow-facts dd { color: rgb(var(--tx-2)); overflow-wrap: anywhere; white-space: pre-wrap; }
+    .workflow-visit {
+      display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: 7px; font-size: 11px;
+      background: rgb(var(--surface-900)); border: 1px solid rgb(var(--edge-card)); overflow-wrap: anywhere;
+    }
+    .workflow-attempt + .workflow-attempt { border-top: 1px solid rgb(var(--surface-700)); padding-top: 6px; }
+    .workflow-attempt p { margin-top: 4px; font: 12.5px/1.5 'DM Sans', sans-serif; text-wrap: pretty; }
+    .workflow-result { padding: 0 6px; border-radius: 5px; border: 1px solid rgb(var(--surface-700)); font-size: 10.5px; }
+    .workflow-attempt:is([data-state="done"], [data-state="failed"], [data-state="current"], [data-state="disarmed"]) :is(.workflow-attempt-outcome, .workflow-result) { color: hsl(var(--workflow-hue)); }
+    .workflow-attempt:is([data-state="done"], [data-state="failed"], [data-state="current"], [data-state="disarmed"]) .workflow-result {
+      background: hsl(var(--workflow-hue) / .1); border-color: hsl(var(--workflow-hue) / .24);
+    }
+    .workflow-attempt-header button { color: rgb(var(--accent)); }
+    .workflow-attempt-header button:hover { text-decoration: underline; }
+    .workflow-notice { font-size: 13px; color: rgb(var(--warn)); overflow-wrap: anywhere; }
+    .workflow-recorded { display: flex; flex-direction: column; gap: 5px; opacity: .92; }
+    .workflow-pane summary { cursor: pointer; }
+
     /* ─── notify row (init modal, details rail) ─── */
     /* Segmented control: one question, three answers. The buttons are laid out
        by an x-for, which leaves its own <template> as the first child, so the
@@ -2023,11 +2190,6 @@
         </h1>
       </div>
 
-      <details x-show="showWorkflowGraph(selectedTicket)" :open="!!selectedTicket?.graph_execution?.wait || workflowReleaseMessages().length > 0" class="px-6 pb-3 font-mono text-[11px] text-tx-3">
-        <summary>Workflow graph · execution <span x-text="selectedTicket?.graph_execution?.current_node || ''"></span></summary>
-        <div class="max-h-[36vh] overflow-y-auto p-1" x-html="detailWorkflowMarkup"></div>
-      </details>
-
       <!-- Stage ribbon: one segment per stage, grown by its real duration -->
       <div class="stage-ribbon shrink-0 px-6 pb-[13px] border-b border-surface-700/60"
            x-data="stageRibbonOwner()"
@@ -2096,6 +2258,8 @@
               class="stage-ribbon-empty font-mono text-[10.5px] text-surface-600 pl-5 border-l border-surface-700/70">no runs yet</span>
       </div>
 
+      <div class="shrink-0" data-workflow-release-slot x-html="detailWorkflowReleaseMarkup"></div>
+
       <!-- Body: content column + fixed-width rail. The tab bar and the rail's
            header cell share one stretched row that carries the rule itself, so
            the line runs edge to edge and crosses the rail's border instead of
@@ -2119,6 +2283,11 @@
               <button x-show="showSummaryTab()" @click="switchTab('summary')"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'summary' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">summary</button>
+              <button type="button" x-show="showWorkflowGraph(selectedTicket)" @click="switchTab('workflow')" :aria-pressed="activeTab === 'workflow'"
+                      class="flex items-center gap-[7px] font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
+                      :class="activeTab === 'workflow' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
+                <span class="workflow-tab-dot" x-show="workflowWaiting(selectedTicket) && selectedTicket.graph_execution.wait.kind === 'human'" aria-label="Human wait"></span>workflow
+              </button>
               <button x-show="showDiffTab()" @click="switchTab('diff')"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'diff' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
@@ -2146,7 +2315,7 @@
                       class="font-mono text-[11px] pb-[9px] text-accent hover:underline">← back to live</button>
             </div>
           </div>
-          <div class="ticket-detail-rail-cap shrink-0 w-[308px] border-l border-surface-700/50"></div>
+          <div x-show="activeTab !== 'workflow'" class="ticket-detail-rail-cap shrink-0 w-[308px] border-l border-surface-700/50"></div>
         </div>
 
         <div class="ticket-detail-columns flex-1 min-h-0 flex">
@@ -2156,6 +2325,10 @@
 
           <!-- Tab content -->
           <div class="flex-1 min-h-0 overflow-hidden">
+
+            <div x-show="activeTab === 'workflow'" class="h-full overflow-y-auto" data-detail-scroll="workflow">
+              <template x-if="showWorkflowGraph(selectedTicket)"><div x-html="detailWorkflowMarkup"></div></template>
+            </div>
 
             <!-- Live session: the source of truth while a stage runs -->
             <div x-show="!isSecondary(selectedTicket) && activeTab === 'session'" class="h-full min-h-0 flex flex-col bg-surface-frame">
@@ -2489,7 +2662,7 @@
              rail's first label. The session and activity rows use a smaller
              inset instead: items-center in a row with taller controls already
              pushes their text down. -->
-        <div class="ticket-detail-rail shrink-0 w-[308px] border-l border-surface-700/50 bg-surface-frame flex flex-col min-h-0">
+        <div x-show="activeTab !== 'workflow'" class="ticket-detail-rail shrink-0 w-[308px] border-l border-surface-700/50 bg-surface-frame flex flex-col min-h-0">
           <div class="flex-1 min-h-0 overflow-y-auto p-4 pb-[22px] flex flex-col gap-4">
 
             <!-- Churn: bounded regardless of how many files changed -->
@@ -3993,6 +4166,9 @@
               <button type="button" @click="archiveTab = 'activity'; $refs.archiveContent.scrollTop = 0" :aria-pressed="archiveTab === 'activity'"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="archiveTab === 'activity' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">activity</button>
+              <button type="button" x-show="showWorkflowGraph(selectedTicket)" @click="archiveTab = 'workflow'; $refs.archiveContent.scrollTop = 0" :aria-pressed="archiveTab === 'workflow'"
+                      class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
+                      :class="archiveTab === 'workflow' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">workflow</button>
               <button type="button" @click="archiveTab = 'details'" :aria-pressed="archiveTab === 'details'"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="archiveTab === 'details' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">details</button>
@@ -4009,7 +4185,6 @@
                 <span class="font-mono text-[10.5px] text-tx-4" x-text="selectedTicket?.id ? selectedTicket.id + '.md' : ''"></span>
                 <div x-show="archiveDetailLoading" class="font-mono text-[11.5px] text-surface-600">loading…</div>
                 <div class="ticket-prose ticket-read" x-effect="setProse($el, selectedTicket?.body || '')"></div>
-                <div x-show="showWorkflowGraph(selectedTicket)" x-html="detailWorkflowMarkup"></div>
                 <div class="flex gap-[9px] items-stretch min-w-0" x-show="stageRibbon().length">
                   <template x-for="seg in stageRibbon()" :key="seg.name">
                     <div class="flex-1 min-w-0 flex flex-col gap-[7px]" :class="seg.state === 'done' ? '' : 'opacity-50'">
@@ -4032,6 +4207,8 @@
                   </template>
                 </div>
               </div>
+
+              <template x-if="archiveTab === 'workflow' && showWorkflowGraph(selectedTicket)"><div x-html="detailWorkflowMarkup"></div></template>
 
               <div x-show="archiveTab === 'activity'" class="flex flex-col gap-2.5">
                 <div class="flex items-center gap-2.5">
@@ -5898,7 +6075,7 @@
         <details x-show="showWorkflowGraph(selectedTicket) && (mobilePanel() === 'ticket' || mobilePanel() === 'output')"
                  :open="!!selectedTicket?.graph_execution?.wait || workflowReleaseMessages().length > 0" class="shrink-0 px-4 py-2 text-xs text-tx-3">
           <summary>Workflow graph · execution <span x-text="selectedTicket?.graph_execution?.current_node || ''"></span></summary>
-          <div class="max-h-[36vh] overflow-y-auto p-1" x-html="detailWorkflowMarkup"></div>
+          <div class="max-h-[36vh] overflow-y-auto p-1" x-html="detailWorkflowTraceMarkup"></div>
         </details>
         <div x-show="mobilePanel() === 'notes'" class="flex-1 min-h-0" x-html="detailNotesMarkup"></div>
         <div x-show="mobilePanel() === 'changes'" data-detail-scroll="changes" class="mobile-ticket-pane overflow-y-auto" x-html="detailChangesMarkup"></div>

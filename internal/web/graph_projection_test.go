@@ -12,7 +12,7 @@ import (
 )
 
 func TestGraphDTOThinAndDetail(t *testing.T) {
-	cfg := &config.Config{Pipelines: map[string]config.PipelineDefinition{"graph": {Graph: &config.WorkflowGraph{Version: 2, Entry: "review", Nodes: []config.WorkflowNode{{ID: "review", Type: "agent", Stage: "review-template", Agent: "reviewer"}}}}}}
+	cfg := &config.Config{Pipelines: map[string]config.PipelineDefinition{"graph": {Graph: &config.WorkflowGraph{Version: 2, Entry: "review", Nodes: []config.WorkflowNode{{ID: "review", Type: "agent", Stage: "review-template", Agent: "reviewer", Handoff: config.WorkflowHandoffPrevious}}}}}}
 	tk := &ticket.Ticket{Kontora: true, Pipeline: "graph", Stage: "review", GraphState: &ticket.GraphState{Version: 1, ExecutionID: "exec", Revision: 2, DefinitionFingerprint: "fp", Visit: 1, VisitID: "exec.1", Transitions: []ticket.GraphTransition{{From: "review", Port: "complete", To: "done", Revision: 2}}}, History: []ticket.HistoryEntry{{Stage: "review", Run: 4, Template: "review-template", WorkflowExecutionID: "exec", NodeVisitID: "exec.1", DefinitionFingerprint: "fp"}}}
 	for _, detail := range []bool{false, true} {
 		info := TicketInfoFromView(app.BuildView(cfg, tk, detail))
@@ -21,6 +21,8 @@ func TestGraphDTOThinAndDetail(t *testing.T) {
 		var decoded map[string]any
 		require.NoError(t, json.Unmarshal(data, &decoded))
 		assert.Contains(t, decoded, "graph_definition")
+		require.Len(t, info.GraphDefinition.Nodes, 1)
+		assert.Equal(t, config.WorkflowHandoffPrevious, info.GraphDefinition.Nodes[0].Handoff)
 		assert.Contains(t, decoded, "graph_execution")
 		assert.NotContains(t, decoded, "stages")
 		execution := decoded["graph_execution"].(map[string]any)

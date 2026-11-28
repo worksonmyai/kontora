@@ -544,7 +544,7 @@ export function kontoraDetail() {
     },
 
     switchTab(tab) {
-      if (this.isSecondary(this.selectedTicket) && !['ticket', 'summary', 'notes'].includes(tab)) return;
+      if (this.isSecondary(this.selectedTicket) && !['ticket', 'summary', 'notes', 'workflow'].includes(tab)) return;
       // The tab content uses x-show, so leaving it would otherwise keep a
       // focused textarea mounted and bring it back with stale geometry.
       if (tab !== 'ticket' && this.editingBody) {

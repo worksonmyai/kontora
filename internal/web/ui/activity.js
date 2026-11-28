@@ -446,6 +446,7 @@ export function kontoraActivity() {
         const tooltip = root.querySelector('.stage-ribbon-tooltip');
         const stages = viewport.parentElement, pane = root.parentElement;
         const tabs = pane.querySelector('[data-ticket-tabs]');
+        const releaseBand = pane.querySelector('[data-workflow-release-slot]');
         var frame = null, seen = null, pending = null, openKey = null, cancelledHydration = null;
         let focused = null, hover = null, dwell = null, shownCard = null;
         function openingKey() {
@@ -522,10 +523,11 @@ export function kontoraActivity() {
             const { width, height } = tooltip.getBoundingClientRect();
             // The stages container includes the overflow arrows when they are visible.
             const below = stages.getBoundingClientRect().bottom + 4;
-            const tabBounds = tabs.getBoundingClientRect();
+            const tabBounds = tabs.getBoundingClientRect(), bandBounds = releaseBand?.getBoundingClientRect();
+            const controlsTop = bandBounds?.height ? bandBounds.top : tabBounds.top;
             const candidates = [clip.top - 4 - height, below, Math.max(below, tabBounds.bottom + 4)];
             const top = candidates.find(y => y >= minY + 4 && y + height <= maxY - 4 &&
-              (y + height <= tabBounds.top || y >= tabBounds.bottom));
+              (y + height <= controlsTop || y >= tabBounds.bottom));
             if (top === undefined || width > maxX - minX - 12) return false;
             tooltip.style.left = Math.max(minX + 6, Math.min(maxX - 6 - width, (left + right - width) / 2)) - origin.left + 'px';
             tooltip.style.top = top - origin.top + 'px';
@@ -681,9 +683,9 @@ export function kontoraActivity() {
         ro.observe(root);
         ro.observe(pane);
         ro.observe(tabs);
-        // The identity block and workflow graph can move the ribbon without resizing it.
+        if (releaseBand) ro.observe(releaseBand);
+        // The title can move the ribbon without resizing it.
         if (pane.firstElementChild) ro.observe(pane.firstElementChild);
-        if (root.previousElementSibling) ro.observe(root.previousElementSibling);
         sync();
         return function () {
           stop();

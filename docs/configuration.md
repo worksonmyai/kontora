@@ -773,6 +773,13 @@ Graph workflows execute one node at a time in the ticket's shared worktree.
 The order of `nodes` and `edges` in YAML has no execution meaning. There is no
 parallel fan-out or join.
 
+On a desktop ticket, open **workflow** to inspect the configured graph. Solid
+edges show recorded transitions for the current execution. Select a node to
+inspect its settings and visits. A human wait can be released from the band
+above the tabs. A release lets the workflow continue and does not approve a diff.
+If the daemon does not confirm a release, use **refresh wait** to look for its
+receipt. Do not send a new request for the same wait.
+
 This complete example runs a check, tests its exit code, and allows two repair
 passes before parking for inspection. It does not authorize commits or pushes.
 

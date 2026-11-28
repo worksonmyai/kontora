@@ -14932,7 +14932,7 @@ test("one rule closes the tab row across the pane and the rail", () => {
   assert.match(html, /<div class="flex-1 min-w-0 px-6 pt-\[11px\]">\s*<div class="flex items-center gap-5">/);
   // The rail's header cell is a bare spacer: painting it would start the frame
   // colour a tab row above the pane's.
-  assert.match(html, /<div class="ticket-detail-rail-cap shrink-0 w-\[308px\] border-l border-surface-700\/50"><\/div>/);
+  assert.match(html, /<div x-show="activeTab !== 'workflow'" class="ticket-detail-rail-cap shrink-0 w-\[308px\] border-l border-surface-700\/50"><\/div>/);
 });
 
 test("the commit rail starts level with the top of the card column", () => {

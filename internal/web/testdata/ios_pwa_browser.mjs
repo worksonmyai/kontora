@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { expect } from 'playwright/test';
-import { deferred, source, ticket } from './browser_fixture.mjs';
+import { deferred, source, ticket, withInsets } from './browser_fixture.mjs';
 import { iosPwa, iosPwaOptions } from './browser_scenes.mjs';
 
 export function registerIOSPwaTests(test, withPage) {
@@ -203,8 +203,8 @@ export function registerIOSPwaTests(test, withPage) {
 
   for (const hash of ['#/', '#/column/human_review']) {
     test(`iOS PWA refresh Retry remains below the top safe area on ${hash}`, async t => {
+      const data = options();
       await withPage(t, 390, 'dark', async (page, fixture) => {
-        await page.addStyleTag({ content: '.mobile-board-safe-top { height: 59px }' });
         const failed = fixture.holdSnapshot();
         failed.release({ failure: 'http' });
         await action(page, 'Filters').click();
@@ -214,7 +214,10 @@ export function registerIOSPwaTests(test, withPage) {
         const box = await retry.boundingBox();
         assert.ok(box.y >= 59);
         await retry.click({ trial: true });
-      }, { ...options(), hash });
+      }, { ...data, hash, beforeNavigation: async page => {
+        await data.beforeNavigation(page);
+        await withInsets({ top: 59 })(page);
+      } });
     });
   }
 

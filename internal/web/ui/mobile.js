@@ -2,6 +2,12 @@
 import { activeDialog, blockingInteraction, canReturnInteractionFocus, dialogFocusable, focusAvailable, stepDialogTab, syncInteractionCoverage } from './dialogs.js';
 import { isoWithOffset, localScheduleText, parseScheduleInput, pickerToScheduleText, schedulePresets } from './format.js';
 
+function intersectsList(el, bounds) {
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom &&
+    rect.right > bounds.left && rect.left < bounds.right;
+}
+
 export function kontoraMobile() {
   // Keep DOM nodes and listener handles out of Alpine's reactive state.
   let lifecycle = null;
@@ -394,9 +400,7 @@ export function kontoraMobile() {
     },
 
     mobileVisibleListControl(el, bounds) {
-      if (!focusAvailable(el)) return false;
-      const rect = el.getBoundingClientRect();
-      return rect.bottom > bounds.top && rect.top < bounds.bottom && rect.right > bounds.left && rect.left < bounds.right;
+      return focusAvailable(el) && intersectsList(el, bounds);
     },
 
     mobileCaptureList(focusKey) {
@@ -404,7 +408,8 @@ export function kontoraMobile() {
       if (!list) return null;
       const bounds = list.getBoundingClientRect();
       const rows = [...list.querySelectorAll('[data-mobile-ticket-key]')];
-      const anchor = rows.find(el => this.mobileVisibleListControl(el, bounds));
+      // The list is inert under a sheet, but its rows still have a scroll position.
+      const anchor = rows.find(el => intersectsList(el, bounds));
       const active = document.activeElement;
       return { filter: this.mobileListSignature(), top: list.scrollTop,
         anchor: anchor?.dataset.mobileListKey || anchor?.dataset.mobileTicketKey, offset: anchor ? anchor.getBoundingClientRect().top - bounds.top : 0,
@@ -426,7 +431,7 @@ export function kontoraMobile() {
         if (sequence !== listRestoreSequence) return;
         restoringList = false;
         if (this._appDestroyed || !this.isMobile || this.currentView !== 'board' || this.mobileColumnKey !== column ||
-            (this.selectedTicket && this.mobileLayout !== 'duo-split') || this.selectedEpic || blockingInteraction(this)) return;
+            !this.mobileBoardListVisible() || (focus && blockingInteraction(this))) return;
         const list = this.$refs?.mobileCardList;
         if (!list) return;
         syncInteractionCoverage(this);
@@ -434,7 +439,7 @@ export function kontoraMobile() {
         const rows = [...list.querySelectorAll('[data-mobile-ticket-key]')];
         if (!position || position.filter !== this.mobileListSignature()) list.scrollTop = 0;
         else {
-          const anchor = rows.find(el => (el.dataset.mobileListKey || el.dataset.mobileTicketKey) === position.anchor && focusAvailable(el));
+          const anchor = rows.find(el => (el.dataset.mobileListKey || el.dataset.mobileTicketKey) === position.anchor && el.getClientRects().length);
           list.scrollTop = anchor ? list.scrollTop + anchor.getBoundingClientRect().top - bounds.top - position.offset : position.top;
         }
         if (!focus) return;
@@ -753,16 +758,21 @@ export function kontoraMobile() {
 
     _updateMobileLayout(coarse) {
       const width = window.innerWidth;
-      const split = width >= 768 && width < 1100 && !!coarse;
-      const mobile = width < 768 || split;
+      const wideMobile = width >= 768 && width < 1100 && !!coarse;
+      const mobile = width < 768 || wideMobile;
       const style = mobile && window.getComputedStyle?.(document.documentElement);
       const left = parseFloat(style?.getPropertyValue?.('--mobile-safe-left')) || 0;
       const right = parseFloat(style?.getPropertyValue?.('--mobile-safe-right')) || 0;
-      const insetSide = Math.max(left, right) >= 44 ? (left > right ? 'left' : 'right') : '';
-      const portrait = !insetSide && width >= 600 && window.innerHeight > width;
+      const bottom = parseFloat(style?.getPropertyValue?.('--mobile-safe-bottom')) || 0;
+      // Leave room for the rail's top spacing, four ticket actions and navigation dock.
+      const railFits = window.innerHeight - bottom >= 550;
+      const split = wideMobile && railFits;
+      const insetSide = railFits && Math.max(left, right) >= 44 ? (left > right ? 'left' : 'right') : '';
+      const portrait = railFits && !insetSide && width >= 600 && window.innerHeight > width;
       const layout = split ? 'duo-split' : !mobile ? 'desktop' : portrait ? 'duo-portrait' : 'phone';
       const side = mobile ? insetSide || (split ? 'right' : '') : '';
       const changed = this.mobileLayout !== layout || this.mobileRailSide !== side;
+      const focused = changed && this.isMobile && mobile ? document.activeElement : null;
       const list = this.$refs?.mobileCardList;
       if (changed && list && this.mobileBoardListVisible()) duoListPosition = this.mobileCaptureList();
       this.isMobile = mobile;
@@ -771,12 +781,42 @@ export function kontoraMobile() {
       if (!changed) return;
       this.$nextTick(() => {
         if (this._appDestroyed || this.mobileLayout !== layout || this.mobileRailSide !== side) return;
-        this.syncDetailCoverage();
-        if (this.currentView === 'board' && this.mobileBoardListVisible() && duoListPosition) {
-          this.mobileRestoreList(duoListPosition, false);
+        const restoreList = this.currentView === 'board' && this.mobileBoardListVisible() && duoListPosition;
+        if (restoreList) {
+          this.mobileRestoreList(restoreList, false);
           duoListPosition = null;
         }
+        this.syncDetailCoverage();
+        if (!focused || focused === document.body) return;
+        if (!restoreList) this._restoreMobileLayoutFocus(focused);
+        else {
+          // Reveal the focus target after list restoration, which can scroll it away.
+          this.$nextTick(() => {
+            if (this._appDestroyed || this.mobileLayout !== layout || this.mobileRailSide !== side) return;
+            this._restoreMobileLayoutFocus(focused);
+          });
+        }
       });
+    },
+
+    _focusMobileActionCounterpart(opener) {
+      const action = opener?.dataset?.mobileAction;
+      if (!action) return false;
+      const target = [...document.querySelectorAll('[data-mobile-action]')].find(el =>
+        el !== opener && el.dataset.mobileAction === action && canReturnInteractionFocus(this, el));
+      if (!target) return false;
+      target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      target.focus({ preventScroll: true });
+      return true;
+    },
+
+    _restoreMobileLayoutFocus(opener) {
+      if (blockingInteraction(this)) return;
+      const active = document.activeElement;
+      if (active !== document.body && focusAvailable(active)) return;
+      if (this._focusMobileActionCounterpart(opener)) return;
+      const target = [...document.querySelectorAll('.mobile-detail-tabs button[aria-pressed="true"], .mobile-bottom-nav button[aria-current="page"]')].find(focusAvailable);
+      target?.focus({ preventScroll: true });
     },
 
     initMobile() {
@@ -1034,8 +1074,12 @@ export function kontoraMobile() {
       sheetFocus = null;
       syncInteractionCoverage(this, keepCoverage);
       if (!focus || !restore || activeDialog(this)) return;
-      const target = canReturnInteractionFocus(this, focus.returnFocus) ? focus.returnFocus
-        : document.querySelector('[data-mobile-focus-fallback]');
+      if (canReturnInteractionFocus(this, focus.returnFocus)) {
+        focus.returnFocus.focus({ preventScroll: true });
+        return;
+      }
+      if (this._focusMobileActionCounterpart(focus.returnFocus)) return;
+      const target = document.querySelector('[data-mobile-focus-fallback]');
       if (canReturnInteractionFocus(this, target)) target.focus({ preventScroll: true });
       else this.focusMobileDetail?.();
     },

@@ -15,6 +15,14 @@ export const liveAgent = 'fixture-agent-with-a-long-descriptive-name';
 export const supervisorID = 'abcdef-abcd';
 const themeModes = new Set(['system', 'light', 'dark']);
 
+export const withInsets = ({ top = 0, right = 0, bottom = 0, left = 0 }) => page =>
+  page.route(/\/app\.css\?v=[0-9a-f]+$/, async route => {
+    const response = await route.fetch();
+    const body = (await response.text()).replace(/env\(safe-area-inset-(top|right|bottom|left)(?:,[^)]*)?\)/g,
+      (_, side) => `${{ top, right, bottom, left }[side]}px`);
+    await route.fulfill({ response, body });
+  });
+
 export function ticket(id, title, extra = {}) {
   const description = `# ${title}\n\nFixture description.\n\n`;
   return { id, title, status: 'open', kontora: true, source: 'primary',

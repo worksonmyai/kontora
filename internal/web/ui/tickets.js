@@ -41,6 +41,7 @@ export function kontoraTickets() {
     workflowSelectedNode: Object.create(null),
     workflowEvidenceKey: '',
     workflowCopiedCommand: '',
+    daemonConnected: false,
 
     ticketRead(run, controller = new AbortController()) {
       reads.add(controller);
@@ -73,6 +74,7 @@ export function kontoraTickets() {
 
     ticketReadUnauthorized() {
       this.needsAuth = true;
+      this.daemonConnected = false;
       clearTimeout(this._sseReconnect);
       this._eventSource?.close();
       this._eventSource = null;
@@ -900,6 +902,7 @@ export function kontoraTickets() {
         if (generation === streamGeneration && !this.needsAuth && !this._appDestroyed) fn(event);
       });
       on('open', () => {
+        this.daemonConnected = true;
         this.companionRefresh();
         this.automationsRefresh();
         if (this.currentView === 'archive') {
@@ -990,6 +993,7 @@ export function kontoraTickets() {
       es.onerror = () => {
         if (generation !== streamGeneration || this.needsAuth || this._appDestroyed) return;
         es.close();
+        this.daemonConnected = false;
         // Waiting for a stream that failed only delays the board.
         this._releaseInitialSnapshot();
         // Drop any in-flight markers: if a plannotator run completes while SSE

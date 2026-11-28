@@ -124,7 +124,7 @@ function fixture() {
 
 for (const [name, property] of [
   ['init', 'initModal'], ['delete', 'deleteModal'], ['note-delete', 'noteDeleteTarget'], ['settings', 'settingsGuard'],
-  ['archive', 'archivePromptId'], ['automation-delete', 'automationsDeleteOpen'], ['auth', 'needsAuth'], ['palette', 'paletteOpen'],
+  ['archive', 'archivePromptId'], ['archive-mobile', 'archiveMobilePicker'], ['automation-delete', 'automationsDeleteOpen'], ['auth', 'needsAuth'], ['palette', 'paletteOpen'],
 ]) {
   test(`${name} owns focus, traps both Tab directions and guards focus return`, () => {
     const f = fixture();

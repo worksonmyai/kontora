@@ -26,6 +26,7 @@ const STATS_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'S
 // Heat levels 1-4 as accent alpha; level 0 is the empty-cell surface. Both come
 // from theme tokens, so the light theme needs no rules of its own.
 const STATS_HEAT_ALPHA = [0, 0.28, 0.5, 0.72, 1];
+const STATS_MOBILE_HEAT_ALPHA = [0, 0.25, 0.45, 0.7, 1];
 
 // Stage rows cycle this palette by position. Stage names are user-defined, so
 // there is no fixed name-to-colour map to honour.
@@ -118,9 +119,10 @@ function statsBucketLabel(start, unit) {
   return 'week of ' + statsDayLabel(s);
 }
 
-function statsHeatColor(level) {
+function statsHeatColor(level, mobile = false) {
   if (!level) return 'rgba(var(--surface-800),1)';
-  return 'rgba(var(--accent),' + STATS_HEAT_ALPHA[level] + ')';
+  const alpha = mobile ? STATS_MOBILE_HEAT_ALPHA : STATS_HEAT_ALPHA;
+  return 'rgba(var(--accent),' + alpha[level] + ')';
 }
 
 // Weeks start on Sunday; pad the first column with blanks to align weekdays.
@@ -393,6 +395,7 @@ export function statsDerive(payload) {
   return {
     heat: statsHeatWeeks(payload.days),
     heatCaption: statsCompact(totals.runs || 0) + ' runs · ' + (payload.days || []).length + ' days',
+    mobileHeatCaption: statsCompact(totals.runs || 0) + ' total',
     unit: unit,
     throughput: throughput,
     tokens: tokens,
@@ -592,6 +595,16 @@ export function kontoraStats() {
       // whenever it opens mid-week, and the chip beside this would disagree.
       const days = win.days || 0;
       const span = 'last ' + days + (days === 1 ? ' day' : ' days');
+      return this.statsUpdated ? span + ' · updated ' + this.statsUpdated : span;
+    },
+
+    statsMobileWindowLabel() {
+      const days = this.stats?.window?.days;
+      if (!days) return this.statsLoading ? 'Loading…' : '';
+      const weeks = days / 7;
+      const span = Number.isInteger(weeks)
+        ? 'Last ' + weeks + (weeks === 1 ? ' week' : ' weeks')
+        : 'Last ' + days + (days === 1 ? ' day' : ' days');
       return this.statsUpdated ? span + ' · updated ' + this.statsUpdated : span;
     },
 

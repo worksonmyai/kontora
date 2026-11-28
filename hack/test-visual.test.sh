@@ -143,7 +143,9 @@ for mode in check repeat update; do
     for arg in linux/amd64 none KONTORA_TEST_VISUAL=1 "KONTORA_VISUAL_MODE=$mode" sha256:fixture; do
         grep -Fxq -- "$arg" "$tmp/run.args"
     done
-    grep -Fq 'go test -count=1 -v -timeout 15m ./internal/web -run "^TestVisualBrowserJS$"' "$tmp/run.args"
+    grep -Fq 'timeout=15m' "$tmp/run.args"
+    grep -Fq 'if [[ $KONTORA_VISUAL_MODE == repeat ]]; then timeout=25m; fi' "$tmp/run.args"
+    grep -Fq 'go test -count=1 -v -timeout "$timeout" ./internal/web -run "^TestVisualBrowserJS$"' "$tmp/run.args"
     if grep -Eq 'KONTORA_CONFIG|KONTORA_TICKETS_DIR|OPENAI_API_KEY|not-a-real-key' "$tmp/run.args"; then
         fail 'host configuration or credentials forwarded'
     fi

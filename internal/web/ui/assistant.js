@@ -158,6 +158,7 @@ export function kontoraAssistant() {
     assistantGate: null,
     assistantError: null,
     assistantContext: [],
+    mobileAssistantContext: null,
     // The open slash or mention menu: { kind, rows, index, from }.
     assistantMenu: null,
     assistantAutonomyOpen: false,
@@ -260,7 +261,7 @@ export function kontoraAssistant() {
       if (this.assistantGate) return 'Approval';
       if (this.assistantStreaming) return 'Working';
       if (this.companionEnabled()) {
-        const unread = (this.companionSnapshot?.items || []).filter(item => !item.read).length;
+        const unread = this.assistantUnreadCount();
         if (unread) return 'Inbox ' + unread;
       }
       return '';
@@ -273,15 +274,18 @@ export function kontoraAssistant() {
       return label ? 'Assistant: ' + label + ' unread' : 'Open Assistant';
     },
 
+    assistantUnreadCount() {
+      return this.companionEnabled() ? (this.companionSnapshot?.items || []).filter(item => !item.read).length : 0;
+    },
+
     assistantComposerID(name) {
-      return (this.isMobile ? 'assistant-sheet-' : 'assistant-') + name;
+      return (this.isMobile ? 'assistant-page-' : 'assistant-') + name;
     },
 
     // --- scrolling -------------------------------------------------------
 
     _assistantScrollEl() {
-      const sheet = this.sheet && this.sheet.type === 'assistant';
-      return globalThis.document?.getElementById(sheet ? 'assistant-sheet-thread' : 'assistant-thread');
+      return globalThis.document?.getElementById(this.assistantComposerID('thread'));
     },
 
     // Read before the tape is spliced: a reader who has scrolled up to a tool
@@ -301,7 +305,7 @@ export function kontoraAssistant() {
       this._assistantNoteScroll();
     },
 
-    assistantSheetScrollOwner() {
+    assistantPageScrollOwner() {
       const app = this;
       return resourceOwner(function (alive) {
         const thread = this.$el;
@@ -316,12 +320,6 @@ export function kontoraAssistant() {
         if (transcript) observer.observe(transcript);
         return () => observer.disconnect();
       });
-    },
-
-    assistantRevealApproval() {
-      const proposal = document.getElementById('assistant-sheet-proposal');
-      proposal?.scrollIntoView({ block: 'start' });
-      proposal?.focus({ preventScroll: true });
     },
 
     _assistantScrollToEnd(force) {
@@ -341,6 +339,7 @@ export function kontoraAssistant() {
     // it was left on. Called from the component's init.
     async initAssistant() {
       if (this._appDestroyed || lane.destroyed) return;
+      if (this.isMobile && this.currentView !== 'assistant') this.assistantOpen = false;
       if (!presentationBound && this.$watch) {
         presentationBound = true;
         // Alpine can remove the outgoing composer's blur handler before teardown dispatches blur.
@@ -464,7 +463,7 @@ export function kontoraAssistant() {
       history = { events: null, messages: null, rows: [], visible: null, start: -1 };
     },
 
-    closeAssistant() {
+    closeAssistant({ persist = !this.isMobile } = {}) {
       this._assistantRetireWidth();
       this._assistantSelectionSeq++;
       this._assistantRetireActivity();
@@ -472,7 +471,7 @@ export function kontoraAssistant() {
       this.assistantMenu = null;
       this.assistantAutonomyOpen = false;
       this.assistantCompositionReset();
-      assistantStore('kontora-assistant-open', '0');
+      if (persist) assistantStore('kontora-assistant-open', '0');
       // The pane's flight is retired above; only a new read-only badge poll
       // survives dismissal. Destruction disables even that background owner.
       this._armAssistantPoll();
@@ -481,24 +480,60 @@ export function kontoraAssistant() {
     },
 
     _assistantDefaultInbox() {
-      if (this.companionSnapshot?.enabled && !this.assistantThread && !this.assistantDraft && !this.assistantViewIntent) {
+      if (this.companionSnapshot?.enabled && !this.mobileAssistantContext && !this.assistantThread && !this.assistantDraft && !this.assistantViewIntent) {
         this.assistantView = 'inbox';
       }
     },
 
-    openAssistantSheet(opener) {
-      // Touch browsers can dispatch a click without focusing the opener.
-      opener?.focus({ preventScroll: true });
+    mobileAssistantEnter(ticket, traversing, focus = true) {
+      if (this.sheet) this.closeSheet(false);
+      this.mobileAssistantContext = ticket || null;
       this.assistantCompositionReset();
       this.assistantOpen = true;
       this._assistantStick = true;
-      this._assistantDefaultInbox();
-      this.sheet = { type: 'assistant' };
+      if (ticket) {
+        // A ticket menu opens actionable Chat, not the observation-only chat.
+        if (this.companionThread() && !traversing) {
+          this._assistantEmptyThread();
+          this.assistantViewIntent = 'thread';
+        }
+        this.assistantView = 'thread';
+      } else this._assistantDefaultInbox();
       this.assistantRecomputeContext();
       this.assistantLoadThreads();
-      if (this.assistantEnabled() || this.companionThread()) {
+      if (this.assistantEnabled() || this.companionThread()) this._assistantResume();
+      if (!focus) return;
+      const seq = this._navigationSeq;
+      this.$nextTick(() => {
+        if (seq === this._navigationSeq && this.isMobile && this.currentView === 'assistant' && !this.interactionOwner?.()) {
+          this.$refs?.mobileAssistantTitle?.focus({ preventScroll: true });
+        }
+      });
+    },
+
+    mobileAssistantLeave() {
+      this.mobileAssistantContext = null;
+      if (this.assistantView === 'inbox' && !this.companionEnabled()) this.assistantView = 'thread';
+      this.closeAssistant({ persist: false });
+    },
+
+    mobileAssistantBreakpointChanged() {
+      if (this.isMobile) {
+        if (this.currentView !== 'assistant' && this.assistantOpen) this.closeAssistant({ persist: false });
+      } else if (this.currentView === 'assistant') {
+        // A phone-only route must not strand a wide viewport without a board.
+        void this.navigateDestination({ view: 'assistant', assistantTicket: this.mobileAssistantContext, replace: true });
+      } else if (!this.assistantOpen && assistantStored('kontora-assistant-open', '0') === '1') {
+        this.assistantOpen = true;
+        this.assistantRecomputeContext();
+        this.assistantLoadThreads();
         this._assistantResume();
       }
+    },
+
+    mobileAssistantTicketContext() {
+      const t = this.mobileAssistantContext;
+      return t && (this.lifecycleResolve(t) || t);
     },
 
     // The rail keeps the pane mounted at icon width, so a running turn is still
@@ -698,6 +733,10 @@ export function kontoraAssistant() {
         const res = await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(id), undefined, current);
         const thread = await res.json();
         if (thread.purpose === 'companion') {
+          if (quiet && this.mobileAssistantContext) {
+            if (current()) this._assistantSelecting = false;
+            return false;
+          }
           if (!this.companionSnapshot) await this.companionRefresh();
           if (!this.companionEnabled()) {
             if (current()) {
@@ -860,7 +899,8 @@ export function kontoraAssistant() {
 
     async sendAssistantMessage() {
       if (this.assistantSending) return;
-      if (this.isSecondary(this.selectedTicket)) {
+      const mobilePage = this.currentView === 'assistant';
+      if (this.isSecondary(mobilePage ? this.mobileAssistantContext : this.selectedTicket) && !(mobilePage && this.companionThread())) {
         this.assistantError = 'The assistant is unavailable for secondary tickets. Claim the ticket into primary first.';
         return;
       }
@@ -954,7 +994,26 @@ export function kontoraAssistant() {
       return row ? row.label : mode;
     },
 
+    mobileAssistantComposerHint() {
+      if (this.companionThread()) return 'Observation only';
+      const mode = this.assistantEffectiveAutonomy();
+      const hint = mode === 'read' ? 'Read only' : mode === 'auto' ? 'Can make changes' : 'Asks before changes';
+      return hint + ' · type / or @';
+    },
+
     // --- approval --------------------------------------------------------
+
+    mobileAssistantProposal() {
+      const { tool, arg } = this.assistantGate || {};
+      const move = tool === 'move_ticket' ? arg?.match(/^([\w.-]+)\s*→\s*([a-z_]+)$/) :
+        tool?.toLowerCase() === 'bash' ? arg?.match(/^kontora move ([\w][\w.-]*) ([a-z_]+)$/) : null;
+      if (move && (move[2] === 'todo' || this.columns.some(col => col.statuses.includes(move[2])))) {
+        const status = this.mobileTicketStatus({ status: move[2] });
+        return { ticket: move[1], status };
+      }
+      // An arbitrary argument is not a status change. Show it unabridged.
+      return { text: arg || tool || '' };
+    },
 
     assistantApprovalLabel() {
       switch (this.assistantGate?.kind) {
@@ -1447,8 +1506,9 @@ export function kontoraAssistant() {
     // to the agent: it tells the reader which ticket a bare "it" would mean.
     assistantRecomputeContext() {
       const chips = [];
-      if (this.selectedTicket) {
-        chips.push({ key: 'ticket', label: this.selectedTicket.id, kind: 'ticket' });
+      const ticket = this.currentView === 'assistant' ? this.mobileAssistantContext : this.selectedTicket;
+      if (ticket) {
+        chips.push({ key: 'ticket', label: ticket.id, kind: 'ticket' });
       }
       const query = (this.searchQuery || '').trim();
       if (query) chips.push({ key: 'filter', label: query, kind: 'filter' });
@@ -1561,6 +1621,11 @@ export function kontoraAssistant() {
     assistantEscape() {
       if (this.assistantMenu) { this.assistantMenu = null; return true; }
       if (this.assistantAutonomyOpen) { this.assistantAutonomyOpen = false; return true; }
+      if (this.isMobile && this.currentView === 'assistant') {
+        if (this.assistantView !== 'thread') this.assistantShowChat();
+        else this.mobileAssistantBack();
+        return true;
+      }
       if (this.assistantView === 'history') { this.assistantShowChat(); return true; }
       if (this.assistantOpen) { this.closeAssistant(); return true; }
       return false;

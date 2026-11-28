@@ -29,11 +29,15 @@ comparison settings.
 ## iOS PWA scenes
 
 The populated Tickets home is captured at 390 × 844 in dark and light mode.
-At this fold, the fixture shows four progress rows, including a waiting ticket,
-and the first Queue control must be hit-testable without scrolling. The Open
-selection, Queue sheet, running ticket, and Human review scenes use the same
-isolated phone dataset and viewport in dark mode. Staging interacts with the UI
-without confirming any write. The desktop board still uses its original seed.
+The waiting ticket appears above In progress. Its Reply button must be usable
+without scrolling. The Open selection, batch Queue sheet, blocked Run sheet,
+running ticket, and Human review scenes use the same phone dataset in dark mode.
+No scene confirms a write. The desktop board uses a separate seed.
+
+The Duo scenes cover the closed home and ticket at 466 × 678, the open landscape
+split at 951 × 669, and open portrait at 669 × 951. The fixture supplies a side
+inset for the closed poses. Check the rail against the camera and status bar on
+a device; the browser cannot measure the camera cutout.
 
 ## Review candidates
 
@@ -129,6 +133,11 @@ changes in #106](https://github.com/worksonmyai/kontora/pull/106):
 On November 24, 2026, Alexander Akhmetov approved the populated mobile board,
 empty mobile board, and mobile Assistant screenshots for the In progress first
 view.
+
+On November 28, 2026, Alexander Akhmetov approved 31 baselines for the phone and
+Duo redesign, including six refreshed desktop baselines. The mobile epic
+screenshot did not change. All 320 repeat comparisons passed in 19 minutes
+26 seconds on an Arm Mac using Docker's amd64 emulation.
 
 ## Read failures
 

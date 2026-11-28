@@ -268,6 +268,9 @@ export function kontoraSettings() {
     },
 
     settingsSection: 'general',
+    // The mobile index is an in-view navigator. Existing section, search and
+    // field URLs still point straight to the editor, on all layout tiers.
+    settingsMobileListOpen: false,
     settingsOpenAgent: null,
     settingsReloadWarning: '',
     settingsRevealMessage: '',
@@ -1436,6 +1439,49 @@ export function kontoraSettings() {
       }).map(issue => issue.message).join(' ');
     },
 
+    settingsMobileConfigName() {
+      return (this.configCache?.config_path || '').split(/[\\/]/).pop();
+    },
+
+    settingsLimitStepValue(field, step) {
+      const raw = this.settingsConfig?.general[field.key]?.trim() || '';
+      // Zero and unset both use the daemon's default. Leave malformed drafts
+      // alone: the editable input and existing validation can repair them.
+      if (raw && !/^\+?(?:0|[1-9]\d*)$/.test(raw)) return null;
+      const value = BigInt(raw || '0') || BigInt(field.placeholder);
+      const next = value + BigInt(step);
+      if (next < 1n || next > 9223372036854775807n) return null;
+      return String(next);
+    },
+
+    settingsStepLimit(field, step) {
+      if (this.settingsEditsLocked()) return;
+      const next = this.settingsLimitStepValue(field, step);
+      if (next !== null) this.settingsConfig.general[field.key] = next;
+    },
+
+    async settingsMobileFocusHeading() {
+      await new Promise(resolve => this.$nextTick(resolve));
+      if (!this.isMobile || this.currentView !== 'settings' || this.settingsGuard) return;
+      const heading = document.getElementById('settings-page-title');
+      if (!heading) return;
+      heading.closest('.routed-form-scroll')?.scrollTo(0, 0);
+      heading.focus({ preventScroll: true });
+    },
+
+    async settingsMobileShowList() {
+      this.closeAgentPicker?.(false);
+      if (this.settingsQuery || this.settingsField) {
+        await this.settingsNavigate(this.settingsSection, { mobileList: true, replace: true });
+      } else this.settingsMobileListOpen = true;
+      await this.settingsMobileFocusHeading();
+    },
+
+    async settingsMobileOpenSection(section) {
+      if (await this.settingsNavigate(section) === false) return;
+      await this.settingsMobileFocusHeading();
+    },
+
     settingsNavigate(section, options = {}) {
       this.closeAgentPicker?.(false);
       ++this._settingsRevealSeq;
@@ -1446,11 +1492,13 @@ export function kontoraSettings() {
       this.settingsField = options.field || '';
       const destination = { view: 'settings', ticketId: null, settingsSection: this.settingsSection,
         settingsQuery: this.settingsQuery, settingsField: this.settingsField, replace: !!options.replace };
+      if (options.mobileList) destination.settingsMobileList = true;
       return this.navigateDestination ? this.navigateDestination(destination) : undefined;
     },
 
     async settingsApplyRoute(route, navigation) {
       this.closeAgentPicker?.(false);
+      this.settingsMobileListOpen = this.isMobile && (route.settingsMobileList || !route.settingsSection);
       ++this._settingsRevealSeq;
       this.settingsRevealMessage = '';
       if (route.settingsField && navigation === this._navigationSeq) await this.settingsRevealField(route.settingsField, false, navigation);
@@ -1458,7 +1506,8 @@ export function kontoraSettings() {
 
     settingsQueryChanged() {
       ++this._settingsRevealSeq;
-      this.settingsNavigate(this.settingsSection, { query: this.settingsQuery, replace: true });
+      this.settingsNavigate(this.settingsSection, { query: this.settingsQuery, replace: true,
+        mobileList: this.isMobile && this.settingsMobileListOpen });
     },
 
     async settingsRevealField(id, navigate = true, navigation = this._navigationSeq) {
@@ -1642,7 +1691,12 @@ export function kontoraSettings() {
         this.writeHash();
         return true;
       }
+      if (view === 'assistant' && this.isMobile) {
+        this.currentView = 'assistant';
+        return true;
+      }
       if (view === 'stats') { this.currentView = 'stats'; this.openStats(); this.writeHash(); return; }
+      if (view === 'more') { this.currentView = 'more'; void this.mobileLoadMorePage(); this.writeHash(); return; }
       if (view === 'archive') { this.currentView = 'archive'; this.openArchive(); this.writeHash(); return; }
       if (view === 'settings') { await this.openSettings(); this.writeHash(); return; }
       if (view === 'new') return this.openCreateModal(navigation);

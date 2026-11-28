@@ -170,13 +170,13 @@ test('Assistant shells mount constant fragments and keep exclusive scroll hosts'
   const hosts = [...html.matchAll(/x-html="(assistant\w+Markup)"/g)].map(match => match[1]);
   assert.deepEqual(hosts, [
     'assistantContextMarkup', 'assistantHistoryMarkup', 'assistantTranscriptMarkup', 'assistantConfigureMarkup', 'assistantComposerMarkup',
-    'assistantContextMarkup', 'assistantSheetTranscriptMarkup', 'assistantSheetConfigureMarkup', 'assistantHistoryMarkup', 'assistantSheetApprovalMarkup', 'assistantSheetComposerMarkup',
+    'assistantContextMarkup', 'assistantPageTranscriptMarkup', 'assistantPageConfigureMarkup', 'assistantHistoryMarkup', 'assistantPageComposerMarkup',
   ]);
   for (const name of hosts) assert.equal(typeof fragments[name], 'string', name);
   for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(fragments))) assert.equal(descriptor.get, undefined);
   assert.match(html, /x-if="!isMobile && assistantOpen && !assistantRail"/);
-  assert.match(html, /x-if="isMobile && sheet.type==='assistant'"/);
-  for (const [id, name] of [['assistant-thread', 'assistantTranscriptMarkup'], ['assistant-sheet-thread', 'assistantSheetTranscriptMarkup']]) {
+  assert.match(html, /x-if="isMobile && currentView === 'assistant'"/);
+  for (const [id, name] of [['assistant-thread', 'assistantTranscriptMarkup'], ['assistant-page-thread', 'assistantPageTranscriptMarkup']]) {
     const host = html.match(new RegExp(`<div id="${id}"[^>]*>[\\s\\S]*?x-html="${name}"`))?.[0];
     assert.ok(host, id);
     assert.match(host, /@scroll\.passive="(?:if \(assistantThreadVisible\(\)\) )?assistantThreadScrolled\(\)"/);
@@ -185,7 +185,7 @@ test('Assistant shells mount constant fragments and keep exclusive scroll hosts'
   assert.doesNotMatch(html, /x-for="row in assistantThreadRows\(\)"/);
 });
 
-for (const prefix of ['', 'Sheet']) {
+for (const prefix of ['', 'Page']) {
   test(`shared ${prefix || 'desktop'} transcript restores recorded details and stable stream blocks`, () => {
     const transcript = fragments[`assistant${prefix}TranscriptMarkup`];
     for (const binding of ['row.msg.error', 'row.event.model', 'assistantEventTime(row.event)', 'assistantGate.tool', 'assistantGate.arg', 'row.event.result || row.event.summary']) {
@@ -202,26 +202,34 @@ for (const prefix of ['', 'Sheet']) {
     assert.ok(transcript.indexOf('x-for="row in assistantThreadRows()"') < partial);
     assert.ok(partial < working);
     assert.doesNotMatch(transcript.slice(partial, working), /setProse|x-html|x-for/);
-    assert.match(transcript, new RegExp(`id="assistant-${prefix ? 'sheet-' : ''}partial"`));
-    assert.match(transcript, new RegExp(`id="assistant-${prefix ? 'sheet-' : ''}partial-tool"`));
-    const approval = prefix ? fragments.assistantSheetApprovalMarkup : transcript;
+    assert.match(transcript, new RegExp(`id="assistant-${prefix ? 'page-' : ''}partial"`));
+    assert.match(transcript, new RegExp(`id="assistant-${prefix ? 'page-' : ''}partial-tool"`));
     if (prefix) {
-      assert.doesNotMatch(transcript, /resolveAssistantGate/);
-      assert.match(approval, /aria-controls="assistant-sheet-proposal"/);
+      assert.match(transcript, /<section id="assistant-page-proposal"/);
+      assert.match(transcript, /aria-labelledby="assistant-page-proposal-title"/);
+      assert.doesNotMatch(transcript, /approval-dock/);
     }
-    assert.match(approval, /@click="resolveAssistantGate\(true\)"/);
-    assert.match(approval, /@click="resolveAssistantGate\(false\)"/);
+    assert.match(transcript, /@click="resolveAssistantGate\(true\)"/);
+    assert.match(transcript, /@click="resolveAssistantGate\(false\)"/);
   });
 
-  test(`shared ${prefix || 'desktop'} composer exposes suggestions, autonomy hints and configured agent`, () => {
+  test(`shared ${prefix || 'desktop'} composer exposes suggestions, current autonomy and send controls`, () => {
     const composer = fragments[`assistant${prefix}ComposerMarkup`];
-    for (const binding of ['assistantDraftChanged()', 'assistantComposerKey($event)', 'assistantCompositionStart()', 'assistantCompositionEnd()', 'assistantCompositionReset()', 'acceptAssistantMenu(row)', 'mode.hint', 'assistantAgent.agent', 'sendAssistantMessage()', 'stopAssistantTurn()']) {
+    for (const binding of ['assistantDraftChanged()', 'assistantComposerKey($event)', 'assistantCompositionStart()', 'assistantCompositionEnd()', 'assistantCompositionReset()', 'acceptAssistantMenu(row)', 'sendAssistantMessage()', 'stopAssistantTurn()']) {
       assert.ok(composer.includes(binding), binding);
     }
     assert.match(composer, /role="listbox"/);
     assert.match(composer, /role="option"/);
     assert.match(composer, /:aria-activedescendant=/);
-    assert.match(composer, new RegExp(`id="assistant-${prefix ? 'sheet-' : ''}input"`));
+    assert.match(composer, new RegExp(`id="assistant-${prefix ? 'page-' : ''}input"`));
+    if (prefix) {
+      assert.match(composer, /aria-describedby="assistant-page-hint"/);
+      assert.match(composer, /mobileAssistantComposerHint\(\)/);
+      assert.doesNotMatch(composer, /assistantAutonomyOpen/);
+    } else {
+      assert.match(composer, /mode.hint/);
+      assert.match(composer, /assistantAgent.agent/);
+    }
     const configure = fragments[`assistant${prefix}ConfigureMarkup`];
     assert.match(configure, /assistantAgent.hint/);
     assert.match(configure, /gotoView\('settings'\)/);
@@ -402,7 +410,7 @@ test('touch suggestion selection returns focus to the existing composer', () => 
   globalThis.document = { getElementById: id => ({ focus() { focused = id; } }) };
   try {
     state.acceptAssistantMenu(state.assistantMenu.rows[0]);
-    assert.equal(focused, 'assistant-sheet-input');
+    assert.equal(focused, 'assistant-page-input');
   } finally {
     if (original === undefined) delete globalThis.document;
     else globalThis.document = original;
@@ -767,5 +775,5 @@ test('composer accessibility references use the active exclusive shell', () => {
   const state = assistant();
   assert.equal(state.assistantComposerID('menu'), 'assistant-menu');
   state.isMobile = true;
-  assert.equal(state.assistantComposerID('menu'), 'assistant-sheet-menu');
+  assert.equal(state.assistantComposerID('menu'), 'assistant-page-menu');
 });

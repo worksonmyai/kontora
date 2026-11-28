@@ -408,7 +408,7 @@ test('phone navigation markup uses the shared route, upload input, filters and s
   assert.match(html, /Valid files are imported immediately as Open tickets\. This form stays unchanged\./);
   assert.match(home, /x-model="searchQuery"[^>]*aria-label="Search tickets"/);
   assert.match(home, /x-text="mobileFilterSummary\(\)"/);
-  const filters = html.split(`<template x-if="sheet.type === 'filters'">`)[1]?.split(`<template x-if="sheet.type === 'browse'">`)[0];
+  const filters = html.split(`<template x-if="sheet.type === 'filters'">`)[1]?.split(`<template x-if="sheet.type === 'navigation'">`)[0];
   assert.ok(filters);
   for (const facet of ['Status', 'Project', 'Agent']) {
     assert.ok(filters.includes(`x-model="mobile${facet}Filter"`));
@@ -416,8 +416,11 @@ test('phone navigation markup uses the shared route, upload input, filters and s
   const nav = html.match(/<nav\b[^>]*class="mobile-bottom-nav"[^>]*>[\s\S]*?<\/nav>/)?.[0];
   assert.ok(nav);
   assert.match(nav, /@click="mobileNavigate\('board'\)"[^>]*>/);
-  assert.match(nav, /@click="mobileNavigate\('settings'\)"[^>]*>/);
-  assert.match(nav, /@click="sheet = \{ type: 'browse' \}" aria-haspopup="dialog"/);
+  assert.match(nav, /@click="mobileOpenAssistant\(\)"/);
+  assert.match(nav, /@click="mobileNavigate\('automations'\)"/);
+  assert.match(nav, /@click="mobileNavigate\('more'\)"/);
+  assert.match(nav, /x-text="globalNeedsInputCount"/);
+  assert.doesNotMatch(html, /sheet.type === 'browse'/);
   assert.match(html, /mobileNavigationCount\(view.key\)/);
   assert.match(html, /settings-mobile-context[\s\S]{0,600}configCache\?\.config_path/);
   const creation = html.slice(html.indexOf('id="new-view"'), html.indexOf('id="automations-view"'));

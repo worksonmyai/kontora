@@ -222,7 +222,16 @@ export function fixtures({ base, assets, engine }, options = {}) {
     'kon-live/code/0': 'Live code registration: unrecorded running output.\n',
   }));
   let mintedNotes = 0, createdThreads = 0;
-  const terminalMarkers = new Map();
+  const terminalMarkers = new Map(), terminalSnapshotRows = new Map();
+  function writeTerminalMarker(url, marker) {
+    const index = sockets.findLastIndex(socket => socket.href === url);
+    assert.ok(index >= 0, 'The connected socket must be intercepted');
+    const ws = socketRoutes[index];
+    // A reset for this grid can still be in transit to the browser.
+    const rows = terminalSnapshotRows.get(ws);
+    terminalMarkers.set(ws, marker);
+    ws.send(Buffer.from(`\x1b[2J\x1b[${rows};1H${marker}`));
+  }
   const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, activityEvents: null, bracketedPaste: false,
     descriptionWait: null, descriptionFailure: null, editWait: null, holdResizes: false,
     epicWait: null, epicFailure: null, assistantMessageFailure: null, assistantGateWait: null,
@@ -1041,6 +1050,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
         const snapshots = options.terminalSnapshots;
         const transcript = ticketID !== null && snapshots && Object.hasOwn(snapshots, ticketID) ? snapshots[ticketID] : undefined;
         const snapshot = (cols, rows) => {
+          terminalSnapshotRows.set(ws, rows);
           if (paneStream) ws.send(JSON.stringify({ type: 'reset', cols, rows }));
           const marker = terminalMarkers.get(ws);
           const content = transcript ?? ('Offline fixture terminal\r\n$ ' + (behavior.bracketedPaste ? '\x1b[?2004h' : ''));
@@ -1103,7 +1113,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
       };
     });
   }
-  return { install, api, config, configWrites, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig, descriptionWrites, pendingResizes, terminalMarkers,
+  return { install, api, config, configWrites, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig, descriptionWrites, pendingResizes, terminalMarkers, writeTerminalMarker,
     holdSnapshot, holdDetail, holdRead, pendingSnapshot, releaseReads, pickupRequests, enqueued, artifactReads, terminalInputs,
     uploads, stylesheetRequests, authNavigations, rawOutputs,
     get rawConfig() { return rawConfig; }, set rawConfig(content) { rawConfig = content; } };

@@ -1146,6 +1146,7 @@ export function kontoraBoard() {
       // workers; collecting them for the rail must not count them again.
       var epics = [];
       var needsInputCount = 0;
+      var globalNeedsInputCount = 0;
       var entries = this.allBoardTickets();
       for (var i = 0; i < entries.length; i++) {
         var t = entries[i];
@@ -1161,11 +1162,12 @@ export function kontoraBoard() {
         if (!this.isSecondary(t) && t.kontora && this.executionActive(t) && t.agent) {
           running[t.agent] = (running[t.agent] || 0) + 1;
         }
+        var needsInput = this.needsLiveInput(t);
+        if (needsInput) globalNeedsInputCount++;
         var key = colOf[t.status];
         if (key === undefined) continue;            // no column -> not rendered
         if (this.sourceFilter && (this.isSecondary(t) ? t.source : 'primary') !== this.sourceFilter) continue;
         if (filtering && !this.ticketMatchesQuery(t, query)) continue;
-        var needsInput = this.needsLiveInput(t);
         if (needsInput) needsInputCount++;
         if (this.needsInputOnly && !needsInput) continue;
         board[key].push(t);
@@ -1179,6 +1181,7 @@ export function kontoraBoard() {
       this.mobileBoardChanged();
       this._boardTotal = total;
       this.needsInputCount = needsInputCount;
+      this.globalNeedsInputCount = globalNeedsInputCount;
       this._statusCounts = counts;
       this._agentRunning = running;
       this.runningAgents = counts.in_progress;

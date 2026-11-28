@@ -28,7 +28,27 @@ const ASSISTANT_APPROVAL_ACTIONS = `
   <button type="button" id="assistant-skip" @click="resolveAssistantGate(false)" class="font-mono text-[11.5px] h-[26px] px-3 rounded-[6px] bg-surface-850 border border-edge-input text-tx-3 hover:text-tx-2 transition-colors">Skip</button>
 </div>`;
 
-const assistantTranscript = (approvalActions = '') => `
+const MOBILE_ASSISTANT_PROPOSAL = `
+<template x-if="assistantGate">
+  <section id="assistant-proposal" class="mobile-assistant-proposal" aria-labelledby="assistant-proposal-title" x-data="{ get proposal() { return mobileAssistantProposal() } }">
+    <h2 id="assistant-proposal-title" x-text="assistantGate.kind === 'write' ? 'Proposed change' : assistantGate.kind === 'delete' ? 'Proposed deletion' : 'Unclassified call'"></h2>
+    <template x-if="proposal.ticket">
+      <p class="mobile-assistant-proposal-summary"><span x-text="proposal.ticket"></span> → <strong x-text="proposal.status"></strong></p>
+    </template>
+    <p x-show="!proposal.ticket" class="mobile-assistant-proposal-summary" x-text="proposal.text"></p>
+    <details x-show="assistantGate.arg">
+      <summary>Details</summary>
+      <p x-text="assistantGate.tool"></p>
+      <code x-text="assistantGate.arg"></code>
+    </details>
+    <div class="mobile-assistant-proposal-actions" role="group" aria-label="Pending approval">
+      <button type="button" id="assistant-skip" @click="resolveAssistantGate(false)">Skip</button>
+      <button type="button" id="assistant-approve" @click="resolveAssistantGate(true)">Approve</button>
+    </div>
+  </section>
+</template>`;
+
+const assistantTranscript = (mobile = false) => `
 <div x-show="assistantReadError" x-cloak role="status" class="font-mono text-[11px] text-warn">
   <span x-text="'Transcript updates unavailable. ' + assistantReadError"></span>
   <button type="button" x-show="assistantReadRetryable && assistantReadRetries > 4" @click="assistantRetryActivity()" class="underline">Retry</button>
@@ -42,7 +62,7 @@ const assistantTranscript = (approvalActions = '') => `
   </div>
 </template>
 <template x-for="row in assistantThreadRows()" :key="row.key">
-  <div :class="row.msg ? 'self-end max-w-[85%] rounded-[10px] px-2.5 py-1.5 bg-surface-850 border border-edge-input' : 'min-w-0'">
+  <div :class="${mobile ? "row.msg ? 'mobile-assistant-bubble' : row.event?.kind === 'tool' ? 'mobile-assistant-tool' : 'min-w-0'" : "row.msg ? 'self-end max-w-[85%] rounded-[10px] px-2.5 py-1.5 bg-surface-850 border border-edge-input' : 'min-w-0'"}">
     <template x-if="row.msg">
       <div>
         <span class="block text-[12.5px] leading-[1.5] text-tx whitespace-pre-wrap" x-text="row.msg.text"></span>
@@ -60,7 +80,7 @@ const assistantTranscript = (approvalActions = '') => `
         <template x-if="row.event.kind === 'tool'">
           <div class="assistant-tool-row rounded-[7px] border border-edge-input bg-surface-900">
             <button type="button" @click="toggleAssistantTool(row.event, row.index)" class="w-full flex items-center gap-2 px-2 py-1 text-left min-w-0" :aria-expanded="assistantToolExpanded(row.event, row.index) ? 'true' : 'false'">
-              <span class="font-mono text-[10.5px] shrink-0" :class="assistantToolFailed(row.event) ? 'text-err' : 'text-ok'" x-text="assistantToolFailed(row.event) ? '✗' : '▸'"></span>
+              <span class="font-mono text-[10.5px] shrink-0" :class="assistantToolFailed(row.event) ? 'text-err' : 'text-ok'" x-text="assistantToolFailed(row.event) ? '✗' : '${mobile ? '✓' : '▸'}'"></span>
               <span class="font-mono text-[11px] text-tx-3 shrink-0" x-text="row.event.tool"></span>
               <span class="font-mono text-[11px] text-surface-600 truncate min-w-0" x-text="row.event.arg"></span>
               <span class="font-mono text-[10px] text-tx-faint shrink-0 ml-auto" x-text="assistantEventTime(row.event)"></span>
@@ -86,6 +106,7 @@ const assistantTranscript = (approvalActions = '') => `
 <template x-if="assistantStreaming && !assistantGate">
   <div class="flex items-center gap-2 font-mono text-[11px] text-surface-600" aria-live="polite"><span x-text="assistantWorkingLabel()"></span></div>
 </template>
+${mobile ? MOBILE_ASSISTANT_PROPOSAL : `
 <template x-if="assistantGate">
   <div id="assistant-proposal" tabindex="-1" class="rounded-[9px] border border-warn/60 bg-surface-900 p-2.5 flex flex-col gap-2">
     <div class="flex items-baseline gap-2 min-w-0">
@@ -93,17 +114,9 @@ const assistantTranscript = (approvalActions = '') => `
       <span class="font-mono text-[11px] text-tx-3 break-words min-w-0" x-text="assistantGate.tool"></span>
     </div>
     <code class="font-mono text-[11px] leading-[1.5] text-tx-2 bg-surface-850 border border-edge-input rounded px-2 py-1.5 break-words" x-text="assistantGate.arg"></code>
-    ${approvalActions}
-  </div>
-</template>`;
-
-const ASSISTANT_SHEET_APPROVAL = `
-<template x-if="assistantGate && assistantView === 'thread' && assistantThreadVisible()">
-  <div class="assistant-approval-dock" role="group" aria-label="Pending approval">
-    <button type="button" class="assistant-approval-details" @click="assistantRevealApproval()" aria-controls="assistant-sheet-proposal">Request details</button>
     ${ASSISTANT_APPROVAL_ACTIONS}
   </div>
-</template>`;
+</template>`}`;
 
 const ASSISTANT_CONFIGURE = `
 <template x-if="!assistantEnabled() && !companionThread() && assistantView === 'thread'">
@@ -117,10 +130,7 @@ const ASSISTANT_CONFIGURE = `
   </div>
 </template>`;
 
-const ASSISTANT_COMPOSER = `
-<!-- Composer -->
-<template x-if="(assistantEnabled() || companionThread()) && assistantView === 'thread' && assistantThreadVisible()">
-  <div class="assistant-composer shrink-0 border-t border-surface-700 p-2 relative" @keydown.escape="if (assistantMenu || assistantAutonomyOpen) { $event.preventDefault(); $event.stopPropagation(); assistantMenu = null; assistantAutonomyOpen = false; }">
+const ASSISTANT_SUGGESTIONS = `
     <div x-show="assistantMenu" x-cloak id="assistant-menu" class="assistant-suggestions absolute left-2 right-2 bottom-full mb-1 max-h-[220px] overflow-y-auto rounded-[9px] border border-surface-700 bg-surface-850 py-1" role="listbox" aria-label="Composer suggestions">
       <template x-for="(row, ri) in (assistantMenu ? assistantMenu.rows : [])" :key="row.id">
         <button type="button" @click="acceptAssistantMenu(row)" role="option" :id="assistantComposerID('suggestion-' + ri)" :aria-selected="assistantMenu && ri === assistantMenu.index ? 'true' : 'false'" class="w-full flex items-baseline gap-2 px-2.5 py-1 text-left min-w-0" :class="assistantMenu && ri === assistantMenu.index ? 'bg-surface-800' : ''">
@@ -128,8 +138,15 @@ const ASSISTANT_COMPOSER = `
           <span class="text-[11px] text-surface-600 truncate min-w-0" x-text="row.sub"></span>
         </button>
       </template>
-    </div>
-    <textarea id="assistant-input" x-model="assistantDraft" @input="assistantDraftChanged()" @keydown="assistantComposerKey($event)" @compositionstart="assistantCompositionStart()" @compositionend="assistantCompositionEnd()" @blur="assistantCompositionReset()" rows="2" placeholder="Ask about the board. / for commands, @ for a ticket" aria-label="Message the assistant" role="combobox" aria-multiline="true" :aria-controls="assistantComposerID('menu')" :aria-expanded="!!assistantMenu" :aria-activedescendant="assistantMenu ? assistantComposerID('suggestion-' + assistantMenu.index) : null" aria-autocomplete="list" class="w-full resize-none rounded-[8px] bg-surface-900 border border-edge-input px-2.5 py-2 text-[12.5px] leading-[1.5] text-tx placeholder:text-surface-600 outline-none focus:border-edge-hover transition-colors"></textarea>
+    </div>`;
+
+const ASSISTANT_INPUT = `id="assistant-input" x-model="assistantDraft" @input="assistantDraftChanged()" @keydown="assistantComposerKey($event)" @compositionstart="assistantCompositionStart()" @compositionend="assistantCompositionEnd()" @blur="assistantCompositionReset()" aria-label="Message the assistant" role="combobox" aria-multiline="true" :aria-controls="assistantComposerID('menu')" :aria-expanded="!!assistantMenu" :aria-activedescendant="assistantMenu ? assistantComposerID('suggestion-' + assistantMenu.index) : null" aria-autocomplete="list"`;
+const ASSISTANT_COMPOSER = `
+<!-- Composer -->
+<template x-if="(assistantEnabled() || companionThread()) && assistantView === 'thread' && assistantThreadVisible()">
+  <div class="assistant-composer shrink-0 border-t border-surface-700 p-2 relative" @keydown.escape="if (assistantMenu || assistantAutonomyOpen) { $event.preventDefault(); $event.stopPropagation(); assistantMenu = null; assistantAutonomyOpen = false; }">
+    ${ASSISTANT_SUGGESTIONS}
+    <textarea ${ASSISTANT_INPUT} rows="2" placeholder="Ask about the board. / for commands, @ for a ticket" class="w-full resize-none rounded-[8px] bg-surface-900 border border-edge-input px-2.5 py-2 text-[12.5px] leading-[1.5] text-tx placeholder:text-surface-600 outline-none focus:border-edge-hover transition-colors"></textarea>
     <div class="assistant-composer-actions flex items-center gap-2 mt-1.5">
       <div class="relative">
         <span x-show="companionThread()" class="companion-note">Observation only</span>
@@ -150,20 +167,34 @@ const ASSISTANT_COMPOSER = `
   </div>
 </template>`;
 
-// Both shells are exclusive. Keep the desktop IDs used by focus and tests;
-// phone IDs are computed once here, never from reactive thread state.
-const sheetIDs = markup => markup.replaceAll('id="assistant-', 'id="assistant-sheet-');
+const MOBILE_ASSISTANT_COMPOSER = `
+<template x-if="(assistantEnabled() || companionThread()) && assistantView === 'thread' && assistantThreadVisible()">
+  <div class="mobile-assistant-compose">
+    ${ASSISTANT_SUGGESTIONS}
+    <label class="mobile-assistant-pill">
+      <textarea ${ASSISTANT_INPUT} rows="1" :placeholder="mobileAssistantContext && !companionThread() ? 'Ask about ' + mobileAssistantContext.id : 'Ask about the board'" aria-describedby="assistant-hint"></textarea>
+      <span id="assistant-hint" x-text="mobileAssistantComposerHint()"></span>
+    </label>
+    <button type="button" id="assistant-send" x-show="!assistantStreaming" @click="sendAssistantMessage()" :disabled="assistantSending || !assistantDraft.trim() || (companionThread() && !companionCanAsk()) || (!companionThread() && isSecondary(mobileAssistantContext))" class="mobile-assistant-send" aria-label="Send">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg>
+    </button>
+    <button type="button" x-show="assistantStreaming" @click="stopAssistantTurn()" class="mobile-assistant-stop">Stop</button>
+  </div>
+</template>`;
+
+// Keep desktop selectors stable. The mobile page mounts a separate copy of
+// each shared fragment; rewrite both the IDs and their static references.
+const pageIDs = markup => markup.replace(/((?:id|aria-describedby|aria-labelledby)="assistant-)/g, '$1page-');
 
 export function kontoraAssistantMarkup() {
   return {
     assistantContextMarkup: ASSISTANT_CONTEXT,
     assistantHistoryMarkup: ASSISTANT_HISTORY,
-    assistantTranscriptMarkup: assistantTranscript(ASSISTANT_APPROVAL_ACTIONS),
+    assistantTranscriptMarkup: assistantTranscript(),
     assistantConfigureMarkup: ASSISTANT_CONFIGURE,
     assistantComposerMarkup: ASSISTANT_COMPOSER,
-    assistantSheetTranscriptMarkup: sheetIDs(assistantTranscript()),
-    assistantSheetApprovalMarkup: sheetIDs(ASSISTANT_SHEET_APPROVAL),
-    assistantSheetConfigureMarkup: sheetIDs(ASSISTANT_CONFIGURE),
-    assistantSheetComposerMarkup: sheetIDs(ASSISTANT_COMPOSER),
+    assistantPageTranscriptMarkup: pageIDs(assistantTranscript(true)),
+    assistantPageConfigureMarkup: pageIDs(ASSISTANT_CONFIGURE),
+    assistantPageComposerMarkup: pageIDs(MOBILE_ASSISTANT_COMPOSER),
   };
 }

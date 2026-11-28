@@ -227,8 +227,8 @@ test('context invalidation and separate elements reuse the text-keyed sanitizer 
 });
 
 test('recorded Assistant replies use shared prose styling in both shells without ticket-read', () => {
-  const { assistantTranscriptMarkup, assistantSheetTranscriptMarkup } = kontoraAssistantMarkup();
-  for (const transcript of [assistantTranscriptMarkup, assistantSheetTranscriptMarkup]) {
+  const { assistantTranscriptMarkup, assistantPageTranscriptMarkup } = kontoraAssistantMarkup();
+  for (const transcript of [assistantTranscriptMarkup, assistantPageTranscriptMarkup]) {
     const classes = transcript.match(/<div class="([^"]+)" x-effect="setProse\(\$el, row\.event\.text\)"><\/div>/)?.[1].split(/\s+/) || [];
     assert.ok(classes.includes('ticket-prose'));
     assert.ok(classes.includes('prose-assistant'), 'keeps the Assistant-only styling hook');

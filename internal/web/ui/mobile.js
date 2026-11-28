@@ -15,8 +15,13 @@ export function kontoraMobile() {
   let consumedClick = null;
   const listPageSize = 100;
   let terminalFocusSequence = 0;
+  let duoListPosition = null;
+  let moreRequest = null;
 
   return {
+    mobileLayout: 'desktop',
+    mobileRailSide: '',
+    mobileArchiveCount: null,
     _mobileWindowKey: '',
     mobileStatusFilter: ':attention',
     mobileProjectFilter: '',
@@ -134,7 +139,8 @@ export function kontoraMobile() {
     mobileHomeGroups() {
       const projection = this.mobileTicketList();
       if (!this.mobileHomeFiltered()) return [
-        { key: 'in_progress', label: 'In progress', rows: projection.progress },
+        ...(projection.waiting.length ? [{ key: 'input', label: 'Needs input', rows: projection.waiting }] : []),
+        { key: 'in_progress', label: 'In progress', rows: projection.progress.filter(t => !this.needsLiveInput(t)) },
         { key: 'open', label: 'Open', rows: projection.open.slice(0, 4) },
       ];
       let remaining = this._mobileWindowKey === this.mobileWindowKey() ? this._mobileWindowSize : listPageSize;
@@ -278,15 +284,13 @@ export function kontoraMobile() {
 
     mobileHomeLinks() {
       const { byColumn, epics } = this.mobileTicketList();
-      return this.columns.filter(col => this.mobileHomeFiltered() || !['in_progress', 'open'].includes(col.key))
-        .sort((a, b) => Number(!['human_review', 'done', 'cancelled'].includes(a.key)) - Number(!['human_review', 'done', 'cancelled'].includes(b.key)))
+      return this.columns.filter(col => ['done', 'cancelled'].includes(col.key))
         .map(col => ({ key: col.key, label: col.label, count: byColumn.get(col.key)?.length || 0 }))
-        .concat({ key: ':epics', label: 'Epics', count: epics.length }, { key: ':archive', label: 'Archive' });
+        .concat({ key: ':epics', label: 'Epics', count: epics.length });
     },
 
     mobileHomeLink(item) {
       if (item.key === ':epics') return this.mobileJumpTo('epics');
-      if (item.key === ':archive') return this.mobileNavigate('archive');
       return this.openMobileColumn(item.key, false, item.key + '-list');
     },
 
@@ -300,9 +304,18 @@ export function kontoraMobile() {
         cancelled: '<path d="m6 6 12 12M18 6 6 18"/>',
         ':epics': '<rect x="4" y="8" width="16" height="12" rx="3"/><path d="M8 4h8"/>',
         ':archive': '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v11h14V9M10 13h4"/>',
+        stats: '<path d="M4 4v16h16M8 16v-3m4 3V8m4 8v-5"/>',
+        filters: '<path d="M4 6h16M7 12h10m-7 6h4"/>',
+        add: '<path d="M5 12h14m-7-7v14"/>',
+        back: '<path d="m15 18-6-6 6-6"/>',
+        pause: '<path d="M9 5v14m6-14v14"/>',
+        live: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m7 9 3 3-3 3m6 0h4"/>',
+        folder: '<path d="M3 6a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
+        search: '<circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/>',
         board: '<rect x="3" y="4" width="7" height="16" rx="2"/><rect x="14" y="4" width="7" height="10" rx="2"/>',
         settings: '<path d="M3 7h5m4 0h9M3 17h10m4 0h4"/><circle cx="10" cy="7" r="2"/><circle cx="15" cy="17" r="2"/>',
-        browse: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+        automations: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+        more: '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
       };
       const icon = Object.hasOwn(paths, key) ? paths[key] : paths.open;
       return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon}</svg>`;
@@ -334,12 +347,23 @@ export function kontoraMobile() {
       heading?.focus({ preventScroll: true });
     },
 
-    mobileRowMeta(ticket) {
-      return [this.ticketProjectName(ticket), this.showAgentMeta && ticket.agent, this.isSecondary(ticket) && this.sourceLabel(ticket)].filter(Boolean).join(' · ');
+    mobileMoreLinks() {
+      const done = this._statusCounts.done;
+      return [
+        { key: 'stats', icon: 'stats', label: 'Stats', count: this.mobileTicketCountKnown() ? done.toLocaleString() + ' done' : '' },
+        { key: 'archive', icon: ':archive', label: 'Archive', count: this.mobileArchiveCount?.toLocaleString() ?? '' },
+        { key: 'settings', icon: 'settings', label: 'Settings' },
+      ];
     },
 
-    mobileStageAge(ticket) {
-      return [ticket?.stage, ticket?.started_at && this.noteAgo(ticket.started_at)].filter(Boolean).join(' · ');
+    async mobileLoadMorePage() {
+      moreRequest?.abort();
+      this.mobileArchiveCount = null;
+      const request = moreRequest = new AbortController();
+      try {
+        const { tickets } = await this.ticketRead(signal => this.readTicketJSON('/api/tickets/archived', signal, 'Could not load Archive.'), request);
+        if (request === moreRequest && !request.signal.aborted && Array.isArray(tickets)) this.mobileArchiveCount = tickets.length;
+      } catch { /* The Archive page reports errors and offers a retry. */ }
     },
 
     mobileTickets() {
@@ -402,9 +426,10 @@ export function kontoraMobile() {
         if (sequence !== listRestoreSequence) return;
         restoringList = false;
         if (this._appDestroyed || !this.isMobile || this.currentView !== 'board' || this.mobileColumnKey !== column ||
-            this.selectedTicket || this.selectedEpic || blockingInteraction(this)) return;
+            (this.selectedTicket && this.mobileLayout !== 'duo-split') || this.selectedEpic || blockingInteraction(this)) return;
         const list = this.$refs?.mobileCardList;
         if (!list) return;
+        syncInteractionCoverage(this);
         const bounds = list.getBoundingClientRect();
         const rows = [...list.querySelectorAll('[data-mobile-ticket-key]')];
         if (!position || position.filter !== this.mobileListSignature()) list.scrollTop = 0;
@@ -698,8 +723,60 @@ export function kontoraMobile() {
 
     async mobileNavigate(view) {
       this.closeSheet();
-      if (this.currentView === view && view !== 'board') return true;
+      if (this.currentView === view && view !== 'board' &&
+          !(view === 'automations' && (this.automationsDetail || this.automationsEditing))) return true;
       return this.navigateDestination({ view });
+    },
+
+    mobileOpenAssistant(ticket) {
+      if (!this.isMobile || this._appDestroyed) return false;
+      if (this.currentView === 'assistant' && !ticket) return true;
+      return this.navigateDestination({ view: 'assistant', assistantTicket: ticket?.id ? {
+        id: ticket.id, source: ticket.source || 'primary', kind: ticket.kind === 'epic' ? 'epic' : '',
+      } : null });
+    },
+
+    mobileAssistantReturnRoute(ticket = this.mobileAssistantContext) {
+      return { view: 'board', ticketId: ticket?.kind === 'epic' ? null : ticket?.id,
+        epicId: ticket?.kind === 'epic' ? ticket.id : null, source: ticket?.source };
+    },
+
+    mobileAssistantBack() {
+      if (!this._traverseMobileParent('assistant')) {
+        return this.navigateDestination({ ...this.mobileAssistantReturnRoute(), replace: true });
+      }
+    },
+
+    mobileBoardListVisible() {
+      return !this.selectedEpic && (!this.selectedTicket || this.mobileLayout === 'duo-split');
+    },
+
+    _updateMobileLayout(coarse) {
+      const width = window.innerWidth;
+      const split = width >= 768 && width < 1100 && !!coarse;
+      const mobile = width < 768 || split;
+      const style = mobile && window.getComputedStyle?.(document.documentElement);
+      const left = parseFloat(style?.getPropertyValue?.('--mobile-safe-left')) || 0;
+      const right = parseFloat(style?.getPropertyValue?.('--mobile-safe-right')) || 0;
+      const insetSide = Math.max(left, right) >= 44 ? (left > right ? 'left' : 'right') : '';
+      const portrait = !insetSide && width >= 600 && window.innerHeight > width;
+      const layout = split ? 'duo-split' : !mobile ? 'desktop' : portrait ? 'duo-portrait' : 'phone';
+      const side = mobile ? insetSide || (split ? 'right' : '') : '';
+      const changed = this.mobileLayout !== layout || this.mobileRailSide !== side;
+      const list = this.$refs?.mobileCardList;
+      if (changed && list && this.mobileBoardListVisible()) duoListPosition = this.mobileCaptureList();
+      this.isMobile = mobile;
+      this.mobileLayout = layout;
+      this.mobileRailSide = side;
+      if (!changed) return;
+      this.$nextTick(() => {
+        if (this._appDestroyed || this.mobileLayout !== layout || this.mobileRailSide !== side) return;
+        this.syncDetailCoverage();
+        if (this.currentView === 'board' && this.mobileBoardListVisible() && duoListPosition) {
+          this.mobileRestoreList(duoListPosition, false);
+          duoListPosition = null;
+        }
+      });
     },
 
     initMobile() {
@@ -710,19 +787,22 @@ export function kontoraMobile() {
         target.addEventListener(name, handler, options);
         owner.listeners.push(() => target.removeEventListener(name, handler, options));
       };
+      const pointer = window.matchMedia?.('(pointer: coarse)');
       const update = () => {
         if (lifecycle !== owner || this._appDestroyed) return;
-        // Use the layout viewport, never the keyboard/pinch-zoom viewport, for
-        // the board breakpoint.
-        this.isMobile = window.innerWidth < 768;
-        if (this.isMobile && this.runConfirmOpen) this.closeRunConfirm(false);
         if (owner.frame !== null) return;
         owner.frame = requestAnimationFrame(() => {
           owner.frame = null;
           if (lifecycle === owner && !this._appDestroyed) this._updateMobileViewport();
         });
       };
-      listen(window, 'resize', () => { this.mobileClearGesture(); update(); });
+      const resize = () => {
+        this.mobileClearGesture();
+        this._updateMobileLayout(pointer?.matches);
+        update();
+      };
+      listen(window, 'resize', resize);
+      listen(pointer, 'change', resize);
       const viewport = window.visualViewport;
       listen(viewport, 'resize', update);
       listen(viewport, 'scroll', update);
@@ -748,6 +828,8 @@ export function kontoraMobile() {
         for (const key of ['currentView', 'selectedTicket', 'selectedEpic']) {
           const stop = this.$watch(key, () => {
             if (lifecycle !== owner || this._appDestroyed) return;
+            if (key === 'selectedTicket' && (this.sheet?.ticketMenu || ['run-settings', 'related'].includes(this.sheet?.type)) &&
+                !this.sameTicket(this.sheet.ticket, this.selectedTicket)) this.closeSheet(false);
             this.$nextTick(() => {
               if (lifecycle !== owner || this._appDestroyed) return;
               this.syncDetailCoverage();
@@ -757,7 +839,7 @@ export function kontoraMobile() {
           if (typeof stop === 'function') owner.watches.push(stop);
         }
       }
-      this.isMobile = window.innerWidth < 768;
+      this._updateMobileLayout(pointer?.matches);
       this._updateMobileViewport();
       this._syncMobileSheet();
     },
@@ -766,6 +848,7 @@ export function kontoraMobile() {
       const owner = lifecycle;
       lifecycle = null;
       ++descriptionSequence;
+      moreRequest?.abort();
       this.mobileResetTerminalInput();
       this.closeAgentPicker(false);
       this.flushEditSave();
@@ -854,6 +937,7 @@ export function kontoraMobile() {
     },
 
     mobileBreakpointChanged() {
+      if (this.runConfirmOpen) this.closeRunConfirm(false);
       listProjection = null;
       columnProjection = null;
       this.mobileResetListInteraction();
@@ -862,11 +946,14 @@ export function kontoraMobile() {
       this.flushEditSave();
       this.editingBody = false;
       this.closeSheet(false);
+      this.mobileAssistantBreakpointChanged?.();
     },
 
     // Navigation guards must run before this cleanup.
     mobileBeforeNavigate(view) {
       if (view === this.currentView) return;
+      if (this.currentView === 'assistant') this.mobileAssistantLeave();
+      if (this.currentView === 'more') moreRequest?.abort();
       this.rememberDetailView();
       this.mobileResetTerminalInput();
       ++descriptionSequence;
@@ -926,7 +1013,6 @@ export function kontoraMobile() {
       if (!lifecycle || this._appDestroyed) return;
       const sheet = this.isMobile ? this.sheet : null;
       if (sheetFocus?.sheet === sheet) return;
-      if (sheetFocus?.sheet?.type === 'assistant' && this.assistantOpen) this.closeAssistant();
       const returnFocus = sheetFocus?.returnFocus || document.activeElement;
       const keepCoverage = !!(sheet && sheetFocus?.dialog);
       this._releaseMobileSheetFocus(!sheet, keepCoverage);
@@ -988,17 +1074,6 @@ export function kontoraMobile() {
         this.closeAgentPicker(true);
         return;
       }
-      if (this.sheet.type === 'assistant') {
-        if (event.isComposing || event.keyCode === 229 || this._assistantComposing || this._assistantCompositionEnding) return;
-        if (event.key === 'Escape' && (this.assistantMenu || this.assistantAutonomyOpen)) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          this.assistantMenu = null;
-          this.assistantAutonomyOpen = false;
-          return;
-        }
-        if (event.key === 'Tab' && this.assistantMenu && event.target?.matches('textarea[aria-autocomplete="list"]')) return;
-      }
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -1035,15 +1110,20 @@ export function kontoraMobile() {
     },
 
     mobileSwitchPanel(panel) {
-      const mode = panel === 'output' ? (this.isSecondary(this.selectedTicket) || !this.mobileHasRun(this.selectedTicket) || (this.activityStage !== null && this._activityExplicit) ? 'activity' : this.mobileFirstTab())
-        : panel === 'changes' ? 'diff' : panel;
-      this.mobileSwitchTab(mode);
+      if (panel === 'output' && this.mobilePanel() === 'output') return;
+      if (panel === 'output') {
+        const t = this.selectedTicket;
+        const mode = !this.mobileHasRun(t) || (this.activityStage !== null && this._activityExplicit) ? 'activity' : this.mobileFirstTab();
+        return this.mobileSwitchTab(mode);
+      }
+      this.mobileSwitchTab(panel === 'changes' ? 'diff' : panel);
     },
     mobileTagLabel(t) {
       return t?.pipeline || this.pathBasename(t?.path) || '—';
     },
 
     async openMobileTicket(t, navigation = ++this._navigationSeq) {
+      if (this.currentView === 'board' && this.mobileBoardListVisible()) duoListPosition = this.mobileCaptureList();
       if (this.currentView !== 'board') {
         if (await this.gotoView('board', navigation, { view: 'board', ticketId: t.id, source: t.source }) === false) return;
         if (navigation !== this._navigationSeq) return;
@@ -1107,6 +1187,93 @@ export function kontoraMobile() {
       }
     },
 
+    get mobileTicketProgress() {
+      const ticket = this.selectedTicket;
+      const stages = this.stageRibbon();
+      const start = this.displayStage();
+      const runs = Math.max(ticket?.history?.length || 0, this.currentTicketCost()?.tracked_runs || 0);
+      const fresh = ['open', 'todo'].includes(ticket?.status) && !runs && !this.executionActive(ticket);
+      const current = stages.findIndex(stage => stage.name === ticket?.stage);
+      return {
+        stages: fresh ? stages.map(stage => ({ ...stage, state: stage.name === start ? 'start' : 'queued' })) : stages,
+        start,
+        runs,
+        position: current >= 0 ? (current + 1) + ' of ' + stages.length : '',
+        total: stages.some(stage => stage.runs || stage.seconds) ? this.formatSeconds(stages.reduce((sum, stage) => sum + stage.seconds, 0)) + ' total' : '',
+      };
+    },
+
+    get mobileTicketDependencies() {
+      const { total, done, holder } = this.dependsOn();
+      const blocker = holder || this.ticketBlocker(this.selectedTicket)?.ref;
+      const remaining = Math.max(total - done, blocker ? 1 : 0);
+      return { total, done, remaining, blocker };
+    },
+
+    mobileTicketStatusWord(ticket) {
+      const label = this.workflowStatusLabel(ticket);
+      return label.charAt(0).toUpperCase() + label.slice(1);
+    },
+
+    mobileRelationStatus(ref) {
+      return !this.relationKnown(ref) || ref.missing ? 'not found' : this.workflowStatusLabel(ref);
+    },
+
+    mobileBlockerProgress(ref) {
+      if (!ref || ref.missing || !this.relationKnown(ref)) return '';
+      const blocker = this.lifecycleResolve(ref) || ref;
+      if (ref.waits_on?.open) return ref.waits_on.open + ' of ' + ref.waits_on.total + ' still open';
+      if (!blocker.started_at && ['open', 'todo'].includes(blocker.status)) return 'Not started';
+      return this.childStageLine(blocker) === '—' ? '' : this.childStageLine(blocker);
+    },
+
+    mobileTicketLiveAge() {
+      const started = Date.parse(this.selectedTicket?.started_at);
+      return Number.isFinite(started) ? this.formatSeconds(Math.max(0, Math.floor((this.now - started) / 1000))) : '';
+    },
+
+    mobileRelationGroups() {
+      const ticket = this.selectedTicket;
+      return [
+        { name: 'Dependencies', refs: ticket?.deps || [] },
+        { name: 'Related', refs: this.relatedRefs() },
+        { name: 'Parent', refs: ticket?.parent ? [ticket.parent] : [] },
+        { name: 'Unblocks', refs: ticket?.blocks || [] },
+        { name: 'Children', refs: this.childRows() },
+      ].filter(group => group.refs.length);
+    },
+
+    mobileRelatedSummary() {
+      const groups = this.mobileRelationGroups();
+      const refs = groups.find(group => group.name === 'Related')?.refs || groups[0]?.refs || [];
+      return [...refs.slice(0, 2).map(ref => ref.id + ' ' + this.mobileRelationStatus(ref).toLowerCase()),
+        refs.length > 2 ? '+' + (refs.length - 2) + ' more' : ''].filter(Boolean).join(' · ');
+    },
+
+    mobileOpenTicketSubSheet(type) {
+      if (!this.selectedTicket || this.detailLoading) return;
+      this.sheet = { type, ticket: this.selectedTicket };
+      this._syncMobileSheet();
+    },
+
+    mobileDescriptionPreview() {
+      let observer;
+      return {
+        expanded: false,
+        clipped: false,
+        init() {
+          const update = () => {
+            const { prose, preview } = this.$refs;
+            if (prose && preview) this.clipped = prose.scrollHeight > preview.clientHeight + 1;
+          };
+          observer = new ResizeObserver(update);
+          observer.observe(this.$refs.prose);
+          observer.observe(this.$refs.preview);
+        },
+        destroy() { observer?.disconnect(); },
+      };
+    },
+
     mobileTicketCostLabel() {
       var cost = this.currentTicketCost();
       var label = this.costLabel(cost);
@@ -1162,9 +1329,27 @@ export function kontoraMobile() {
       const key = this.ticketKey(t);
       const command = t?.status === 'human_review' && !this.executionActive(t)
         ? this.lifecycleCommand(key, 'move:done') : this.lifecycleActions(key)[0];
-      if (!command) return { hidden: true };
-      return { label: command.id === 'move:done' ? 'Mark done' : command.label,
-        disabled: this.lifecycleBusy(key), run: () => this.dispatchLifecycle(key, command) };
+      if (!command || command.id === 'pause') return { hidden: true };
+      const reviewRun = command.id === 'start' && this.lifecycleCanQueueSaved(key);
+      return { label: command.id === 'move:done' ? 'Approve' : reviewRun ? 'Run…' : command.label, play: command.id === 'start',
+        disabled: this.lifecycleBusy(key) || this.lifecycleNeedsReconciliation(key),
+        run: () => reviewRun ? this.openMobileRun(t) : this.dispatchLifecycle(key, command) };
+    },
+
+    openMobileRun(t, fromList = false) {
+      if (!this.lifecycleCanQueueSaved(t) || this.lifecycleBusy(t) ||
+          (!fromList && (!this.sameTicket(t, this.selectedTicket) || this.detailLoading))) return;
+      this.closeAgentPicker(false);
+      this.sheet = { type: 'run', ticket: t };
+      this._syncMobileSheet();
+      return this.openRunConfirm(t);
+    },
+
+    mobileRunBlockerText() {
+      const blocker = this.runConfirmView().blocker;
+      if (!blocker) return '';
+      if (this.runConfirmPreview?.blocker?.missing) return blocker.body;
+      return 'Queue this ticket now. It can be picked up when its dependencies are done and an agent is free.';
     },
 
     openMoveSheet(t) {
@@ -1340,8 +1525,8 @@ export function kontoraMobile() {
     },
 
     _mobileTerminalFocusout(event) {
-      // Entering input hides the reading header and can blur its focused Back button.
-      if (event.target?.closest('.mobile-reading-bar')) return;
+      // Entering input hides the resting header and can blur its focused Back button.
+      if (event.target?.closest('.mobile-reading-bar, .mobile-ticket-route')) return;
       if (!this.mobileTerminalTyping() || !event.target?.closest('.mobile-terminal-dock, .mobile-terminal-host, .mobile-terminal-bar')) return;
       const owner = lifecycle;
       const sequence = ++terminalFocusSequence;
@@ -1381,10 +1566,14 @@ export function kontoraMobile() {
       return true;
     },
 
-    openActionsSheet(t) {
+    openTicketMenu() {
+      return this.openActionsSheet(this.selectedTicket, true);
+    },
+
+    openActionsSheet(t, ticketMenu = false) {
       if (!t || this._appDestroyed) return;
       this.closeSheet(false);
-      this.sheet = { type: 'actions', ticket: t };
+      this.sheet = { type: 'actions', ticket: t, ticketMenu };
       this._syncMobileSheet();
     },
     async openNewSheet() {
@@ -1401,9 +1590,10 @@ export function kontoraMobile() {
       return '';
     },
     closeSheet(restoreFocus = true) {
-      if (this.sheet?.type === 'assistant') this.closeAssistant();
+      const type = this.sheet?.type;
       this.closeAgentPicker(false);
       this.sheet = null;
+      if (type === 'run') this.closeRunConfirm(false);
       this._releaseMobileSheetFocus(restoreFocus);
     },
 
@@ -1519,14 +1709,16 @@ export function kontoraMobile() {
       const refreshRequired = this.lifecycleNeedsReconciliation(key);
       if (refreshRequired) add('Refresh ticket', 'default', () => this.lifecycleRefreshTicket(key));
       else if (this.sameTicket(t, this.selectedTicket || this.selectedEpic)) add('Refresh ticket', 'default', () => this.reloadTicketDetail());
-      if (this.sameTicket(t, this.selectedTicket) && this.mobileRunningOverview()) {
-        add('Navigation', 'default', () => { this.sheet = { type: 'navigation' }; });
-        add('Assistant', 'default', () => this.openAssistantSheet());
-      }
+      if (!this.sheet?.ticketMenu && this.sameTicket(t, this.selectedTicket || this.selectedEpic)) add('Assistant', 'default', () => this.mobileOpenAssistant(t));
       if (t.kind === 'epic' && !this.sameTicket(t, this.selectedEpic) && !this.isSecondary(t)) add('Epic overview', 'default', () => this.openEpic(t.id));
       const current = this.lifecycleResolve(key) || t;
       if (this.ticketCanControl(current) && !refreshRequired) {
-        this.lifecycleActions(key).forEach(addCommand);
+        this.lifecycleActions(key).forEach(command => {
+          if (command.id === 'start' && this.sheet?.ticketMenu && this.lifecycleCanQueueSaved(key)) {
+            add('Run…', 'default', () => this.openMobileRun(t));
+            add('Set up and run…', 'default', () => this.dispatchLifecycle(key, command));
+          } else addCommand(command);
+        });
         if (this.lifecycleDestinations(key).length) add('Set status', 'default', () => this.openMoveSheet(t));
         for (const id of ['cancel', 'skip', 'review', 'annotate', 'archive', 'delete']) {
           const command = this.lifecycleCommand(key, id);

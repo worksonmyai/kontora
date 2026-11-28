@@ -164,7 +164,9 @@ NODE
         )
         export KONTORA_VISUAL_RENDERER=1
         status=0
-        go test -count=1 -v -timeout 15m ./internal/web -run "^TestVisualBrowserJS$" || status=$?
+        timeout=15m
+        if [[ $KONTORA_VISUAL_MODE == repeat ]]; then timeout=25m; fi
+        go test -count=1 -v -timeout "$timeout" ./internal/web -run "^TestVisualBrowserJS$" || status=$?
 
         # Playwright removes and recreates its output directories, so they
         # cannot be bind mount roots. Export local evidence even on failure.

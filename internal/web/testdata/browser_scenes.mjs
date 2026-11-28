@@ -90,9 +90,10 @@ export async function detailPanel(page, name) {
 export async function phoneOutputView(page, view) {
   const output = page.locator('.mobile-detail-tabs').getByRole('button', { name: 'Output', exact: true });
   if (await output.getAttribute('aria-pressed') !== 'true') await output.click();
-  const select = page.locator('.mobile-detail .mobile-output-row').getByRole('combobox', { name: 'Output view', exact: true });
-  await inViewport(select);
-  await select.selectOption({ label: view });
+  const label = { Terminal: 'Live', 'Stage logs': 'Logs' }[view] || view;
+  const segment = page.locator('.mobile-detail .mobile-output-row').getByRole('button', { name: label, exact: true });
+  await inViewport(segment);
+  if (await segment.getAttribute('aria-pressed') !== 'true') await segment.click();
 }
 
 export function parityEpicRecords() {
@@ -128,10 +129,14 @@ export function parityAssistantOptions() {
     { id: 'b0123456789abcdef', title: 'Disposable history chat', turns: 3, writes: 2, running: false, autonomy: 'read', messages: [] }],
   };
 }
-export const assistantSurface = page => page.locator('#assistant-pane:visible, #assistant-sheet:visible');
+export const assistantSurface = page => page.locator('#assistant-pane:visible, #assistant-page:visible');
 export async function openAssistantControl(page) {
   if (!await assistantSurface(page).isVisible()) {
-    await page.getByRole('button', { name: 'Assistant', exact: true }).filter({ visible: true }).and(page.locator(':not([inert], [inert] *)')).first().click();
+    const launch = page.getByRole('button', { name: 'Assistant', exact: true }).filter({ visible: true }).and(page.locator(':not([inert], [inert] *)')).first();
+    if (!await launch.isVisible()) {
+      await page.locator('[data-mobile-ticket-menu]:visible').click();
+    }
+    await launch.click();
   }
   await visible(assistantSurface(page).getByRole('navigation', { name: 'Assistant views', exact: true }));
 }

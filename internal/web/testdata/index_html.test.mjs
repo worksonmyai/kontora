@@ -4381,19 +4381,18 @@ test('mobile rows keep their identity, content, and action hooks', () => {
   const row = mobileRowsHTML();
   const opener = row.match(/<button\b[^>]*@click="mobileSelecting \? mobileToggleSelected\(ticket\) : openMobileTicket\(ticket\)"[^>]*>/)?.[0];
   assert.ok(opener);
-  assert.match(row, /<li class="mobile-ios-row" :data-pipe-color="ticketPipeColor\(ticket\)"/);
+  assert.match(row, /<li class="mobile-ios-row" :data-pipe-color="pipelineColorByName\(ticketProjectName\(ticket\)\)"/);
   assert.match(opener, /:data-mobile-ticket-key="ticketKey\(ticket\)"/);
   assert.match(opener, /:aria-pressed="mobileSelecting \? mobileSelection.includes\(ticketKey\(ticket\)\) : null"/);
   assert.match(opener, /:disabled="mobileSelecting && !mobileSelectionAllowed\(ticket\)"/);
   assert.match(row, /class="mobile-card-row mobile-ios-meta"/);
   const title = row.slice(row.indexOf('<span class="mobile-card-title"'), row.indexOf('<span class="mobile-card-row'));
-  assert.match(title, /<template x-if="parseTitleTag\(ticket\)\.tag">\s*<span class="title-tag"/);
-  assert.match(title, /:data-pipe-color="pipelineColorByName\(parseTitleTag\(ticket\)\.tag\)"/);
-  assert.match(title, /x-text="'\[' \+ parseTitleTag\(ticket\)\.tag \+ '\] '"/);
+  assert.doesNotMatch(title, /class="title-tag"/);
   assert.match(title, /<span\b[^>]*x-text="parseTitleTag\(ticket\)\.rest \|\| ticket\.id"/);
   assert.doesNotMatch(title, /x-html=|x-text="ticket\.title"/);
   assert.match(row, /class="mobile-card-id"[^>]*x-text="ticket\.id"/);
-  assert.match(row, /x-text="mobileRowMeta\(ticket\)"/);
+  assert.match(row, /x-text="ticketProjectName\(ticket\)"/);
+  assert.match(row, /class="mobile-ios-folder" role="img" :aria-label="sourceLabel\(ticket\)"/);
   assert.match(row, /class="mobile-ios-selection-reason"[^>]*x-text="mobileSelecting \? mobileSelectionReason\(ticket\)/);
   assert.doesNotMatch(row, /pulse-dot|waiting-dot/);
 });
@@ -4405,7 +4404,8 @@ test('mobile rows show accessible per-stage progress only for eligible active ru
   assert.match(stage, /x-show="cardStageProgress\(ticket\)" class="mobile-ios-segments" role="img" :aria-label="cardStageProgress\(ticket\)\?\.label"/);
   assert.match(stage, /x-for="\(stage, i\) in cardStageProgress\(ticket\) \? ticket\.stages : \[\]"/);
   assert.match(stage, /'is-complete': i < ticket\.stages.indexOf\(ticket\.stage\), 'is-current': stage === ticket\.stage/);
-  assert.match(stage, /x-text="mobileStageAge\(ticket\)"/);
+  assert.match(stage, /x-text="ticket\.stage"/);
+  assert.match(stage, /x-text="noteAgo\(ticket\.started_at\)"/);
 });
 
 test("mobile sheets retain their dialog heading and actions without repeated titles or dots", () => {
@@ -4449,8 +4449,12 @@ test('both phone terminals use mounted native inline composers without a Compose
     assert.match(field, /@keydown.escape.stop.prevent="mobileFinishTerminalInput\(\)"/);
     assert.match(field, /rows="1"/);
     assert.doesNotMatch(field, /disabled|readonly|x-if|x-show|keydown.enter|autocorrect="off"|spellcheck="false"/i);
-    const dock = html.slice(html.indexOf(field), html.indexOf(field) + 1500);
-    assert.match(dock, /@click="mobileBeginTerminalDirect\(\)"[^>]*>Type in terminal<\/button>/);
+    const start = html.lastIndexOf('<div class="mobile-terminal-compose-row">', html.indexOf(field));
+    const dock = html.slice(start, html.indexOf('</div>', html.indexOf(field)));
+    if (id === 'mobile-terminal-compose') {
+      assert.match(dock, /@click="mobileBeginTerminalDirect\(\)"[^>]*aria-label="Type in terminal"[^>]*><svg/);
+      assert.doesNotMatch(dock, /x-show="mobileTerminalTyping\(\)"/);
+    } else assert.match(dock, /@click="mobileBeginTerminalDirect\(\)"[^>]*>Type in terminal<\/button>/);
     assert.match(dock, /@pointerdown.prevent @click="submitComposeMobile\(\)"/);
     assert.match(dock, /:disabled="!terminalRW \|\| !terminalConnected \|\| !mobileComposeDraft.trim\(\) \|\| terminalGuardedComposePending"/);
   }
@@ -7278,7 +7282,7 @@ test("index.html renders every prose block through the idempotent write", () => 
   // its body through it too; and the notes tab's own note and reply bodies
   // are markdown like every other authored block; and the epic page renders
   // both its brief and its own notes the same way in both layouts.
-  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 24);
+  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 23);
   assert.equal(html.match(/setSummaryProse\(\$el, /g).length, 2);
   assert.match(html, /card\.imported \? setProse\(\$el, card\.summary\) : setSummaryProse/);
   // Nothing in the markup writes a note as plain text any more: the rail block
@@ -9412,11 +9416,13 @@ test("every general field is drawn exactly once in the recomposed form", () => {
   const state = loadKontoraState();
   const general = settingsSectionMarkup(fs.readFileSync(htmlPath, "utf8"), "general");
   const placed = [];
-  for (const match of general.matchAll(/settingsGeneralFields\.filter\(f => (\[[^\]]+\])\.includes\(f\.key\)\)/g)) {
+  for (const match of general.matchAll(/settingsGeneralFields\.filter\(f => [^"\[]*(\[[^\]]+\])\.includes\(f\.key\)\)/g)) {
     placed.push(...[...match[1].matchAll(/'([^']+)'/g)].map(key => key[1]));
   }
   placed.push(...[...general.matchAll(/settingsGeneralFields\.find\(x => x\.key === '([^']+)'\)/g)].map(match => match[1]));
   placed.push(...[...general.matchAll(/x-model="settingsConfig\.general\.([a-z_]+)"/g)].map(match => match[1]));
+  // The mobile storage disclosure and the desktop Paths disclosure alternate.
+  assert.match(general, /f\.key === 'tickets_dir' && !isMobile/);
   assert.deepEqual(placed.sort(), [...state.settingsGeneralFields].map(field => field.key).sort());
   assert.equal(new Set(placed).size, placed.length);
 });
@@ -9437,6 +9443,38 @@ test("compact concurrency inputs preserve raw text and save arbitrary supported 
   assert.match(await state._settingsWrite(), /^max_concurrent_agents: lots$/m);
   state.settingsConfig.general.max_concurrent_agents = "";
   assert.deepEqual([...state.settingsChangedPaths()], []);
+});
+
+test("mobile limit steppers reuse the defaults and exact integer drafts", async () => {
+  const state = await settingsState();
+  const worker = state.settingsGeneralFields.find(f => f.key === 'max_concurrent_agents');
+  assert.equal(state.settingsLimitStepValue(worker, -1), '2');
+  state.settingsStepLimit(worker, 1);
+  assert.equal(state.settingsConfig.general[worker.key], '4');
+  assert.deepEqual([...state.settingsChangedPaths()], [worker.key]);
+  for (const [raw, step, next] of [
+    ['0', 1, '4'], ['lots', 1, null], ['01', 1, null], ['1', -1, null],
+    ['9007199254740993', 1, '9007199254740994'], ['9223372036854775807', 1, null],
+  ]) {
+    state.settingsConfig.general[worker.key] = raw;
+    assert.equal(state.settingsLimitStepValue(worker, step), next);
+    state.settingsStepLimit(worker, step);
+    assert.equal(state.settingsConfig.general[worker.key], next ?? raw);
+  }
+});
+
+test("mobile Settings opens the list for generic navigation, not for an editor route", async () => {
+  const state = loadKontoraState();
+  state.isMobile = true;
+  await state.settingsApplyRoute({ view: 'settings' }, state._navigationSeq);
+  assert.equal(state.settingsMobileListOpen, true);
+  for (const route of [{ view: 'settings', settingsSection: 'general' }, { view: 'settings', settingsSection: 'web' }]) {
+    await state.settingsApplyRoute(route, state._navigationSeq);
+    assert.equal(state.settingsMobileListOpen, false);
+  }
+  state.isMobile = false;
+  await state.settingsApplyRoute({ view: 'settings' }, state._navigationSeq);
+  assert.equal(state.settingsMobileListOpen, false);
 });
 
 test("legacy numeric input is retained with file-edit guidance and never PUT", async () => {
@@ -10072,19 +10110,20 @@ test('phone home projects prioritized runs, a four-ticket Open preview, and list
   assert.equal(state.mobileHomeFiltered(), false);
   assert.equal(state.mobileFilterLabel(), 'Default');
   assert.deepEqual(mobileGroupKeys(state), [
-    ['in_progress', ['waiting', 'active-new', 'active-old', 'paused', 'todo', 'idle']],
+    ['input', ['waiting']],
+    ['in_progress', ['active-new', 'active-old', 'paused', 'todo', 'idle']],
     ['open', ['open-5', 'open-4', 'open-3', 'open-2']],
   ]);
   assert.deepEqual(Object.fromEntries(state.mobileHomeTiles().map(({ key, count }) => [key, count])),
     { in_progress: 6, input: 1, open: 5, human_review: 1 });
   assert.deepEqual(Object.fromEntries(state.mobileHomeLinks().map(({ key, count }) => [key, count])),
-    { human_review: 1, done: 1, cancelled: 0, awaiting_data: 1, ':epics': 1, ':archive': undefined });
+    { done: 1, cancelled: 0, ':epics': 1 });
   assert.deepEqual(Array.from(state.mobileTicketList().epics, epic => epic.id), ['passive']);
   assert.deepEqual(Array.from(state.mobileTicketList().waiting, ticket => ticket.id), ['waiting']);
 
   state.searchQuery = '   ';
   assert.equal(state.mobileHomeFiltered(), false, 'whitespace does not replace the home projection');
-  assert.equal(state.mobileListGroups()[1].rows.length, 4);
+  assert.equal(state.mobileListGroups().find(group => group.key === 'open').rows.length, 4);
   state.mobileStatusFilter = ':all';
   assert.equal(state.mobileHomeFiltered(), true, 'All statuses switches from home to grouped results');
   assert.deepEqual(Array.from(state.mobileListGroups()[0].rows, ticket => ticket.id),
@@ -10119,8 +10158,6 @@ test('phone search groups by status and intersects Project, Agent, status, and s
   assert.deepEqual(mobileGroupKeys(state), [
     ['open', ['same']], ['human_review', ['review']], ['done', ['team/same']],
   ], 'both namesakes survive the exact facet intersection');
-  assert.equal(state.mobileRowMeta(match), 'Repo · claude');
-  assert.equal(state.mobileRowMeta(state.secondaryTickets[0]), 'Repo · claude · /shared/tickets');
 
   state.mobileStatusFilter = 'done';
   assert.equal(state.mobileFilterLabel(), 'Done');
@@ -11783,6 +11820,41 @@ test("the hash router maps each route to a view", async () => {
   }
 });
 
+test('mobile Assistant route carries contextual identity and omits unrelated selection', async () => {
+  const { state, location } = routerState('#/');
+  const ticket = { id: 'kon-test', source: 'team & friends', title: 'Secondary ticket', status: 'open' };
+  state.isMobile = true;
+  state.secondaryTickets = [ticket];
+  state.assistantLoadThreads = () => {};
+  await state.mobileOpenAssistant(ticket);
+  assert.equal(location.hash, '#/assistant?ticket=kon-test&source=team+%26+friends');
+  assert.equal(state.mobileAssistantContext.source, ticket.source);
+  assert.match(state._assistantPageContext(), /Title: Secondary ticket/);
+  await state.mobileNavigate('board');
+  assert.equal(state.mobileAssistantContext, null);
+  state.selectedTicket = ticket;
+  await state.mobileOpenAssistant();
+  assert.equal(location.hash, '#/assistant');
+  assert.doesNotMatch(state._assistantPageContext(), /kon-test/);
+  await state.applyRoute();
+  assert.equal(state.currentView, 'assistant');
+});
+
+test('mobile Assistant does not open until the Automations leave guard accepts', async () => {
+  const { state, location } = routerState('#/automations');
+  state.isMobile = true;
+  state.currentView = 'automations';
+  state.assistantLoadThreads = () => {};
+  state.automationsConfirmReplace = () => false;
+  assert.equal(await state.mobileOpenAssistant(), false);
+  assert.equal(location.hash, '#/automations');
+  assert.equal(state.assistantOpen, false);
+  state.automationsConfirmReplace = () => true;
+  assert.equal(await state.mobileOpenAssistant(), true);
+  assert.equal(location.hash, '#/assistant');
+  assert.equal(state.assistantOpen, true);
+});
+
 const automationSpecFields = ['agent', 'enabled', 'model', 'name', 'overlap', 'path', 'prompt', 'schedule', 'timeout', 'timezone', 'workspace'];
 const automationFires = ['2026-11-10T08:00:00Z', '2026-11-11T08:00:00Z', '2026-11-12T08:00:00Z', '2026-11-13T08:00:00Z'];
 
@@ -12768,13 +12840,16 @@ for (const [history, tracked, status, expected] of [
   });
 }
 
-test('mobile progress strip is noninteractive and hidden with secondary metadata', () => {
+test('mobile draft progress is noninteractive and does not mark stages before the chosen entry done', () => {
   const html = fs.readFileSync(htmlPath, 'utf8');
   const mobile = html.slice(html.indexOf('class="mobile-detail detail-enter"'));
-  const strip = mobile.split('aria-label="Pipeline stage progress"')[1].split('</div>\n          </template>')[0];
-  assert.match(strip, /x-for="seg in stageRibbon\(\)"/);
+  const strip = mobile.split('aria-label="Pipeline stage progress"')[1].split('</div>')[0];
+  assert.match(strip, /x-for="seg in mobileTicketProgress\.stages"/);
   assert.doesNotMatch(strip, /<button|@click/);
-  assert.match(mobile, /!isSecondary\(selectedTicket\) && !epicIsAgent\(selectedTicket\) && detailTab !== 'logs'/);
+  assert.match(mobile, /!mobileRunningOverview\(\) && !isSecondary\(selectedTicket\) && !epicIsAgent\(selectedTicket\)/);
+  const state = pageState({ id: 'kon-suffix', status: 'open', stage: 'code', stages: ['plan', 'code', 'test'] });
+  assert.deepEqual(Array.from(state.mobileTicketProgress.stages, seg => seg.state), ['queued', 'start', 'queued']);
+  assert.equal(state.mobileTicketProgress.runs, 0);
   assert.match(mobile, /:aria-current="logViewStage === seg.name \? 'step' : null"/);
   assert.match(mobile, /@click="clickStage\(seg.name\)"/);
 });
@@ -13594,23 +13669,23 @@ test('phone Output retains activity controls, shared scroller, selectors and fou
   assert.doesNotMatch(pane, /<select|selectOutputRun|openActivity/);
   assert.equal((html.match(/id="activity-scroll"/g) || []).length, 2);
 
-  const tabs = html.split('<nav class="mobile-detail-tabs flex" aria-label="Ticket panels">')[1].split('</nav>')[0];
-  assert.equal((tabs.match(/class="mobile-tab"/g) || []).length, 4);
-  for (const [tab, label] of [['ticket', 'Ticket'], ['notes', 'Notes'], ['output', 'Output'], ['changes', 'Changes']]) {
-    const button = [...tabs.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)]
-      .find(([markup]) => markup.includes(`@click="mobileSwitchPanel('${tab}')"`));
-    assert.ok(button, tab + ' remains reachable regardless of run history');
-    assert.equal(button[1].trim(), label);
-    assert.ok(button[0].includes(`:aria-pressed="mobilePanel() === '${tab}'"`));
-    assert.doesNotMatch(button[0], /x-show/);
+  const tabs = html.split('<nav class="mobile-detail-tabs" aria-label="Ticket panels">')[1].split('</nav>')[0];
+  const buttons = [...tabs.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)];
+  assert.deepEqual(buttons.map(button => button[2].replace(/<[^>]+>/g, '').trim()), ['Ticket', 'Output', 'Notes', 'Changes']);
+  for (const [index, tab] of ['ticket', 'output', 'notes', 'changes'].entries()) {
+    assert.ok(buttons[index][1].includes(`@click="mobileSwitchPanel('${tab}')"`));
+    assert.ok(buttons[index][1].includes(`:aria-pressed="mobilePanel() === '${tab}'"`));
+    assert.doesNotMatch(buttons[index][1], /x-show/);
   }
+  assert.match(buttons[1][2], /mobile-ticket-pulse/);
+  assert.match(buttons[3][2], /ticketChanges\?\.files\?\.length/);
   const toolbar = html.split('class="mobile-output-toolbar detail-shared"')[1].split('<!-- terminal')[0];
-  const controls = html.split('class="mobile-output-row"').find(part => part.includes('aria-label="Output view"'));
-  assert.match(controls, /@change="selectOutputRun\(\$event.target.value\)"/);
-  const modes = controls.split('</select>')[0];
-  assert.match(modes, /@change="mobileSwitchTab\(\$event.target.value\)"/);
-  assert.doesNotMatch(toolbar, /aria-label="Output view"/);
-  for (const view of ['terminal', 'activity', 'logs']) assert.ok(modes.includes(`value="${view}"`), view + ' remains reachable within Output');
+  const modes = html.split('aria-label="Output view">')[1].split('</div>')[0];
+  assert.match(toolbar, /@change="selectOutputRun\(\$event.target.value\)"/);
+  assert.doesNotMatch(modes, /<select/);
+  for (const [view, label] of [['terminal', 'Live'], ['activity', 'Activity'], ['logs', 'Logs']]) {
+    assert.match(modes, new RegExp(`@click="mobileSwitchTab\\('${view}'\\)"[^>]*>${label}</button>`));
+  }
   assert.doesNotMatch(tabs, /text-transform:uppercase|letter-spacing:|JetBrains Mono/);
 });
 
@@ -14407,7 +14482,10 @@ test("a relation opens through the board entry when the board has one", async ()
 test('shared relationships render complete, readable references without relying on hover', () => {
   const html = indexMarkup();
   const relationships = kontoraDetailMarkup().detailRelationshipsMarkup;
-  assert.equal((html.match(/data-detail-relationships/g) || []).length, 2, 'same relationship surface in both shells');
+  assert.equal((html.match(/data-detail-relationships/g) || []).length, 1, 'desktop retains the original relationship surface');
+  assert.match(html, /class="mobile-ticket-callout mobile-ticket-dependencies" aria-label="Dependencies"/);
+  assert.match(html, /x-if="sheet.type === 'related'"[\s\S]*x-for="group in mobileRelationGroups\(\)"/);
+  assert.match(html, /@click="closeSheet\(\); openTicketRef\(ref\)"/);
   assert.match(relationships, /aria-label="Depends on"/);
   assert.match(relationships, /x-text="dependsOn\(\)\.done \+ ' of ' \+ dependsOn\(\)\.total \+ ' done'"/);
   for (const refs of ['dependsOn().others', 'relatedRefs()', 'selectedTicket?.blocks || []']) {
@@ -15055,10 +15133,10 @@ test("both summary views put the ticket-level outcome above the stage summaries"
 
   // Mobile: the outcome above the last run's summary, which keeps its stage.
   const mobile = html.slice(html.indexOf(`x-show="detailTab==='ticket'"`));
-  assert.match(mobile, /x-if="selectedTicket\?\.last_error"[\s\S]*?role="alert"[^>]*x-text="selectedTicket\.last_error"/);
-  assert.ok(mobile.indexOf('x-text="selectedTicket.last_error"') < mobile.indexOf('x-if="selectedTicket?.summary"'));
+  assert.match(mobile, /x-show="selectedTicket\?\.last_error"[^>]*role="alert"[^>]*x-text="selectedTicket\?\.last_error"/);
+  assert.ok(mobile.indexOf('x-text="selectedTicket?.last_error"') < mobile.indexOf('x-if="selectedTicket?.summary"'));
   assert.ok(mobile.indexOf('x-if="finalSummary()"') < mobile.indexOf('x-if="selectedTicket?.summary"'));
-  assert.match(mobile, /<template x-if="summaryStage\(\)">\s*<span\b[^>]*x-text="summaryStage\(\)"/);
+  assert.match(mobile, /<small x-text="summaryStage\(\)"/);
 });
 
 test("the summary rail wraps on a container query, not a viewport one", () => {
@@ -16546,6 +16624,7 @@ test('Needs input counts search and source matches before applying the toggle', 
   state.sourceFilter = 'team';
   state.recomputeBoard();
   assert.equal(state.needsInputCount, 0);
+  assert.equal(state.globalNeedsInputCount, 2, 'the mobile tab badge ignores filters');
   assert.equal(state.filteredTicketCount(), 0);
   assert.deepEqual({ ...state._statusCounts }, global);
 });
@@ -16649,20 +16728,18 @@ test('index.html shows waiting badges in detail and a reply action in phone rows
   assert.match(desktop, /\.waiting-chip \{[^}]*--st-review/s);
 
   const row = mobileRowsHTML(html);
-  assert.match(row, /<template x-if="!mobileSelecting && needsLiveInput\(ticket\)">\s*<div class="mobile-ios-question">/);
-  assert.match(row, /<strong>Needs input<\/strong><p x-text="liveQuestion\(ticket\)">/);
-  assert.match(row, /@click="mobileReply\(ticket\)">Reply<\/button>/);
+  assert.match(row, /x-show="!mobileSelecting && needsLiveInput\(ticket\)" class="mobile-ios-row-question" x-text="liveQuestion\(ticket\)"/);
+  assert.match(row, /@click="mobileReply\(ticket\)"><span class="mobile-ios-pill">Reply<\/span>/);
   const mobile = html.slice(mobileStart);
-  assert.match(mobile, /x-if="needsLiveInput\(selectedTicket\)"/);
+  assert.match(mobile, /x-if="detailTab === 'ticket' && needsLiveInput\(selectedTicket\)"/);
   assert.match(mobile, /mobilePanel\(\) === 'output' && needsLiveInput\(selectedTicket\)/);
-  for (const subject of ['selectedTicket', 'selectedEpic']) {
-    const badge = [...mobile.matchAll(/<span\b[^>]*class="waiting-chip"[^>]*>([\s\S]*?)<\/span>\s*<\/span>/g)]
-      .find(([, content]) => content.includes(`waitingFor(${subject})`));
-    assert.ok(badge, subject + ' retains an attention badge');
-    assert.match(badge[1], /needs input/);
-    assert.match(badge[1], new RegExp(`x-text="waitingFor\\(${subject}\\)"`));
-    assert.doesNotMatch(badge[0], /pulse-dot|waiting-dot/);
-  }
+  assert.match(mobile, /<h2>Waiting for you<\/h2>[\s\S]*?@click="mobileReply\(selectedTicket\)"/);
+  const badge = [...mobile.matchAll(/<span\b[^>]*class="waiting-chip"[^>]*>([\s\S]*?)<\/span>\s*<\/span>/g)]
+    .find(([, content]) => content.includes('waitingFor(selectedEpic)'));
+  assert.ok(badge, 'The epic surface retains its attention badge');
+  assert.match(badge[1], /needs input/);
+  assert.match(badge[1], /x-text="waitingFor\(selectedEpic\)"/);
+  assert.doesNotMatch(badge[0], /pulse-dot|waiting-dot/);
 });
 
 test("the board badge's question uses the wrapping tip, not the nowrap one", () => {
@@ -16755,7 +16832,7 @@ function assistantState(opts = {}) {
   return { state, store, requests, listeners, scroller, streams, runFrames, runTimers, routes };
 }
 
-for (const boundary of ['sheet', 'actions', 'new', 'schedule', 'breakpoint', 'companion ticket', 'destroy']) {
+for (const boundary of ['Tickets tab', 'new', 'breakpoint', 'companion ticket', 'destroy']) {
   test(`mobile assistant ${boundary} retires foreground resources without stopping the running turn`, async () => {
     const wait = deferred();
     const { state, requests, streams } = assistantState({ manualFrames: true, manualTimers: true,
@@ -16765,19 +16842,23 @@ for (const boundary of ['sheet', 'actions', 'new', 'schedule', 'breakpoint', 'co
     state.assistantOpen = true;
     state.assistantThread = { id: 'mobile-live', running: true };
     state.assistantDraft = 'recover draft';
-    state.sheet = { type: 'assistant' };
+    state.currentView = 'assistant';
     state._assistantSetStreaming(true, Date.now());
     const loading = state._loadAssistantActivity();
     const sheetThread = state.assistantThread;
     state.loadCreateConfig = async () => true;
     const ticket = { id: 'navigation', status: 'open', kontora: true };
-    if (boundary === 'sheet') state.closeSheet();
-    if (boundary === 'actions') state.openActionsSheet(ticket);
+    if (boundary === 'Tickets tab') await state.mobileNavigate('board');
     if (boundary === 'new') await state.openNewSheet();
-    if (boundary === 'schedule') state.openScheduleSheet(ticket);
-    if (boundary === 'breakpoint') state.mobileBreakpointChanged();
+    if (boundary === 'breakpoint') {
+      // Widening converts the page to the desktop route with its dock.
+      state.isMobile = false;
+      state.toggleAssistant = () => {};
+      state.mobileBreakpointChanged();
+      await flushMicrotasks();
+    }
     if (boundary === 'companion ticket') {
-      state._paletteOpenTicket = async () => true;
+      state.tickets = [ticket];
       await state.companionOpenTicket({ ticket_id: ticket.id });
     }
     if (boundary === 'destroy') state.destroy();
@@ -16982,7 +17063,8 @@ test("the body escape chain reaches the pane after sheets and ticket details", (
   const chain = html.match(/@keydown\.escape\.window="([^"]+)"/)[1];
 
   assert.ok(chain.indexOf("closeSheet()") < chain.indexOf("assistantEscape()"));
-  assert.ok(chain.indexOf("closeDetail()") < chain.indexOf("assistantEscape()"));
+  assert.ok(chain.indexOf("closeDetail()") < chain.lastIndexOf("assistantEscape()"));
+  assert.ok(chain.indexOf("currentView === 'assistant') assistantEscape()") < chain.indexOf("closeDetail()"));
   const confirmEscape = chain.indexOf('closeRunConfirm(true)');
   assert.ok(confirmEscape >= 0 && confirmEscape < chain.indexOf('closeDetail()'), 'Escape closes Run confirmation before leaving the ticket');
   // The palette is first, so ⎋ with both open closes the palette and leaves the
@@ -16990,12 +17072,12 @@ test("the body escape chain reaches the pane after sheets and ticket details", (
   assert.ok(chain.indexOf("palettePop()") < chain.indexOf("assistantEscape()"));
 });
 
-test("the docked pane is desktop only and the phone gets the sheet instead", () => {
+test("the docked pane is desktop only and the phone gets a routed page", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
   assert.match(html, /x-if="!isMobile && assistantOpen && !assistantRail"/);
   assert.match(html, /x-if="!isMobile && assistantOpen && assistantRail"/);
-  assert.match(html, /x-if="isMobile && sheet\.type==='assistant'"/);
+  assert.match(html, /x-if="isMobile && currentView === 'assistant'"/);
   // A flex sibling of the views rather than an overlay, so the board narrows
   // and stays visible.
   assert.match(html, /id="assistant-pane"[\s\S]{0,200}?shrink-0/);
@@ -17057,7 +17139,13 @@ test("approval labels distinguish deletion, writes and unclassified calls", () =
     state.assistantGate = { kind };
     assert.equal(state.assistantApprovalLabel(), label);
   }
-  assert.equal((html.match(/x-text="assistantApprovalLabel\(\)"/g) || []).length, 2);
+  assert.equal((html.match(/x-text="assistantApprovalLabel\(\)"/g) || []).length, 1);
+  state.assistantGate = { tool: 'move_ticket', arg: 'al-6ukh → todo' };
+  assert.deepEqual(vmValue(state.mobileAssistantProposal()), { ticket: 'al-6ukh', status: 'Queued' });
+  state.assistantGate = { tool: 'Bash', arg: 'kontora move al-6ukh todo' };
+  assert.deepEqual(vmValue(state.mobileAssistantProposal()), { ticket: 'al-6ukh', status: 'Queued' });
+  state.assistantGate = { tool: 'Bash', arg: 'kontora move al-6ukh todo && other-command' };
+  assert.equal(state.mobileAssistantProposal().text, state.assistantGate.arg, 'never hide extra arguments in a proposed command');
   assert.match(state.assistantAutonomies().find((a) => a.key === "auto").hint, /asks for deletes and unclassified calls/);
 });
 
@@ -17686,7 +17774,7 @@ test("the tool being called is previewed in both copies and clears with the part
   assert.equal([...html.matchAll(/x-if="assistantPartialTool"/g)].length, 2);
   assert.equal([...html.matchAll(/x-text="assistantPartialTool"/g)].length, 2);
   assert.match(html, /id="assistant-partial-tool"/);
-  assert.match(html, /id="assistant-sheet-partial-tool"/);
+  assert.match(html, /id="assistant-page-partial-tool"/);
 
   const { state, streams } = assistantState();
   state.assistantOpen = true;
@@ -17724,7 +17812,7 @@ test("the pending tool row clears when the message lands in the tape", () => {
 
 test("both assistant row windows can load earlier rows without replacing the shared transcript fragments", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
-  for (const [id, fragment] of [['assistant-thread', 'assistantTranscriptMarkup'], ['assistant-sheet-thread', 'assistantSheetTranscriptMarkup']]) {
+  for (const [id, fragment] of [['assistant-thread', 'assistantTranscriptMarkup'], ['assistant-page-thread', 'assistantPageTranscriptMarkup']]) {
     const host = html.slice(html.indexOf(`id="${id}"`), html.indexOf(`x-html="${fragment}"`));
     assert.match(host, /x-show="assistantView === 'thread'(?: && assistantThreadVisible\(\))?"/);
     assert.match(host, /<button type="button" x-show="(?:assistantThreadVisible\(\) && )?assistantHiddenRows\(\)" @click="assistantLoadEarlier\(\)"/);
@@ -17755,7 +17843,7 @@ test("the text being typed is in both the docked pane and the sheet", () => {
     assert.ok(rows[i] < partial[i] && partial[i] < working[i], "copy " + i + " has the partial out of order");
   }
   assert.match(html, /id="assistant-partial"/);
-  assert.match(html, /id="assistant-sheet-partial"/);
+  assert.match(html, /id="assistant-page-partial"/);
   assert.equal([...html.matchAll(/x-text="assistantPartial"/g)].length, 2);
   assert.equal([...html.matchAll(/x-show="assistantPartialTyping"/g)].length, 2);
 
@@ -17838,7 +17926,7 @@ test("sending scrolls to the bottom whatever the reader was reading", async () =
   assert.equal(scroller.scrollTop, 1000, "the message just typed is on screen");
 });
 
-test("the working row is in both the docked pane and the sheet", () => {
+test("the working row is in both the docked pane and the page", () => {
   const html = indexMarkup();
 
   // A parked write is its own card with its own buttons. Two live states at
@@ -17848,7 +17936,7 @@ test("the working row is in both the docked pane and the sheet", () => {
   // shows an element again, and the sheet's row carries its display inline.
   assert.equal([...html.matchAll(/x-if="assistantStreaming && !assistantGate"/g)].length, 2);
   assert.equal([...html.matchAll(/assistantWorkingLabel\(\)/g)].length, 2);
-  assert.match(html, /id="assistant-sheet-thread"/, "the sheet's thread is named so the autoscroll finds it");
+  assert.match(html, /id="assistant-page-thread"/, "the page's thread is named so the autoscroll finds it");
 });
 
 test("the poll re-arms only while something can still change", () => {
@@ -18294,7 +18382,7 @@ const pendingCreateCases = {
 
 for (const phase of ['config', 'POST']) {
   for (const reply of pendingCreateCases[phase]) {
-    for (const overlay of ['navigation', 'assistant']) {
+    for (const overlay of ['navigation']) {
       for (const closeOverlay of [false, true]) {
         test(`routed New keeps pending ${phase} ${reply.name} across ${overlay}: close=${closeOverlay}`, async () => {
           const { state, ctx } = loadKontoraContext();
@@ -18307,14 +18395,7 @@ for (const phase of ['config', 'POST']) {
           state.configCache = {};
           await state.gotoView('new');
           Object.assign(state.createForm, { title: 'Draft', path: '/repo' });
-          const showOverlay = () => {
-            // The mobile navigation button assigns the sheet directly.
-            if (overlay === 'navigation') state.sheet = { type: 'navigation' };
-            else {
-              state.assistantLoadThreads = async () => {};
-              state.openAssistantSheet();
-            }
-          };
+          const showOverlay = () => { state.sheet = { type: overlay }; };
           if (closeOverlay) showOverlay();
           if (phase === 'config') state.configCache = null;
           ctx.fetch = pending.fetch;
@@ -22125,7 +22206,7 @@ for (const entry of ["startup", "desktop", "mobile", "history"]) {
     } });
     await state.initAssistant();
     if (entry === "desktop") state.toggleAssistant();
-    if (entry === "mobile") { state.isMobile = true; state.openAssistantSheet(); }
+    if (entry === "mobile") { state.isMobile = true; await state.mobileOpenAssistant(); }
     if (entry === "history") { state.assistantOpen = true; state.assistantView = "history"; }
     await state.assistantLoadThreads();
     await flushMicrotasks();
@@ -22201,8 +22282,7 @@ for (const mobile of [false, true]) {
       const ticket = { id: "kon-1", title: "A question", status: "open", body: "" };
       const { state, requests } = companionState({ routes: { "/api/tickets/kon-1": ticket } });
       state.isMobile = mobile;
-      state.currentView = "stats";
-      state.sheet = mobile ? { type: "assistant" } : null;
+      state.currentView = mobile ? "assistant" : "stats";
       state.tickets = [ticket];
       if (alreadySelected) state.selectedTicket = ticket;
       await state.companionOpenTicket(COMPANION_SNAPSHOT.items[0]);
@@ -22221,14 +22301,12 @@ test("inbox links respect dirty Settings without selecting a hidden ticket", asy
   state.settingsConfig.general.branch_prefix = "unsaved";
   state.currentView = "settings";
   state.isMobile = true;
-  state.sheet = { type: "assistant" };
   assert.equal(state.settingsDirty(), true);
   await state.companionOpenTicket(COMPANION_SNAPSHOT.items[0]);
   assert.equal(state.currentView, "settings");
   assert.equal(state.settingsGuard, true);
   assert.deepEqual(vmValue(state.settingsGuardTarget), { view: 'board', ticketId: 'kon-1' });
   assert.equal(state.selectedTicket, null);
-  assert.equal(state.sheet, null, 'the sheet must release focus so the Settings guard is operable');
   assert.equal(state.settingsConfig.general.branch_prefix, "unsaved");
   state.destroy();
 });
@@ -22251,7 +22329,7 @@ test("desktop and mobile reuse the companion inbox, state text, evidence, and mi
     assert.equal(html.split(`x-html="${key}"`).length - 1, 2, key);
   }
   assert.equal(html.split('x-html="companionHeaderMarkup"').length - 1, 1);
-  assert.match(html, /x-html="companionSheetTabsMarkup"/);
+  assert.match(html, /class="mobile-assistant-segments" aria-label="Assistant views"/);
   assert.match(html, /x-html="companionStatusMarkup \+ companionChatHintMarkup"/);
   for (const fragment of [state.companionStatusMarkup, state.companionChatHintMarkup]) {
     assert.ok(fragment && state.companionHeaderMarkup.includes(fragment));
@@ -22266,9 +22344,9 @@ test("desktop and mobile reuse the companion inbox, state text, evidence, and mi
   assert.match(state.companionHeaderMarkup, /x-text="companionEnabled\(\) && companionThread\(\) \? companionName\(\) \+ ' chat' : 'Chat'"/);
   assert.match(state.companionHeaderMarkup, /x-show="companionThread\(\) && assistantStreaming" @click="stopAssistantTurn\(\)"/);
   assert.match(state.companionHeaderMarkup, /x-show="companionEnabled\(\) && companionThread\(\) && !companionSnapshot\?\.ai_available"/);
-  assert.equal(html.split(`x-show="companionEnabled() && assistantView === 'inbox'" x-cloak`).length - 1, 2);
-  assert.match(html, /id="assistant-sheet-thread"[^>]*x-show="assistantView === 'thread'"/);
-  assert.match(fs.readFileSync(htmlPath, 'utf8'), /x-show="assistantThreadVisible\(\)" x-html="assistantSheetTranscriptMarkup"/);
+  assert.equal(html.split(`x-show="companionEnabled() && assistantView === 'inbox'" x-cloak`).length - 1, 1);
+  assert.match(html, /id="assistant-page-thread"[^>]*x-show="assistantView === 'thread'"/);
+  assert.match(fs.readFileSync(htmlPath, 'utf8'), /x-show="assistantThreadVisible\(\)" x-html="assistantPageTranscriptMarkup"/);
   assert.equal(html.split(`x-for="t in assistantVisibleThreads()"`).length - 1, 2);
   assert.match(html, /class="companion-rail-cat" x-show="companionEnabled\(\)" x-cloak/);
   assert.match(state.companionEvidenceMarkup, /x-show="companionEnabled\(\) && companionThread\(\)" x-cloak/);

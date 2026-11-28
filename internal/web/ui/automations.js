@@ -1,4 +1,5 @@
 import { canReturnInteractionFocus } from './dialogs.js';
+import { managementRowClickConsumed, managementRowGesture } from './mobile-management.js';
 import { termState } from './terminal.js';
 
 const automationsFields = ['name', 'prompt', 'path', 'agent', 'model', 'schedule', 'timezone', 'workspace', 'overlap', 'timeout', 'enabled'];
@@ -25,6 +26,7 @@ export function kontoraAutomations() {
     automationsErrors: {},
     automationsFilter: 'all',
     automationsQuery: '',
+    automationsMobileRevealed: null,
     automationsTab: 'runs',
     automationsMenu: false,
     automationsDeleteOpen: false,
@@ -143,6 +145,51 @@ export function kontoraAutomations() {
       }
     },
 
+    automationsMobileCounts() {
+      const enabled = this.automations.filter(row => row.enabled).length;
+      return { all: this.automations.length, enabled, paused: this.automations.length - enabled };
+    },
+    automationsMobileSummary() {
+      if (this.automationsLoading && !this.automations.length) return 'Loading automations…';
+      if (!this.automationsAvailable) return 'Automations unavailable';
+      const count = this.automationsMobileCounts().enabled;
+      const next = this.automations.reduce((earliest, row) => {
+        const at = Date.parse(row.next);
+        return row.enabled && at > 0 && (earliest === null || at < Date.parse(earliest)) ? row.next : earliest;
+      }, null);
+      return count + ' enabled' + (next ? ' · ' + this.automationsMobileNext(next) : '');
+    },
+    automationsMobileNext(next) {
+      if (!(Date.parse(next) > 0)) return 'No next run';
+      return 'Next run ' + this.automationsRelative(next);
+    },
+    automationsMobileSchedule(row) {
+      const label = row.schedule_human?.trim();
+      // For complex schedules the API's human label is the raw expression.
+      return label && label !== row.schedule?.trim().replace(/\s+/g, ' ') ? label : 'View schedule in details';
+    },
+    automationsMobileLast(row) {
+      const run = row.last_run;
+      if (!run) return 'No runs yet';
+      const outcome = this.automationsOutcome(run).replaceAll('_', ' ');
+      const at = this.automationsRunTimestamp(run, true);
+      return outcome.charAt(0).toUpperCase() + outcome.slice(1) + (at ? ' ' + this.automationsRelative(at) : '');
+    },
+    automationsMobileCanRun(row) {
+      return this.automationsAvailable && !this.automationsPending && (!row.running || !!this.automationsRunReceipts[row.id]);
+    },
+    automationsMobileRowGesture(event, row) {
+      managementRowGesture(event, () => {
+        if (!this.isMobile || this.interactionOwner() || this.automationsDetail || this.automationsEditing) return false;
+        this.automationsMobileRevealed = row.id;
+        return true;
+      });
+    },
+    automationsMobileOpenRow(row, event) {
+      if (managementRowClickConsumed(event) || this.interactionOwner()) return;
+      this.automationsMobileRevealed = null;
+      this.automationsSelect(row, true, event.currentTarget);
+    },
     automationsRow() { return this.automations.find(row => row.id === this.automationsSelected) || null; },
     automationsRunningCount() { return this.automations.filter(row => row.running).length; },
     automationsRows() {
@@ -322,6 +369,7 @@ export function kontoraAutomations() {
       this.automationsCreate = null;
       this.automationsDeleteOpen = false;
       this.automationsMenu = false;
+      this.automationsMobileRevealed = null;
       this.automationsCancelPreview();
     },
     async automationsBack(writeRoute = true, list = false) {

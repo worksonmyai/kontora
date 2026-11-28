@@ -44,7 +44,11 @@ type ListItem struct {
 	BaseBranch      string     `json:"base_branch"`
 	// ScheduledAt is the raw scheduled_at frontmatter value, so a listing shows
 	// a malformed hand edit rather than hiding it.
-	ScheduledAt string `json:"scheduled_at,omitempty"`
+	ScheduledAt     string     `json:"scheduled_at,omitempty"`
+	WaitingForInput bool       `json:"waiting_for_input,omitempty"`
+	WaitingSince    *time.Time `json:"waiting_since,omitempty"`
+	WaitingTool     string     `json:"waiting_tool,omitempty"`
+	WaitingQuestion string     `json:"waiting_question,omitempty"`
 	// Ready and Blockers are derived from the whole set, not stored. Ready is
 	// meaningful only for a kontora ticket in todo; Blockers names the
 	// dependency ids that are not closed.
@@ -59,8 +63,9 @@ type ListOpts struct {
 	Path    string
 	// Ready and Blocked select kontora tickets in todo, and are mutually
 	// exclusive.
-	Ready   bool
-	Blocked bool
+	Ready     bool
+	Blocked   bool
+	Attention bool
 	// ShowClosed adds done, cancelled and legacy closed tickets; ShowArchived
 	// adds archived ones.
 	ShowClosed   bool
@@ -73,11 +78,27 @@ type ListOpts struct {
 // makes the listing non-interactive: a filtered board is not the board.
 func (o ListOpts) Filtering() bool {
 	return o.Status != "" || o.Project != "" || o.Path != "" || o.Ready || o.Blocked ||
-		o.Limit > 0 || o.JSON
+		o.Attention || o.Limit > 0 || o.JSON
 }
 
-// Validate rejects the flag combinations that contradict each other.
-func (o ListOpts) Validate() error {
+// Validate uses explicitFlags to detect conflicts even when a flag has its default value.
+func (o ListOpts) Validate(explicitFlags ...string) error {
+	if o.Attention {
+		for _, conflict := range []struct {
+			name   string
+			active bool
+		}{
+			{"status", o.Status != ""},
+			{"ready", o.Ready},
+			{"blocked", o.Blocked},
+			{"closed", o.ShowClosed},
+			{"archived", o.ShowArchived},
+		} {
+			if conflict.active || slices.Contains(explicitFlags, conflict.name) {
+				return fmt.Errorf("--attention and --%s cannot be combined", conflict.name)
+			}
+		}
+	}
 	if o.Ready && o.Blocked {
 		return fmt.Errorf("--ready and --blocked select opposite sets and cannot be combined")
 	}
@@ -145,8 +166,13 @@ func FilterList(items []ListItem, opts ListOpts) Listing {
 	var out []ListItem
 	hiddenClosed := 0
 	for _, it := range items {
-		if hiddenByDefault(ticket.Status(it.Status), opts) {
-			if ticket.Status(it.Status) != ticket.StatusArchived {
+		status := ticket.Status(it.Status)
+		if opts.Attention {
+			if status != ticket.StatusHumanReview && !it.WaitingForInput {
+				continue
+			}
+		} else if hiddenByDefault(status, opts) {
+			if status != ticket.StatusArchived {
 				hiddenClosed++
 			}
 			continue

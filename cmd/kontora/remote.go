@@ -65,9 +65,7 @@ func cmdRelease() {
 	fmt.Fprintln(os.Stdout, receipt.ID)
 }
 
-// printRemoteList renders `kontora ls` in remote mode. It asks for the complete
-// ticket set and then runs the same filter, sort and render path as local mode,
-// so the flags mean the same thing on both sides.
+// printRemoteList fetches all daemon tickets and applies the shared listing filters.
 func printRemoteList(w io.Writer, rc *remote.Client, opts cli.ListOpts) error {
 	tickets, _, err := rc.ListAllTickets()
 	if err != nil {
@@ -112,6 +110,10 @@ func remoteListItem(t web.TicketInfo) cli.ListItem {
 		Branch:          t.Branch,
 		BaseBranch:      t.BaseBranch,
 		ScheduledAt:     t.ScheduledAt,
+		WaitingForInput: t.WaitingForInput,
+		WaitingSince:    t.WaitingSince,
+		WaitingTool:     t.WaitingTool,
+		WaitingQuestion: t.WaitingQuestion,
 		Ready:           t.Ready,
 		Blockers:        t.Blockers,
 	}

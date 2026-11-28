@@ -429,6 +429,7 @@ func cmdLs() {
 	repoPath := fs.String("path", "", "only show tickets for this repository path")
 	ready := fs.Bool("ready", false, "only show todo tickets whose dependencies are all closed")
 	blocked := fs.Bool("blocked", false, "only show todo tickets waiting on a dependency")
+	attention := fs.Bool("attention", false, "show tickets in human_review or with a live question (requires daemon)")
 	limit := fs.Int("limit", 0, "print at most N tickets")
 	asJSON := fs.Bool("json", false, "print JSON instead of a table")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
@@ -442,16 +443,23 @@ func cmdLs() {
 		Path:         *repoPath,
 		Ready:        *ready,
 		Blocked:      *blocked,
+		Attention:    *attention,
 		ShowClosed:   *closed,
 		ShowArchived: *archived,
 		Limit:        *limit,
 		JSON:         *asJSON,
 	}
-	if err := opts.Validate(); err != nil {
+	var explicitFlags []string
+	fs.Visit(func(f *flag.Flag) { explicitFlags = append(explicitFlags, f.Name) })
+	if err := opts.Validate(explicitFlags...); err != nil {
 		log.Fatal(err)
 	}
 
-	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+	rc := remoteClient(*urlFlag, *tokenFlag)
+	if rc == nil && opts.Attention {
+		rc = mustLocalClient(mustLoadStoreConfig(*configPath, *ticketsDir))
+	}
+	if rc != nil {
 		if err := printRemoteList(os.Stdout, rc, opts); err != nil {
 			log.Fatal(err)
 		}

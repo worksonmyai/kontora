@@ -437,24 +437,41 @@ func graphCondition(graph *config.WorkflowGraph, node config.WorkflowNode, s *ti
 	}
 	r := s.LastResult
 	producer, _ := graph.Node(r.NodeID)
-	var equal bool
 	switch node.When.Field {
 	case "verdict":
-		expected, ok := node.When.Equals.(string)
-		if !ok || producer.Type != "agent" || r.Verdict == "" || r.Outcome != "complete" || *r.ExitCode != 0 {
-			return "", "condition requires a successful declared agent verdict"
+		const reason = "condition requires a successful declared agent verdict"
+		if producer.Type != "agent" || r.Verdict == "" || r.Outcome != "complete" || *r.ExitCode != 0 {
+			return "", reason
 		}
-		equal = r.Verdict == expected
+		return compareGraphCondition(r.Verdict, node.When, reason)
 	case "exit_code":
-		expected, ok := node.When.Equals.(int)
-		if !ok || producer.Type != "check" || r.ExitCode == nil {
-			return "", "condition requires a check exit code and integer comparison"
+		const reason = "condition requires a check exit code and integer comparison"
+		if producer.Type != "check" {
+			return "", reason
 		}
-		equal = *r.ExitCode == expected
+		return compareGraphCondition(*r.ExitCode, node.When, reason)
 	default:
 		return "", "unsupported condition field"
 	}
-	if equal {
+}
+
+func compareGraphCondition[T comparable](value T, when *config.WorkflowCondition, invalid string) (string, string) {
+	operator, values := when.Comparison()
+	if len(values) == 0 {
+		return "", invalid
+	}
+	matched := false
+	for _, candidate := range values {
+		expected, ok := candidate.(T)
+		if !ok {
+			return "", invalid
+		}
+		matched = matched || value == expected
+	}
+	if operator == "not_equals" {
+		matched = !matched
+	}
+	if matched {
 		return "true", ""
 	}
 	return "false", ""

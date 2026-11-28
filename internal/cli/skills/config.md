@@ -98,16 +98,29 @@ Graphs declare `version: 2`, `entry`, `nodes`, and `edges`. Each edge uses
 `from: {node: NODE_ID, port: PORT}` and `to: NODE_ID`. Node types are `agent`,
 `check`, `condition`, `loop`, `wait`, and `end`. Execution is sequential and follows
 edges, never the YAML node list order. Distinct agent nodes can share one stage
-template. A condition compares the latest executable verdict or check exit code;
-a loop's positive `max` bounds its repeat transitions for the whole execution.
-Every port needs one destination; every cycle must cross `loop.repeat` and
-include an executable. Graph aliases, merge keys and unknown fields are refused.
+template. A loop's positive `max` bounds its repeat transitions for the whole
+execution. Every port needs one destination; every cycle must cross `loop.repeat`
+and include an executable. Graph aliases, merge keys and unknown fields are refused.
+
+A condition reads only the latest executable result on the current path.
+It never falls back to an earlier result. A missing, stale, or incompatible
+result pauses execution. `verdict` requires a successful agent result with a
+declared verdict. `exit_code` requires a check result and integer comparison values.
+
+In each `when`, give exactly one of `equals`, `not_equals`, or `in` a non-null
+value. A `null` value counts as omitted. Use nonblank strings for `verdict`
+comparisons. For `not_equals` and `in`, those strings cannot contain NUL characters.
+An `in` list must be nonempty and cannot contain duplicates.
+
 See `kontora skills show pipelines 'Workflow graphs'` for complete YAML and
 node fields. Do not use a legacy stage-list editor to author graphs.
 
-Graph agent nodes require version 2 invocation-bound results, or version 3 with
-`wake`, including a declared verdict on completion when configured. The ticket's `stage` is a node ID; daemon-owned
-`graph_state` holds the execution, revision, fingerprint, visits and loop counts.
+Graph agent nodes require invocation-bound version 2 results, or version 3 with
+`wake`. If an agent node declares `verdicts`, a complete result must include one
+of the declared verdicts.
+
+The ticket's `stage` is a node ID. The daemon stores the execution, revision,
+fingerprint, visits and loop counts in `graph_state`.
 Changed effective definitions pause rather than silently changing live traversal.
 `retry` preserves executable identity and loop counts and is refused at `end`.
 `skip` and `set-stage` are refused for graphs.
@@ -119,7 +132,8 @@ termination for inspected state. Inspect processes, journals, results and
 worktree first; recovery does not start work. Both controls require the daemon.
 Graph annotations and Plannotator rework are deferred and refused.
 
-See `kontora skills show config Compatibility` before enabling graphs.
+See `kontora skills show config Compatibility` before enabling graphs or adding
+`not_equals` or `in` to a graph.
 
 ## Durable waits
 
@@ -639,6 +653,8 @@ naming each ignored field. A file that fails to load leaves the running configur
   `epic_child_pipeline`. Older strict-YAML loaders reject the key.
 - Epic activation: See `kontora skills show tickets Compatibility` for mixed versions.
 - Workflow graphs and durable waits: See `kontora skills show pipelines Compatibility`.
+- Graph conditions: Upgrade the daemon and every CLI that reads the config before
+  adding `not_equals` or `in`, even to an existing graph. Older versions accept only `equals`.
 - Custom `running_status`: Upgrade every CLI and daemon sharing the store before enabling the setting.
   Older config loaders reject the key. Older clients treat custom-active tickets as parked work.
   Existing parked tickets are not activated or migrated.

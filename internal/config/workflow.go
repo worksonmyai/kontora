@@ -125,8 +125,24 @@ func (g *WorkflowGraph) UsesPreviousHandoff() bool {
 }
 
 type WorkflowCondition struct {
-	Field  string `yaml:"field"`
-	Equals any    `yaml:"equals"`
+	Field     string `yaml:"field"`
+	Equals    any    `yaml:"equals,omitempty"`
+	NotEquals any    `yaml:"not_equals,omitempty" json:",omitempty"`
+	In        []any  `yaml:"in,omitempty" json:",omitempty"`
+}
+
+// Comparison returns an empty operator unless exactly one is set.
+func (w WorkflowCondition) Comparison() (string, []any) {
+	switch {
+	case w.Equals != nil && w.NotEquals == nil && w.In == nil:
+		return "equals", []any{w.Equals}
+	case w.NotEquals != nil && w.Equals == nil && w.In == nil:
+		return "not_equals", []any{w.NotEquals}
+	case w.In != nil && w.Equals == nil && w.NotEquals == nil:
+		return "in", w.In
+	default:
+		return "", nil
+	}
 }
 
 type WorkflowEdge struct {
@@ -604,17 +620,55 @@ func validateWorkflowCondition(when *WorkflowCondition) error {
 	if when == nil {
 		return fmt.Errorf("when is required")
 	}
-	switch when.Field {
-	case "verdict":
-		if value, ok := when.Equals.(string); !ok || strings.TrimSpace(value) == "" {
-			return fmt.Errorf("verdict equals must be a nonempty string")
-		}
-	case "exit_code":
-		if _, ok := when.Equals.(int); !ok {
-			return fmt.Errorf("exit_code equals must be an integer")
-		}
-	default:
+	if when.Field != "verdict" && when.Field != "exit_code" {
 		return fmt.Errorf("unknown condition field %q", when.Field)
+	}
+	operator, values := when.Comparison()
+	if operator == "" {
+		return fmt.Errorf("when must set exactly one of equals, not_equals, or in")
+	}
+	if len(values) == 0 {
+		return fmt.Errorf("in must not be empty")
+	}
+	var seen map[any]bool
+	if operator == "in" {
+		seen = make(map[any]bool, len(values))
+	}
+	for _, value := range values {
+		switch when.Field {
+		case "verdict":
+			verdict, ok := value.(string)
+			if !ok || strings.TrimSpace(verdict) == "" {
+				switch operator {
+				case "in":
+					return fmt.Errorf("verdict in must contain nonblank strings")
+				case "not_equals":
+					return fmt.Errorf("verdict not_equals must be a nonblank string")
+				default:
+					return fmt.Errorf("verdict equals must be a nonempty string")
+				}
+			}
+			// Preserve equality configs with NUL operands, which never match a valid verdict.
+			if operator != "equals" && strings.ContainsRune(verdict, '\x00') {
+				return fmt.Errorf("verdict %s contains NUL", operator)
+			}
+		case "exit_code":
+			if _, ok := value.(int); !ok {
+				if operator == "in" {
+					return fmt.Errorf("exit_code in must contain integers")
+				}
+				return fmt.Errorf("exit_code %s must be an integer", operator)
+			}
+		}
+		if seen != nil {
+			if seen[value] {
+				if verdict, ok := value.(string); ok {
+					return fmt.Errorf("verdict in contains duplicate value %q", verdict)
+				}
+				return fmt.Errorf("exit_code in contains duplicate value %d", value)
+			}
+			seen[value] = true
+		}
 	}
 	return nil
 }

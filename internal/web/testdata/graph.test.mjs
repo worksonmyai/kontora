@@ -76,6 +76,27 @@ for (const scenario of [
   });
 }
 
+for (const [when, label] of [
+  [{ field: 'exit_code', equals: 0 }, 'exit_code = 0'],
+  [{ field: 'exit_code', not_equals: 0 }, 'exit_code != 0'],
+  [{ field: 'exit_code', in: [1, 2] }, 'exit_code in [1, 2]'],
+  [{ field: 'verdict', equals: 'needs changes' }, 'verdict = "needs changes"'],
+  [{ field: 'verdict', not_equals: 'say "yes"' }, 'verdict != "say \\"yes\\""'],
+  [{ field: 'verdict', in: ['red, blue'] }, 'verdict in ["red, blue"]'],
+  [{ field: 'verdict', in: ['red', 'blue'] }, 'verdict in ["red", "blue"]'],
+]) {
+  test(`workflow graph and definition show ${label}`, () => {
+    const t = graphTicket();
+    t.graph_definition = { entry: 'choose', nodes: [{ id: 'choose', type: 'condition', when }], edges: [] };
+    t.graph_execution = { current_node: 'choose' };
+    const s = state(t);
+    const [node] = s.workflowGraph(t).nodes;
+    assert.equal(node.sub, label);
+    assert.deepEqual(node.config, [['when', label]]);
+    assert.equal(s.workflowConfigText(t.graph_definition), `Entry: choose\nchoose [condition] · ${label}`);
+  });
+}
+
 test('graph output navigation separates visits from retries and preserves artifact run indexes', () => {
   const s = state();
   const rows = s.outputRuns();
@@ -222,22 +243,51 @@ const graphYAML = `pipelines:
       - {id: work, type: agent, stage: implement, agent: claude}
       - {id: again, type: loop, max: 2}
       - {id: passed, type: condition, when: {field: exit_code, equals: 0}}
+      - {id: failed, type: condition, when: {field: exit_code, not_equals: 0}}
+      - {id: repairable, type: condition, when: {field: exit_code, in: [010, 10]}}
     edges:
       - {from: {node: again, port: repeat}, to: work}
 `;
 
+const settingsGraphDefinition = {
+  entry: 'work',
+  nodes: [
+    { id: 'passed', type: 'condition', when: { field: 'exit_code', equals: 0 } },
+    { id: 'failed', type: 'condition', when: { field: 'exit_code', not_equals: 0 } },
+    { id: 'repairable', type: 'condition', when: { field: 'exit_code', in: [8, 10] } },
+  ],
+  edges: [{ from: { node: 'again', port: 'repeat' }, to: 'work' }],
+};
+const settingsGraphConfig = { pipelines: [{ name: 'repair', graph_definition: settingsGraphDefinition }] };
+
+for (const operand of ['in: [010, 10]', 'equals: 0, in: [1]', 'in: [{toString: 0}]']) {
+  test(`settings shows the active graph when disk has ${operand}`, async () => {
+    const raw = settingsFixture + graphYAML.replace('in: [010, 10]', operand);
+    const s = await settingsState(raw, { state: { configCache: settingsGraphConfig } });
+    assert.match(s.settingsPipelineGraphText('repair'), /^Active graph\n/);
+    assert.match(s.settingsPipelineGraphText('repair'), /exit_code in \[8, 10\]/);
+    s.configCache = { pipelines: [] };
+    assert.match(s.settingsPipelineGraphText('repair'), /No active graph/);
+  });
+}
+
 test('settings graph is read-only topology and unrelated saves preserve its YAML', async () => {
-  const raw = settingsFixture + graphYAML;
+  const raw = settingsFixture + graphYAML.replace('010', '8');
   let saved;
-  const s = await settingsState(raw, { fetch: async (_url, options) => {
-    if (!options) return { ok: true, json: async () => ({ content: raw }) };
-    saved = JSON.parse(options.body).content;
-    return { status: 204 };
-  } });
+  const s = await settingsState(raw, {
+    state: { configCache: settingsGraphConfig },
+    fetch: async (_url, options) => {
+      if (!options) return { ok: true, json: async () => ({ content: raw }) };
+      saved = JSON.parse(options.body).content;
+      return { status: 204 };
+    },
+  });
   assert.equal(s.settingsPipelineSteps('repair').length, 0);
   assert.equal(s.settingsPipelineGraph('repair').entry, 'work');
   assert.match(s.settingsPipelineGraphText('repair'), /again.repeat -> work/);
   assert.match(s.settingsPipelineGraphText('repair'), /exit_code = 0/);
+  assert.match(s.settingsPipelineGraphText('repair'), /exit_code != 0/);
+  assert.match(s.settingsPipelineGraphText('repair'), /exit_code in \[8, 10\]/);
   assert.deepEqual(Array.from(s.settingsStagePipelines('implement')), ['repair']);
   assert.deepEqual(Array.from(s.settingsAgentStages('claude')), ['implement']);
   assert.doesNotThrow(() => s.settingsSectionSummary('pipelines'));

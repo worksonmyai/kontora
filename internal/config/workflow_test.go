@@ -89,6 +89,14 @@ func TestWorkflowHandoffFingerprintEncoding(t *testing.T) {
 	require.ErrorContains(t, (&Config{}).validateWorkflowNode(WorkflowNode{Type: "agent", Handoff: "all"}), "handoff must be previous")
 }
 
+func TestWorkflowConditionFingerprintEncoding(t *testing.T) {
+	const before = `{"ID":"check-code","Type":"condition","Stage":"","Agent":"","Verdicts":null,"Command":"","Timeout":{"Duration":0},"When":{"Field":"exit_code","Equals":0},"Max":0,"Status":""}`
+	node := WorkflowNode{ID: "check-code", Type: "condition", When: &WorkflowCondition{Field: "exit_code", Equals: 0}}
+	data, err := json.Marshal(node)
+	require.NoError(t, err)
+	require.Equal(t, before, string(data))
+}
+
 func TestWorkflowValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name, old, replacement, want string
@@ -132,8 +140,25 @@ func TestWorkflowValidation(t *testing.T) {
 		{"bad timeout", "timeout: 1m", "timeout: tomorrow", "invalid duration"},
 		{"missing condition", ", when: {field: verdict, equals: approve}", "", "when is required"},
 		{"unknown condition", "field: verdict", "field: summary", "unknown condition field"},
-		{"missing equals", ", equals: approve", "", "verdict equals"},
-		{"null equals", "equals: approve", "equals: null", "verdict equals"},
+		{"missing operator", ", equals: approve", "", `node "approved": when must set exactly one`},
+		{"null equals", "equals: approve", "equals: null", "when must set exactly one"},
+		{"null in", "equals: approve", "in: null", "when must set exactly one"},
+		{"null in with equals", "equals: approve", "equals: approve, in: null", ""},
+		{"legacy NUL in equals", "equals: approve", `equals: "approve\0"`, ""},
+		{"equals with in", "field: verdict, equals: approve", "field: exit_code, equals: 0, in: [1]", `node "approved": when must set exactly one`},
+		{"equals with not_equals", "equals: approve", "equals: approve, not_equals: changes", "when must set exactly one"},
+		{"not_equals with in", "equals: approve", "not_equals: approve, in: [changes]", "when must set exactly one"},
+		{"empty in", "equals: approve", "in: []", "in must not be empty"},
+		{"duplicate in", "equals: approve", `in: ["ready\nretry", "ready\nretry"]`, `verdict in contains duplicate value "ready\nretry"`},
+		{"duplicate exit code in", "field: verdict, equals: approve", `field: exit_code, in: [8, 010]`, "exit_code in contains duplicate value 8"},
+		{"typed exit code in", "field: verdict, equals: approve", `field: exit_code, in: [1, "2"]`, "exit_code in must contain integers"},
+		{"null in member", "equals: approve", "in: [approve, null]", "verdict in must contain nonblank strings"},
+		{"blank verdict in", "equals: approve", "in: [approve, ' ']", "verdict in must contain nonblank strings"},
+		{"NUL verdict in", "equals: approve", `in: ["approve\0"]`, "contains NUL"},
+		{"NUL verdict not_equals", "equals: approve", `not_equals: "approve\0"`, "contains NUL"},
+		{"typed verdict not_equals", "equals: approve", "not_equals: 0", "verdict not_equals must be a nonblank string"},
+		{"valid verdict not_equals", "equals: approve", "not_equals: approve", ""},
+		{"valid exit code in", "field: verdict, equals: approve", "field: exit_code, in: [0, 2]", ""},
 		{"typed verdict", "equals: approve", "equals: true", "verdict equals"},
 		{"typed exit code", "field: verdict, equals: approve", "field: exit_code, equals: '0'", "exit_code equals"},
 		{"float exit code", "field: verdict, equals: approve", "field: exit_code, equals: 0.0", "exit_code equals"},

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { buildWorkflowGraph } from '../ui/workflow_graph.js';
+import { buildWorkflowGraph, conditionLabel } from '../ui/workflow_graph.js';
 import * as yaml from '../static/vendor/yaml@2.8.1/yaml.mjs';
 
 export const settingsFixture = `# Preserve this comment
@@ -62,7 +62,7 @@ export async function settingsState(text = settingsFixture, globals = {}) {
     .replace(/^import .*;\n/gm, '').replace('export function kontoraSettings', 'function kontoraSettings');
   const context = vm.createContext({ console, URLSearchParams, setTimeout, clearTimeout,
     requestAnimationFrame: fn => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout,
-    clockHM: () => '12:00', buildWorkflowGraph, ...globals });
+    clockHM: () => '12:00', buildWorkflowGraph, conditionLabel, ...globals });
   const notifySource = fs.readFileSync(new URL('../ui/notify.js', import.meta.url), 'utf8')
     .replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   const ticketsSource = fs.readFileSync(new URL('../ui/tickets.js', import.meta.url), 'utf8')

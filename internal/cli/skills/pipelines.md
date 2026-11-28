@@ -186,14 +186,22 @@ are `complete`/`failed`; check ports are `pass`/`fail`; condition ports are
 and select `done`, `human_review`, `paused`, or a declared custom parked status.
 Checks require a nonempty command and positive timeout.
 
-A condition compares the most recent executable result on the current path.
-Use `when: {field: exit_code, equals: 0}` for a check, or
-`when: {field: verdict, equals: approved}` for a successful agent result.
-Agent nodes can declare `verdicts: [approved, changes_requested]`; their complete
-version 2 results (version 3 with `wake`) must include a declared verdict. Consecutive conditions read
-the same result until another executable replaces it. Missing or incompatible
-results pause. Review requesting changes is complete with a verdict, not a
-runner failure. Blocked or malformed results pause the same visit.
+A condition reads only the latest executable result on the current path.
+It never falls back to an earlier result. Consecutive conditions read the same
+result until another executable node replaces it. A missing, stale, or
+incompatible result pauses execution.
+
+In each `when`, give exactly one of `equals`, `not_equals`, or `in` a non-null
+value. A `null` value counts as omitted. For example:
+
+- `when: {field: exit_code, equals: 0}` matches exit code 0.
+- `when: {field: exit_code, in: [1, 2]}` matches either exit code.
+- `when: {field: verdict, not_equals: approved}` matches verdicts other than `approved`.
+
+`exit_code` requires a check result and integer comparison values. `verdict`
+requires a successful agent result with a declared verdict. Use nonblank strings
+for `verdict` comparisons. For `not_equals` and `in`, those strings cannot
+contain NUL characters. An `in` list must be nonempty and cannot contain duplicates.
 
 IDs use lowercase letters, digits, `_` and `-`. Reserved IDs are `default`,
 `annotation`, `rework`, and names ending in `-annotation`. Distinct agent node IDs
@@ -206,9 +214,14 @@ refused. Legacy policies and `running_status` are not graph-node fields.
 The ticket's `stage` is the node ID. `graph_state` holds execution identity,
 revision, fingerprint, visit identity, loop counts, last result and transition
 trace. Changed effective definitions pause an existing execution. Do not edit
-or clear graph state to bypass recovery. Graph agent nodes require version 2
-results, or version 3 with `wake`, even outside epic supervision; checks use observed exit codes.
-Timeout, interruption, provider/infrastructure errors, and uncertain termination
+or clear graph state to bypass recovery.
+
+Graph agent nodes require version 2 results, or version 3 with `wake`, even
+outside epic supervision. If an agent node declares `verdicts`, a complete
+result must include one of the declared verdicts. A review that requests changes
+completes with a verdict and does not count as a runner failure. Checks use
+observed exit codes. Blocked or malformed results pause the same visit.
+Timeout, interruption, provider or infrastructure errors, and uncertain termination
 pause rather than taking ordinary failure edges.
 
 Graph controls are listed below. Restart and recovery require a daemon.
@@ -236,7 +249,8 @@ Graph annotations and Plannotator rework are deferred and refused; epic
 supervisors cannot use graphs. Recovery does not promise exactly-once shell or
 hook effects, host-power-loss durability, or arbitrary detached-process containment.
 Graph participation grants no commit or publication authority.
-See `kontora skills show pipelines Compatibility` before enabling graphs.
+See `kontora skills show pipelines Compatibility` before enabling graphs or
+adding `not_equals` or `in` to a graph.
 
 ## Starter graph and offline simulation
 
@@ -554,6 +568,8 @@ or prove reported completion. See `kontora skills show pipelines Compatibility` 
 ## Compatibility
 
 - Workflow graphs: Upgrade all clients and daemons sharing config or tickets together before enabling graphs.
+- Graph conditions: Upgrade the daemon and every CLI that reads the config before
+  adding `not_equals` or `in`, even to an existing graph. Older versions accept only `equals`.
 - Durable waits: Upgrade all sharing clients and daemons before wait configuration, result v3 or graph-state v2.
   Fingerprints stay unchanged for workflows without waits.
   Version 1 graph state, version 1 and 2 results, and existing recovery contracts remain compatible.

@@ -222,12 +222,12 @@ func PreflightGraph(graph *config.WorkflowGraph, limit int) GraphPreflightResult
 	if len(queue) == 0 {
 		return result
 	}
-	codes := representativeCheckCodes(graph)
+	codesByCheck := representativeCheckCodes(graph)
 	for len(queue) > 0 {
 		current := queue[0]
 		queue[0] = cursor{}
 		queue = queue[1:]
-		for _, event := range preflightEvents(current.advance, codes) {
+		for _, event := range preflightEvents(current.advance, codesByCheck[current.advance.Stage]) {
 			if result.Explored >= limit {
 				result.Inconclusive = true
 				return result
@@ -270,26 +270,64 @@ func preflightCursorKey(a GraphAdvance) string {
 	return key.String()
 }
 
-// Zero takes the pass port. Each in-range equality needs its own value, and
-// all other nonzero values are equivalent for the available comparisons.
-func representativeCheckCodes(graph *config.WorkflowGraph) []int {
-	var compared [256]bool
+func representativeCheckCodes(graph *config.WorkflowGraph) map[string][]int {
+	nodes := make(map[string]config.WorkflowNode, len(graph.Nodes))
 	for _, node := range graph.Nodes {
-		if node.Type == "condition" && node.When != nil && node.When.Field == "exit_code" {
-			if code, ok := node.When.Equals.(int); ok && code > 0 && code < len(compared) {
-				compared[code] = true
+		nodes[node.ID] = node
+	}
+	targets := make(map[string][]string)
+	for _, edge := range graph.Edges {
+		targets[edge.From.Node] = append(targets[edge.From.Node], edge.To)
+	}
+	codesByCheck := make(map[string][]int)
+	for _, check := range graph.Nodes {
+		if check.Type != "check" {
+			continue
+		}
+		var compared [256]bool
+		seen := make(map[string]bool)
+		var visit func(string)
+		visit = func(id string) {
+			if seen[id] {
+				return
+			}
+			seen[id] = true
+			node := nodes[id]
+			switch node.Type {
+			case "condition":
+				if node.When != nil && node.When.Field == "exit_code" {
+					_, values := node.When.Comparison()
+					for _, value := range values {
+						if code, ok := value.(int); ok && code > 0 && code < len(compared) {
+							compared[code] = true
+						}
+					}
+				}
+			case "loop", "wait":
+			default:
+				return // Stop before another executable replaces the result.
+			}
+			// Follow every control branch regardless of condition values or loop counts.
+			for _, next := range targets[id] {
+				visit(next)
 			}
 		}
-	}
-	codes := []int{0}
-	other := false
-	for code := 1; code < len(compared); code++ {
-		if compared[code] || !other {
-			codes = append(codes, code)
-			other = other || !compared[code]
+		for _, next := range targets[check.ID] {
+			visit(next)
 		}
+
+		// Zero takes the pass port. Unlisted nonzero codes take the same branches.
+		codes := []int{0}
+		other := false
+		for code := 1; code < len(compared); code++ {
+			if compared[code] || !other {
+				codes = append(codes, code)
+				other = other || !compared[code]
+			}
+		}
+		codesByCheck[check.ID] = codes
 	}
-	return codes
+	return codesByCheck
 }
 
 func preflightEvents(a GraphAdvance, codes []int) []GraphScenarioEvent {

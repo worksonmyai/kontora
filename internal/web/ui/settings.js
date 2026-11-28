@@ -1264,11 +1264,10 @@ export function kontoraSettings() {
     },
 
     settingsPipelineGraphText(name) {
-      const graph = this.settingsPipelineGraph(name);
-      if (!graph) return '';
-      return ['entry: ' + graph.entry,
-        ...(graph.nodes || []).map(n => n.id + ' [' + n.type + ']' + (n.stage ? ' · template ' + n.stage : '') + (n.agent ? ' · ' + n.agent : '') + (n.command ? ' · ' + n.command : '') + (n.when ? ' · ' + n.when.field + ' = ' + (typeof n.when.equals === 'bigint' ? String(n.when.equals) : JSON.stringify(n.when.equals)) : '') + (n.type === 'loop' ? ' · max ' + n.max : '') + (n.mode ? ' · mode ' + n.mode : '') + (n.environment ? ' · environment ' + n.environment : '') + (n.timeout ? ' · timeout ' + n.timeout : '') + (n.wake ? ' · wake max ' + n.wake.max + ' · check timeout ' + n.wake.check_timeout : '') + (n.status ? ' · ' + n.status : '')),
-        ...(graph.edges || []).map(e => e.from.node + '.' + e.from.port + ' -> ' + e.to)].join('\n');
+      if (!this.settingsPipelineGraph(name)) return '';
+      // The disk YAML can differ from the graph the daemon accepted.
+      const graph = this.configCache?.pipelines?.find(p => p.name === name)?.graph_definition;
+      return graph ? 'Active graph\n' + this.workflowConfigText(graph) : 'No active graph for this pipeline.';
     },
 
     settingsPipelineEnds(name) {

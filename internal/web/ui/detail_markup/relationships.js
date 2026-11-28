@@ -1,33 +1,57 @@
-// Relationships stay readable without entity tooltips. Navigation remains in relations.js.
+const CHIP = `<button type="button" class="detail-chip" :disabled="!relationKnown(ref) || !!ref.missing"
+  :data-tip-t="relationKnown(ref) && !ref.missing ? (ref.title || ref.id) : 'Couldn’t resolve this ticket. Check the ID and configured ticket folders.'" @click="openTicketRef(ref)">
+  <span x-show="relationKnown(ref) && !ref.missing" class="w-1.5 h-1.5 rounded-full shrink-0" :class="relationDotClass(ref)" aria-hidden="true"></span>
+  <span x-text="relationKnown(ref) && !ref.missing ? ref.id : ref.id + ' · unresolved'"></span>
+</button>`;
+
+// Shared by the desktop and phone ticket views.
 export const DETAIL_RELATIONSHIPS = `
-<section class="detail-relationships detail-shared" data-detail-relationships aria-label="Relationships">
-  <p x-show="chainError" role="status" class="text-xs text-warn mb-2" x-text="chainError"></p>
+<section class="detail-relationships detail-shared flex flex-col gap-2.5" data-detail-relationships aria-label="Depends on">
+  <template x-if="isMobile && selectedTicket?.parent">
+    <div class="detail-chip-row" aria-label="Parent">
+      <span class="side-label mr-1">Parent</span>
+      <div x-data="{ get ref() { return selectedTicket.parent } }">${CHIP}</div>
+    </div>
+  </template>
+  <p x-show="chainError" role="status" class="text-xs text-warn" x-text="chainError"></p>
   <template x-if="chainVerdict() === 'cycle'"><div role="alert" class="detail-blocker text-err"><strong>Dependency cycle</strong><span class="break-all" x-text="(chain?.cycle || []).join(' → ')"></span></div></template>
-  <template x-if="chainHolder() && chainHolder().direction === 'upstream'"><div class="detail-blocker">
-    <strong>Blocked by</strong>
-    <button type="button" class="detail-reference" :disabled="!relationKnown(chainHolder()) || !!chainHolder().missing" @click="openTicketRef(chainHolder())">
-      <span x-text="chainHolder().title || chainHolder().id"></span><span class="detail-reference-meta"><span x-text="chainHolder().id"></span><span x-text="chainHolder().missing ? 'Missing reference' : paletteStatusLabel(chainHolder().status)"></span></span>
-    </button>
-    <button type="button" x-show="ticketCanControl(selectedTicket) && chainResumeMove()" :disabled="lifecycleBusy(chainHolder())" @click="resumeChainHolder()" class="text-xs text-accent" x-text="chainResumeMove()?.label"></button>
-  </div></template>
-  <template x-for="row in relationRows()" :key="row.key"><section class="detail-relation-group">
-    <h3 class="side-label" x-text="({ parent: 'Parent', deps: 'Dependencies', blocks: 'Dependents', links: 'Related tickets' })[row.key] || row.label"></h3>
-    <div class="flex flex-col gap-1"><template x-for="ref in row.refs" :key="ref.id"><button type="button" class="detail-reference" :disabled="!relationKnown(ref) || !!ref.missing" @click="openTicketRef(ref)">
-      <span x-text="ref.title || ref.id"></span><span class="detail-reference-meta"><span class="font-mono" x-text="ref.id"></span><span :class="relationHueClass(ref)" x-text="ref.missing || !relationKnown(ref) ? 'Missing reference' : paletteStatusLabel(ref.status)"></span></span>
-    </button></template></div>
-  </section></template>
+  <template x-if="dependsOn().total || dependsOn().holder">
+    <div class="flex items-baseline gap-2.5">
+      <h2 class="side-label">Depends on</h2>
+      <span x-show="dependsOn().total" class="font-mono text-[10.5px] text-tx-log" x-text="dependsOn().done + ' of ' + dependsOn().total + ' done'"></span>
+    </div>
+  </template>
+  <template x-if="dependsOn().holder">
+    <div class="depends-blocker" :class="dependsOn().holder.missing ? 'is-missing' : ''">
+      <span class="depends-blocker-label">Waits for</span>
+      <button type="button" class="depends-blocker-ref" :disabled="!!dependsOn().holder.missing || !relationKnown(dependsOn().holder)" @click="openTicketRef(dependsOn().holder)">
+        <span class="depends-blocker-title" x-text="dependsOn().holder.title || dependsOn().holder.id"></span>
+        <span class="depends-blocker-meta">
+          <span class="text-tx-3" x-text="dependsOn().holder.id"></span>
+          <span :class="relationHueClass(dependsOn().holder)" x-text="dependsOn().holder.missing ? 'unresolved' : statusLabel(dependsOn().holder.status)"></span>
+        </span>
+      </button>
+      <button type="button" x-show="ticketCanControl(selectedTicket) && chainResumeMove()" :disabled="lifecycleBusy(dependsOn().holder)" @click="resumeChainHolder()" class="btn-outline depends-blocker-run">
+        <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 4 20 12 6 20"/></svg>
+        <span x-text="chainResumeMove()?.label"></span>
+      </button>
+    </div>
+  </template>
+  <div x-show="dependsOn().others.length" class="detail-chip-row">
+    <template x-for="ref in dependsOn().others" :key="ticketKey(ref)">${CHIP}</template>
+  </div>
+  <div x-show="relatedRefs().length" class="detail-chip-row">
+    <span class="side-label mr-1">Related</span>
+    <template x-for="ref in relatedRefs()" :key="ticketKey(ref)">${CHIP}</template>
+  </div>
+  <div x-show="(selectedTicket?.blocks || []).length" class="detail-chip-row">
+    <span class="side-label mr-1">Unblocks</span>
+    <template x-for="ref in selectedTicket?.blocks || []" :key="ticketKey(ref)">${CHIP}</template>
+  </div>
   <template x-if="(selectedTicket?.children || []).length"><section class="detail-relation-group">
     <div class="flex gap-3 items-center"><h3 class="side-label">Children</h3><span class="text-xs text-tx-3" x-text="childRollup().done + ' of ' + childRollup().total + ' done'"></span></div>
     <div class="flex flex-col gap-1"><template x-for="c in childRows()" :key="c.id"><button type="button" class="detail-reference" :disabled="!relationKnown(c) || !!c.missing" @click="openTicketRef(c)">
       <span x-text="c.title || c.id"></span><span class="detail-reference-meta"><span class="font-mono" x-text="c.id"></span><span :class="relationHueClass(c)" x-text="c.missing || !relationKnown(c) ? 'Missing reference' : paletteStatusLabel(c.status)"></span><span x-text="childStageLine(c)"></span><span x-text="childElapsed(c)"></span></span>
     </button></template><button type="button" x-show="childrenHidden() > 0" @click="childrenExpanded = true" class="text-xs text-accent text-left" x-text="'Show ' + childrenHidden() + ' more children'"></button></div>
   </section></template>
-  <template x-if="chain && chainVerdict() !== 'cycle' && chainSummary().total > 1"><details class="detail-disclosure mt-3">
-    <summary><span>Dependency chain</span> <span class="text-tx-3" x-text="chainSummary().text"></span></summary>
-    <p class="text-xs text-tx-3 my-2" x-text="[chainSummary().place, chainSummary().state, chainSummary().releases].filter(Boolean).join(' · ')"></p>
-    <div class="flex flex-col gap-1"><template x-for="row in chainRows()" :key="row.id"><button type="button" class="detail-reference" :class="row.is_self ? 'bg-accent/[.09]' : ''" :disabled="row.is_self || row.missing || !relationKnown(row)" @click="openTicketRef(row)">
-      <span x-text="row.title || row.id"></span><span class="detail-reference-meta"><span class="font-mono" x-text="row.id"></span><span :class="relationHueClass(row)" x-text="row.missing ? 'Missing reference' : paletteStatusLabel(row.status)"></span><span x-text="row.holds_chain ? 'Holds the chain' : row.meta"></span></span>
-    </button></template></div>
-    <p x-show="chainSummary().total > (chain.nodes || []).length" class="text-xs text-tx-3 mt-2" x-text="(chainSummary().total - (chain.nodes || []).length) + ' more not shown'"></p>
-  </details></template>
 </section>`;

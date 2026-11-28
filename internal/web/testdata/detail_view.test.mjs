@@ -167,6 +167,44 @@ function integratedApp() {
   };
 }
 
+for (const [label, mobile, kind, saved, expected, explicit] of [
+  ['fresh phone ticket', true, 'task', null, 'ticket'],
+  ['phone ticket with saved Notes', true, 'task', 'notes', 'notes'],
+  ['phone ticket with saved Terminal', true, 'task', 'terminal', 'terminal'],
+  ['phone ticket with Notes chosen during hydration', true, 'task', 'terminal', 'notes', 'notes'],
+  ['desktop ticket', false, 'task', null, 'terminal'],
+  ['phone supervisor', true, 'epic', null, 'terminal'],
+]) test(`running ${label} opens ${expected} without an early Terminal attachment`, async () => {
+  const { state } = integratedApp();
+  const ticket = { id: 'kon-running', kind, status: 'in_progress' };
+  let hydrate, terminals = 0;
+  Object.assign(state, {
+    isMobile: mobile, _navigationSeq: 0, _editorSaves: {}, tickets: [],
+    closeAgentPicker() {}, flushEditSave() {}, noteResetDrafts() {}, _pushRecentTicket() {},
+    fetchTicketCost() {}, fetchChain() {}, _touchTicket() {}, writeHash() {},
+    mobileAcceptDetail() {}, syncDetailCoverage() {},
+    canCompareChanges: () => false, epicIsAgent: () => kind === 'epic',
+    openTerminal() { terminals++; },
+    ticketRead: run => run(new AbortController().signal),
+    readTicketJSON: () => new Promise(resolve => { hydrate = resolve; }),
+  });
+  if (saved) {
+    state.selectedTicket = ticket;
+    state.detailTab = saved;
+    state.rememberDetailView();
+  }
+  state.selectedTicket = null;
+  state.detailTab = 'terminal'; // The pane that was showing on a previous subject.
+  const selection = state.selectTicket(ticket);
+  if (mobile && kind !== 'epic') assert.equal(state.detailTab, 'ticket');
+  if (explicit) state.mobileSwitchTab(explicit);
+  assert.equal(terminals, 0);
+  hydrate(ticket);
+  await selection;
+  assert.equal(state.detailTab, expected);
+  assert.equal(terminals, expected === 'terminal' ? 1 : 0);
+});
+
 for (const route of ['reopen', 'resize']) {
   for (const mode of ['activity', 'diff', 'logs', 'terminal', 'notes', 'ticket']) {
     test(`secondary phone ${mode} uses a supported desktop pane on ${route}`, async () => {

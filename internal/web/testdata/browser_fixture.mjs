@@ -213,7 +213,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
     agents: ['fixture-agent'], agent_infos: [{ name: 'fixture-agent', binary: 'pi' }],
     projects: [{ name: 'Fixture repository', path: '/fixtures/repository-with-a-long-name', agent: 'fixture-agent', pipeline: 'standard' }],
     custom_statuses: [], stages: ['plan', 'code'], channels: [], default_channels: [], ...options.config };
-  const requests = [], mutations = [], sockets = [], socketRoutes = [], messages = [], violations = [], expectedHTTPFailures = [];
+  const requests = [], mutations = [], sockets = [], socketRoutes = [], messages = [], terminalInputs = [], violations = [], expectedHTTPFailures = [];
   const descriptionWrites = [], pendingResizes = [], pickupRequests = [], enqueued = [], artifactReads = [];
   const uploads = [], stylesheetRequests = [], authNavigations = [];
   const rawOutputs = new Map(Object.entries(options.rawOutputs || {
@@ -224,10 +224,12 @@ export function fixtures({ base, assets, engine }, options = {}) {
   let mintedNotes = 0, createdThreads = 0;
   const terminalMarkers = new Map();
   const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, activityEvents: null, bracketedPaste: false,
-    descriptionWait: null, descriptionFailure: null, holdResizes: false,
+    descriptionWait: null, descriptionFailure: null, editWait: null, holdResizes: false,
     epicWait: null, epicFailure: null, assistantMessageFailure: null, assistantGateWait: null,
-    changesWait: null, changesFailure: null, lifecycleWait: null, lifecycleFailure: null, noteWait: null,
-    noteDispatchWait: null, noteFailure: null, noteLoseResponse: false,
+    changesWait: null, changesFailure: null, lifecycleWait: null, lifecycleFailure: null,
+    // Keys are exact request paths. Refusals persist; post-write failures are consumed once.
+    lifecycleRefusals: new Map(), lifecyclePostWriteFailures: new Map(), lifecycleAckWait: null,
+    noteWait: null, noteDispatchWait: null, noteFailure: null, noteLoseResponse: false,
     assistantCreateWait: null, assistantCreateFailure: null, assistantMissingThreads: new Set(options.assistantMissingThreads || []),
     uploadWait: null, uploadResponse: options.uploadResponse || null, stylesheetFailures: options.stylesheetFailures || 0, rawFailures: new Map(),
     authRequired: options.authRequired || false, authToken: 'fixture-token',
@@ -756,7 +758,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
       }
       return json(route, snapshot);
     }
-    const match = path.match(/^\/api(?:\/sources\/([^/]+))?\/tickets\/([^/]+)(?:\/(cost|chain|changes|logs|activity|move|pause|retry|init|run))?$/);
+    const match = path.match(/^\/api(?:\/sources\/([^/]+))?\/tickets\/([^/]+)(?:\/(cost|chain|changes|logs|activity|move|pause|retry|init|run|schedule|set-stage))?$/);
     if (match) {
       const folder = match[1] ? decodeURIComponent(match[1]) : 'primary';
       const id = decodeURIComponent(match[2]), action = match[3];
@@ -766,10 +768,18 @@ export function fixtures({ base, assets, engine }, options = {}) {
         return json(route, { error: 'Ticket not found' }, 404);
       }
       assert.ok(record, `Unknown source-qualified ticket: ${folder}/${id}`);
-      if (method === 'GET' && !action) return readResponse(route, path, record.archived_at ? { ...record, status: 'archived', archived_from: record.status } : record);
+      if (method === 'GET' && !action) {
+        const detail = record.archived_at ? { ...record, status: 'archived', archived_from: record.status } : { ...record };
+        if (record.source === 'primary' && record.status === 'open' && record.kontora && !record.scheduled_at) {
+          detail.run_preview ??= { stages: (record.stages || []).slice(Math.max(0, record.stages?.indexOf(record.stage) ?? 0)),
+            agent: record.agent, branch: record.branch || record.auto_branch, repo: record.path };
+        }
+        return readResponse(route, path, detail);
+      }
       if (method === 'PUT' && !action) {
         const body = request.postDataJSON();
         assert.ok(!('body' in body), 'Description edits must not replace the protected tail');
+        if (behavior.editWait) await behavior.editWait;
         if (record.can_edit === false) {
           expectedHTTPFailures.push(base + path);
           return json(route, { error: 'Fixture ticket is read-only' }, 403);
@@ -836,19 +846,44 @@ export function fixtures({ base, assets, engine }, options = {}) {
           }
         }
       }
-      if (method === 'POST' && ['move', 'pause', 'retry', 'init', 'run'].includes(action)) {
+      if (method === 'POST' && ['move', 'pause', 'retry', 'init', 'run', 'schedule', 'set-stage'].includes(action)) {
         const body = request.postData() ? request.postDataJSON() : {};
         if (behavior.lifecycleWait) await behavior.lifecycleWait;
-        const refuse = message => {
+        const refuse = (message, status = 400) => {
           expectedHTTPFailures.push(base + path);
-          return json(route, { error: message }, 400);
+          return json(route, { error: message }, status);
         };
+        if (behavior.lifecycleRefusals.has(path)) return refuse(behavior.lifecycleRefusals.get(path), 409);
         if (behavior.lifecycleFailure) return refuse(behavior.lifecycleFailure);
         if (record.archived_at || record.status === 'archived') return refuse('Ticket is archived');
         if (record.kind === 'epic' && record.epic_mode === 'passive') return refuse('Passive epic status is derived');
         if (!record.can_control) return refuse('Ticket is not controllable');
         const before = structuredClone(record);
-        if (action === 'move') {
+        if (action === 'schedule') {
+          if (active(record)) return refuse('Cannot schedule a running ticket', 409);
+          if (body.clear === true) {
+            assert.deepEqual(Object.keys(body), ['clear']);
+            delete record.scheduled_at;
+          } else {
+            assert.deepEqual(Object.keys(body), ['scheduled_at']);
+            const at = Date.parse(body.scheduled_at);
+            if (typeof body.scheduled_at !== 'string' ||
+                !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/.test(body.scheduled_at) || !Number.isFinite(at)) {
+              return refuse('scheduled_at must be an RFC 3339 timestamp');
+            }
+            if (at < (options.scheduleNow ?? Date.now()) - 60_000) return refuse('scheduled_at is in the past');
+            if (!record.kontora || record.kind === 'epic' || !['open', 'todo'].includes(record.status)) {
+              return refuse('Schedule requires an initialized open or todo ticket', 409);
+            }
+            record.scheduled_at = new Date(at).toISOString().replace(/\.\d{3}Z$/, 'Z');
+            record.status = 'open';
+          }
+        } else if (action === 'set-stage') {
+          assert.deepEqual(Object.keys(body), ['stage']);
+          if (active(record) || !record.stages?.includes(body.stage)) return refuse('Invalid stage change');
+          record.stage = body.stage;
+          record.attempt = 0;
+        } else if (action === 'move') {
           assert.deepEqual(Object.keys(body), ['status'], 'A move is not an execution settings update');
           if (!['open', 'todo', 'paused', 'human_review', 'done', 'cancelled', ...config.custom_statuses].includes(body.status)) return refuse('Invalid status');
           if (record.status === body.status) return refuse('Ticket already has that status');
@@ -867,15 +902,28 @@ export function fixtures({ base, assets, engine }, options = {}) {
           if (active(record)) return refuse('Ticket is already running');
           if (action === 'retry' && (!record.kontora || record.status === 'todo')) return refuse('Cannot retry this status');
           if (action === 'run' && (!record.kontora || !['open', 'todo'].includes(record.status))) return refuse('Run requires an initialized open or todo ticket');
-          if (action === 'run') Object.assign(record, { status: 'todo', last_error: '' });
-          else Object.assign(record, body, { status: body.status || 'todo', attempt: 0, last_error: '' });
+          if (action === 'run') {
+            assert.deepEqual(body, {}, 'Run uses saved ticket settings');
+            Object.assign(record, { status: 'todo', last_error: '' });
+          } else {
+            Object.assign(record, body, { status: body.status || 'todo', attempt: 0, last_error: '' });
+          }
           delete record.scheduled_at;
           pickupRequests.push({ id, action });
           if (record.status === 'todo' && !behavior.pickupBlocked?.has(id)) enqueued.push({ id, action });
         }
         record.execution_active = false; // Mutations park/queue; only a later daemon claim makes execution active.
-        mutations.push({ method, path, body, before, ticket: structuredClone(record) });
-        return json(route, record);
+        const snapshot = structuredClone(record);
+        mutations.push({ method, path, body, before, ticket: snapshot });
+        const failedAck = behavior.lifecyclePostWriteFailures.get(path);
+        behavior.lifecyclePostWriteFailures.delete(path);
+        if (behavior.lifecycleAckWait) await behavior.lifecycleAckWait;
+        if (failedAck) {
+          if (failedAck.failure !== 'network') return refuse(failedAck.error ?? 'Lifecycle response failed after write', 503);
+          expectedHTTPFailures.push(base + path);
+          return route.abort('failed');
+        }
+        return json(route, snapshot);
       }
     }
     throw new Error(`Unmodelled API request: ${method} ${url}`);
@@ -985,6 +1033,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
         assert.ok([...url.searchParams.keys()].every(k => ['cols', 'rows', 'rw', 'stream'].includes(k)));
         assert.equal(url.searchParams.get('stream'), paneStream ? 'pane' : null);
         assert.ok(Number(url.searchParams.get('cols')) > 0 && Number(url.searchParams.get('rows')) > 0);
+        const socketIndex = sockets.length;
         sockets.push(url);
         socketRoutes.push(ws);
         // Do not call connectToServer(): there is no terminal server at all.
@@ -1006,6 +1055,11 @@ export function fixtures({ base, assets, engine }, options = {}) {
               assert.ok(Number.isInteger(data.cols) && data.cols > 0 && Number.isInteger(data.rows) && data.rows > 0);
               if (behavior.holdResizes) pendingResizes.push({ url, ...data, reset: () => snapshot(data.cols, data.rows) });
               else snapshot(data.cols, data.rows);
+            } else {
+              assert.equal(typeof data.data, 'string');
+              assert.equal(url.searchParams.get('rw'), '1', 'Input requires a writable fixture stream');
+              // Reconnects can reuse the URL; index identifies the actual route that received input.
+              terminalInputs.push({ socketIndex, url, data: data.data });
             }
           } catch (error) { violations.push(error.message); }
         });
@@ -1050,7 +1104,7 @@ export function fixtures({ base, assets, engine }, options = {}) {
     });
   }
   return { install, api, config, configWrites, records, definitions, runs, receipts, runReceipts, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig, descriptionWrites, pendingResizes, terminalMarkers,
-    holdSnapshot, holdDetail, holdRead, pendingSnapshot, releaseReads, pickupRequests, enqueued, artifactReads,
+    holdSnapshot, holdDetail, holdRead, pendingSnapshot, releaseReads, pickupRequests, enqueued, artifactReads, terminalInputs,
     uploads, stylesheetRequests, authNavigations, rawOutputs,
     get rawConfig() { return rawConfig; }, set rawConfig(content) { rawConfig = content; } };
 }

@@ -92,10 +92,7 @@ func (d *Daemon) initializeWorkflow(cfg *config.Config, t *ticket.Ticket, graph 
 		_ = t.SetField("last_error", reason)
 		return errWorkflowNoSpawn
 	}
-	if t.AnnotationReturnStatus != "" || t.IsAgentEpic() {
-		return pause("graph workflows do not support annotation runs or epic supervisors")
-	}
-	fingerprint, err := workflowFingerprint(cfg, t, graph)
+	fingerprint, err := workflowPickupFingerprint(cfg, t, graph)
 	if err != nil {
 		return pause(err.Error())
 	}
@@ -107,42 +104,18 @@ func (d *Daemon) initializeWorkflow(cfg *config.Config, t *ticket.Ticket, graph 
 			return pause("workflow invocation journal requires recovery before another invocation")
 		}
 	}
-	state := t.GraphState
-	stage := t.Stage
-	if state == nil {
-		if stage != "" && stage != graph.Entry {
-			return pause("a new graph workflow must start at its entry")
-		}
-		state = &ticket.GraphState{Version: workflowStateVersion(graph), ExecutionID: newSessionID(), DefinitionFingerprint: fingerprint}
-		stage = ""
-	} else {
-		if state.DefinitionFingerprint != fingerprint {
-			return pause("workflow definition changed; inspect the saved execution before restarting")
-		}
-		if t.InvocationID != "" {
-			return pause("workflow execution requires recovery acknowledgement before another invocation")
-		}
-		if node, ok := graph.Node(stage); ok && node.Type == "end" {
-			return pause("workflow is at an end node; use workflow-restart")
-		}
+	state, stage, err := workflowPickupCursor(t, graph, fingerprint, newSessionID)
+	if err != nil {
+		return pause(err.Error())
 	}
-	state = state.Clone()
 	if reservation := workflowReservation(t); reservation != nil {
 		if err := d.validateWaitProgress(t, reservation); err != nil {
 			return pause(err.Error())
 		}
 	}
-	var ready *ticket.WorkflowWait
-	if state.Wait != nil {
-		if state.Wait.Phase != "ready" || state.Wait.Disarmed || !state.Continuation {
-			return pause("workflow wait must be released before continuation")
-		}
-		ready, state.Wait = state.Wait, nil
-	}
-	populateWorkflowDisplay(state, graph)
-	after := pipeline.AdvanceGraph(graph, stage, state, nil)
-	if ready != nil {
-		after.State.Wait = ready
+	after, err := advanceWorkflowPickup(graph, stage, state)
+	if err != nil {
+		return pause(err.Error())
 	}
 	if err := d.finishControlAdvance(t, after); err != nil {
 		return err
@@ -154,6 +127,54 @@ func (d *Daemon) initializeWorkflow(cfg *config.Config, t *ticket.Ticket, graph 
 		return errWorkflowNoSpawn
 	}
 	return nil
+}
+
+func workflowPickupFingerprint(cfg *config.Config, t *ticket.Ticket, graph *config.WorkflowGraph) (string, error) {
+	if t.AnnotationReturnStatus != "" || t.IsAgentEpic() {
+		return "", errors.New("graph workflows do not support annotation runs or epic supervisors")
+	}
+	return workflowFingerprint(cfg, t, graph)
+}
+
+func workflowPickupCursor(t *ticket.Ticket, graph *config.WorkflowGraph, fingerprint string, newID func() string) (*ticket.GraphState, string, error) {
+	state, stage := t.GraphState, t.Stage
+	if state == nil {
+		if stage != "" && stage != graph.Entry {
+			return nil, "", fmt.Errorf("a new graph workflow must start at its entry %q", graph.Entry)
+		}
+		return &ticket.GraphState{Version: workflowStateVersion(graph), ExecutionID: newID(), DefinitionFingerprint: fingerprint}, "", nil
+	}
+	if state.DefinitionFingerprint != fingerprint {
+		return nil, "", errWorkflowDefinitionChanged
+	}
+	if t.InvocationID != "" {
+		return nil, "", errors.New("workflow execution requires recovery acknowledgement before another invocation")
+	}
+	if node, ok := graph.Node(stage); ok && node.Type == "end" {
+		return nil, "", errors.New("workflow is at an end node; use workflow-restart")
+	}
+	return state, stage, nil
+}
+
+var errWorkflowWaitNotReady = errors.New("workflow wait must be released or re-armed before continuation")
+
+// advanceWorkflowPickup interprets the cursor without committing transitions,
+// registering waits or starting an invocation.
+func advanceWorkflowPickup(graph *config.WorkflowGraph, stage string, state *ticket.GraphState) (pipeline.GraphAdvance, error) {
+	state = state.Clone()
+	ready := state.Wait
+	if ready != nil {
+		if ready.Phase != "ready" || ready.Disarmed || !state.Continuation {
+			return pipeline.GraphAdvance{}, errWorkflowWaitNotReady
+		}
+		state.Wait = nil
+	}
+	populateWorkflowDisplay(state, graph)
+	after := pipeline.AdvanceGraph(graph, stage, state, nil)
+	if ready != nil {
+		after.State.Wait = ready
+	}
+	return after, nil
 }
 
 // Call only for a new execution or after verifying its definition fingerprint.

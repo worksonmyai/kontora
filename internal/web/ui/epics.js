@@ -86,11 +86,11 @@ export function kontoraEpics() {
       </div>`,
     epicChildActionsMarkup: `
       <div class="epic-child-controls" @click.stop x-show="ticketCanControl(r) && ticketCanControl(selectedEpic)">
-        <label>Move to
-          <select aria-label="Move child to status" :disabled="lifecycleBusy(r)" @change="epicChildCommand(r, $event.target.value); $event.target.value = ''">
-            <option value="">Choose status</option>
+        <label>Set status
+          <select aria-label="Set child status" :disabled="lifecycleBusy(r)" @change="epicChildCommand(r, $event.target.value); $event.target.value = ''">
+            <option value="">Set status…</option>
             <template x-for="command in lifecycleDestinations(r)" :key="command.id">
-              <option :value="command.id" x-text="command.label"></option>
+              <option :value="command.id" x-text="command.statusLabel"></option>
             </template>
           </select>
         </label>
@@ -272,7 +272,7 @@ export function kontoraEpics() {
       var parts = [];
       var say = function (n, word) { if (n) parts.push(n + ' ' + word); };
       say(rollup.activeCount, 'running');
-      say(counts.todo, 'Todo');
+      say(counts.todo, 'Queued');
       say(counts.paused, 'paused');
       say(counts.human_review, 'review');
       say(counts.open, 'open');

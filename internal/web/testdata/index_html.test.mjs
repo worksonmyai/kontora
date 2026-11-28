@@ -1309,6 +1309,9 @@ test('history subscriptions survive stream and subject reuse, and dispose with t
   state._disconnectStream();
   assert.ok(subscriptions.every(row => !row.disposed));
   await state.selectTicket({ id: 'tst-002', status: 'in_progress' });
+  assert.equal(state.detailTab, 'ticket');
+  assert.equal(ctx.termState.ws, null);
+  state.mobileSwitchTab('terminal');
   await flushMicrotasks();
   assert.equal(ctx.termState.term, term);
   assert.equal(ctx.termState.historyDisposables.length, subscriptions.length);
@@ -3232,32 +3235,51 @@ test("moveTicketVia re-buckets the cached board after a status change", async ()
   assert.deepEqual(bt(state, "human_review").map(t => t.id), ["kon-1"]);
 });
 
-test("detailMoves drops covered execution buttons but keeps every destination", () => {
-  const state = loadKontoraState();
-  for (const status of ['in_progress', 'paused']) {
-    const ticket = { id: 'kon-moves', status, kontora: true };
-    state.tickets = [ticket];
-    const moves = state.detailMoves(ticket);
-    assert.equal(moves.some(mv => mv.endpoint === (status === 'in_progress' ? 'pause' : 'retry')), false);
-    assert.deepEqual([...moves.map(mv => mv.id)],
-      ['open', 'todo', 'paused', 'human_review', 'done', 'cancelled']
-        .filter(destination => destination !== status).map(destination => 'move:' + destination));
+test("the detail header picks one state action and leaves secondary actions in the menu", () => {
+  const retry = { id: 'retry', label: 'Run again from code' };
+  const skip = { id: 'skip', label: 'Skip stage' };
+  const annotate = { id: 'annotate', label: 'Annotate in Plannotator' };
+  const run = { id: 'run', label: 'Run…', accent: true };
+  const cases = [
+    ['open managed', { status: 'open', can_annotate: true }, run, [skip, annotate]],
+    ['open imported', { status: 'open', kontora: false, stage: '', stages: [] }, run, []],
+    ['queued', { status: 'todo' }, { id: 'move:open', label: 'Unqueue' }, [skip, { id: 'start', label: 'Run now' }]],
+    ['queued for later', { status: 'todo', scheduled_at: '2026-05-19T12:00:00Z' },
+      { id: 'move:open', label: 'Unqueue' }, [skip, { id: 'start', label: 'Run now' }]],
+    ['running', { status: 'in_progress' }, { id: 'pause', label: 'Pause' }, []],
+    ['running supervisor', { status: 'in_progress', kind: 'epic', epic_execution: 'agent' }, { id: 'pause', label: 'Pause supervisor' }, []],
+    ['paused', { status: 'paused' }, retry, [skip]],
+    ['review', { status: 'human_review' }, { id: 'review', label: 'Review diff in Plannotator' }, [skip, retry]],
+    ['done', { status: 'done' }, retry, [skip]],
+    ['cancelled', { status: 'cancelled' }, retry, [skip]],
+    ['custom status', { status: 'waiting' }, retry, [skip]],
+    ['execution overrides custom status', { status: 'waiting', execution_active: true }, { id: 'pause', label: 'Pause' }, []],
+    ['startable epic', { status: 'open', kind: 'epic' }, { id: 'start', label: 'Start epic…', accent: true }, []],
+    ['secondary', { status: 'open', source: 'other-folder' }, null, []],
+    ['no ticket', null, null, []],
+  ];
+  for (const [name, fields, primary, menu] of cases) {
+    const state = loadKontoraState();
+    state.configCache = { custom_statuses: ['waiting'] };
+    const ticket = fields && { id: 'kon-actions', kontora: true, stage: 'code', stages: ['plan', 'code', 'review'], ...fields };
+    state.tickets = ticket ? [ticket] : [];
+    assert.deepEqual(vmValue(state.detailPrimaryAction(ticket)), primary, name);
+    assert.deepEqual(vmValue(state.detailMenuActions(ticket)), menu, name);
   }
 });
 
-test("detailMoves exposes semantic execution commands and destination descriptors", () => {
+test("Set status preserves destination keys and guarded move descriptors", () => {
   const state = loadKontoraState();
-  const ticket = { id: 'kon-moves', status: 'open', kontora: true };
-  state.tickets = [ticket];
-  assert.equal(state.detailMoves(ticket)[0].id, 'start');
-  ticket.status = 'human_review';
-  const review = state.detailMoves(ticket);
-  const approve = review.find(mv => mv.id === 'move:done');
-  assert.equal(approve.endpoint, 'move');
-  assert.equal(approve.status, 'done');
-  assert.equal(review.some(mv => mv.id === 'retry'), true);
-  assert.ok(review.every(mv => mv.ticketKey === ticket.id && mv.expected));
-  assert.deepEqual([...state.detailMoves(null)], []);
+  for (const status of ['in_progress', 'paused', 'human_review', 'done', 'cancelled']) {
+    const ticket = { id: 'kon-moves', status, kontora: true };
+    state.tickets = [ticket];
+    const destinations = [...state.lifecycleDestinations(ticket)];
+    assert.deepEqual(destinations.map(mv => mv.status),
+      ['open', 'todo', 'paused', 'human_review', 'done', 'cancelled'].filter(destination =>
+        destination !== status && (destination !== 'paused' || status === 'in_progress')), status);
+    assert.equal(destinations.find(mv => mv.status === 'todo').statusLabel, 'Queued');
+    assert.ok(destinations.every(mv => mv.endpoint === 'move' && mv.ticketKey === ticket.id && mv.expected));
+  }
 });
 
 test("formatDuration and timeAgo advance with the reactive clock", () => {
@@ -3300,13 +3322,14 @@ const CARD_PROGRESS_TICKET = {
   status: "in_progress", stage: "code", stages: ["plan", "code", "review"],
 };
 const CARD_PROGRESS_CASES = [
-  { name: "first of three", patch: { stage: "plan" }, percent: 17, label: "Stage 1 of 3: plan" },
-  { name: "middle of three", patch: {}, percent: 50, label: "Stage 2 of 3: code" },
-  { name: "last of three", patch: { stage: "review" }, percent: 83, label: "Stage 3 of 3: review" },
-  { name: "first of two", patch: { stage: "plan", stages: ["plan", "code"] }, percent: 25, label: "Stage 1 of 2: plan" },
-  { name: "last of two", patch: { stages: ["plan", "code"] }, percent: 75, label: "Stage 2 of 2: code" },
-  { name: "child ticket", patch: { parent: { id: "kon-epic" } }, percent: 50, label: "Stage 2 of 3: code" },
-  { name: "uninitialized ticket", patch: { kontora: false }, percent: 50, label: "Stage 2 of 3: code" },
+  { name: "first of three", patch: { stage: "plan" }, label: "Stage 1 of 3: plan" },
+  { name: "middle of three", patch: {}, label: "Stage 2 of 3: code" },
+  { name: "second of five", patch: { stages: ["plan", "code", "review", "commit", "push-pr"] }, label: "Stage 2 of 5: code" },
+  { name: "last of three", patch: { stage: "review" }, label: "Stage 3 of 3: review" },
+  { name: "first of two", patch: { stage: "plan", stages: ["plan", "code"] }, label: "Stage 1 of 2: plan" },
+  { name: "last of two", patch: { stages: ["plan", "code"] }, label: "Stage 2 of 2: code" },
+  { name: "child ticket", patch: { parent: { id: "kon-epic" } }, label: "Stage 2 of 3: code" },
+  { name: "uninitialized ticket", patch: { kontora: false }, label: "Stage 2 of 3: code" },
   { name: "standalone supervisor", patch: { kind: "epic", epic_execution: "agent" } },
   { name: "supervisor with children", patch: { kind: "epic", epic_execution: "agent", children: [{ id: "kon-child" }] } },
   ...["open", "todo", "paused", "human_review", "done", "cancelled", "archived"].map(status => ({ name: status, patch: { status } })),
@@ -3331,21 +3354,28 @@ for (const c of CARD_PROGRESS_CASES) {
     const ticket = { ...CARD_PROGRESS_TICKET, ...c.patch };
     const progress = state.cardStageProgress(ticket);
     const html = state._cardHTML(ticket, { key: "in_progress" });
-    if (c.percent === undefined) {
+    if (c.label === undefined) {
       assert.equal(progress, null);
-      assert.doesNotMatch(html, /class="card-progress"/);
+      assert.doesNotMatch(html, /class="card-stage-track"/);
+      assert.deepEqual(cardSegmentStates(html), []);
       return;
     }
-    assert.deepEqual({ ...progress }, { percent: c.percent, label: c.label });
-    const bar = html.match(/<div class="card-progress"[^>]*>/)?.[0];
-    assert.ok(bar);
-    assert.match(bar, /role="img"/);
-    assert.ok(bar.includes(`aria-label="${c.label}"`));
-    assert.ok(bar.includes(`title="${c.label}"`));
-    assert.doesNotMatch(bar, /aria-valuenow|aria-valuemin|aria-valuemax/);
-    assert.ok(html.includes(`style="width:${c.percent}%"`));
+    const index = ticket.stages.indexOf(ticket.stage);
+    const total = ticket.stages.length;
+    assert.deepEqual({ ...progress }, { index, total, label: c.label });
+    const track = html.match(/<span class="card-stage-track"[^>]*>/)?.[0];
+    assert.ok(track);
+    assert.match(track, /role="img"/);
+    assert.ok(track.includes(`aria-label="${c.label}"`));
+    assert.ok(track.includes(`title="${c.label}"`));
+    assert.ok(html.includes(`>${index + 1}/${total}</span>`));
+    assert.deepEqual(cardSegmentStates(html), [
+      ...Array(index).fill('done'), 'current', ...Array(total - index - 1).fill('next'),
+    ]);
   });
 }
+
+const cardSegmentStates = html => [...html.matchAll(/class="card-seg" data-state="([^"]+)"/g)].map(([, state]) => state);
 
 test("_cardHTML uses the progress helper and escapes its accessible stage label", () => {
   const state = loadKontoraState();
@@ -3357,13 +3387,13 @@ test("_cardHTML uses the progress helper and escapes its accessible stage label"
   assert.ok(html.includes(`title="${label}"`));
 
   let received;
-  state.cardStageProgress = t => { received = t; return { percent: 42, label: "Shared progress" }; };
+  state.cardStageProgress = t => { received = t; return { index: 1, total: 5, label: "Shared progress" }; };
   const shared = state._cardHTML(ticket, { key: "in_progress" });
   assert.equal(received, ticket);
   assert.match(shared, /aria-label="Shared progress"/);
-  assert.match(shared, /width:42%/);
+  assert.deepEqual(cardSegmentStates(shared), ['done', 'current', 'next', 'next', 'next']);
   state.cardStageProgress = () => null;
-  assert.doesNotMatch(state._cardHTML(ticket, { key: "in_progress" }), /class="card-progress"/);
+  assert.doesNotMatch(state._cardHTML(ticket, { key: "in_progress" }), /class="card-stage-track"/);
 });
 
 test("_cardHTML renders an in-progress card with selection, glyph, bars, and a live duration span", () => {
@@ -3380,9 +3410,7 @@ test("_cardHTML renders an in-progress card with selection, glyph, bars, and a l
   assert.match(html, /class="[^"]*\bis-selected\b/);
   assert.match(html, /class="[^"]*\bcard-state-running\b/);
   assert.match(html, /card-glyph-running/);
-  // Single-track progress bar: stage 2 of 2 renders as (1 + 0.5) / 2 = 75%.
-  assert.match(html, /class="card-progress"/);
-  assert.match(html, /width:75%/);
+  assert.deepEqual(cardSegmentStates(html), ['done', 'current']);
   assert.match(html, /data-since="2026-05-19T10:00:00Z"/);
   assert.match(html, /retry 2/);
   assert.match(html, /data-ticket-id="sta-2"/);
@@ -3410,29 +3438,51 @@ test("a card's id carries a hover card only when the frontmatter names a relatio
   assert.match(html, /data-tip-e-body="under sta-epic · waits on sta-blk, sta-blk2 · related to sta-rel2"/);
 });
 
-test("_cardHTML shows the finish time on review cards", () => {
-  const state = loadKontoraState();
-  state.now = new Date("2026-05-19T11:00:00Z").getTime();
-  const html = state._cardHTML(
-    {
-      id: "sta-rev", title: "Check it", status: "human_review", kontora: true, pipeline: "kontora",
-      created_at: "2026-05-19T06:00:00Z", updated_at: "2026-05-19T10:30:00Z",
-      finished_at: "2026-05-19T09:00:00Z",
-    },
-    { key: "human_review" },
-  );
-
-  assert.match(html, /data-finished="2026-05-19T09:00:00Z"/);
-  assert.match(html, /finished 2h ago/);
-  assert.equal(/data-ago=/.test(html), false);
+test("_cardHTML separates project, title, pipeline and source folder",  () => {
+  const cases = [
+    { name: 'explicit project', title: '[api] Check it', project: 'api', pipeline: 'default' },
+    { name: 'repo fallback', title: 'Check it', project: 'repo', pipeline: 'default' },
+    { name: 'pipeline labels off', title: '[api] Check it', project: 'api', hidePipeline: true },
+    { name: 'supervisor label', title: 'Check it', project: 'repo', pipeline: 'supervisor', fields: { kind: 'epic', epic_execution: 'agent' } },
+    { name: 'secondary folder', title: 'Check it', project: 'repo', pipeline: 'default', fields: { source: 'team', source_path: '/mnt/team' } },
+  ];
+  for (const c of cases) {
+    const state = loadKontoraState();
+    state.showPipelineBadges = !c.hidePipeline;
+    const ticket = { id: 'sta-card', title: c.title, status: 'open', path: '/work/repo', pipeline: 'default', kontora: true, ...c.fields };
+    const html = state._cardHTML(ticket, { key: 'open' });
+    const row = html.match(/<div class="card-row1\b[^>]*>(.*?)<\/div>/)?.[1];
+    assert.ok(row, c.name);
+    assert.ok(row.includes(`data-pipe-color="${state.pipelineColorByName(c.project)}"`), c.name);
+    assert.ok(row.includes(`>${c.project}</span>`), c.name);
+    assert.match(html, /<p class="card-title\b[^>]*>Check it<\/p>/, c.name);
+    if (c.pipeline) assert.ok(row.includes(`class="card-pipe" title="Pipeline">${c.pipeline}</span>`), c.name);
+    else assert.doesNotMatch(row, /class="card-pipe"/, c.name);
+    const idClasses = html.match(/<span class="([^"]+)"[^>]*>sta-card<\/span>/)?.[1].split(/\s+/);
+    assert.ok(idClasses?.includes('shrink-0'), c.name);
+    assert.ok(!idClasses.includes('truncate'), c.name);
+    if (ticket.source) assert.match(html, new RegExp(`class="card-source [^"]+"[\\s\\S]*>${state.sourceLabel(ticket)}</span>`), c.name);
+    else assert.doesNotMatch(html, /class="card-source /, c.name);
+  }
 });
 
-test("finishedAgo drops the trailing ago for a fresh finish", () => {
-  const state = loadKontoraState();
-  state.now = new Date("2026-05-19T09:00:20Z").getTime();
-
-  assert.equal(state.finishedAgo("2026-05-19T09:00:00Z"), "finished just now");
-  assert.equal(state.finishedAgo(""), "");
+test("_cardHTML shows compact review age and updates it as time passes", () => {
+  const finished = '2026-05-19T09:00:00Z';
+  const timer = { dataset: { finished }, textContent: 'just now' };
+  const state = loadKontoraState({
+    document: { querySelectorAll: selector => selector === '#board-cols [data-finished]' ? [timer] : [] },
+  });
+  const ticket = { id: 'sta-rev', title: 'Check it', status: 'human_review', kontora: true,
+    created_at: '2026-05-19T06:00:00Z', updated_at: '2026-05-19T10:30:00Z', finished_at: finished };
+  for (const [now, age] of [['09:00:20', 'just now'], ['11:00:00', '2h']]) {
+    state.now = Date.parse(`2026-05-19T${now}Z`);
+    const html = state._cardHTML(ticket, { key: 'human_review' });
+    assert.ok(html.includes(`data-finished="${finished}"`));
+    assert.ok(html.includes(`>${age}</span>`));
+    assert.doesNotMatch(html, /data-ago=/);
+    state._updateCardTimers();
+    assert.equal(timer.textContent, age);
+  }
 });
 
 test("_cardHTML uses data-ago for non-running cards and omits is-selected when unselected", () => {
@@ -3445,7 +3495,7 @@ test("_cardHTML uses data-ago for non-running cards and omits is-selected when u
 
   assert.equal(/\bis-selected\b/.test(html), false);
   assert.match(html, /data-ago="2026-05-19T08:00:00Z"/);
-  assert.match(html, /◌/); // todo glyph in the in_progress column
+  assert.match(html, /◌<\/span><span>Queued<\/span>/);
 });
 
 test("_cardHTML ships the menu button but no menu", () => {
@@ -3465,7 +3515,7 @@ test("_cardHTML ships the menu button but no menu", () => {
   assert.equal(html.includes("<svg"), false);
 });
 
-test("_cardMenuHTML encodes menu actions and the Initialize entry", () => {
+test("_cardMenuHTML separates execution actions from status destinations", () => {
   const state = loadKontoraState();
   state.tickets = [
     { id: 'sta-4', status: 'todo', kontora: true },
@@ -3480,13 +3530,12 @@ test("_cardMenuHTML encodes menu actions and the Initialize entry", () => {
   assert.match(todo, /data-act="move" data-status="open"/);
   assert.match(todo, /data-act="move" data-status="cancelled"/);
 
-  // Open ticket: Queue maps to the run endpoint with no status.
-  assert.match(state._cardMenuHTML({ id: "sta-5", title: "O", status: "open", kontora: true }), /data-act="run"/);
+  const managed = state._cardMenuHTML(state.tickets[1]);
+  assert.match(managed, /data-act="run"[^>]*>Run…<\/button>[\s\S]*>Set status<\/div>[\s\S]*data-act="move" data-status="todo"[^>]*>Queued<\/button>/);
+  assert.doesNotMatch(managed, /data-act="init"/);
 
-  // Non-kontora ticket: Initialize action is present.
-  assert.match(state._cardMenuHTML({ id: "sta-6", title: "Imported", status: "open", kontora: false, path: "/x/proj" }), /data-act="init"/);
-  // Kontora ticket: it is not.
-  assert.equal(state._cardMenuHTML({ id: "sta-5", title: "O", status: "open", kontora: true }).includes('data-act="init"'), false);
+  const imported = state._cardMenuHTML(state.tickets[2]);
+  assert.match(imported, /data-act="init"[^>]*>Set up and run…<\/button>/);
 
   // A canonical read-only subject has no commands even if an old card says otherwise.
   assert.match(state._cardMenuHTML({ id: "sta-8", title: "C", status: "review", kontora: true }), /No actions available/);
@@ -3564,7 +3613,7 @@ test("card menus are built on open and removed on close", () => {
   assert.equal(state._openMenuId, "kon-2");
   assert.equal(menus[0].attached, false);
   assert.equal(menus.filter((m) => m.attached).length, 1);
-  assert.match(menus[1].html, /data-act="init"/);   // non-kontora gets Initialize
+  assert.match(menus[1].html, /data-act="init"/);
   assert.equal(cards["kon-1"].btn.attrs["aria-expanded"], "false");
   assert.equal(cards["kon-1"].classes.has("menu-open"), false);
 
@@ -3599,14 +3648,15 @@ test("index.html drops the stats bar but keeps the matched counter", () => {
   assert.match(html, /filteredTicketCount\(\)[^<]*<\/span>\s*matched/);
 });
 
-test("the ticket page's identity block carries the status chip and pipeline tag", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
-
-  // shrink-0 pins these to the desktop page's identity block; the mobile
-  // overlay's own chips carry neither class, so a match here cannot come from
-  // the wrong layer.
-  assert.match(html, /class="status-chip shrink-0"[^>]*:data-status="selectedTicket\?\.status"/);
-  assert.match(html, /class="pipe-tag shrink-0"\s*\n\s*:data-pipe-color="selectedTicket \? ticketPipeColor\(selectedTicket\) : 'none'"/);
+test("the desktop ticket identity separates status, project, pipeline and title", () => {
+  const html = htmlNoComments();
+  const status = html.indexOf('class="status-chip shrink-0"');
+  assert.ok(status > 0);
+  const identity = elementAt(html, status);
+  assert.match(identity, /:data-status="selectedTicket\?\.status"/);
+  assert.match(identity, /:data-pipe-color="pipelineColorByName\(parseTitleTag\(selectedTicket \|\| \{\}\)\.tag\)"/);
+  assert.match(identity, /:data-pipe-color="ticketPipeColor\(selectedTicket\)"[^>]*x-text="selectedTicket\.pipeline"/);
+  assert.match(html, /<h1\b[^>]*x-text="parseTitleTag\(selectedTicket \|\| \{\}\)\.rest"/);
 });
 
 test("parseTitleTag extracts a [tag] title prefix and falls back to the project basename", () => {
@@ -3647,6 +3697,72 @@ test("cancelled column starts collapsed and toggling persists the set", () => {
 
   state.toggleColumnCollapsed("done");
   assert.equal(stored["kontora-collapsed-cols"], JSON.stringify(["done"]));
+});
+
+test("derived columns distinguish configured, archived and unknown statuses without changing their keys", () => {
+  const state = loadKontoraState();
+  state.configCache = { custom_statuses: ['needs_qa'] };
+  state.secondaryTickets = ['archived', 'needs_qa', 'tombstone'].map(status => ({ id: status, status, source: 'external' }));
+  state.tickets = [{ id: 'worker', status: 'working_elsewhere', execution_active: true }];
+  const cols = state._deriveColumns();
+  for (const [key, label, swatch] of [
+    ['needs_qa', 'Needs qa', 'hsl(var(--st-review))'],
+    ['archived', 'Archived', 'rgb(var(--surface-600))'],
+    ['tombstone', 'Unknown status (tombstone)', 'rgb(var(--surface-700))'],
+    ['working_elsewhere', 'Unknown status (working_elsewhere)', 'rgb(var(--surface-700))'],
+  ]) {
+    const col = cols.find(c => c.key === key);
+    assert.ok(col, key);
+    assert.equal(col.label, label, key);
+    assert.deepEqual([...col.statuses], [key], key);
+    assert.equal(state.railSwatch(col), swatch, key);
+    if (label.startsWith('Unknown status')) assert.ok(col.tip.includes(`"${key}"`));
+    if (key !== 'needs_qa') assert.equal(col.dropStatus, undefined, key);
+  }
+  assert.equal(state.railSwatch({}), 'rgb(var(--surface-700))');
+});
+
+test("expanded columns and the shared rail preserve column order across toggles", () => {
+  const state = loadKontoraState();
+  state.$nextTick = fn => fn?.();
+  state.secondaryTickets = [{ id: 'hidden', source: 'external', status: 'tombstone' }];
+  const original = Array.from(state._deriveColumns(), c => c.key);
+  for (const [toggle, hidden] of [
+    [null, ['cancelled']],
+    ['tombstone', ['cancelled', 'tombstone']],
+    ['open', ['open', 'cancelled', 'tombstone']],
+    ['cancelled', ['open', 'tombstone']],
+    ['tombstone', ['open']],
+    ['open', []],
+  ]) {
+    if (toggle) state.toggleColumnCollapsed(toggle);
+    assert.deepEqual(Array.from(state.collapsedColumns(), c => c.key), hidden, toggle);
+    assert.deepEqual(Array.from(state.expandedColumns(), c => c.key), original.filter(key => !hidden.includes(key)), toggle);
+  }
+});
+
+test("the review column note uses the oldest visible finish and hides fresh or missing ages", () => {
+  const state = loadKontoraState();
+  state.now = Date.parse('2026-05-19T11:00:00Z');
+  const review = (id, stamps) => ({ id, title: id, status: 'human_review', ...stamps });
+  state.tickets = [
+    review('newer', { finished_at: '2026-05-19T10:00:00Z' }),
+    review('oldest', { updated_at: '2026-05-19T09:00:00Z' }),
+    review('fresh', { finished_at: '2026-05-19T10:59:40Z' }),
+    review('undated', {}),
+  ];
+  for (const [query, key, note] of [
+    ['', 'human_review', 'oldest 2h'],
+    ['newer', 'human_review', 'oldest 1h'],
+    ['fresh', 'human_review', ''],
+    ['undated', 'human_review', ''],
+    ['no matches', 'human_review', ''],
+    ['', 'done', ''],
+  ]) {
+    state.searchQuery = query;
+    state.recomputeBoard();
+    assert.equal(state.colNote(key), note, `${query || 'unfiltered'}: ${key}`);
+  }
 });
 
 test("renderColumn fills expanded columns but clears collapsed rails", () => {
@@ -4193,7 +4309,7 @@ test("display toggles invalidate the rendered-card cache and drop card sections"
     { id: "sta-9", title: "T", status: "open", created_at: "2026-05-19T08:00:00Z", kontora: true, pipeline: "kontora" },
     { key: "open" },
   );
-  assert.equal(noBadge.includes("pipe-tag"), false);
+  assert.doesNotMatch(noBadge, /class="card-pipe"/);
 
   state.toggleShowAgentMeta();
   assert.equal(state.showAgentMeta, false);
@@ -4253,56 +4369,43 @@ test("index.html shares routed pages and builds board layers exclusively", () =>
   }
 });
 
-function mobileCardsHTML(html = fs.readFileSync(htmlPath, 'utf8')) {
-  const loop = 'x-for="(ticket, index) in mobileTickets()" :key="ticketKey(ticket)"';
+function mobileRowsHTML(html = fs.readFileSync(htmlPath, 'utf8')) {
+  const loop = '<template x-for="ticket in group.rows" :key="ticketKey(ticket)">';
   const start = html.indexOf(loop);
-  const end = html.indexOf('<!-- ===== Ticket detail', start);
-  assert.ok(start >= 0 && end > start, 'mobile cards use a source-qualified key');
-  return html.slice(start, end);
+  const end = html.indexOf('</li>', start);
+  assert.ok(start >= 0 && end > start, 'mobile rows use a source-qualified key');
+  return html.slice(start, end + '</li>'.length);
 }
 
-test("mobile cards keep their content and state hooks without decorative indicators", () => {
-  const cards = mobileCardsHTML();
-  const card = cards.match(/<button\b[^>]*@click="openMobileTicket\(ticket\)"[^>]*>/)?.[0];
-  assert.ok(card);
-  assert.match(card, /class="[^"]*\bshrink-0\b/);
-  assert.match(card, /:data-pipe-color="ticketPipeColor\(ticket\)"/);
-  assert.match(card, /:data-mobile-ticket-key="ticketKey\(ticket\)"/);
-  for (const name of ['mobile-card-row', 'mobile-card-context', 'mobile-card-id']) {
-    assert.match(cards, new RegExp(`class="[^"]*\\b${name}\\b`));
-  }
-  const title = cards.match(/<p\b[^>]*class="mobile-card-title"[^>]*>([\s\S]*?)<\/p>/)?.[1];
-  assert.ok(title, 'mobile title has separate tag and text spans');
-  assert.match(title, /<template x-if="parseTitleTag\(ticket\)\.tag">[\s\S]*?<span\b[^>]*class="title-tag"/);
+test('mobile rows keep their identity, content, and action hooks', () => {
+  const row = mobileRowsHTML();
+  const opener = row.match(/<button\b[^>]*@click="mobileSelecting \? mobileToggleSelected\(ticket\) : openMobileTicket\(ticket\)"[^>]*>/)?.[0];
+  assert.ok(opener);
+  assert.match(row, /<li class="mobile-ios-row" :data-pipe-color="ticketPipeColor\(ticket\)"/);
+  assert.match(opener, /:data-mobile-ticket-key="ticketKey\(ticket\)"/);
+  assert.match(opener, /:aria-pressed="mobileSelecting \? mobileSelection.includes\(ticketKey\(ticket\)\) : null"/);
+  assert.match(opener, /:disabled="mobileSelecting && !mobileSelectionAllowed\(ticket\)"/);
+  assert.match(row, /class="mobile-card-row mobile-ios-meta"/);
+  const title = row.slice(row.indexOf('<span class="mobile-card-title"'), row.indexOf('<span class="mobile-card-row'));
+  assert.match(title, /<template x-if="parseTitleTag\(ticket\)\.tag">\s*<span class="title-tag"/);
   assert.match(title, /:data-pipe-color="pipelineColorByName\(parseTitleTag\(ticket\)\.tag\)"/);
   assert.match(title, /x-text="'\[' \+ parseTitleTag\(ticket\)\.tag \+ '\] '"/);
-  assert.match(title, /<span\b[^>]*x-text="parseTitleTag\(ticket\)\.rest"/);
+  assert.match(title, /<span\b[^>]*x-text="parseTitleTag\(ticket\)\.rest \|\| ticket\.id"/);
   assert.doesNotMatch(title, /x-html=|x-text="ticket\.title"/);
-  assert.match(cards, /x-show="showPipelineBadges"/);
-  for (const expression of ['ticket.id', 'ticketProjectName(ticket)', 'sourceLabel(ticket)']) {
-    assert.ok(cards.includes(`x-text="${expression}"`), expression);
-  }
-  assert.match(cards, /x-if="!ticket\.kontora"/);
-  assert.match(cards, /not init'd/);
-  assert.match(cards, /ticket\.status\s*===\s*'cancelled'[\s\S]*?text-decoration:line-through/);
-  assert.match(cards, /ticket\.status\s*===\s*'open' && ticket\.scheduled_at/);
-  assert.match(cards, /scheduleChip\(ticket\)\.abs/);
-  assert.match(cards, /scheduleChip\(ticket\)\.rel/);
-  assert.match(cards, /epicIsAgent\(ticket\) \? 'supervising' : ticket\.stage/);
-  assert.match(cards, /epicCardInfo\(ticket\)\.done/);
-  assert.ok(cards.indexOf('mobile-card-title') < cards.indexOf('mobile-card-row'));
-  assert.doesNotMatch(cards, /border-left:|pulse-dot|waiting-dot/);
+  assert.match(row, /class="mobile-card-id"[^>]*x-text="ticket\.id"/);
+  assert.match(row, /x-text="mobileRowMeta\(ticket\)"/);
+  assert.match(row, /class="mobile-ios-selection-reason"[^>]*x-text="mobileSelecting \? mobileSelectionReason\(ticket\)/);
+  assert.doesNotMatch(row, /pulse-dot|waiting-dot/);
 });
 
-test("mobile cards use the shared progress helper behind a conditional template", () => {
-  const cards = mobileCardsHTML();
-  const progress = [...cards.matchAll(/<template x-if="([^"]+)">([\s\S]*?)<\/template>/g)]
-    .find(([, , body]) => /class="card-progress"/.test(body));
-  assert.ok(progress, 'excluded tickets must not mount a progress bar');
-  assert.equal(progress[1], 'cardStageProgress(ticket)');
-  assert.match(progress[2], /:aria-label="cardStageProgress\(ticket\)\.label"/);
-  assert.match(progress[2], /:style="[^"]*cardStageProgress\(ticket\)\.percent[^"]*%[^"]*"/);
-  assert.doesNotMatch(progress[2], /indexOf\(|Math\.round\(/);
+test('mobile rows show accessible per-stage progress only for eligible active runs', () => {
+  const row = mobileRowsHTML();
+  const stage = row.match(/<template x-if="executionActive\(ticket\)">\s*<span class="mobile-ios-stage">([\s\S]*?)<\/template>\s*<\/button>/)?.[1];
+  assert.ok(stage, 'inactive rows do not mount stage progress');
+  assert.match(stage, /x-show="cardStageProgress\(ticket\)" class="mobile-ios-segments" role="img" :aria-label="cardStageProgress\(ticket\)\?\.label"/);
+  assert.match(stage, /x-for="\(stage, i\) in cardStageProgress\(ticket\) \? ticket\.stages : \[\]"/);
+  assert.match(stage, /'is-complete': i < ticket\.stages.indexOf\(ticket\.stage\), 'is-current': stage === ticket\.stage/);
+  assert.match(stage, /x-text="mobileStageAge\(ticket\)"/);
 });
 
 test("mobile sheets retain their dialog heading and actions without repeated titles or dots", () => {
@@ -4349,7 +4452,7 @@ test('both phone terminals use mounted native inline composers without a Compose
     const dock = html.slice(html.indexOf(field), html.indexOf(field) + 1500);
     assert.match(dock, /@click="mobileBeginTerminalDirect\(\)"[^>]*>Type in terminal<\/button>/);
     assert.match(dock, /@pointerdown.prevent @click="submitComposeMobile\(\)"/);
-    assert.match(dock, /:disabled="!terminalRW \|\| !terminalConnected \|\| !mobileComposeDraft.trim\(\)"/);
+    assert.match(dock, /:disabled="!terminalRW \|\| !terminalConnected \|\| !mobileComposeDraft.trim\(\) \|\| terminalGuardedComposePending"/);
   }
   assert.equal([...html.matchAll(/@pointerdown.prevent @click="sendTerminalKey\(key.bytes\)"/g)].length, 4);
   assert.equal([...html.matchAll(/x-for="key in terminalEssentialKeys\(\)"/g)].length, 2);
@@ -4479,7 +4582,24 @@ test("board width ignores folder path length while columns retain their minimum"
 
   assert.ok(classes.includes("min-w-0"));
   assert.ok(!classes.includes("min-w-min"));
-  assert.match(board, /:class="isCollapsed\(col\.key\) \? 'w-9 flex-none' : 'flex-1 min-w-\[280px\] basis-0'"/);
+  assert.match(board, /x-for="col in expandedColumns\(\)"[\s\S]*?class="kanban-col\b[^>]*min-w-\[280px\]/);
+});
+
+test("one hidden-status rail keeps keyboard expansion and the per-column drop host", () => {
+  const board = elementWithId(htmlNoComments(), 'board-cols');
+  const columns = board.indexOf('x-for="col in expandedColumns()"');
+  const at = board.indexOf('aria-label="Hidden statuses"');
+  assert.ok(columns >= 0 && at > columns, 'rail follows expanded columns');
+  assert.equal((board.match(/aria-label="Hidden statuses"/g) || []).length, 1);
+  const rail = elementAt(board, at);
+  assert.match(rail, /x-show="collapsedColumns\(\)\.length"/);
+  assert.match(rail, /x-for="col in collapsedColumns\(\)"/);
+  assert.match(rail, /role="button" tabindex="0"/);
+  assert.match(rail, /:aria-label="[^"]*col\.label/);
+  assert.match(rail, /boardTickets\(col\.key\)\.length/);
+  assert.match(rail, /:id="'col-' \+ col\.key"[^>]*:data-drop-status="col\.dropStatus"[^>]*x-data="boardSortableOwner\(col\.key\)"/);
+  assert.match(board, /class="col-head-label"[^>]*:data-tip="col\.tip"/);
+  assert.match(board, /x-text="colNote\(col\.key\)"/);
 });
 
 test("index.html column owner drops the render state Alpine just invalidated", () => {
@@ -4543,8 +4663,9 @@ test("index.html gates both empty-board panels on ticketBoardEmpty", () => {
   assert.ok(boardView.includes('id="board-empty-desktop"'), "desktop panel sits under the !loading board view");
   const mobileView = elementAt(html, html.indexOf('class="mobile-board-layer"'));
   assert.match(mobileView, /^<div x-show="!loading && currentView === 'board'"/);
-  assert.match(mobileView, /<template x-if="!needsInputOnly && ticketBoardEmpty\(\)">\s*<div id="board-empty-mobile"/);
-  assert.match(mobileView, /x-show="!ticketBoardEmpty\(\) && !ticketsLoadError && !ticketSourcesFailed\(\) && !mobileTicketList\(\)\.rows\.length && !mobileTicketList\(\)\.epics\.length && \(!needsInputOnly \|\| needsInputCount\)"/);
+  assert.match(mobileView, /<template x-if="!mobileColumnKey && !needsInputOnly && ticketBoardEmpty\(\)">\s*<div id="board-empty-mobile"/);
+  assert.match(mobileView, /x-show="!mobileColumnKey && !ticketBoardEmpty\(\) && !ticketsLoadError && !ticketSourcesFailed\(\) && !mobileTicketList\(\)\.rows\.length && !mobileTicketList\(\)\.epics\.length"/);
+  assert.match(mobileView, /x-text="needsInputOnly \? 'No agents need input among tickets matching your filters\.' : 'No tickets match the current filters and search\.'"/);
 });
 
 test("ticketBoardEmpty requires a successful load and no raw tickets, regardless of search", () => {
@@ -5353,7 +5474,7 @@ test('desktop and mobile native fieldsets disable every description and settings
   assert.equal(fieldsets.filter(([, , content]) => /x-model="editForm.body"/.test(content)).length, 2);
   assert.equal(fieldsets.filter(([, , content]) => /x-model="editForm.pipeline"/.test(content)).length, 2);
   for (const [, disabled] of fieldsets) assert.match(disabled, /lifecycleBusy\(selectedTicket\)/);
-  const tooltip = 'Move into primary without starting work. Related tickets are not moved; references resolve in primary.';
+  const tooltip = String.raw`Moves the ticket file into this daemon\'s tickets folder. Doesn\'t start work.`;
   assert.equal(html.split(`selectedTicket?.refusal_reason || '${tooltip}'`).length - 1, 2);
 });
 
@@ -6633,10 +6754,9 @@ test("the init modal's header band names the transition the ticket is about to m
 
   assert.match(html, /<template x-if="initForm\.status && initForm\.status !== 'todo'">/);
   assert.match(html, /x-text="statusLabel\(initForm\.status\)"/);
-  assert.match(html, /class="status-chip status-chip-sm" data-status="todo">Todo</);
+  assert.match(html, /class="status-chip status-chip-sm" data-status="todo">Queued</);
   assert.match(html, /<h2 id="init-modal-title"/);
-  // The modal's tag differs from a card's in size alone, so it adds a class to
-  // .title-tag instead of restating the family, weight and colour.
+  // Keep the separate size variant for the modal's title tag.
   assert.match(html, /class="title-tag init-title-tag" :data-pipe-color="pipelineColorByName\(initForm\.tag\)"/);
   assert.match(html, /\.title-tag\.init-title-tag \{ font-size: 13px; \}/);
 });
@@ -6645,7 +6765,8 @@ test("the init modal states what starting the ticket does", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
   assert.ok(html.includes(`x-text="initStages().length ? 'starts at ' + initStages()[0] : 'single run, no stages'"`));
-  assert.ok(html.includes('This requests pickup. Unresolved dependencies can keep the ticket out of the queue.'));
+  assert.ok(html.includes('Saves these settings and requests a run. Unresolved dependencies can block pickup.'));
+  assert.match(html, /initSubmitting \? 'Starting…' : \(initForm.kind === 'epic' \? 'Start epic' : 'Set up and run'\)/);
   // The stages moved out of the select's option labels and into the strip.
   const select = html.slice(html.indexOf('id="init-pipeline"'));
   const options = select.slice(0, select.indexOf("</select>"));
@@ -6766,7 +6887,7 @@ test('pickup preserves a managed draft’s persisted standalone pipeline', async
   assert.equal(writes[0][0], '/api/tickets/kon-solo/init');
   assert.equal(writes[0][1].pipeline, 'none');
   assert.equal(state.initModal, false);
-  assert.equal(state.toast, 'kon-solo: Pickup requested');
+  assert.equal(state.toast, 'kon-solo: Run requested');
 });
 
 test("the pipeline badge names a project only when the pipeline came from it", async () => {
@@ -9071,10 +9192,6 @@ test("index.html wires the settings shell to the guard and the section rail", ()
   assert.match(html, /<template x-if="!loading && currentView === 'settings'">/);
   assert.match(html, /w-\[214px\][^"]*bg-surface-frame border-r border-surface-700\/50/);
 
-  // The board's search box shrinks so the three-column settings layout fits.
-  assert.match(html, /flex-1 min-w-\[120px\] max-w-\[300px\] relative/);
-  assert.equal(html.includes('class="w-[300px] relative"'), false);
-
   // The 501 state offers no way to edit or save: it renders before the
   // settingsState === 'ok' template, and every editable control is inside it.
   const empty = html.slice(
@@ -9746,36 +9863,59 @@ test("escape clears the settings search without unwinding the global escape chai
   }
 });
 
-test("slash focuses the settings search, and only there", () => {
-  const focused = [];
-  const search = { focus: () => focused.push("settings-search") };
-  const state = loadKontoraState({
-    document: {
-      getElementById: (id) => (id === "settings-search" ? search : null),
-      querySelector: () => null,
-      hasFocus: () => true,
-      addEventListener() {},
-      removeEventListener() {},
-    },
-  });
-  const press = (key, target) => {
+test("slash focuses the visible desktop filter or settings search without stealing typed input", () => {
+  for (const [view, visible, mobile, tagName, expected] of [
+    ['board', true, false, 'DIV', ['filter:focus', 'filter:select']],
+    ['board', false, false, 'DIV', []],
+    ['board', true, true, 'DIV', []],
+    ['board', true, false, 'INPUT', []],
+    ['board', true, false, 'TEXTAREA', []],
+    ['settings', true, false, 'DIV', ['settings:focus']],
+    ['settings', true, false, 'INPUT', []],
+  ]) {
+    const actions = [];
+    const nodes = {
+      'board-filter': { getClientRects: () => visible ? [{}] : [], focus: () => actions.push('filter:focus'), select: () => actions.push('filter:select') },
+      'settings-search': { focus: () => actions.push('settings:focus') },
+    };
+    const state = loadKontoraState({ document: { getElementById: id => nodes[id] || null } });
+    state.currentView = view;
+    state.isMobile = mobile;
     let prevented = false;
-    state._handleKeySequence({ key, target, preventDefault: () => { prevented = true; } });
-    return prevented;
-  };
+    state._handleKeySequence({ key: '/', target: { tagName }, preventDefault: () => { prevented = true; } });
+    const name = `${view}: visible=${visible}, mobile=${mobile}, target=${tagName}`;
+    assert.deepEqual(actions, expected, name);
+    assert.equal(prevented, expected.length > 0, name);
+  }
+});
 
-  state.currentView = "board";
-  assert.equal(press("/", { tagName: "DIV" }), false);
-  assert.deepEqual(focused, []);
-
-  state.currentView = "settings";
-  assert.equal(press("/", { tagName: "DIV" }), true);
-  assert.deepEqual(focused, ["settings-search"]);
-
-  // Typing a "/" into the search box itself, or into the terminal, is a "/".
-  assert.equal(press("/", { tagName: "INPUT" }), false);
-  assert.equal(press("/", { tagName: "TEXTAREA" }), false);
-  assert.deepEqual(focused, ["settings-search"]);
+test("the running pill respects navigation guards and expands In progress before scrolling", async () => {
+  for (const [allow, reduceMotion] of [[false, false], [true, false], [true, true]]) {
+    const scrolls = [], destinations = [];
+    const state = loadKontoraState({
+      window: { innerWidth: 1200, matchMedia: () => ({ matches: reduceMotion }) },
+      document: { getElementById: id => id === 'col-in_progress' ? {
+        closest(selector) {
+          assert.equal(selector, '.kanban-col');
+          assert.equal(state.isCollapsed('in_progress'), false);
+          return { scrollIntoView: options => scrolls.push(options) };
+        },
+      } : null },
+    });
+    state.$nextTick = async fn => fn?.();
+    state.toggleColumnCollapsed('in_progress');
+    state.selectedTicket = { id: 'kon-open' };
+    state.navigateDestination = async destination => {
+      destinations.push(destination);
+      if (!allow) return false;
+      state.selectedTicket = null;
+      return true;
+    };
+    await state.showInProgress();
+    assert.deepEqual(vmValue(destinations), [{ view: 'board', revealColumn: 'in_progress' }]);
+    assert.equal(state.isCollapsed('in_progress'), !allow);
+    assert.deepEqual(Array.from(scrolls, options => options.behavior), allow ? [reduceMotion ? 'auto' : 'smooth'] : []);
+  }
 });
 
 // ── Agent picker ─────────────────────────────────────────────────────────
@@ -9900,56 +10040,183 @@ test('phone status picker offers the grouped view, all statuses, and the current
   const picker = html.match(/<select\b[^>]*\bx-model="mobileStatusFilter"[^>]*>[\s\S]*?<\/select>/)?.[0];
   assert.ok(picker, 'phone board has a status picker');
   assert.doesNotMatch(picker, /:disabled=/, 'status remains editable during search');
-  assert.match(picker, /<option value=":attention">In progress first<\/option>/);
+  assert.match(picker, /<option value=":attention">Default<\/option>/);
   assert.match(picker, /<option value=":all">All statuses<\/option>/);
   assert.match(picker, /<template x-for="col in columns" :key="col.key">\s*<option :value="col.key" :selected="mobileStatusFilter === col.key" x-text="col.label">/);
 });
 
-test('phone list groups active runs before attention and other tickets and respects filters', () => {
+function mobileGroupKeys(state) {
+  return Array.from(state.mobileListGroups(), group =>
+    [group.key, Array.from(group.rows, ticket => state.ticketKey(ticket))]);
+}
+
+test('phone home projects prioritized runs, a four-ticket Open preview, and list counts', () => {
   const state = loadKontoraState();
-  const waiting = { id: 'waiting', title: 'Needs an answer', status: 'in_progress', kontora: true, waiting_for_input: true };
+  const waiting = { id: 'waiting', title: 'Needs an answer', status: 'in_progress', kontora: true,
+    waiting_for_input: true, started_at: '2026-05-01T00:00:00Z' };
   state.configCache = { custom_statuses: ['awaiting_data'] };
   state.tickets = [
-    { id: 'same', title: 'Shared name', status: 'open' },
-    waiting,
+    ...Array.from({ length: 5 }, (_, i) => ({ id: `open-${i + 1}`, title: 'Draft', status: 'open',
+      created_at: `2026-05-0${i + 1}T12:00:00Z` })),
     { ...waiting, id: 'paused', status: 'paused' },
     { id: 'idle', title: 'Run stopped', status: 'in_progress', execution_active: false },
-    { id: 'active', title: 'Running with a custom status', status: 'awaiting_data', execution_active: true },
-    { id: 'review', title: 'Shared name in review', status: 'human_review' },
+    { id: 'active-old', title: 'Older run', status: 'in_progress', started_at: '2026-05-02T00:00:00Z' },
+    { id: 'active-new', title: 'Custom-status run', status: 'awaiting_data', execution_active: true, started_at: '2026-05-03T00:00:00Z' },
+    waiting,
+    { id: 'todo', title: 'Awaiting pickup', status: 'todo' },
+    { id: 'review', title: 'Awaiting review', status: 'human_review' },
+    { id: 'done', title: 'Completed', status: 'done' },
+    { id: 'passive', kind: 'epic', title: 'Passive epic', status: 'open' },
   ];
-  state.secondaryTickets = [{ id: 'same', source: 'team', title: 'Shared name', status: 'done' }];
-  const keys = () => Array.from(state.mobileTickets(), t => state.ticketKey(t));
-  const headings = () => vmValue(state.mobileTicketList().headings);
   state.recomputeBoard();
-  assert.equal(state.mobileFilterLabel(), 'In progress first');
-  assert.deepEqual(headings(), { 0: 'In progress (1)', 1: 'Needs attention (2)', 3: 'Other tickets' });
-  assert.deepEqual(keys(), ['active', 'waiting', 'review', 'same', 'idle', 'paused', 'team/same']);
+  assert.equal(state.mobileHomeFiltered(), false);
+  assert.equal(state.mobileFilterLabel(), 'Default');
+  assert.deepEqual(mobileGroupKeys(state), [
+    ['in_progress', ['waiting', 'active-new', 'active-old', 'paused', 'todo', 'idle']],
+    ['open', ['open-5', 'open-4', 'open-3', 'open-2']],
+  ]);
+  assert.deepEqual(Object.fromEntries(state.mobileHomeTiles().map(({ key, count }) => [key, count])),
+    { in_progress: 6, input: 1, open: 5, human_review: 1 });
+  assert.deepEqual(Object.fromEntries(state.mobileHomeLinks().map(({ key, count }) => [key, count])),
+    { human_review: 1, done: 1, cancelled: 0, awaiting_data: 1, ':epics': 1, ':archive': undefined });
+  assert.deepEqual(Array.from(state.mobileTicketList().epics, epic => epic.id), ['passive']);
+  assert.deepEqual(Array.from(state.mobileTicketList().waiting, ticket => ticket.id), ['waiting']);
 
+  state.searchQuery = '   ';
+  assert.equal(state.mobileHomeFiltered(), false, 'whitespace does not replace the home projection');
+  assert.equal(state.mobileListGroups()[1].rows.length, 4);
   state.mobileStatusFilter = ':all';
-  assert.deepEqual(headings(), {});
-  assert.deepEqual(keys(), ['same', 'waiting', 'idle', 'paused', 'review', 'active', 'team/same']);
-  state.mobileStatusFilter = 'done';
-  assert.equal(state.mobileFilterLabel(), 'Done');
-  assert.deepEqual(keys(), ['team/same']);
+  assert.equal(state.mobileHomeFiltered(), true, 'All statuses switches from home to grouped results');
+  assert.deepEqual(Array.from(state.mobileListGroups()[0].rows, ticket => ticket.id),
+    ['open-5', 'open-4', 'open-3', 'open-2', 'open-1']);
+});
 
+test('phone search groups by status and intersects Project, Agent, status, and source filters', () => {
+  const state = loadKontoraState();
+  const match = { id: 'same', title: 'Shared name', status: 'open', path: '/work/backend', agent: 'claude' };
+  state.configCache = { projects: [{ name: 'Repo', path: match.path }, { name: 'Repo-tools', path: '/work/tools' }] };
+  state.ticketSources = [{ id: 'team', path: '/shared/tickets', available: true }];
+  state.tickets = [
+    match,
+    { ...match, id: 'review', status: 'human_review' },
+    { ...match, id: 'wrong-project', status: 'in_progress', path: '/work/tools' },
+    { ...match, id: 'wrong-agent', status: 'cancelled', agent: 'claude-alt' },
+    { ...match, id: 'wrong-text', title: 'Unrelated', status: 'done' },
+  ];
+  state.secondaryTickets = [{ ...match, source: 'team', status: 'done' }];
   state.searchQuery = 'Shared name';
   state.recomputeBoard();
-  assert.equal(state.mobileFilterLabel(), 'Done');
-  assert.deepEqual(keys(), ['team/same']);
-  assert.equal(state.mobileStatusFilter, 'done', 'search does not rewrite the selection');
-  state.mobileStatusFilter = ':attention';
-  assert.deepEqual(headings(), { 0: 'Needs attention (1)', 1: 'Other tickets' });
-  assert.deepEqual(keys(), ['review', 'same', 'team/same'], 'namesakes remain distinct across folders');
-  state.mobileStatusFilter = 'done';
-  state.sourceFilter = 'team';
-  state.recomputeBoard();
-  assert.deepEqual(keys(), ['team/same'], 'search still respects the selected folder');
+  assert.equal(state.mobileHomeFiltered(), true);
+  assert.deepEqual(mobileGroupKeys(state), [
+    ['open', ['same']], ['in_progress', ['wrong-project']], ['human_review', ['review']],
+    ['done', ['team/same']], ['cancelled', ['wrong-agent']],
+  ]);
+  state.mobileProjectFilter = 'Repo';
+  assert.deepEqual(mobileGroupKeys(state), [
+    ['open', ['same']], ['human_review', ['review']], ['done', ['team/same']], ['cancelled', ['wrong-agent']],
+  ]);
+  state.mobileAgentFilter = 'claude';
+  assert.deepEqual(mobileGroupKeys(state), [
+    ['open', ['same']], ['human_review', ['review']], ['done', ['team/same']],
+  ], 'both namesakes survive the exact facet intersection');
+  assert.equal(state.mobileRowMeta(match), 'Repo · claude');
+  assert.equal(state.mobileRowMeta(state.secondaryTickets[0]), 'Repo · claude · /shared/tickets');
 
-  state.sourceFilter = '';
-  state.searchQuery = '   ';
-  state.recomputeBoard();
+  state.mobileStatusFilter = 'done';
   assert.equal(state.mobileFilterLabel(), 'Done');
-  assert.deepEqual(keys(), ['team/same']);
+  assert.deepEqual(mobileGroupKeys(state), [['done', ['team/same']]]);
+  state.sourceFilter = 'primary';
+  assert.deepEqual(mobileGroupKeys(state), [], 'source filtering does not substitute the local namesake');
+  state.sourceFilter = 'team';
+  state.searchQuery = 'name';
+  assert.equal(state.mobileStatusFilter, 'done', 'search does not rewrite the selected status');
+  assert.deepEqual(mobileGroupKeys(state), [['done', ['team/same']]]);
+});
+
+test('phone Open selection excludes ineligible rows and prunes filtered or changed tickets', () => {
+  const state = loadKontoraState();
+  const draft = { id: 'same', title: 'Draft', status: 'open', kontora: true, path: '/work/repo' };
+  const keep = { ...draft, id: 'keep', title: 'Keep' };
+  state.mobileColumnKey = 'open';
+  state.tickets = [draft, keep, { ...draft, id: 'other-project', path: '/work/tools' },
+    { ...draft, id: 'scheduled', scheduled_at: '2026-05-03T00:00:00Z' },
+    { ...draft, id: 'unmanaged', kontora: false }];
+  state.secondaryTickets = [{ ...draft, source: 'team' }];
+  state.recomputeBoard();
+  assert.equal(state.mobileSelectionReason(state.secondaryTickets[0]), 'From another ticket folder');
+  assert.equal(state.mobileSelectionReason(state.tickets[3]), 'Already scheduled');
+  assert.equal(state.mobileSelectionReason(state.tickets[4]), 'Not initialized');
+
+  state.mobileStartSelection();
+  state.mobileToggleSelected(state.secondaryTickets[0]);
+  assert.deepEqual([...state.mobileSelection], []);
+  state.mobileToggleSelectAll();
+  assert.deepEqual([...state.mobileSelection], ['other-project', 'same', 'keep']);
+  assert.equal(state.mobileAllSelected(), true);
+  state.mobileProjectFilter = 'repo';
+  state.mobileListFilterChanged();
+  assert.deepEqual([...state.mobileSelection], ['same', 'keep']);
+
+  state.applyTicketUpdate({ ...draft, status: 'todo' });
+  state.recomputeBoard();
+  state.mobileOpenBatch();
+  assert.deepEqual([...state.mobileSelection], ['keep']);
+  assert.deepEqual(Array.from(state.sheet.items, item => [item.key, item.command.id]), [['keep', 'queue-saved']]);
+});
+
+test('phone review selection uses the shared lifecycle rules without resolving each board row again', () => {
+  const state = loadKontoraState();
+  const supervisor = { id: 'supervisor', title: 'Review supervisor', kind: 'epic', epic_execution: 'agent',
+    status: 'human_review', kontora: true };
+  const paused = { ...supervisor, id: 'passive', epic_execution: 'passive' };
+  state.mobileColumnKey = 'human_review';
+  state.tickets = [supervisor, paused];
+  state.recomputeBoard();
+  assert.deepEqual(Array.from(state.mobileReviewCommands(supervisor), command => command.id), ['retry', 'move:done']);
+  assert.deepEqual(Array.from(state.mobileReviewCommands(paused)), []);
+  state.lifecycleResolve = () => { throw new Error('select all must use the loaded board rows'); };
+  state.mobileStartSelection();
+  state.mobileToggleSelectAll();
+  assert.deepEqual([...state.mobileSelection], ['supervisor']);
+});
+
+test('phone row swipe ignores vertical drags and rechecks the ticket before queuing', () => {
+  const state = loadKontoraState({ window: { innerWidth: 390 } });
+  const draft = { id: 'swipe', status: 'open', kontora: true };
+  state.tickets = [draft];
+  const captured = [];
+  const row = { isConnected: true, setPointerCapture: id => captured.push(id) };
+  const pointer = (clientX, clientY) => ({ clientX, clientY, pointerId: 1, button: 0, currentTarget: row,
+    target: { closest: name => name === '.mobile-ios-row-open' } });
+  const queued = [];
+  state.mobileQueueSaved = key => queued.push(key);
+
+  state.mobileRowPointerDown(pointer(100, 100), draft);
+  state.mobileRowPointerMove(pointer(105, 130));
+  state.mobileRowPointerUp(pointer(200, 130));
+  assert.deepEqual(captured, [], 'vertical movement stays scrollable');
+  assert.deepEqual(queued, []);
+
+  state.mobileRowPointerDown(pointer(100, 100), draft);
+  state.mobileRowPointerMove(pointer(120, 100));
+  state.tickets = [{ ...draft, status: 'todo' }];
+  state.mobileRowPointerUp(pointer(200, 100));
+  assert.deepEqual(captured, [1]);
+  assert.deepEqual(queued, [], 'the swipe cannot queue a ticket that changed while being dragged');
+
+  state.tickets = [draft];
+  state.mobileRowPointerDown(pointer(100, 100), draft);
+  state.mobileRowPointerMove(pointer(120, 100));
+  state.mobileRowPointerUp(pointer(200, 100));
+  assert.deepEqual(queued, ['swipe']);
+  const suppressed = [];
+  const click = detail => ({ detail, preventDefault: () => suppressed.push('prevent'), stopImmediatePropagation: () => suppressed.push('stop') });
+  state.mobileSuppressRowClick(click(0), draft);
+  state.mobileSuppressRowClick(click(1), { ...draft, source: 'team' });
+  assert.deepEqual(suppressed, [], 'keyboard and namesake clicks still work');
+  state.mobileSuppressRowClick(click(1), draft);
+  state.mobileSuppressRowClick(click(1), draft);
+  assert.deepEqual(suppressed, ['prevent', 'stop'], 'only the swipe-generated click is consumed');
 });
 
 for (const geometry of [
@@ -9988,7 +10255,8 @@ for (const visualViewport of [false, true]) {
     assert.ok(dom.document.listeners.every(l => l.options === true));
     assert.equal(dom.viewport?.listeners.length || 0, visualViewport ? 2 : 0);
     const watchKeys = ['currentView', 'mobileAgentFilter', 'mobileProjectFilter', 'mobileStatusFilter', 'needsInputOnly', 'searchQuery', 'selectedEpic', 'selectedTicket', 'sheet', 'sourceFilter'];
-    assert.deepEqual([...watches.keys()].sort(), watchKeys);
+    assert.deepEqual([...watches.keys()].filter(key => key !== '_board').sort(), watchKeys);
+    const registeredWatches = watches.size;
     assert.equal(state.isMobile, true);
     dom.window.innerHeight = 400;
     if (dom.viewport) { dom.viewport.height = 200; dom.viewport.width = 100; }
@@ -10014,7 +10282,7 @@ for (const visualViewport of [false, true]) {
     assert.equal(dom.window.listeners.length, 0);
     assert.equal(dom.document.listeners.length, 0);
     assert.equal(dom.viewport?.listeners.length || 0, 0);
-    assert.equal(unwatched, watchKeys.length);
+    assert.equal(unwatched, registeredWatches);
     assert.equal(watches.size, 0);
     assert.equal(dom.style.getPropertyValue('--mobile-vv-top'), '7px');
     assert.equal(dom.style.getPropertyPriority('--mobile-vv-top'), 'important');
@@ -10861,16 +11129,16 @@ test("drilling into a paused ticket lists its legal moves then the three tab tar
   assert.deepEqual(groupLabels(state), ["Actions", "Open"]);
   const actions = groupIn(state, "Actions");
   assert.equal(actions.hint, "paused · 6 legal");
-  assert.deepEqual(rowTitles(actions.items), ['Retry stage', 'Move to Open', 'Move to Todo', 'Move to Human Review', 'Move to Done', 'Move to Cancelled']);
+  assert.deepEqual(rowTitles(actions.items), ['Run again from plan', 'Set status to Open', 'Set status to Queued', 'Set status to Human review', 'Set status to Done', 'Set status to Cancelled']);
   assert.deepEqual(rowTitles(groupIn(state, "Open").items),
     ["Open logs", "Open summary", "Open ticket body"]);
 });
 
-test("an unmanaged ticket gets Initialize before its other moves", () => {
+test("an unmanaged ticket gets Set up and run before its status destinations", () => {
   const state = paletteState();
   state.palettePush("gol-3");
 
-  assert.deepEqual(rowTitles(groupIn(state, "Actions").items), ['Initialize', 'Move to Todo', 'Move to Human Review', 'Move to Done', 'Move to Cancelled']);
+  assert.deepEqual(rowTitles(groupIn(state, "Actions").items), ['Set up and run…', 'Set status to Queued', 'Set status to Human review', 'Set status to Done', 'Set status to Cancelled']);
 });
 
 test("the palette offers no Delete anywhere", () => {
@@ -11082,7 +11350,7 @@ test("an action carrying a target status dispatches its stable move descriptor",
   await state.paletteRun(state._paletteRows.find((r) => r.id === 'action:kon-1:move:human_review'), false);
 
   assert.deepEqual(vmValue(calls), [['kon-1', 'move:human_review', 'human_review']]);
-  assert.equal(state.toast, 'kon-1 move to human review');
+  assert.equal(state.toast, 'kon-1: Status set to Human review');
 });
 
 test("a failed action is not confirmed as done", async () => {
@@ -11324,7 +11592,7 @@ test("the legal-move count in the scope header does not move with the query", ()
   state.onPaletteQueryChanged();
 
   assert.equal(groupIn(state, "Actions").hint, "paused · 6 legal");
-  assert.deepEqual(rowTitles(groupIn(state, "Actions").items), ["Move to Cancelled"]);
+  assert.deepEqual(rowTitles(groupIn(state, "Actions").items), ["Set status to Cancelled"]);
 });
 
 test("hovering a row moves the highlight to it", () => {
@@ -11425,15 +11693,19 @@ test("the palette leads the Escape stack and the highlight follows the mouse, no
   assert.equal(/@mouseenter="paletteHover/.test(html), false);
 });
 
-test("the filter input keeps a plain filter and a ⌘K keycap", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
-
+test("the desktop filter keeps its slash hint and a separate command-palette button", () => {
+  const html = htmlNoComments();
+  const at = html.indexOf('class="desktop-board-search ');
+  const filter = elementAt(html, at);
   // The autocomplete dropdown and its handlers are gone.
-  assert.equal(/searchOpen|suggestions|selectedIndex|updateSuggestions|applySuggestion|acceptSelection|moveSelection|flatIndex/.test(html), false);
-  assert.match(html, /x-show="!searchQuery" @click="openPalette\(\)"/);
-  assert.match(html, /x-text="isMac \? '⌘K' : 'Ctrl K'"/);
-  // Room for the keycap next to the clear button.
-  assert.match(html, /placeholder="Filter tickets…"[\s\S]{0,200}?pr-11/);
+  assert.doesNotMatch(filter, /searchOpen|suggestions|selectedIndex|updateSuggestions|applySuggestion|acceptSelection|moveSelection|flatIndex/);
+  assert.match(filter, /class="desktop-board-search\b[^>]*\bflex-1\b[^>]*min-w-\[140px\][^>]*max-w-\[320px\]/);
+  assert.match(filter, /<input\b[^>]*id="board-filter"[^>]*x-model="searchQuery"[^>]*placeholder="Filter tickets"/);
+  assert.match(filter, /x-show="searchQuery" @click="clearSearch\(\)"/);
+  assert.match(filter, /<kbd\b[^>]*x-show="!searchQuery"[^>]*>\/<\/kbd>/);
+  assert.doesNotMatch(filter, /openPalette\(\)/);
+  const desktopHeader = html.slice(html.lastIndexOf('<header', at), html.indexOf('</header>', at));
+  assert.match(desktopHeader, /<button\b[^>]*@click="openPalette\(\)"[^>]*aria-label="Open command palette"[^>]*x-text="isMac \? '⌘K' : 'Ctrl K'"/);
 });
 
 test("the palette animations are dropped under reduced motion", () => {
@@ -12051,6 +12323,19 @@ test("selecting and closing a ticket writes and clears the hash", async () => {
   assert.equal(state.selectedTicket, null);
 });
 
+test("changing or closing the selected ticket clears Run confirmation", async () => {
+  const { state } = routerState('#/');
+  state.tickets = [{ id: 'kon-first', status: 'open' }, { id: 'kon-next', status: 'open' }];
+  await state.selectTicket(state.tickets[0]);
+  state.runConfirmOpen = true;
+  await state.selectTicket(state.tickets[1]);
+  assert.equal(state.runConfirmOpen, false);
+  assert.equal(state.selectedTicket.id, 'kon-next');
+  state.runConfirmOpen = true;
+  state.closeDetail();
+  assert.equal(state.runConfirmOpen, false);
+});
+
 test("a hash naming an unknown ticket falls back to the board", async () => {
   const { state, location } = routerState("#/t/ghost");
   state.tickets = [{ id: "kon-1", status: "todo" }];
@@ -12080,7 +12365,8 @@ for (const row of [
   { name: 'summary phone', mobile: true, status: 'done', summary: 'Result' },
   { name: 'completed desktop', mobile: false, status: 'done', activity: 1 },
   { name: 'summary desktop', mobile: false, status: 'done', summary: 'Result', activity: 1 },
-  { name: 'running phone', mobile: true, status: 'in_progress', terminal: 1 },
+  { name: 'running phone', mobile: true, status: 'in_progress', pane: 'ticket' },
+  { name: 'running desktop', mobile: false, status: 'in_progress', pane: 'terminal', terminal: 1 },
   { name: 'open phone', mobile: true, status: 'open', history: [] },
   { name: 'secondary phone', mobile: true, status: 'done', source: 'team' },
   { name: 'imported phone', mobile: true, status: 'done', history: [{ stage: 'code', imported: true }] },
@@ -12107,6 +12393,7 @@ for (const row of [
     assert.equal(requests.filter(url => /\/activity(?:\?|$)/.test(url)).length, row.activity || 0);
     assert.equal(requests.filter(url => /\/logs(?:\?|$)/.test(url)).length, row.logs || 0);
     assert.equal(terminals, row.terminal || 0);
+    if (row.pane) assert.equal(state.detailTab, row.pane);
     state.closeDetail(false);
   });
 }
@@ -12202,6 +12489,19 @@ test("the ribbon sizes each stage by its real duration", () => {
   assert.equal(segs[2].seconds, 0, "a stage with no run has no duration");
   assert.equal(segs[2].state, "queued");
   assert.equal(segs[2].meta, "not started");
+});
+
+test("fresh desktop ribbons mark exactly where execution will start without marking earlier stages done", () => {
+  const stages = ['plan', 'code', 'review'];
+  for (const [status, stage, start] of [['open', '', 'plan'], ['open', 'code', 'code'], ['todo', 'review', 'review']]) {
+    const state = pageState({ id: 'kon-preview', status, stage, stages });
+    state.isMobile = false;
+    assert.deepEqual(Array.from(state.stageRibbon(), seg => [seg.name, seg.state, seg.meta, seg.startsHere]),
+      stages.map(name => [name, 'queued', name === start ? 'starts here' : 'not started', name === start]));
+    assert.deepEqual(vmValue(state.ribbonMeters()), [{ k: 'runs', v: 'none yet', muted: true }]);
+  }
+  const standalone = pageState({ id: 'kon-standalone', status: 'open' });
+  assert.deepEqual(vmValue(standalone.ribbonMeters()), []);
 });
 
 test("a long stage grows more than a short one", () => {
@@ -13296,7 +13596,7 @@ test('phone Output retains activity controls, shared scroller, selectors and fou
 
   const tabs = html.split('<nav class="mobile-detail-tabs flex" aria-label="Ticket panels">')[1].split('</nav>')[0];
   assert.equal((tabs.match(/class="mobile-tab"/g) || []).length, 4);
-  for (const [tab, label] of [['ticket', 'Ticket'], ['notes', 'Notes'], ['output', 'Output'], ['changes', 'Committed changes']]) {
+  for (const [tab, label] of [['ticket', 'Ticket'], ['notes', 'Notes'], ['output', 'Output'], ['changes', 'Changes']]) {
     const button = [...tabs.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)]
       .find(([markup]) => markup.includes(`@click="mobileSwitchPanel('${tab}')"`));
     assert.ok(button, tab + ' remains reachable regardless of run history');
@@ -13565,7 +13865,7 @@ for (const [label, refs, snapshot] of [
   ['base is cleared', { base_branch: undefined }, true],
   ['branch is removed', { branch: undefined }, true],
   ['repository is removed', { path: '' }, true],
-]) test(`Committed changes invalidates cached and late results when the ${label}`, async () => {
+]) test(`Changes invalidates cached and late results when the ${label}`, async () => {
   const ticket = { id: 'kon-compare', status: 'human_review', path: '/repo', branch: 'feature', base_branch: 'develop' };
   const updated = { ...ticket, ...refs };
   for (const key of Object.keys(refs)) if (updated[key] === undefined) delete updated[key];
@@ -13617,7 +13917,7 @@ for (const [label, refs, snapshot] of [
   }
 });
 
-test("Committed changes explains a missing repository instead of reporting an empty comparison", () => {
+test("Changes explains a missing repository instead of reporting an empty comparison", () => {
   const markup = kontoraDetailMarkup().detailChangesMarkup;
   assert.match(markup, /x-show="!isSecondary\(selectedTicket\) && selectedTicket\?\.branch && !selectedTicket\.path"[^>]*>Cannot compare commits: no repository path is stored for this ticket\./);
   assert.match(markup, /x-if="canCompareChanges\(\) && !ticketChangesLoading && !ticketChangesError"/);
@@ -13626,7 +13926,7 @@ test("Committed changes explains a missing repository instead of reporting an em
 test("changed-file overflow names the omitted files", () => {
   const button = indexMarkup().match(/<button type="button" x-show="churn\(\)\.more > 0"[^>]*x-text="([^"]+)"/);
   assert.ok(button);
-  for (const [more, name] of [[1, '1 more file in Committed changes'], [2, '2 more files in Committed changes']]) {
+  for (const [more, name] of [[1, '1 more file in Changes'], [2, '2 more files in Changes']]) {
     assert.equal(vm.runInNewContext(button[1], { churn: () => ({ more }) }), name);
   }
 });
@@ -13661,9 +13961,7 @@ test("files with equal churn are ordered by path", () => {
   assert.deepEqual(state.churn().top.map((f) => f.path), first, "repeated renders agree");
 });
 
-// The relation refs the daemon resolves for the rail: an epic above, two
-// blockers of which one is gone from the tickets dir, one dependent, and more
-// links than the rail shows at once.
+// Resolved and missing refs from the daemon, plus the parent and dependents.
 const RELATION_TICKET = {
   id: "kon-r1",
   status: "todo",
@@ -13676,51 +13974,10 @@ const RELATION_TICKET = {
   links: Array.from({ length: 10 }, (_, i) => ({ id: `kon-l${i}`, title: `Related ${i}`, status: "done" })),
 };
 
-test("the rail lists the frontmatter relations and drops the rows with nothing in them", () => {
-  const cases = [
-    {
-      name: "every relation set",
-      ticket: RELATION_TICKET,
-      want: ["parent", "deps", "blocks", "links"],
-    },
-    {
-      name: "one row only",
-      ticket: { id: "kon-r2", deps: [], links: [{ id: "kon-l0", status: "done" }] },
-      want: ["links"],
-    },
-    { name: "no relations", ticket: { id: "kon-r3" }, want: [] },
-    { name: "no ticket open", ticket: null, want: [] },
-  ];
-
-  for (const c of cases) {
-    const state = pageState(c.ticket);
-    // Spread, because the component builds the row list inside the VM realm and
-    // the strict assert compares prototypes.
-    assert.deepEqual([...state.relationRows().map((r) => r.key)], c.want, c.name);
-  }
-});
-
-test("a relation row shows the first eight refs until it is expanded", () => {
+test("a relation tooltip names the ticket's status or says it was not found", () => {
   const state = pageState(RELATION_TICKET);
-  const links = state.relationRows().find((r) => r.key === "links");
-
-  assert.equal(state.relationRefs(links).length, 8);
-  assert.equal(state.relationHidden(links), 2);
-
-  state.relExpanded[links.key] = true;
-  assert.equal(state.relationRefs(links).length, 10);
-  assert.equal(state.relationHidden(links), 0);
-
-  // A row inside the cap never offers the reveal.
-  const deps = state.relationRows().find((r) => r.key === "deps");
-  assert.equal(state.relationHidden(deps), 0);
-});
-
-test("a relation chip wears the status of the ticket it names, and says when there is none", () => {
-  const state = pageState(RELATION_TICKET);
-  const [blocker, gone] = state.relationRows().find((r) => r.key === "deps").refs;
-
-  assert.equal(state.relationChipClass(blocker), "ent ent-ticket text-surface-600");
+  const [blocker, gone] = RELATION_TICKET.deps;
+  assert.equal(state.relationKnown(blocker), true);
   assert.deepEqual({ ...state.ticketTip(blocker) }, {
     tag: "",
     tagColor: "none",
@@ -13731,18 +13988,16 @@ test("a relation chip wears the status of the ticket it names, and says when the
 
   // The frontmatter still points at kon-gone, so it stays on screen. The daemon
   // found no ticket for it, so it is not a link.
-  assert.equal(state.relationChipClass(gone), "ent ent-ticket text-surface-600 ent-ticket-gone");
+  assert.equal(state.relationKnown(gone), false);
   assert.deepEqual({ ...state.ticketTip(gone) }, {
     tag: "",
     tagColor: "none",
     title: "kon-gone",
-    body: "not in the tickets dir",
+    body: "not found",
     hint: "",
   });
 
-  // A running dependent carries the colour the board column uses.
   const running = { id: "kon-run", title: "Running", status: "in_progress" };
-  assert.equal(state.relationChipClass(running), "ent ent-ticket text-st-progress");
   assert.equal(state.ticketTip(running).body, "running");
 });
 
@@ -13795,125 +14050,49 @@ const CHAIN_PAYLOAD = {
 
 const chainState = (chain, ticket = { id: "pca-d3q9", status: "todo" }) => pageState(ticket, { chain });
 
-test("the ladder rows step by depth and close each run at the elbow", () => {
-  const rows = vmValue(chainState(CHAIN_PAYLOAD).chainRows());
-
-  assert.deepEqual(rows.map((r) => r.id), ["pca-itf5", "pca-csyi", "pca-qv0y", "pca-u8ax", "pca-d3q9", "pca-uvby"]);
-  // One 16px step per depth layer, which is what draws the staircase.
-  assert.deepEqual(rows.map((r) => r.indent), [0, 0, 0, 16, 32, 48]);
-  // The run is the block sharing a depth: only its final row stops the stem,
-  // because the next depth's gutter is a step to the right.
-  assert.deepEqual(rows.map((r) => r.last), [false, false, true, true, true, true]);
-  assert.deepEqual(rows.map((r) => r.is_self), [false, false, false, false, true, false]);
-  // The meta cell names what the row itself is waiting for, counting deps the
-  // chain does not carry. A node with no deps says nothing at all.
-  assert.deepEqual(rows.map((r) => r.meta), ["", "", "", "waits on 1 of 3", "waits on 1 of 1", "waits on 1 of 1"]);
-});
-
-test("a ladder row for a ticket that is gone is not painted as a link", () => {
-  const state = chainState(CHAIN_PAYLOAD);
-  const cases = [
-    { name: "the open ticket", row: { is_self: true }, want: "bg-accent/[.09]" },
-    { name: "a ticket the click opens", row: { missing: false }, want: "cursor-pointer hover:bg-surface-850/40" },
-    { name: "an id with no ticket file", row: { missing: true }, want: "ent-ticket-gone" },
-  ];
-  for (const c of cases) assert.equal(state.chainRowClass(c.row), c.want, c.name);
-});
-
-test("the ladder meta cell reads the node's own deps", () => {
-  const cases = [
-    { name: "no deps at all", node: { waits_on: { open: 0, total: 0 } }, want: "" },
-    { name: "some deps open", node: { waits_on: { open: 2, total: 5 } }, want: "waits on 2 of 5" },
-    { name: "every dep closed", node: { waits_on: { open: 0, total: 3 } }, want: "deps clear" },
-    { name: "no ticket file", node: { missing: true, waits_on: { open: 0, total: 0 } }, want: "not in the tickets dir" },
-  ];
-  const state = chainState(CHAIN_PAYLOAD);
-  for (const c of cases) assert.equal(state._chainMeta(c.node), c.want, c.name);
-});
-
-test("the chain summary says the size, the place and the state in one voice", () => {
-  const cases = [
-    {
-      name: "blocked mid-chain",
-      chain: CHAIN_PAYLOAD,
-      ticket: { id: "pca-d3q9", status: "todo" },
-      want: { text: "6 tickets · 2 done", place: "3rd of 4", state: "waiting on pca-qv0y", releases: "finishing this unblocks pca-uvby" },
-    },
-    {
-      name: "nothing blocking, and something downstream to release",
-      chain: {
-        ...CHAIN_PAYLOAD, verdict: "ready", position: 1, path_length: 2, goal: "pca-uvby", total: 2, done: 0,
-        nodes: [
-          { id: "pca-d3q9", title: "Self", status: "todo", depth: 0, direction: "self", on_critical_path: true, resolved: false, holds_chain: true, waits_on: { open: 0, total: 0 } },
-          { id: "pca-uvby", title: "Goal", status: "open", depth: 1, direction: "downstream", on_critical_path: true, resolved: false, holds_chain: false, waits_on: { open: 1, total: 1 } },
-        ],
-      },
-      ticket: { id: "pca-d3q9", status: "todo" },
-      want: { text: "2 tickets · 0 done", place: "1st of 2", state: "nothing blocking", releases: "finishing this unblocks pca-uvby" },
-    },
-    {
-      name: "the ticket is done, so the copy is retrospective",
-      chain: {
-        ...CHAIN_PAYLOAD, verdict: "ready", position: 1, path_length: 2, goal: "pca-uvby", total: 2, done: 2,
-        nodes: [
-          { id: "pca-d3q9", title: "Self", status: "done", depth: 0, direction: "self", on_critical_path: true, resolved: true, holds_chain: false, waits_on: { open: 0, total: 0 } },
-          { id: "pca-uvby", title: "Goal", status: "cancelled", depth: 1, direction: "downstream", on_critical_path: true, resolved: true, holds_chain: false, waits_on: { open: 0, total: 1 } },
-        ],
-      },
-      ticket: { id: "pca-d3q9", status: "done" },
-      want: { text: "2 tickets · 2 done", place: "1st of 2", state: "chain cleared", releases: "finishing this unblocked pca-uvby" },
-    },
-    {
-      name: "a downstream holder is not blocking the ticket, it is waiting on it",
-      chain: {
-        ...CHAIN_PAYLOAD, verdict: "ready", position: 1, path_length: 2, goal: "pca-uvby", total: 2, done: 1,
-        nodes: [
-          { id: "pca-d3q9", title: "Self", status: "done", depth: 0, direction: "self", on_critical_path: true, resolved: true, holds_chain: false, waits_on: { open: 0, total: 0 } },
-          { id: "pca-uvby", title: "Goal", status: "open", depth: 1, direction: "downstream", on_critical_path: true, resolved: false, holds_chain: true, waits_on: { open: 0, total: 1 } },
-        ],
-      },
-      ticket: { id: "pca-d3q9", status: "done" },
-      want: { text: "2 tickets · 1 done", place: "1st of 2", state: "nothing blocking", releases: "finishing this unblocked pca-uvby" },
-    },
-    {
-      name: "a cycle has no place and no ladder",
-      chain: { id: "pca-d3q9", verdict: "cycle", position: 0, path_length: 0, goal: "", total: 0, done: 0, cycle: ["pca-d3q9", "pca-u8ax", "pca-d3q9"], nodes: [] },
-      ticket: { id: "pca-d3q9", status: "todo" },
-      want: { text: "0 tickets · 0 done", place: "", state: "dependency cycle", releases: "" },
-    },
-    {
-      name: "a lone ticket counts in the singular",
-      chain: { id: "solo", verdict: "ready", position: 1, path_length: 1, goal: "solo", total: 1, done: 0, cycle: [], nodes: [{ id: "solo", title: "Solo", status: "todo", depth: 0, direction: "self", on_critical_path: true, resolved: false, holds_chain: true, waits_on: { open: 0, total: 0 } }] },
-      ticket: { id: "solo", status: "todo" },
-      want: { text: "1 ticket · 0 done", place: "1st of 1", state: "nothing blocking", releases: "" },
-    },
-  ];
-
-  for (const c of cases) {
-    const got = chainState(c.chain, c.ticket).chainSummary();
-    assert.deepEqual({ text: got.text, place: got.place, state: got.state, releases: got.releases }, c.want, c.name);
+test("Depends on counts only direct prerequisites that release dependents", () => {
+  for (const [status, done] of [
+    ['human_review', 1], ['done', 1], ['cancelled', 1], ['archived', 1], ['closed', 1],
+    ['open', 0], ['todo', 0], ['in_progress', 0], ['paused', 0], ['needs_qa', 0], [undefined, 0],
+  ]) {
+    const deps = [{ id: 'direct', status }];
+    const state = chainState(CHAIN_PAYLOAD, { id: CHAIN_PAYLOAD.id, deps });
+    const holder = CHAIN_PAYLOAD.nodes.find(n => n.holds_chain);
+    assert.deepEqual(vmValue(state.dependsOn()), vmValue({ total: 1, done, holder, others: deps }), status);
   }
 });
 
-test("the chain lookups find the holder, the goal and the direct dependents", () => {
-  const state = chainState(CHAIN_PAYLOAD, { id: "pca-d3q9", status: "todo", blocks: [{ id: "pca-uvby", status: "open" }] });
-
-  assert.equal(state.chainVerdict(), "blocked");
-  assert.equal(state.chainHolder().id, "pca-qv0y");
-  assert.equal(state.chainGoal().id, "pca-uvby");
-  // unblocks is the frontmatter edge, read off the chain for its status.
-  assert.deepEqual(vmValue(state.chainUnblocks()).map((n) => n.id), ["pca-uvby"]);
-  // One segment per node, in the ladder's own order and hue.
-  assert.deepEqual(vmValue(state.chainMeter()).map((s) => s.cls), [
-    "text-st-done bg-current", "text-st-done bg-current", "text-st-paused bg-current",
-    "text-st-open bg-current", "text-surface-600 bg-current", "text-st-open bg-current",
-  ]);
+test("Depends on shows only an upstream blocker and deduplicates it by ticket source", () => {
+  const primary = { id: 'pca-qv0y', status: 'paused' };
+  const external = { ...primary, source: 'other-folder' };
+  const missing = { id: 'pca-missing', missing: true };
+  for (const [name, holder, others] of [
+    ['direct upstream', { ...primary, source: '', direction: 'upstream' }, [external, missing]],
+    ['external upstream', { ...external, direction: 'upstream' }, [primary, missing]],
+    ['missing upstream', { ...missing, direction: 'upstream' }, [primary, external]],
+    ['self', { ...primary, direction: 'self' }, [primary, external, missing]],
+    ['downstream', { ...primary, direction: 'downstream' }, [primary, external, missing]],
+    ['no holder', null, [primary, external, missing]],
+  ]) {
+    const node = holder && { ...holder, holds_chain: true };
+    const state = chainState({ nodes: node ? [node] : [] }, { id: CHAIN_PAYLOAD.id, deps: [primary, external, missing] });
+    assert.deepEqual(vmValue(state.dependsOn()), { total: 3, done: 0, holder: node?.direction === 'upstream' ? node : null, others }, name);
+  }
+  assert.deepEqual(vmValue(pageState(null).dependsOn()), { total: 0, done: 0, holder: null, others: [] });
 });
 
-test("the resume pill only offers a move the daemon would take", () => {
+test("Related omits direct prerequisites and the indirect blocker, but keeps missing refs", () => {
+  const holder = { id: 'pca-qv0y' };
+  const unrelated = { id: 'kon-unresolved' };
+  const state = chainState(CHAIN_PAYLOAD, { ...RELATION_TICKET, id: CHAIN_PAYLOAD.id,
+    links: [...RELATION_TICKET.deps, holder, unrelated, ...RELATION_TICKET.links] });
+  assert.deepEqual(vmValue(state.relatedRefs()), [unrelated, ...RELATION_TICKET.links]);
+});
+
+test("the blocker action only offers a move for a controllable live ticket", () => {
   const cases = [
-    { name: "paused holder resumes", status: "paused", want: { id: "pca-qv0y", endpoint: "retry", label: "retry stage" } },
-    { name: "Open holder offers Request pickup", status: "open", want: { id: "pca-qv0y", endpoint: "run", label: "request pickup" } },
+    { name: "paused holder resumes", status: "paused", want: { id: "pca-qv0y", endpoint: "retry", label: "Run pca-qv0y again" } },
+    { name: "open holder offers the run form", status: "open", want: { id: "pca-qv0y", endpoint: "run", label: "Run pca-qv0y…" } },
     { name: "a running holder needs no push", status: "in_progress", want: null },
     { name: "a queued holder needs no push", status: "todo", want: null },
     { name: "a holder in review is not the pill's business", status: "human_review", want: null },
@@ -13924,10 +14103,11 @@ test("the resume pill only offers a move the daemon would take", () => {
     const chain = { ...CHAIN_PAYLOAD, nodes: CHAIN_PAYLOAD.nodes.map((n) => (n.holds_chain ? { ...n, status: c.status, source: c.source } : n)) };
     const state = chainState(chain);
     state.tickets.push(...chain.nodes.map(n => ({ ...n, kontora: true })));
-    assert.deepEqual(vmValue(state.chainResumeMove()), c.want, c.name);
+    const move = vmValue(state.chainResumeMove());
+    if (move) assert.equal(move.ref.id, c.want?.id, c.name);
+    if (move) delete move.ref;
+    assert.deepEqual(move, c.want, c.name);
   }
-
-  // No holder, and a holder with no ticket file, both offer nothing.
   assert.equal(chainState({ ...CHAIN_PAYLOAD, nodes: CHAIN_PAYLOAD.nodes.map((n) => ({ ...n, holds_chain: false })) }).chainResumeMove(), null);
   const gone = { ...CHAIN_PAYLOAD, nodes: CHAIN_PAYLOAD.nodes.map((n) => (n.holds_chain ? { ...n, status: "", missing: true } : n)) };
   assert.equal(chainState(gone).chainResumeMove(), null);
@@ -13964,7 +14144,7 @@ test("an SSE batch refetches the chain when it names a node or waits on one", ()
   assert.equal(pageState({ id: "pca-d3q9" })._chainTouchedBy([{ id: "pca-d3q9" }]), false);
 });
 
-test("deleting a node of the open chain refetches the ladder", async () => {
+test("deleting a node of the open chain refetches the dependency data", async () => {
   const listeners = {};
   let fetched = 0;
   const state = loadKontoraState({
@@ -13980,37 +14160,22 @@ test("deleting a node of the open chain refetches the ladder", async () => {
 
   listeners.ticket_deleted({ data: JSON.stringify({ id: "kon-other" }) });
   await flushMicrotasks();
-  assert.equal(fetched, 0, "a ticket outside the chain leaves the ladder alone");
+  assert.equal(fetched, 0, "a ticket outside the chain leaves dependencies alone");
 
-  // The ladder would otherwise keep drawing the gone node, holder and resume
-  // pill included.
+  // Deleting a downstream node also refetches the chain.
   listeners.ticket_deleted({ data: JSON.stringify({ id: "pca-uvby" }) });
   await flushMicrotasks();
   assert.equal(fetched, 1);
 });
 
-test("the chain opens expanded and refetches preserve the user's choice", async () => {
-  const cases = [
-    { name: "a blocked six-node chain opens expanded", chain: CHAIN_PAYLOAD },
-    { name: "a ready chain opens expanded", chain: { ...CHAIN_PAYLOAD, verdict: "ready" } },
-    { name: "a two-node chain opens expanded", chain: { ...CHAIN_PAYLOAD, total: 2 } },
-  ];
-
-  for (const c of cases) {
-    const state = loadKontoraState({ fetch: async () => ({ ok: true, json: async () => c.chain }) });
-    state.selectedTicket = { id: "pca-d3q9", status: "todo" };
-    await state.fetchChain("pca-d3q9");
-    assert.equal(state.chainCollapsed, false, c.name);
-    assert.equal(state.chainError, null, c.name);
-  }
-
-  // An SSE refetch must not undo the user's own expand or collapse.
-  const kept = loadKontoraState({ fetch: async () => ({ ok: true, json: async () => ({ ...CHAIN_PAYLOAD, verdict: "ready" }) }) });
-  kept.selectedTicket = { id: "pca-d3q9", status: "todo" };
-  for (const collapsed of [true, false]) {
-    kept.chainCollapsed = collapsed;
-    await kept.fetchChain("pca-d3q9");
-    assert.equal(kept.chainCollapsed, collapsed, "a refetch leaves the ladder as the user left it");
+test("chain fetch accepts the current response and drops stale or superseded responses", async () => {
+  for (const verdict of ['blocked', 'ready', 'cycle']) {
+    const payload = { ...CHAIN_PAYLOAD, verdict };
+    const state = loadKontoraState({ fetch: async () => ({ ok: true, json: async () => payload }) });
+    state.selectedTicket = { id: payload.id, status: 'todo' };
+    await state.fetchChain(payload.id);
+    assert.equal(state.chainVerdict(), verdict);
+    assert.equal(state.chainError, null, verdict);
   }
 
   // A response for a ticket the user has already navigated away from is dropped.
@@ -14020,7 +14185,7 @@ test("the chain opens expanded and refetches preserve the user's choice", async 
   assert.equal(stale.chain, null);
 
   // Two fetches for the same ticket in flight: the older answer is dropped
-  // whatever order they resolve in, so the ladder ends on the newer graph.
+  // whatever order they resolve in, so the panel ends on the newer graph.
   const raced = loadKontoraState({
     fetch: async (url) => {
       const nth = raced._nth = (raced._nth || 0) + 1;
@@ -14243,19 +14408,18 @@ test('shared relationships render complete, readable references without relying 
   const html = indexMarkup();
   const relationships = kontoraDetailMarkup().detailRelationshipsMarkup;
   assert.equal((html.match(/data-detail-relationships/g) || []).length, 2, 'same relationship surface in both shells');
-  assert.match(relationships, /aria-label="Relationships"/);
-  assert.match(relationships, /x-for="row in relationRows\(\)" :key="row.key"/);
-  assert.match(relationships, /parent: 'Parent', deps: 'Dependencies', blocks: 'Dependents', links: 'Related tickets'/);
-  assert.match(relationships, /x-for="ref in row.refs" :key="ref.id"/);
-  assert.match(relationships, /x-text="ref.title \|\| ref.id"/);
-  assert.match(relationships, /x-text="ref.id"/);
-  assert.match(relationships, /:class="relationHueClass\(ref\)"/);
-  assert.match(relationships, /Missing reference.*paletteStatusLabel\(ref.status\)/);
-  assert.match(relationships, /:disabled="!relationKnown\(ref\) \|\| !!ref.missing" @click="openTicketRef\(ref\)"/);
-  assert.doesNotMatch(relationships, /relationRefs\(row\)|data-tip-e|noteDraft/);
+  assert.match(relationships, /aria-label="Depends on"/);
+  assert.match(relationships, /x-text="dependsOn\(\)\.done \+ ' of ' \+ dependsOn\(\)\.total \+ ' done'"/);
+  for (const refs of ['dependsOn().others', 'relatedRefs()', 'selectedTicket?.blocks || []']) {
+    assert.ok(relationships.includes(`x-for="ref in ${refs}"`), refs);
+  }
+  assert.match(relationships, /class="detail-chip"[^>]*:disabled="!relationKnown\(ref\) \|\| !!ref\.missing"[^>]*@click="openTicketRef\(ref\)"/);
+  assert.match(relationships, /x-text="[^"]*ref\.id \+ ' · unresolved'"/);
+  assert.match(relationships, />Unblocks</);
+  assert.match(relationships, />Related</);
 });
 
-test('both detail shells retain the parent crumb, readable chain and expandable children', () => {
+test('the detail shells retain the parent crumb, blocker, cycle alert and expandable children', () => {
   const html = indexMarkup();
 
   // The crumb sits between board and the open id, and only when there is a
@@ -14272,18 +14436,13 @@ test('both detail shells retain the parent crumb, readable chain and expandable 
   assert.match(relationships, /x-text="chainError"/);
   assert.match(relationships, /<template x-if="chainVerdict\(\) === 'cycle'">/);
   assert.match(relationships, /role="alert"[\s\S]*Dependency cycle[\s\S]*chain\?\.cycle/);
-  assert.match(relationships, /<template x-if="chainHolder\(\) && chainHolder\(\).direction === 'upstream'">/);
-  assert.match(relationships, /<strong>Blocked by<\/strong>/);
-  assert.match(relationships, /@click="openTicketRef\(chainHolder\(\)\)"/);
-  assert.match(relationships, /x-show="ticketCanControl\(selectedTicket\) && chainResumeMove\(\)"/);
-  assert.match(relationships, /:disabled="lifecycleBusy\(chainHolder\(\)\)" @click="resumeChainHolder\(\)"/);
-  assert.match(relationships, /chain && chainVerdict\(\) !== 'cycle' && chainSummary\(\).total > 1/);
-  assert.match(relationships, /<summary><span>Dependency chain<\/span>/);
-  assert.match(relationships, /chainSummary\(\).place, chainSummary\(\).state, chainSummary\(\).releases/);
-  assert.match(relationships, /x-for="row in chainRows\(\)" :key="row.id"/);
-  assert.match(relationships, /:disabled="row.is_self \|\| row.missing \|\| !relationKnown\(row\)" @click="openTicketRef\(row\)"/);
-  for (const field of ['title', 'id', 'status', 'holds_chain', 'meta']) assert.ok(relationships.includes('row.' + field), field + ' is readable without hover');
-  assert.match(relationships, /chainSummary\(\).total - \(chain.nodes \|\| \[\]\).length/);
+  assert.match(relationships, /<template x-if="dependsOn\(\)\.holder">/);
+  assert.match(relationships, />Waits for</);
+  assert.match(relationships, /:disabled="!!dependsOn\(\)\.holder\.missing \|\| !relationKnown\(dependsOn\(\)\.holder\)"[^>]*@click="openTicketRef\(dependsOn\(\)\.holder\)"/);
+  assert.match(relationships, /x-text="dependsOn\(\)\.holder\.title \|\| dependsOn\(\)\.holder\.id"/);
+  assert.match(relationships, /x-text="dependsOn\(\)\.holder\.missing \? 'unresolved' : statusLabel\(dependsOn\(\)\.holder\.status\)"/);
+  assert.match(relationships, /x-show="ticketCanControl\(selectedTicket\) && chainResumeMove\(\)"[^>]*:disabled="lifecycleBusy\([^"]+\)"[^>]*@click="resumeChainHolder\(\)"/);
+  assert.match(relationships, /x-text="chainResumeMove\(\)\?\.label"/);
   // Children retain progress, stage, timing, missing-reference protection and expansion.
   assert.match(relationships, /<template x-if="\(selectedTicket\?\.children \|\| \[\]\).length">/);
   assert.match(relationships, /x-for="c in childRows\(\)" :key="c.id"/);
@@ -14311,7 +14470,9 @@ test("index.html renders the ribbon, transcript and rail the page needs", () => 
   assert.match(ribbon, /:aria-label="\[seg.name,/);
   assert.match(ribbon, /:aria-disabled="!\(seg.state === 'running' \|\| \(seg.state === 'done' && seg.runs\)\)"/);
   assert.match(ribbon, /@click="ribbonTrigger\(\$event\); clickRibbon\(seg\)"/);
-  assert.match(ribbon, /class="stage-ribbon-name" x-text="seg.name"/);
+  assert.match(ribbon, /class="stage-ribbon-name"[^>]*x-text="seg.name"/);
+  assert.match(ribbon, /seg\.startsHere/);
+  assert.doesNotMatch(ribbon, /no runs yet/);
   for (const operator of ['===', '!==']) {
     assert.match(ribbon, new RegExp(`<template x-if="seg.state ${operator} 'running'">\\s*<div data-stage-bar class="mt-auto shrink-0 `));
   }
@@ -14453,7 +14614,9 @@ test("the notes tab is always present and its composer is never gated on status"
   const tabBar = html.slice(html.indexOf("<!-- Tab bar -->"), html.indexOf("<!-- Content column -->"));
 
   // No x-show: an open ticket with no runs can still carry a note.
-  assert.match(tabBar, /<button @click="switchTab\('notes'\)"[\s\S]{0,240}>notes<\/button>/);
+  const notesTab = tabBar.match(/<button\b[^>]*@click="switchTab\('notes'\)"[^>]*>Notes<\/button>/)?.[0];
+  assert.ok(notesTab);
+  assert.doesNotMatch(notesTab, /x-show=/);
 
   const pane = html.slice(html.indexOf("<!-- Notes: the ticket's conversation"), html.indexOf("<!-- Right rail."));
   // Header, scrolling feed, pinned composer.
@@ -14909,13 +15072,13 @@ test("the summary rail wraps on a container query, not a viewport one", () => {
   assert.match(html, /\.summary-layout:has\(\.summary-rail\) \{ grid-template-columns: minmax\(0, 1fr\) 264px; \}/);
 });
 
-test("every tab pane starts its first row on the rail's first label", () => {
+test("desktop ticket panes keep their first row close to the rail's first label", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
-  // The rail's p-4 is the reference inset; the ticket, diff and summary panes
-  // match it, so the pane's first row and the rail's first label share a line.
+  // Details shares the compact top inset, with a slightly larger start for the
+  // ticket tab's Depends on and Run settings sections.
   assert.match(html, /overflow-y-auto p-4 pb-\[22px\]/);
-  assert.match(html, /max-w-\[960px\] mx-auto px-6 pt-4 pb-6/);
+  assert.match(html, /max-w-\[960px\] mx-auto px-6 pt-\[18px\] pb-6[^>]*gap-\[22px\]/);
   assert.match(html, /max-w-3xl mx-auto px-6 pt-4 pb-6/);
   assert.match(html, /\.summary-layout \{[^}]*padding: 1rem 1\.5rem 3rem/);
   // text-xs on the banner wrapper: the inherited strut is taller than the 12px
@@ -14929,7 +15092,7 @@ test("one rule closes the tab row across the pane and the rail", () => {
   // The rule sits on the row, not inside either cell, so it runs edge to edge
   // instead of breaking into a px-6 segment and a px-4 one.
   assert.match(html, /<div data-ticket-tabs class="shrink-0 flex items-stretch border-b border-surface-700\/70">/);
-  assert.match(html, /<div class="flex-1 min-w-0 px-6 pt-\[11px\]">\s*<div class="flex items-center gap-5">/);
+  assert.match(html, /<div class="flex-1 min-w-0 px-6 pt-\[11px\]">\s*<div class="flex flex-wrap items-center gap-x-\[22px\]">/);
   // The rail's header cell is a bare spacer: painting it would start the frame
   // colour a tab row above the pane's.
   assert.match(html, /<div x-show="activeTab !== 'workflow'" class="ticket-detail-rail-cap shrink-0 w-\[308px\] border-l border-surface-700\/50"><\/div>/);
@@ -16218,17 +16381,29 @@ test("stage actions refuse active execution and review without making requests",
   }
 });
 
-test("the shared stage field gates writes on permissions and editability, not on the current stage", () => {
+test("Run settings labels the start stage without saving an implicit first stage", () => {
   const metadata = kontoraDetailMarkup().detailMetadataMarkup;
-  assert.doesNotMatch(metadata, /\['paused', 'open'\]\.includes/);
-  assert.match(metadata, /<template x-if="ticketCanControl\(selectedTicket\) && canSetStage\(\)">/);
-  assert.match(metadata, /aria-label="Stage" :value="selectedTicket\?\.stage \|\| ''" @change="setStage\(\$event.target.value\)"/);
-  assert.match(metadata, /x-for="s in selectedTicket\?\.stages \|\| \[\]"/);
+  assert.match(metadata, /aria-label="Run settings"/);
+  assert.match(metadata, /\['open', 'todo'\]\.includes\(selectedTicket\?\.status\) \? 'Start at stage' : 'Stage'/);
+  assert.match(metadata, /<template x-if="[^\"]*canSetStage\(\)[^\"]*">\s*<select\b[^>]*@change="setStage\(\$event\.target\.value\)"/);
   assert.match(metadata, /x-text="displayStage\(\) \|\| '—'"/);
-  assert.match(metadata, /:selected="s === selectedTicket\?\.stage"/);
-  assert.doesNotMatch(metadata, /:selected="s === displayStage\(\)"/);
-  assert.match(metadata, /<option value="" :selected="!selectedTicket\?\.stage">Set stage…<\/option>/);
+  assert.match(metadata, /<option\b[^>]*:value="i === 0 && !selectedTicket\.stage \? '' : s"[^>]*x-text="i === 0 \? s \+ ' \(first\)' : s"/);
   assert.match(metadata, /Pause and wait for the agent to stop before changing stages/);
+  assert.match(metadata, /<summary>Details<\/summary>[\s\S]*?>Schedule</);
+});
+
+test("pipeline choices describe stage count or graph without spelling out the stages", () => {
+  const state = loadKontoraState();
+  state.configCache = { pipeline_infos: [
+    { name: 'solo', stages: ['implement'] },
+    { name: 'full', stages: ['implement', 'review'] },
+    { name: 'graph', stages: ['implement', 'review'], graph_definition: { nodes: [] } },
+    { name: 'empty', stages: [] },
+  ] };
+  for (const [name, label] of [['solo', 'solo · 1 stage'], ['full', 'full · 2 stages'],
+    ['graph', 'graph · graph'], ['empty', 'empty'], ['unknown', 'unknown']]) {
+    assert.equal(state.pipelineLabel(name), label);
+  }
 });
 
 test("an empty stage shows the pipeline's first stage without writing it", async () => {
@@ -16255,49 +16430,15 @@ test("an empty stage shows the pipeline's first stage without writing it", async
   assert.equal(state.displayStage(), "code");
 });
 
-test("the detail panel's re-run button uses semantic retry labels on parked and finished tickets", () => {
+test("the detail retry action appears once and is disabled while busy", () => {
   const state = loadKontoraState();
-  const cases = [
-    { status: "paused", idle: "retry", busy: "retrying..." },
-    { status: "done", idle: "restart", busy: "restarting..." },
-    { status: "cancelled", idle: "restart", busy: "restarting..." },
-  ];
-
-  for (const c of cases) {
-    state.selectedTicket = { id: "kon-a", status: c.status };
-    state.lifecyclePending = {};
-    assert.equal(state.retryLabel(), c.idle, c.status);
-    state.lifecyclePending['kon-a'] = 'retry';
-    assert.equal(state.retryLabel(), c.busy, c.status);
-    assert.equal(state.lifecycleCommand(state.selectedTicket, 'retry').label,
-      c.status === 'paused' ? 'Retry stage' : 'Run again', c.status);
-  }
-
-  const html = fs.readFileSync(htmlPath, "utf8");
-  // One button, one endpoint, three statuses, and only on a ticket the daemon owns:
-  // Service.Retry rejects a foreign one before it looks at the status.
-  assert.ok(html.includes(`<template x-if="ticketCanControl(selectedTicket) && ['paused', 'done', 'cancelled'].includes(selectedTicket?.status) && selectedTicket?.kontora && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">`));
-  assert.ok(html.includes(`<button @click="action('retry')" :disabled="!!actionLoading || lifecycleBusy(selectedTicket)"`));
-  assert.ok(html.includes(`<span x-text="actionLoading === 'retry' ? 'Queuing…' : lifecycleCommand(selectedTicket, 'retry')?.label"></span>`));
-});
-
-test("the detail header renders one retry button, not the bespoke one plus Reopen", () => {
-  const state = loadKontoraState();
-
-  // The bespoke restart button covers the endpoint for every parked status, so
-  // the validMoves list must not put a second /retry button next to it.
-  for (const status of ["paused", "done", "cancelled"]) {
-    state.tickets = [{ id: 'kon-covered', status, kontora: true }];
-    const moves = state.detailMoves(state.tickets[0]);
-    assert.equal(moves.some(mv => mv.endpoint === "retry"), false, status);
-  }
-
-  // Everything else on those statuses stays.
-  for (const status of ['done', 'cancelled']) {
-    state.tickets = [{ id: 'kon-covered', status, kontora: true }];
-    assert.deepEqual([...state.detailMoves(state.tickets[0]).map(mv => mv.id)],
-      ['open', 'todo', 'human_review', status === 'done' ? 'cancelled' : 'done'].map(destination => 'move:' + destination));
-  }
+  const ticket = { id: 'kon-retry', status: 'paused', kontora: true };
+  state.tickets = [ticket];
+  assert.deepEqual(vmValue(state.detailPrimaryAction(ticket)), { id: 'retry', label: 'Run again' });
+  assert.deepEqual(vmValue(state.detailMenuActions(ticket)), []);
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  assert.match(html, /<template x-if="detailPrimaryAction\(selectedTicket\)\?\.id === 'retry'">\s*<button\b[^>]*@click="action\('retry'\)"[^>]*:disabled="!!actionLoading \|\| lifecycleBusy\(selectedTicket\)"/);
+  assert.match(html, /x-text="actionLoading === 'retry' \? 'Queuing…' : detailPrimaryAction\(selectedTicket\)\?\.label"/);
 });
 
 // ─── Waiting for input ──────────────────────────────────────────────────────
@@ -16495,21 +16636,26 @@ test("recomputeBoard tallies waiting tickets and the favicon ranks them over run
   assert.equal(ctx.document.title, "(1 running) kontora");
 });
 
-test("index.html badges a waiting ticket in the detail header and both mobile layers", () => {
-  const html = fs.readFileSync(htmlPath, "utf8");
+test('index.html shows waiting badges in detail and a reply action in phone rows', () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const mobileStart = html.indexOf('class="mobile-board-layer"');
+  const desktop = html.slice(0, mobileStart);
+  assert.match(desktop, /x-show="needsLiveInput\(selectedTicket\)" class="waiting-chip"/);
+  assert.match(desktop, /x-show="needsLiveInput\(selectedEpic\)" class="waiting-chip"/);
+  assert.equal(desktop.match(/class="waiting-chip"/g).length, 2);
+  for (const subject of ['selectedTicket', 'selectedEpic']) {
+    assert.match(desktop, new RegExp(`x-text="waitingFor\\(${subject}\\)"`));
+  }
+  assert.match(desktop, /\.waiting-chip \{[^}]*--st-review/s);
 
-  // Desktop detail header: beside the status chip in the identity block.
-  assert.match(html, /x-show="needsLiveInput\(selectedTicket\)" class="waiting-chip"/);
-  assert.match(html, /x-if="needsLiveInput\(ticket\)"/);
-  assert.match(html, /x-if="needsLiveInput\(selectedTicket\)"/);
-  assert.match(html, /mobilePanel\(\) === 'output' && needsLiveInput\(selectedTicket\)/);
-  // Three ticket badges with elapsed time, plus both embedded epic headers.
-  assert.equal(html.match(/class="waiting-chip"/g).length, 5);
-  assert.equal(html.match(/waitingFor\((selectedTicket|ticket)\)/g).length, 3);
-  // The chip reuses the review hue and, on desktop, the shared pulse animation.
-  assert.match(html, /\.waiting-chip \{[^}]*--st-review/s);
-  const mobile = html.slice(html.indexOf('class="mobile-board-layer"'));
-  for (const subject of ['ticket', 'selectedTicket', 'selectedEpic']) {
+  const row = mobileRowsHTML(html);
+  assert.match(row, /<template x-if="!mobileSelecting && needsLiveInput\(ticket\)">\s*<div class="mobile-ios-question">/);
+  assert.match(row, /<strong>Needs input<\/strong><p x-text="liveQuestion\(ticket\)">/);
+  assert.match(row, /@click="mobileReply\(ticket\)">Reply<\/button>/);
+  const mobile = html.slice(mobileStart);
+  assert.match(mobile, /x-if="needsLiveInput\(selectedTicket\)"/);
+  assert.match(mobile, /mobilePanel\(\) === 'output' && needsLiveInput\(selectedTicket\)/);
+  for (const subject of ['selectedTicket', 'selectedEpic']) {
     const badge = [...mobile.matchAll(/<span\b[^>]*class="waiting-chip"[^>]*>([\s\S]*?)<\/span>\s*<\/span>/g)]
       .find(([, content]) => content.includes(`waitingFor(${subject})`));
     assert.ok(badge, subject + ' retains an attention badge');
@@ -16837,6 +16983,8 @@ test("the body escape chain reaches the pane after sheets and ticket details", (
 
   assert.ok(chain.indexOf("closeSheet()") < chain.indexOf("assistantEscape()"));
   assert.ok(chain.indexOf("closeDetail()") < chain.indexOf("assistantEscape()"));
+  const confirmEscape = chain.indexOf('closeRunConfirm(true)');
+  assert.ok(confirmEscape >= 0 && confirmEscape < chain.indexOf('closeDetail()'), 'Escape closes Run confirmation before leaving the ticket');
   // The palette is first, so ⎋ with both open closes the palette and leaves the
   // pane where it was.
   assert.ok(chain.indexOf("palettePop()") < chain.indexOf("assistantEscape()"));
@@ -19297,7 +19445,7 @@ for (const mobile of [false, true]) {
 
   for (const { status, history, error, message } of [
     { status: 'open', history: [], message: /has not recorded a run/ },
-    { status: 'todo', history: [], message: /Todo.*if it starts/ },
+    { status: 'todo', history: [], message: /queued.*when it starts/ },
     { status: 'paused', history: [], error: 'startup failed', message: /failed before recording a run/ },
     { status: 'human_review', history: [{ stage: 'default', run: 0 }], message: /No live session.*recorded run/ },
   ]) {
@@ -19923,7 +20071,7 @@ for (const mobile of [false, true]) {
       assert.deepEqual(vmValue(state.outputRuns().map(r => r.key)), ['default#0']);
       await state.epicAction('retry');
       assert.equal(state.selectedEpic.status, 'todo');
-      assert.match(state.outputNoRunText(), /Todo/);
+      assert.match(state.outputNoRunText(), /queued/);
       state.applyTicketUpdate({ ...epic, status: 'in_progress', last_error: '' });
       state.recomputeBoard();
       assert.deepEqual(vmValue(state.outputRuns().map(r => r.key)), ['default#1', 'default#0']);
@@ -20504,9 +20652,8 @@ test('passive execution links offer activation without attaching a nonexistent s
   assert.equal(state.selectedTicket.id, epic.id);
   assert.equal(state.detailTab, 'ticket');
   assert.equal(sockets.length, 0);
-  assert.equal(state.mobilePrimaryAction(state.selectedTicket).label, 'Start epic');
-  assert.deepEqual(vmValue(state.detailMoves(state.selectedTicket)), [{ label: 'Start epic', endpoint: 'run',
-    id: 'start', kind: 'start', ticketKey: epic.id, expected: state._lifecycleState(state.lifecycleResolve(epic.id)) }]);
+  assert.equal(state.mobilePrimaryAction(state.selectedTicket).label, 'Start epic…');
+  assert.deepEqual(vmValue(state.detailPrimaryAction(state.selectedTicket)), { id: 'start', label: 'Start epic…', accent: true });
   await state.moveTicketVia(epic.id, 'run', null);
   assert.equal(state.initForm.ticketId, epic.id);
   state.closeDetail();
@@ -20554,7 +20701,7 @@ for (const supervisorsOnly of [true, false]) {
     const col = state.columns.find(c => c.key === 'in_progress');
     const card = state._cardHTML(state.tickets[0], col);
     assert.match(card, /aria-label="Supervisor /);
-    assert.match(card, />supervisor<\/span>/, 'identity survives disabled pipeline badges');
+    assert.doesNotMatch(card, /class="card-pipe"/, 'the badge toggle also hides the supervisor pipeline label');
     assert.match(card, />supervising<\/span>/);
     assert.match(state._cardMenuHTML(epic), />Epic overview<\/button>/);
     assert.match(state._cardMenuHTML(epic), />Pause supervisor<\/button>/);
@@ -20572,26 +20719,26 @@ for (const supervisorsOnly of [true, false]) {
   });
 }
 
-for (const [status, label] of [['in_progress', 'supervising'], ['todo', 'Todo'], ['paused', 'paused']]) {
+for (const [status, label] of [['in_progress', 'supervising'], ['todo', 'Queued'], ['paused', 'paused']]) {
   test(`supervisor board uses ${label}, not a pipeline stage`, () => {
     const { state, epic } = epicSupervisorUI({ status });
     const ticket = { ...epic, stage: 'code', stages: ['plan', 'code', 'review'] };
     state.showPipelineBadges = false;
     const col = state.columns.find(c => c.key === 'in_progress');
     const card = state._cardHTML(ticket, col);
-    assert.match(card, />supervisor<\/span>/);
+    assert.match(card, /aria-label="Supervisor /);
     assert.ok(card.includes('>' + label + '</span>'));
-    assert.equal(card.includes('card-progress'), false, 'supervisors have no child pipeline progress');
+    assert.deepEqual(cardSegmentStates(card), [], 'supervisors have no child pipeline progress');
     assert.equal(card.includes('>code</span>'), false);
     state.destroy();
   });
 }
 
-test('phone cards label worker and supervisor statuses even when metadata is hidden', () => {
+test('phone rows label worker and supervisor statuses even when metadata preferences are off', () => {
   const { state, epic } = epicSupervisorUI();
-  const cards = mobileCardsHTML();
-  assert.match(cards, /<span class="mobile-card-state" :class="ticket.status === 'paused' \? 'card-glyph-paused' : ''" x-text="mobileTicketStatus\(ticket\)"><\/span>/);
-  assert.match(cards, /<template x-if="executionActive\(ticket\)">\s*<span class="mobile-card-state text-st-progress">\s*<span x-text="epicIsAgent\(ticket\) \? 'supervising' : ticket\.stage"/);
+  const row = mobileRowsHTML();
+  assert.match(row, /<span class="mobile-card-state" x-show="[^"]+ticket\.status[^"]*" x-text="mobileTicketStatus\(ticket\)"><\/span>/);
+  assert.match(row, /<span x-show="epicIsAgent\(ticket\)">Supervisor<\/span>/);
   state.showPipelineBadges = false;
   state.showAgentMeta = false;
   for (const kind of ['ticket', 'epic']) {
@@ -22325,8 +22472,9 @@ for (const destination of [
       if (destination.ticketId) {
         assert.equal(state.selectedTicket.id, destination.ticketId);
         assert.equal(state.isSecondary(state.selectedTicket), !!destination.source);
-        if (!destination.source) assert.ok(opened > 0, 'running output attaches after Board activation');
+        assert.equal(state.detailTab, 'ticket');
       }
+      assert.equal(opened, 0, 'fresh phone details leave the terminal disconnected');
       if (destination.epicId) assert.equal(state.selectedEpic.id, destination.epicId);
     });
   }
@@ -22372,8 +22520,16 @@ for (const mobile of [false, true]) {
     await flushMicrotasks();
     assert.deepEqual(writes, ['#/t/route-next']);
     assert.equal(state.selectedTicket.id, next.id);
-    assert.ok(opened.length > 0);
-    assert.ok(opened.every(id => id === next.id));
+    if (mobile) {
+      assert.equal(state.detailTab, 'ticket');
+      assert.deepEqual(opened, []);
+      state.mobileSwitchTab('terminal');
+      assert.deepEqual(opened, [next.id]);
+      assert.deepEqual(writes, ['#/t/route-next']);
+    } else {
+      assert.ok(opened.length > 0);
+      assert.ok(opened.every(id => id === next.id));
+    }
   });
 }
 

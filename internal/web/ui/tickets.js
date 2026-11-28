@@ -20,6 +20,7 @@ export function kontoraTickets() {
   let primaryAgain = false;
   let detailFlight = null;
   let detailRefreshSeq = 0;
+  let dependencyDirtyKey = null;
   let refreshFlight = null;
   let refreshAgain = false;
   let streamGeneration = 0;
@@ -36,6 +37,7 @@ export function kontoraTickets() {
     ticketsLastLoaded: null,
     ticketsLoadError: null,
     ticketDetailRefreshError: null,
+    ticketColumnConfigFailed: false,
     workflowSelectedNode: Object.create(null),
     workflowEvidenceKey: '',
     workflowCopiedCommand: '',
@@ -141,12 +143,44 @@ export function kontoraTickets() {
         const config = await res.json();
         if (fresh()) {
           this.configCache = config;
+          this.ticketColumnConfigFailed = false;
           if (this.activeTab === 'workflow' && !this.showWorkflowGraph(this.selectedTicket)) this.switchTab('ticket');
           this.applyConfigTheme(config);
         }
       } catch (e) {
         if (fresh()) throw e;
       }
+    },
+
+    async readTicketColumnConfig({ reportError = false } = {}) {
+      const read = this.ticketRead(signal => this.loadConfigCache({ required: false, signal, current: () => !signal.aborted }));
+      const generation = configGeneration;
+      const current = () => !this._appDestroyed && generation === configGeneration;
+      try {
+        const response = await read;
+        if (!current() || !response) return;
+        this.ticketColumnConfigFailed = true;
+        if (response.status === 401) this.ticketReadUnauthorized();
+      } catch (e) {
+        if (!current()) return;
+        this.ticketColumnConfigFailed = true;
+        if (reportError) this.error = 'Failed to load config';
+      }
+    },
+
+    ticketColumnRouteStatus(key, columns) {
+      if (this.loading) return 'pending';
+      // Secondary snapshots schedule a board flush rather than recomputing
+      // immediately. Do not infer absence from the last rendered board.
+      if ((columns || this._deriveColumns()).some(column => column.key === key)) return 'valid';
+      if (this.ticketColumnConfigFailed || !this.configCache || this.ticketsRefreshing || this.ticketsLoadError || this.ticketsLastLoaded === null ||
+          !this.ticketSourcesLoaded || this.ticketSourcesFailed()) return 'unverified';
+      return 'missing';
+    },
+
+    activeTicketColumnRouteStatus() {
+      if (this.currentView !== 'board' || this.selectedTicket || this.selectedEpic || !this.mobileColumnKey) return '';
+      return this.ticketColumnRouteStatus(this.mobileColumnKey, this.columns);
     },
 
     async refreshConfigCache() {
@@ -197,7 +231,13 @@ export function kontoraTickets() {
         if (!known.has(t.status) && (this.isSecondary(t) || this.executionActive(t))) extra.add(t.status);
       }
       for (var status of [...extra].sort()) {
-        cols.push({ key: status, statuses: [status], label: status, color: 'bg-surface-600', emptyText: 'No tickets', tip: 'Undeclared status (display only)' });
+        var archived = status === 'archived';
+        cols.push({ key: status, statuses: [status],
+          label: archived ? 'Archived' : 'Unknown status (' + status + ')',
+          swatch: archived ? 'rgb(var(--surface-600))' : 'rgb(var(--surface-700))',
+          color: 'bg-surface-600', emptyText: 'No tickets',
+          tip: archived ? 'Archived tickets from another tickets folder. Display only.'
+            : 'Unknown status "' + status + '". This daemon\'s config doesn\'t declare it. Display only.' });
       }
       var signature = JSON.stringify(cols);
       if (signature !== this._columnsSignature) {
@@ -229,7 +269,7 @@ export function kontoraTickets() {
       // The palette model is small and fully in memory, so it rebuilds on every
       // keystroke without a debounce.
       this.$watch('paletteQuery', () => this.onPaletteQueryChanged());
-      // Detail covers the board without rebuilding the column DOM.
+      // On desktop, detail covers the board without rebuilding the column DOM.
       const dismissCoveredMenu = () => {
         if (this.selectedTicket || this.selectedEpic) this._closeCardMenu();
       };
@@ -238,6 +278,7 @@ export function kontoraTickets() {
         this._markSelectedCard();
       });
       this.$watch('selectedEpic', dismissCoveredMenu);
+      this.$watch('activeTicketColumnRouteStatus()', () => this.reconcileMobileColumnRoute());
       // Custom statuses add columns; recompute so _board gains the new key,
       // then renderBoard (called by recomputeBoard) fills the new column DOM.
       this.$watch('configCache', () => this.$nextTick(() => {
@@ -277,14 +318,7 @@ export function kontoraTickets() {
         initialWaitTimer = setTimeout(() => this._releaseInitialSnapshot(), SSE_OPEN_WAIT_MS);
       });
       this.connectSSE();
-      var config = (async () => {
-        try {
-          const res = await this.ticketRead(signal => this.loadConfigCache({ required: false, signal, current: () => !signal.aborted }));
-          if (res?.status === 401) this.ticketReadUnauthorized();
-        } catch (e) {
-          this.error = 'Failed to load config';
-        }
-      })();
+      const config = this.readTicketColumnConfig({ reportError: true });
       await subscribed;
       if (this._appDestroyed) return;
       this.setupTicketRefresh();
@@ -311,8 +345,8 @@ export function kontoraTickets() {
       // second 401 of its own.
       this.initAssistant();
       this.companionInit();
-      // Open whatever the URL addresses. Tickets are loaded by now, so a
-      // #/t/<id> link can resolve against the board.
+      // Wait for the config and ticket reads: a failed read cannot establish
+      // that a column is missing.
       await this.applyRoute();
       // The board DOM (column containers) is created by Alpine once loading
       // flips false; render cards into it on the next tick, then bind the one
@@ -536,7 +570,7 @@ export function kontoraTickets() {
       } else if (counts.paused > 0) {
         color = h('--st-paused'); label = counts.paused + ' paused';
       } else if (counts.todo > 0) {
-        color = v('--surface-600'); label = counts.todo + ' Todo';
+        color = v('--surface-600'); label = counts.todo + ' queued';
       } else if (counts.done > 0) {
         color = h('--st-done'); label = 'all done';
       } else {
@@ -640,12 +674,10 @@ export function kontoraTickets() {
       return !this.isSecondary(this.selectedTicket) && (!!this.selectedTicket?.branch || this.showReviewWorktree());
     },
 
-    // Board cards render neither the body nor the notes parsed out of it, and
-    // an entry holding them pins that ticket's full text for the life of the
-    // tab. Every ticket stored in this.tickets goes through here; the detail
-    // panel reads selectedTicket, which keeps the whole ticket.
+    // Board entries omit detail-only data: keeping the body and notes would
+    // pin the full text in memory, and Run reviews saved settings from detail.
     boardEntry(ticket) {
-      var { body, notes, description, description_tail, ...rest } = ticket;
+      var { body, notes, description, description_tail, run_preview, ...rest } = ticket;
       return rest;
     },
 
@@ -729,6 +761,11 @@ export function kontoraTickets() {
             Object.assign(this.selectedTicket, this.liveWaitFields(ticket), this.changesRefs(ticket));
             this.selectedTicket.status = ticket.status;
             this.selectedTicket.execution_active = ticket.execution_active;
+            this.selectedTicket.blockers = ticket.blockers;
+            this.selectedTicket.ready = ticket.ready;
+            this.selectedTicket.deps = ticket.deps;
+            this.selectedTicket.links = ticket.links;
+            this.selectedTicket.blocks = ticket.blocks;
             this.selectedTicket.kind = ticket.kind;
             this.selectedTicket.epic_execution = ticket.epic_execution;
             this.selectedTicket.epic_child = ticket.epic_child;
@@ -755,6 +792,7 @@ export function kontoraTickets() {
           } else {
             this.selectedTicket = this._mergeDetailProjection(this.selectedTicket, ticket);
           }
+          if (this.runConfirmOpen && !this.lifecycleCanQueueSaved(ticket)) this.closeRunConfirm(false);
           if (this.logTabActive() && !this.showTerminalTab()) {
             this.activeTab = 'ticket';
           }
@@ -779,7 +817,7 @@ export function kontoraTickets() {
           this._costDirtyKey = this.ticketKey(ticket);
         }
       }
-      if (!this._chainDirtyKey && this._chainTouchedBy([ticket])) this._chainDirtyKey = this.ticketKey(this.selectedTicket);
+      this._markTicketRelationsDirty(ticket);
       this.applyTicketUpdate(ticket, outputOptions);
       this.scheduleBoardFlush();
     },
@@ -796,37 +834,60 @@ export function kontoraTickets() {
       if (this._dragging || this._appDestroyed) return;
       var key = this.ticketKey(this.selectedTicket);
       if (key && this._costDirtyKey === key && !this.isSecondary(this.selectedTicket)) this.fetchTicketCost(this.selectedTicket.id);
-      if (key && this._chainDirtyKey === key && !this.isSecondary(this.selectedTicket)) this.fetchChain(this.selectedTicket.id);
       this._costDirtyKey = null;
-      this._chainDirtyKey = null;
       this._boardDirty = false;
+      this._flushTicketRelations();
       this.recomputeBoard();
       this.updateFavicon();
       if (this.paletteOpen) this.recomputePalette();
     },
 
-    // Whether a batch of ticket updates changes the ladder. A refetch rather
-    // than a patch: one dep going done moves holds_chain, every waits_on behind
-    // it and the verdict at once, which is the whole graph re-derived, and the
-    // event carries nothing like enough to do that here.
-    //
-    // The second clause is what catches a new dependent: a ticket that adds a
-    // dep on the open one becomes a downstream row, and its id is not in the
-    // chain yet. The event is built with the body, so its deps are resolved refs.
+    _flushTicketRelations() {
+      const selected = this.selectedTicket;
+      const key = this.ticketKey(selected);
+      const refreshChain = key && this._chainDirtyKey === key;
+      const refreshDependencies = key && dependencyDirtyKey === key;
+      this._chainDirtyKey = null;
+      dependencyDirtyKey = null;
+      if (refreshChain) this.fetchChain(selected.id);
+      if (refreshDependencies) void this.reloadTicketDetail();
+    },
+
+    _markTicketRelationsDirty(ticket) {
+      const selected = this.selectedTicket;
+      if (!selected || this.isSecondary(selected)) return;
+      const key = this.ticketKey(selected);
+      const affectsDependency = !this.sameTicket(selected, ticket) &&
+        (selected.deps || []).some(ref => this._dependencyTouchedBy(ref, ticket));
+      if (affectsDependency) {
+        // The prerequisite's event does not update this ticket's resolved deps,
+        // blockers or readiness. Invalidate reads already in flight, even if
+        // the chain has not loaded or its nodes were capped.
+        ++this._selectedTicketUpdateSeq;
+        dependencyDirtyKey = key;
+      }
+      if (affectsDependency || (this._chainDirtyKey !== key && this._chainTouchedBy([ticket]))) this._chainDirtyKey = key;
+    },
+
+    _dependencyTouchedBy(ref, ticket) {
+      // A primary ticket can shadow any external match. A secondary namesake
+      // cannot displace a resolved primary one, but can make an external match ambiguous.
+      return (ref.id || ref) === ticket.id &&
+        (!this.isSecondary(ticket) || !ref.status || this.isSecondary(ref));
+    },
+
+    // Refetch the dependency chain: a single change can move the holder and
+    // change the verdict. A ticket that adds an edge to a known node can become
+    // a downstream node even if it isn't in the current chain.
     _chainTouchedBy(pending) {
       if (!this.chain || !this.selectedTicket || this.isSecondary(this.selectedTicket)) return false;
       var nodes = this.chain.nodes || [];
       var ids = new Set(nodes.map(function (n) { return n.id; }));
       return pending.some(t => {
-        if (nodes.some(n => this.sameTicket(n, t))) return true;
+        if (nodes.some(n => n.direction === 'upstream' ? this._dependencyTouchedBy(n, t) : this.sameTicket(n, t))) return true;
         if (this.isSecondary(t)) return false;
         return (t.deps || []).some(function (d) { return ids.has(d.id || d); });
       });
-    },
-
-    _chainHasNode(id) {
-      if (!this.chain || !this.selectedTicket || this.isSecondary(this.selectedTicket)) return false;
-      return (this.chain.nodes || []).some(function (n) { return n.id === id; });
     },
 
     connectSSE() {
@@ -868,7 +929,10 @@ export function kontoraTickets() {
       });
       on('secondary_ticket_deleted', (e) => {
         var payload = JSON.parse(e.data);
-        this.deleteSecondaryTicket(payload.ticket || payload);
+        var ticket = payload.ticket || payload;
+        this._markTicketRelationsDirty(ticket);
+        this.deleteSecondaryTicket(ticket);
+        this._flushTicketRelations();
         if (this.paletteOpen) this.recomputePalette();
       });
       on('ticket_deleted', (e) => {
@@ -883,10 +947,10 @@ export function kontoraTickets() {
         if (wasSelected) {
           this.closeDetail();
           this.error = 'Historical ticket ' + ticket.id + ' is missing. It may have been deleted.';
-        } else if (this._chainHasNode(ticket.id)) {
-          // A dep or a dependent of the open ticket is gone: the ladder would
-          // keep drawing it, holder and resume pill included.
-          this.fetchChain(this.selectedTicket.id);
+        } else {
+          // A deleted prerequisite or dependent can change the chain's holder and verdict.
+          this._markTicketRelationsDirty(ticket);
+          this._flushTicketRelations();
         }
         this.scheduleBoardFlush();
       });
@@ -1224,11 +1288,10 @@ export function kontoraTickets() {
     },
 
     pipelineLabel(name) {
-      var infos = this.configCache?.pipeline_infos || [];
-      var info = infos.find(i => i.name === name);
-      if (info?.graph_definition) return name + '  (graph · entry ' + info.graph_definition.entry + ')';
-      if (info?.stages?.length) return name + '  (' + info.stages.join(' → ') + ')';
-      return name;
+      var info = (this.configCache?.pipeline_infos || []).find(i => i.name === name);
+      if (info?.graph_definition) return name + ' · graph';
+      var n = info?.stages?.length || 0;
+      return n ? name + ' · ' + n + (n === 1 ? ' stage' : ' stages') : name;
     },
 
     // Label rendered in the [PIPELINE] tag at the top of a card.

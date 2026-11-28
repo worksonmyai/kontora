@@ -104,7 +104,7 @@ func TestSkills(t *testing.T) {
 		{
 			name:    "list of one topic prints its headings only",
 			args:    []string{"list", "cli"},
-			want:    []string{"kontora new", "kontora skills"},
+			want:    []string{"kontora new", "kontora skills", "Polling for ticket attention"},
 			notWant: []string{"--description-file"},
 		},
 		{
@@ -224,6 +224,19 @@ func TestSkills(t *testing.T) {
 			args:    []string{"show", "cli", "kontora ls"},
 			want:    []string{"kind", "epic_execution", "child_order", "branch", "base_branch", "not membership", "parent"},
 			notWant: []string{"omits `kind`"},
+		},
+		{
+			name: "polling recipe is available as a section",
+			args: []string{"show", "cli", "Polling for ticket attention"},
+			want: []string{
+				"## Polling for ticket attention", "GET /api/tickets", "read-only",
+				"KONTORA_URL", "unset `KONTORA_TOKEN`", "Authorization:Bearer", "--noproxy '*'",
+				"external shell", "requires approval in ask and auto modes",
+				".tickets[]", `.status == "human_review" or .waiting_for_input == true`,
+				"tickets on the primary board", "live question reported by a Pi stage", "`[]`",
+				"short-lived changes between reads", "hooks", "kontora skills show cli 'kontora automation'",
+			},
+			notWant: []string{"## kontora search"},
 		},
 		{
 			name: "run reference explains explicit epic activation",

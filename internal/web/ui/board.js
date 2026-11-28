@@ -5,6 +5,8 @@ const KEY_SEQ_MS = 800;
 // lucide glyph the create form and the phone sheet draw at their own sizes.
 const SCHED_CLOCK_SVG = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>';
 
+const FOLDER_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>';
+
 // Resource handles deliberately stay in closures, outside Alpine's reactive
 // graph. Alpine registers x-data init/destroy, not an x-init return value.
 export function resourceOwner(setup) {
@@ -215,7 +217,42 @@ export function kontoraBoard() {
         + this._escapeHtml('∅ ' + col.emptyText.toLowerCase()) + '</div>';
     },
 
-    // Stage position is the only progress signal, so the current stage counts as half done.
+    showInProgress() {
+      if (this.currentView === 'board' && !this.selectedTicket && !this.selectedEpic) {
+        return this.expandBoardColumn('in_progress');
+      }
+      // Keep the reveal on the destination so the Settings guard can resume it.
+      return this._navigateBoardReveal({ view: 'board', revealColumn: 'in_progress' });
+    },
+
+    async _navigateBoardReveal(destination) {
+      const result = this.navigateDestination(destination);
+      const navigation = this._navigationSeq;
+      if (await result === false || navigation !== this._navigationSeq) return false;
+      await this.expandBoardColumn(destination.revealColumn);
+      return true;
+    },
+
+    async expandBoardColumn(key, { focus = false } = {}) {
+      const navigation = this._navigationSeq;
+      const current = () => navigation === this._navigationSeq && !this._appDestroyed && !this.isMobile &&
+        this.currentView === 'board' && !this.selectedTicket && !this.selectedEpic;
+      if (!current()) return;
+      if (this.isCollapsed(key)) this.toggleColumnCollapsed(key);
+      await this.$nextTick();
+      if (!current() || this.isCollapsed(key)) return;
+      const column = document.getElementById('col-' + key)?.closest('.kanban-col');
+      if (!column) return;
+      // Returning from Settings can leave the board's x-show pending after nextTick.
+      if (column.getClientRects?.().length === 0) {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }
+      if (!current() || this.isCollapsed(key) || column.isConnected === false || column.getClientRects?.().length === 0) return;
+      const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+      column.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: focus || reduceMotion ? 'auto' : 'smooth' });
+      if (focus) column.querySelector('.col-head')?.focus({ preventScroll: true });
+    },
+
     cardStageProgress(ticket) {
       if (ticket?.graph_definition || ticket?.graph_execution) return null;
       if (!ticket || this.epicIsAgent(ticket) || !this.executionActive(ticket) ||
@@ -223,9 +260,14 @@ export function kontoraBoard() {
       var index = ticket.stages.indexOf(ticket.stage);
       if (index < 0) return null;
       return {
-        percent: Math.round(((index + 0.5) / ticket.stages.length) * 100),
+        index,
+        total: ticket.stages.length,
         label: 'Stage ' + (index + 1) + ' of ' + ticket.stages.length + ': ' + ticket.stage,
       };
+    },
+
+    _cardReviewTimeKind(ticket) {
+      return ticket.finished_at ? 'Finished' : ticket.updated_at ? 'Updated' : 'Created';
     },
 
     // Build one card's HTML. Every interpolated string is escaped.
@@ -234,38 +276,58 @@ export function kontoraBoard() {
       var inProgressCol = col.key === 'in_progress';
       var supervisor = this.epicIsAgent(ticket);
       var selected = this.sameTicket(this.selectedTicket, ticket);
+      var canControl = this.ticketCanControl(ticket);
+      var running = this.executionActive(ticket);
+      var secondary = this.isSecondary(ticket);
 
       // shrink-0: the column list is a flex column, and overflow-hidden (which
       // clips the epic spine to the rounded corners) drops the card's automatic
       // minimum size to 0, so without it a full column squashes every card.
-      var cls = ['kt-card group relative rounded-[9px] px-3 py-2.5 cursor-pointer border overflow-hidden shrink-0',
+      var cls = ['kt-card group relative rounded-[9px] px-3 py-[11px] cursor-pointer border overflow-hidden shrink-0',
                  'bg-surface-900 border-edge-card hover:border-edge-hover hover:bg-surface-850',
-                 'flex flex-col gap-1.5'];
+                 'flex flex-col gap-[7px]'];
       // The epic a child belongs to, if any. It paints a spine down the card's
       // left edge and an "Epic: 3 of 6 done" count in the footer, both in the
       // epic's own hue. data-pipe-color goes on those spans, not the card root:
       // the root's --pipe-h is the ticket's own pipeline, and reusing it would
       // repaint the pipeline tag in the epic's colour.
-      var epic = this.isSecondary(ticket) ? null : this.epicCardInfo(ticket);
+      var epic = secondary ? null : this.epicCardInfo(ticket);
       var epicHue = epic ? this.pipelineColorByName(epic.id) : '';
       if (epic) cls.push('pl-[14px]');
       if (selected) cls.push('is-selected');
       if (!ticket.kontora) cls.push('border-dashed');
       if (ticket.status === 'cancelled') cls.push('opacity-60');
       else if (col.key === 'open' && ticket.scheduled_at) cls.push('kt-card-scheduled');
-      if (this.executionActive(ticket)) cls.push('card-state-running');
+      if (running) cls.push('card-state-running');
       if (ticket.status === 'paused') cls.push('card-state-paused');
+      if (canControl) cls.push('has-menu');
 
-      var glyph = '';
-      if (this.executionActive(ticket)) {
-        glyph = '<span class="flex items-center gap-[5px] text-[10px] font-mono card-glyph-running">'
-          + '<span class="w-[5px] h-[5px] rounded-full pulse-dot" style="background: hsl(var(--st-progress))"></span><span>' + esc(supervisor ? 'supervising' : ticket.stage) + '</span></span>';
+      var pt = this.parseTitleTag(ticket);
+      var project = pt.tag
+        ? '<span class="flex items-center gap-1.5 min-w-0 text-tx-3">'
+          + '<span class="w-1.5 h-1.5 rounded-full shrink-0" data-pipe-color="' + esc(this.pipelineColorByName(pt.tag)) + '" style="background: hsl(var(--pipe-h))" aria-hidden="true"></span>'
+          + '<span class="truncate">' + esc(pt.tag) + '</span></span>'
+        : '';
+      var pipeName = supervisor ? 'supervisor' : ticket.pipeline;
+      var pipe = this.showPipelineBadges && pipeName ? '<span class="card-pipe" title="Pipeline">' + esc(pipeName) + '</span>' : '';
+      var row1 = project || pipe || canControl ? '<div class="card-row1 flex items-center justify-between gap-2 min-w-0 font-mono text-[11px] leading-4">' + (project || '<span></span>') + pipe + '</div>' : '';
+
+      var status = '';
+      if (running) {
+        var sp = this.cardStageProgress(ticket);
+        var segs = '';
+        if (sp) for (var k = 0; k < sp.total; k++) segs += '<span class="card-seg" data-state="' + (k < sp.index ? 'done' : k === sp.index ? 'current' : 'next') + '"></span>';
+        var stage = supervisor ? 'supervising' : (ticket.stage || '');
+        status = '<span class="card-stage card-glyph-running">'
+          + '<span class="w-[5px] h-[5px] rounded-full pulse-dot shrink-0" style="background: hsl(var(--st-progress))" aria-hidden="true"></span>'
+          + '<span class="truncate min-w-0" title="' + esc(stage) + '">' + esc(stage) + '</span>'
+          + (sp ? '<span class="shrink-0 text-tx-4">' + (sp.index + 1) + '/' + sp.total + '</span>'
+                + '<span class="card-stage-track" role="img" aria-label="' + esc(sp.label) + '" title="' + esc(sp.label) + '">' + segs + '</span>' : '')
+          + '</span>';
       } else if (inProgressCol && ticket.status === 'paused') {
-        glyph = '<span class="flex items-center gap-1 text-[10px] font-mono card-glyph-paused"><span>⏸</span>'
-          + (supervisor ? '<span>paused</span>' : (ticket.stage ? '<span>' + esc(ticket.stage) + '</span>' : '')) + '</span>';
+        status = '<span class="card-stage card-glyph-paused"><span aria-hidden="true">⏸</span><span>' + esc(supervisor ? 'paused' : (ticket.stage || 'paused')) + '</span></span>';
       } else if (inProgressCol && ticket.status === 'todo') {
-        glyph = '<span class="flex items-center gap-1 text-[10px] font-mono text-surface-600"><span>◌</span>'
-          + '<span>Todo' + (!supervisor && ticket.stage ? ' · ' + esc(ticket.stage) : '') + '</span></span>';
+        status = '<span class="card-stage text-warn"><span aria-hidden="true">◌</span><span>Queued' + (!supervisor && ticket.stage ? ' · ' + esc(ticket.stage) : '') + '</span></span>';
       }
 
       // Nothing moves until a human answers in the terminal, so the badge
@@ -295,15 +357,17 @@ export function kontoraBoard() {
         ? '<span class="px-1.5 py-px rounded-full border border-warn/20 bg-warn/10 text-warn text-[10px] font-mono shrink-0">not a kontora ticket</span>'
         : '';
 
-      var stageProgress = this.cardStageProgress(ticket);
-      var progress = stageProgress
-        ? '<div class="card-progress" role="img" aria-label="' + esc(stageProgress.label) + '"'
-          + ' title="' + esc(stageProgress.label) + '"><div style="width:' + stageProgress.percent + '%"></div></div>'
-        : '';
+      var chips = notKontoraBadge + scheduled + waiting;
+      var statusRow = status || chips ? '<div class="flex items-center gap-2 flex-wrap min-w-0">' + status + chips + '</div>' : '';
 
-      var agent = (this.showAgentMeta && ticket.agent)
-        ? '<span class="flex items-center gap-1.5 min-w-0"><span class="text-edge-faint">·</span>'
-          + '<span class="truncate">' + esc(ticket.agent) + '</span></span>'
+      var agent = this.showAgentMeta && ticket.agent
+        ? '<span class="text-edge-faint shrink-0" aria-hidden="true">·</span><span class="truncate min-w-0">' + esc(ticket.agent) + '</span>'
+        : '';
+      var source = secondary ? this.sourceLabel(ticket) : '';
+      var sourceRestriction = secondary ? esc('From ' + source + '. This daemon can’t run it or change its status.') : '';
+      var folder = secondary
+        ? '<div class="card-source flex items-start gap-1.5 min-w-0 font-mono text-[11px] leading-4 text-tx-3" title="' + sourceRestriction + '">'
+          + '<span class="shrink-0 mt-0.5 text-tx-4">' + FOLDER_SVG + '</span><span class="break-all">' + esc(source) + '</span></div>'
         : '';
 
       var retry = (ticket.attempt > 0 && ticket.status !== 'done' && ticket.status !== 'cancelled')
@@ -312,49 +376,25 @@ export function kontoraBoard() {
       // data-since / data-ago let _updateCardTimers patch the text in place on
       // the 30s tick without rebuilding the card.
       var timeSpan = '';
-      var finishedAt = this.reviewFinishedAt(ticket);
-      if (this.executionActive(ticket) && ticket.started_at) {
+      var reviewAt = this.reviewFinishedAt(ticket);
+      if (running && ticket.started_at) {
         timeSpan = '<span data-since="' + esc(ticket.started_at) + '" data-tip-t="' + esc('Started: ' + this.formatAbsDate(ticket.started_at)) + '">'
           + esc(this.formatDuration(ticket)) + '</span>';
-      } else if (finishedAt) {
-        timeSpan = '<span data-finished="' + esc(finishedAt) + '" data-tip-t="' + esc('Finished: ' + this.formatAbsDate(finishedAt)) + '">'
-          + esc(this.finishedAgo(finishedAt)) + '</span>';
+      } else if (reviewAt) {
+        timeSpan = '<span data-finished="' + esc(reviewAt) + '" data-tip-t="' + esc(this._cardReviewTimeKind(ticket) + ': ' + this.formatAbsDate(reviewAt)) + '">'
+          + esc(this.timeAgo(reviewAt)) + '</span>';
       } else if (ticket.created_at) {
         timeSpan = '<span data-ago="' + esc(ticket.created_at) + '" data-tip-t="' + esc(this.formatAbsDate(ticket.created_at)) + '">'
           + esc(this.timeAgo(ticket.created_at)) + '</span>';
       }
 
-      // Badge row: supervisor identity + pipeline badge (toggleable) + status/import glyphs.
-      // The kebab menu is absolutely positioned so the row can be omitted
-      // entirely when it has no content.
-      var badgeRow = '';
-      var badgeParts = (supervisor ? '<span class="pipe-tag shrink-0">supervisor</span>' : '') + (this.showPipelineBadges
-        ? '<span class="pipe-tag truncate">' + esc(this.ticketTagLabel(ticket)) + '</span>'
-        : '') + notKontoraBadge + glyph + scheduled + waiting;
-      if (badgeParts) {
-        // 34px, not the kebab's own width: it sits at right:6px and is 24px
-        // wide, so anything less lets a long .pipe-tag push the chip under it.
-        badgeRow = '<div class="flex items-center gap-2 min-w-0 pr-[34px]">' + badgeParts + '</div>';
-      }
-
       // Only the kebab button ships with the card. The menu itself is built on
       // demand by _toggleCardMenu, which keeps ~9 nodes per card out of a board
       // that only ever shows one open menu.
-      var menu = '<div class="absolute top-1.5 right-1.5 z-[2] flex items-center">'
-        + '<button type="button" class="card-menu-btn w-6 h-6 rounded-md border border-surface-700/40 bg-surface-900/70 text-surface-600 hover:bg-surface-850 hover:text-tx-2 hover:border-edge-hover transition-colors flex items-center justify-center text-[13px] leading-none opacity-0 group-hover:opacity-100 focus:opacity-100" aria-haspopup="menu" aria-expanded="false" aria-label="More actions">'
-        +   '⋯'
-        + '</button>'
-        + '</div>';
-
-      if (!this.ticketCanControl(ticket)) menu = '';
-
-      // Colored mono [tag] prefix: taken from the title's own "[tag] ..."
-      // prefix when present, otherwise the project basename.
-      var pt = this.parseTitleTag(ticket);
-      var tagSpan = pt.tag
-        ? '<span class="title-tag" data-pipe-color="' + esc(this.pipelineColorByName(pt.tag)) + '">' + esc('[' + pt.tag + ']') + '</span> '
-        : '';
-      var titleCls = 'text-[13px] text-tx leading-[1.45]' + (ticket.status === 'cancelled' ? ' line-through decoration-surface-600/60' : '');
+      var menu = canControl ? '<div class="absolute top-1.5 right-1.5 z-[2] flex items-center">'
+        + '<button type="button" class="card-menu-btn w-6 h-6 rounded-md border border-surface-700/40 bg-surface-900/70 text-tx-4 hover:bg-surface-850 hover:text-tx-2 hover:border-edge-hover transition-colors flex items-center justify-center text-[13px] leading-none opacity-0" aria-haspopup="menu" aria-expanded="false" aria-label="More actions">⋯</button>'
+        + '</div>' : '';
+      var titleCls = 'card-title text-[13.5px] text-tx-hi leading-[1.42]' + (ticket.status === 'cancelled' ? ' line-through decoration-surface-600/60' : '');
 
       // The card's id carries a hover card only when the frontmatter names a
       // relation: the title and the status are already on the card and in the
@@ -377,24 +417,24 @@ export function kontoraBoard() {
 
       return '<div class="' + cls.join(' ') + '"'
         + ' data-ticket-id="' + esc(this.ticketKey(ticket)) + '"'
-        + (this.ticketCanControl(ticket) ? '' : ' data-no-drag="true"')
+        + (canControl ? '' : ' data-no-drag="true"')
         + ' data-pipe-color="' + esc(this.ticketPipeColor(ticket)) + '"'
         + ' role="listitem" tabindex="0"'
-        + ' aria-label="' + esc((supervisor ? 'Supervisor ' : 'Ticket ') + ticket.id + ': ' + (ticket.title || '')) + '">'
+        + ' aria-label="' + esc((supervisor ? 'Supervisor ' : 'Ticket ') + ticket.id + ': ' + (ticket.title || '')) + '"'
+        + (secondary ? ' aria-description="' + sourceRestriction + '"' : '') + '>'
         + epicSpine
         + menu
-        + badgeRow
-        + '<p class="' + titleCls + '">' + tagSpan + esc(pt.rest) + '</p>'
-        + progress
-        + '<div class="flex items-center gap-2 text-[11px] font-mono text-surface-600 justify-between">'
+        + row1
+        + '<p class="' + titleCls + '">' + esc(pt.rest) + '</p>'
+        + statusRow
+        + '<div class="flex items-center justify-between gap-2 font-mono text-[11px] leading-4 text-tx-log">'
         +   '<div class="flex items-center gap-1.5 min-w-0">'
-        +     '<span class="group-hover:text-tx-3 transition-colors truncate"' + idTip + '>' + esc(ticket.id) + '</span>'
-        +     (this.isSecondary(ticket) ? '<span class="truncate text-accent" title="' + esc(this.sourceLabel(ticket)) + '">' + esc(this.sourceLabel(ticket)) + '</span>' : '')
-        +     epicCount
-        +     agent
+        +     '<span class="shrink-0 max-w-full break-all text-tx-3"' + idTip + '>' + esc(ticket.id) + '</span>'
+        +     epicCount + agent
         +   '</div>'
-        +   '<div class="flex items-center gap-2 shrink-0">' + retry + timeSpan + '</div>'
+        +   '<div class="flex items-center gap-2 shrink-0 num">' + retry + timeSpan + '</div>'
         + '</div>'
+        + folder
         + '</div>';
     },
 
@@ -405,26 +445,27 @@ export function kontoraBoard() {
     // with _cardHTML — the "card signature covers every rendered field" test
     // guards each field.
     _cardSig(ticket, col) {
-      // ticket.finished_at and ticket.updated_at reach the card only through
-      // reviewFinishedAt, so its result stands in for both here. ticket.parent,
-      // ticket.deps and ticket.links reach it only through the relation line
-      // and, for parent, the epic spine, so those two strings stand in for
-      // them. kind and epic_execution also govern supervisor identity and
-      // whether an epic draws a card at all.
+      // Review age uses ticket.finished_at before ticket.updated_at; track only
+      // the timestamp the card shows and which field supplied it.
+      // ticket.parent, ticket.deps and ticket.links reach the card through the
+      // relation line and, for parent, the epic spine. kind and epic_execution
+      // also govern supervisor identity and whether an epic draws a card at all.
       //
       // The spine and the "Epic: 3 of 6 done" footer are the part of a card that is
       // board state rather than ticket state: a sibling finishing has to
       // repaint this card, and only _epicRollup knows that happened.
-      var epic = this.isSecondary(ticket) ? null : this._epicRollup[(ticket.parent && ticket.parent.id) || ''];
+      var secondary = this.isSecondary(ticket);
+      var epic = secondary ? null : this._epicRollup[(ticket.parent && ticket.parent.id) || ''];
       var epicSig = epic ? [epic.id, epic.title, epic.done, epic.total].join(':') : '';
-      var sourceName = this.ticketSources.find(s => s.id === ticket.source)?.path || ticket.source || 'primary';
+      var sourceName = secondary ? (this.ticketSources.find(s => s.id === ticket.source)?.path || ticket.source) : '';
+      var reviewAt = this.reviewFinishedAt(ticket);
       return [col.key, ticket.id, ticket.source, sourceName, ticket.can_control, ticket.title, ticket.status, ticket.execution_active, ticket.stage,
               ticket.pipeline, ticket.path, ticket.agent, ticket.attempt,
               ticket.kontora ? 1 : 0, ticket.started_at, ticket.created_at,
               ticket.waiting_for_input ? 1 : 0, ticket.waiting_since,
               ticket.waiting_tool, ticket.waiting_question,
               ticket.scheduled_at,
-              this.reviewFinishedAt(ticket),
+              reviewAt, reviewAt && this._cardReviewTimeKind(ticket),
               (ticket.stages || []).join('>'), JSON.stringify(ticket.graph_execution || null), !!ticket.graph_definition,
               this._cardRelationSummary(ticket),
               ticket.kind, ticket.epic_execution, epicSig,
@@ -444,39 +485,39 @@ export function kontoraBoard() {
     },
 
     // Markup for one card's action menu, built only while that menu is open:
-    // Initialize (non-kontora) + valid moves + fallback. data-act carries the
+    // Setup (non-kontora) + actions + destinations. data-act carries the
     // endpoint ("init" for the init modal); data-status carries the target
     // status for move actions. The delegated handler matches .card-menu-item at
     // click time, so it needs no rebinding.
     _cardMenuHTML(ticket) {
-      if (!this.ticketCanControl(ticket)) return '<div class="card-menu px-3 py-2 text-sm text-tx-3">Claim into primary to control this ticket.</div>';
+      if (!this.ticketCanControl(ticket)) return '<div class="card-menu px-3 py-2 text-sm text-tx-3">Move this ticket here to control it.</div>';
       var esc = (s) => this._escapeHtml(s);
+      var item = (endpoint, label, status, warn = false) =>
+        '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[13px] font-sans hover:bg-surface-850 transition-colors '
+        + (warn ? 'text-warn' : 'text-tx-3 hover:text-tx-2') + '" data-act="'
+        + esc(endpoint) + '"' + (status ? ' data-status="' + esc(status) + '"' : '') + '>' + esc(label) + '</button>';
       var items = '';
       var supervisor = this.epicIsAgent(ticket);
-      if (supervisor) {
-        items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors" data-act="epic-overview">Epic overview</button>';
-      }
-      if (!ticket.kontora) {
-        items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-warn hover:bg-surface-850 hover:text-warn transition-colors" data-act="init">Initialize</button>';
-      }
+      if (supervisor) items += item('epic-overview', 'Epic overview');
+      if (!ticket.kontora) items += item('init', 'Set up and run…', '', true);
       var moves = this.ticketMoves(ticket);
-      moves.forEach((mv) => {
+      moves.filter(mv => mv.kind !== 'move').forEach((mv) => {
         var label = mv.label;
         if (supervisor) {
           if (mv.endpoint === 'pause') label = 'Pause supervisor';
-          else if (mv.endpoint === 'retry') label = ['done', 'cancelled'].includes(ticket.status) ? 'Restart supervisor' : 'Retry supervisor';
-          else if (mv.endpoint === 'run') label = 'Start supervisor';
+          else if (mv.endpoint === 'retry') label = ticket.stage ? 'Run supervisor again from ' + ticket.stage : 'Run supervisor again';
+          else if (mv.endpoint === 'run') label = this.needsInitModal(ticket) ? 'Run supervisor…' : 'Run supervisor';
         }
-        items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors" data-act="'
-          + esc(mv.endpoint) + '"' + (mv.status ? ' data-status="' + esc(mv.status) + '"' : '') + '>' + esc(label) + '</button>';
+        items += item(mv.endpoint, label, mv.status);
       });
-      // Archive is not a move: SetStatus refuses archived, so it has its own
-      // verb and its own item rather than a row in validMoves.
-      if (ticket.status === 'done' || ticket.status === 'cancelled') {
-        items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors" data-act="archive">Archive…</button>';
-      } else if (!moves.length) {
-        items += '<span class="block px-3 py-2 text-[12px] font-mono text-surface-600">No actions available</span>';
+      // Archive uses its own endpoint and isn't a status override.
+      if (ticket.status === 'done' || ticket.status === 'cancelled') items += item('archive', 'Archive…');
+      var dests = moves.filter(mv => mv.kind === 'move');
+      if (dests.length) {
+        items += '<div role="presentation" class="px-3 pt-2 pb-1 font-mono text-[10px] font-semibold uppercase tracking-[.1em] text-tx-log">Set status</div>';
+        dests.forEach(mv => { items += item(mv.endpoint, mv.statusLabel, mv.status); });
       }
+      if (!items) items = '<span class="block px-3 py-2 text-[13px] font-sans text-tx-log">No actions available</span>';
       return '<div class="card-menu absolute right-0 top-7 min-w-[10rem] overflow-y-auto overscroll-contain rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-20" role="menu">' + items + '</div>';
     },
 
@@ -827,6 +868,10 @@ export function kontoraBoard() {
       }
       var key = (e.key || '').toLowerCase();
       var now = Date.now();
+      if (key === '/' && this.currentView !== 'settings' && !this.isMobile) {
+        var filter = document.getElementById('board-filter');
+        if (filter?.getClientRects().length) { this._keySeq = ''; e.preventDefault(); filter.focus(); filter.select(); return; }
+      }
       // "/" focuses the settings search. It lives here rather than in
       // settings.js because this is the one document-level keydown that
       // already respects _isTypingTarget, and merge() rejects a second owner
@@ -911,7 +956,7 @@ export function kontoraBoard() {
         el.textContent = self.timeAgo(el.dataset.ago);
       });
       document.querySelectorAll('#board-cols [data-finished]').forEach(function (el) {
-        el.textContent = self.finishedAgo(el.dataset.finished);
+        el.textContent = self.timeAgo(el.dataset.finished);
       });
     },
 
@@ -919,12 +964,14 @@ export function kontoraBoard() {
       return resourceOwner(function (alive) {
         var self = this, el = this.$el;
         var dispose = this.initSortable(el);
-        // A collapse/expand can mount the replacement before Alpine cleans up
-        // the old list with the same id.
+        // The expanded list and rail are separate Alpine loops. Let both
+        // settle before reconciling the new owner of this id.
         this.$nextTick(() => {
           if (!alive() || document.getElementById('col-' + key) !== el) return;
           delete self._rendered[key];
+          if (self._dragging) { self._renderHeld = true; return; }
           self.renderColumn(key);
+          self._dropStaleCardMenu();
         });
         return dispose;
       });
@@ -1129,6 +1176,7 @@ export function kontoraBoard() {
         total += board[col.key].length;
       });
       this._board = board;
+      this.mobileBoardChanged();
       this._boardTotal = total;
       this.needsInputCount = needsInputCount;
       this._statusCounts = counts;
@@ -1143,9 +1191,25 @@ export function kontoraBoard() {
       this.renderBoard();
     },
 
-    // O(1) lookup of a column's cached list. The board header count and the
-    // mobile board still read this reactively; the desktop card list is rendered
-    // from it imperatively by renderColumn/renderBoard.
+    expandedColumns() { return this.columns.filter(c => !this.isCollapsed(c.key)); },
+
+    collapsedColumns() { return this.columns.filter(c => this.isCollapsed(c.key)); },
+
+    railSwatch(col) { return col.tint ? 'hsl(' + col.tint + ')' : (col.swatch || 'rgb(var(--surface-700))'); },
+
+    colNote(key) {
+      if (key !== 'human_review') return '';
+      var oldest = Infinity;
+      for (const ticket of this.boardTickets(key)) {
+        const at = Date.parse(this.reviewFinishedAt(ticket));
+        if (at < oldest) oldest = at;
+      }
+      var ago = oldest === Infinity ? '' : this.timeAgo(oldest);
+      return ago && ago !== 'just now' ? 'oldest ' + ago : '';
+    },
+
+    // Desktop header counts read the cached column list reactively.
+    // `renderColumn` and `renderBoard` use it to render cards.
     boardTickets(key) {
       return this._board[key] || [];
     },

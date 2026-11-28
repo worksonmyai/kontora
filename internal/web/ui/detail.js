@@ -12,7 +12,10 @@ function historyMetadata(state) {
   return m && typeof m.id === 'string' && typeof m.entry === 'string' && Number.isSafeInteger(m.index) ? m : null;
 }
 function historyState(metadata) {
-  return { ...history.state, [HISTORY_KEY]: { id: metadata.id, entry: metadata.entry, index: metadata.index } };
+  const { id, entry, index, mobileParent, mobileList } = metadata;
+  return { ...history.state, [HISTORY_KEY]: {
+    id, entry, index, mobileParent, mobileList: mobileList && JSON.parse(JSON.stringify(mobileList)),
+  } };
 }
 function historySignature(entry) { return JSON.stringify([entry.id, entry.entry, entry.hash]); }
 function historyPosition() {
@@ -25,7 +28,9 @@ function historyPosition() {
 export function kontoraDetail() {
   const moves = new Map();
   const retirements = new Map();
-  const detailBackEntries = new Set();
+  // A native popstate arrives after the browser has left the outgoing entry.
+  // Retain its list position by entry identity until we can write it back.
+  const mobileLists = new Map();
   let hydration = null;
   let rawLogPopup = null;
   const closeRawLogPopup = () => {
@@ -33,6 +38,9 @@ export function kontoraDetail() {
     rawLogPopup = null;
   };
   return {
+    mobileColumnKey: '',
+    mobileColumnRouteError: '',
+
     // What the assistant is told about the open ticket. Null when none is open,
     // so the pane leaves the line out rather than saying "no ticket". The panel
     // only renders on the board and gotoView never clears selectedTicket, so a
@@ -89,10 +97,10 @@ export function kontoraDetail() {
       this.notifyDraft = null;
       this.notifyError = null;
       this.resetChanges();
+      this.detailMenuOpen = false;
+      if (this.runConfirmOpen) this.closeRunConfirm(false);
       this.collapsedStages = {};
-      this.relExpanded = {};
       this.chain = null;
-      this.chainCollapsed = false;
       this.chainError = null;
       this.childrenCollapsed = false;
       this.childrenExpanded = false;
@@ -100,6 +108,13 @@ export function kontoraDetail() {
       var detailSeq = ++this._ticketDetailSeq;
       var key = this.ticketKey(ticket);
       var mine = () => !this._appDestroyed && this.sameTicket(this.selectedTicket, ticket) && detailSeq === this._ticketDetailSeq;
+      // Do not inherit a previous ticket's Terminal while the new one is
+      // hydrating. restoreDetailView still takes precedence over the default.
+      const phoneTicketDefault = this.isMobile && ticket.kind !== 'epic';
+      if (phoneTicketDefault) {
+        this.activeTab = 'ticket';
+        this.detailTab = 'ticket';
+      }
       this.selectedTicket = ticket;
       this.ticketDetailRefreshError = null;
       if (this.isMobile) this.mobileAcceptDetail(ticket);
@@ -163,15 +178,16 @@ export function kontoraDetail() {
         this.writeHash();
         return;
       }
-      // The ladder is derived from every ticket file on disk, so it cannot be
-      // read off the board and has to be fetched for each ticket opened.
+      // The dependency chain includes tickets the board omits, so fetch it
+      // separately for each ticket opened.
       if (this.selectedTicket?.id) {
         this.fetchChain(this.selectedTicket.id);
       }
-      const restored = await this.restoreDetailView();
+      const explicitPane = phoneTicketDefault && this.isMobile && this.detailTab !== 'ticket' && this.executionActive(this.selectedTicket);
+      const restored = explicitPane || await this.restoreDetailView();
       if (!mine()) return;
       // The changed-files sidebar needs the branch comparison on other tabs too.
-      // Restoring Committed changes already starts that read.
+      // Restoring Changes already starts that read.
       if (this.canCompareChanges() && !(restored && this.detailMode() === 'diff')) {
         this.fetchChanges(this.selectedTicket.id);
       }
@@ -189,9 +205,11 @@ export function kontoraDetail() {
         this.detailTab = this.summaryFirst(this.selectedTicket) ? 'ticket' : 'activity';
       } else if (this.executionActive(this.selectedTicket) &&
           (this.selectedTicket.kind !== 'epic' || this.epicIsAgent(this.selectedTicket))) {
-        this.activeTab = 'session';
-        this.detailTab = 'terminal';
-        this.openTerminal();
+        if (!this.isMobile || this.selectedTicket.kind === 'epic') {
+          this.activeTab = 'session';
+          this.detailTab = 'terminal';
+          this.openTerminal();
+        }
       } else {
         this.activeTab = 'ticket';
         this.detailTab = 'ticket';
@@ -519,10 +537,8 @@ export function kontoraDetail() {
       return (this.currentTicketCost()?.runs || []).find(function (cost) { return cost.history_index === historyIndex; }) || null;
     },
 
-    // The chain behind the ladder. Guarded on the selected ticket the way
-    // fetchChanges is, and on a sequence number as well: the SSE path refetches
-    // the same ticket, so the id alone cannot tell two in-flight requests apart
-    // and an older response could land last.
+    // Guard the dependency chain by selection and request sequence: SSE can
+    // start another read for the same ticket before the older response lands.
     async fetchChain(id) {
       if (this.isSecondary(this.selectedTicket)) return;
       var seq = ++this._chainSeq;
@@ -596,6 +612,8 @@ export function kontoraDetail() {
     },
 
     closeDetail(writeRoute = true) {
+      // A phone column owns the return route even after widening to desktop.
+      const returnToList = writeRoute && this.boardDetailOpen() && (this.isMobile || this.mobileColumnKey);
       this.rememberDetailView();
       if (writeRoute) ++this._navigationSeq;
       this.closeAgentPicker(false);
@@ -603,6 +621,7 @@ export function kontoraDetail() {
       this.closeTerminal();
       this.terminalRW = false;
       this.detailMenuOpen = false;
+      if (this.runConfirmOpen) this.closeRunConfirm(false);
       this.deleteModal = false;
       this.editing = false;
       this.editingBody = false;
@@ -624,14 +643,17 @@ export function kontoraDetail() {
       this._resetTicketCost();
       this.resetChanges();
       this.collapsedStages = {};
-      this.relExpanded = {};
       this.chain = null;
-      this.chainCollapsed = false;
       this.chainError = null;
       this.childrenCollapsed = false;
       this.childrenExpanded = false;
       this._ticketDetailSeq++;
-      if (writeRoute) this.writeHash();
+      if (returnToList && this._traverseMobileParent('detail')) return;
+      if (writeRoute) this.writeHash({ replace: !!(returnToList && this._settingsHistory) });
+      if (returnToList && this.isMobile) {
+        this._resetMobileListInteraction();
+        this.mobileRestoreList?.(null);
+      }
     },
 
     // Whether the board's own ticket page is what is open. The Archive view
@@ -647,6 +669,14 @@ export function kontoraDetail() {
     // board, so a stale or hand-typed link never leaves the app blank.
     parseHash(hash) {
       var h = String(hash == null ? '' : hash).replace(/^#/, '');
+      if (h.startsWith('/column/')) {
+        const match = h.match(/^\/column\/([^/?#]+)$/);
+        if (match) {
+          try { return { view: 'board', ticketId: null, columnKey: decodeURIComponent(match[1]) }; }
+          catch {}
+        }
+        return { view: 'board', ticketId: null };
+      }
       // An epic page is an overlay over the board, like a ticket page, so it
       // reports the board view and names the epic separately.
       var secondary = h.match(/^\/s\/([^/]+)\/t\/(.+)$/);
@@ -725,6 +755,11 @@ export function kontoraDetail() {
       if (this.isSecondary(this.selectedTicket)) return '#/s/' + encodeURIComponent(this.selectedTicket.source) + '/t/' + encodeURIComponent(this.selectedTicket.id);
       if (this.selectedTicket) return '#/t/' + encodeURIComponent(this.selectedTicket.id);
       if (this.selectedEpic) return '#/e/' + encodeURIComponent(this.selectedEpic.id);
+      if (this.mobileColumnKey) {
+        const hash = globalThis.location?.hash;
+        if (this.mobileColumnRouteError && this.parseHash(hash).columnKey === this.mobileColumnKey) return hash;
+        return '#/column/' + encodeURIComponent(this.mobileColumnKey);
+      }
       return '#/';
     },
 
@@ -748,9 +783,18 @@ export function kontoraDetail() {
       const physical = historyMetadata(history.state) || adapter.current;
       const entry = { id: physical.id, index: physical.index + (replace ? 0 : 1),
         entry: replace ? physical.entry : historyIdentity(), hash: next };
-      if (replace) detailBackEntries.delete(physical.entry);
-      else if ((this.selectedTicket || this.selectedEpic) && this.currentView === 'board' &&
-          physical.entry === adapter.current.entry && location.hash === adapter.current.hash) detailBackEntries.add(entry.entry);
+      if (replace) {
+        // Canonical encoding is still the same list. A replacement with a
+        // different screen (e.g. unknown column → Tickets) has no parent.
+        const previous = this.parseHash(location.hash);
+        if (previous.columnKey && previous.columnKey === this.parseHash(next).columnKey) {
+          entry.mobileParent = physical.mobileParent;
+          entry.mobileList = mobileLists.get(physical.entry) ?? physical.mobileList;
+        } else mobileLists.delete(physical.entry);
+      } else if (physical.entry === adapter.current.entry && location.hash === adapter.current.hash) {
+        if (this.currentView === 'board' && (this.selectedTicket || this.selectedEpic)) entry.mobileParent = 'detail';
+        else if (this.parseHash(next).columnKey && this._mobileHistoryIsList(adapter.current)) entry.mobileParent = 'column';
+      }
       history[replace ? 'replaceState' : 'pushState'](historyState(entry), '', next);
       adapter.length = history.length;
       if (!replace) adapter.tip = entry.index;
@@ -760,25 +804,78 @@ export function kontoraDetail() {
       this._settingsHistoryRemember();
     },
 
-    acceptMobileDetailRoute() {
+    _mobileHistoryIsList(entry) {
+      return entry?.hash === '#/' || !!this.parseHash(entry?.hash).columnKey;
+    },
+
+    _rememberMobileList(entry, position) {
+      if (!entry || !position) return;
+      mobileLists.set(entry.entry, position);
+      if (historyMetadata(history.state)?.entry === entry.entry && location.hash === entry.hash) {
+        history.replaceState(historyState({ ...entry, mobileList: position }), '', entry.hash);
+      }
+    },
+
+    _resetMobileListInteraction() {
+      if (this.mobileResetListInteraction) this.mobileResetListInteraction();
+      else if (this.sheet) this.closeSheet(false);
+    },
+
+    acceptMobileDetailRoute(ticket, kind = 'ticket') {
       const adapter = this._settingsHistory;
-      if (adapter && adapter.routing === this._navigationSeq && adapter.observed.hash === this.routeHash()) {
+      const from = adapter?.current;
+      const traversing = adapter?.routing === this._navigationSeq;
+      if (!traversing && this._mobileHistoryIsList(from)) {
+        const focusKey = ticket ? (kind === 'epic' ? ':epic:' + ticket.id : this.ticketKey(ticket)) : '';
+        this._rememberMobileList(from, this.mobileCaptureList?.(focusKey));
+      }
+      this._resetMobileListInteraction();
+      if (traversing && adapter.observed.hash === this.routeHash()) {
         adapter.current = adapter.observed;
       } else if (this._applyingRoute !== this._navigationSeq) this.writeHash();
     },
 
+    openMobileColumn(key, select = false, focusKey = '') {
+      return this.navigateDestination({ view: 'board', columnKey: key, selectColumn: select, focusKey });
+    },
+
+    mobileColumnBack() { return this._mobileRouteBack('column'); },
     mobileDetailBack() {
-      if (this.sheet) this.closeSheet(false);
+      if (this.currentView !== 'board') return this.closeDetail(false);
+      return this._mobileRouteBack('detail');
+    },
+
+    _traverseMobileParent(kind) {
       const adapter = this._settingsHistory;
-      if (adapter?.detailBackPending || adapter?.motion) return;
+      if (!adapter) return false;
+      if (adapter.mobileBackPending || adapter.motion) return true;
       const physical = historyMetadata(history.state);
-      if (adapter && physical?.entry === adapter.current.entry && location.hash === adapter.current.hash &&
-          detailBackEntries.has(physical.entry) && typeof history.go === 'function') {
-        adapter.detailBackPending = true;
-        history.go(-1);
-        return;
-      }
-      return this.navigateDestination({ view: 'board', replace: true });
+      if (physical?.entry !== adapter.current.entry || physical.mobileParent !== kind ||
+          location.hash !== adapter.current.hash || typeof history.go !== 'function') return false;
+      adapter.mobileBackPending = true;
+      history.go(-1);
+      return true;
+    },
+
+    _mobileRouteBack(kind) {
+      if (!this._traverseMobileParent(kind)) return this.navigateDestination({ view: 'board', replace: true });
+    },
+
+    reconcileMobileColumnRoute() {
+      const adapter = this._settingsHistory;
+      if (this._appDestroyed || this.needsAuth || this._applyingRoute === this._navigationSeq ||
+          adapter?.routing === this._navigationSeq || adapter?.mobileBackPending || adapter?.motion ||
+          !this.mobileColumnKey || this.parseHash(globalThis.location?.hash).columnKey !== this.mobileColumnKey) return;
+      const status = this.activeTicketColumnRouteStatus();
+      if (status === 'missing' || (status === 'unverified' && !this.mobileColumnRouteError) ||
+          (status === 'valid' && this.mobileColumnRouteError)) return this.applyRoute();
+    },
+
+    async retryMobileColumnRoute() {
+      if (!this.mobileColumnKey || !this.mobileColumnRouteError) return;
+      const navigation = this._navigationSeq;
+      await Promise.all([this.readTicketColumnConfig(), this.refreshTickets()]);
+      if (!this._appDestroyed && !this.needsAuth && navigation === this._navigationSeq) return this.applyRoute();
     },
 
     // Own BOTH route listeners. App-created entries use the History API (which
@@ -862,7 +959,7 @@ export function kontoraDetail() {
     async _settingsHistoryChanged(force = false, eventType) {
       const adapter = this._settingsHistory;
       if (!adapter) return;
-      adapter.detailBackPending = false;
+      adapter.mobileBackPending = false;
       let metadata = historyMetadata(history.state);
       const known = metadata?.id === adapter.current.id;
       // Hash assignments can emit popstate before hashchange, so waiting for
@@ -885,6 +982,7 @@ export function kontoraDetail() {
       const to = { ...metadata, hash: location.hash };
       const signature = historySignature(to);
       if (!force && signature === adapter.seen) return;
+      const firstRoute = adapter.seen === null;
       adapter.seen = signature;
       const previous = adapter.observed;
       adapter.observed = to;
@@ -913,7 +1011,7 @@ export function kontoraDetail() {
       const route = { ...this.parseHash(to.hash), [HISTORY_DESTINATION]: Symbol() };
       const navigation = ++this._navigationSeq;
       adapter.routing = navigation;
-      const result = await this.navigateDestination(route, navigation);
+      const result = await this.navigateDestination(route, navigation, to, firstRoute);
       if (adapter.routing === navigation) adapter.routing = null;
       if (!this._settingsHistory || navigation !== this._navigationSeq) return false;
       if (result === false) {
@@ -954,6 +1052,7 @@ export function kontoraDetail() {
       } else {
         adapter.current = to;
         if (adapter.motion) adapter.motion.target = to;
+        this._rememberMobileList(to, mobileLists.get(to.entry));
         this.writeHash({ replace: true });
       }
       if (adapter.resuming) {
@@ -970,11 +1069,30 @@ export function kontoraDetail() {
       return this.navigateDestination({ ...this.parseHash(location.hash), replace: true });
     },
 
-    async navigateDestination(r, navigation) {
+    async navigateDestination(r, navigation, historyEntry, firstRoute = false) {
       const resumed = this.resumeSettingsHistory(r);
       if (resumed) return resumed;
       if (navigation == null) navigation = ++this._navigationSeq;
       var mine = () => navigation === this._navigationSeq;
+      const adapter = this._settingsHistory;
+      const from = adapter?.current;
+      const fromList = this.currentView === 'board' && !this.selectedTicket && !this.selectedEpic;
+      const toList = r.view === 'board' && !r.ticketId && !r.epicId;
+      const listChanged = !fromList || this.mobileColumnKey !== (r.columnKey || '') ||
+        (historyEntry && (firstRoute || from?.entry !== historyEntry.entry));
+      // For an explicit overlay open, acceptMobileDetailRoute captures the
+      // exact opener once it knows the ticket or Epic was accepted. For a
+      // traversal, capture before changing views without inventing an opener.
+      const capture = !toList ? historyEntry || r.view !== 'board' : listChanged && !firstRoute;
+      const outgoing = !r.restore && this.isMobile && fromList && capture && this._mobileHistoryIsList(from)
+        ? this.mobileCaptureList?.(r.focusKey || '') : null;
+      const leaveList = () => {
+        if (r.restore || !mine()) return;
+        this._rememberMobileList(from, outgoing);
+        if (fromList) this._resetMobileListInteraction();
+        this.mobileColumnKey = '';
+        this.mobileColumnRouteError = '';
+      };
       if (this.currentView === 'settings') ++this._settingsRevealSeq;
       this._applyingRoute = navigation;
       try {
@@ -987,6 +1105,7 @@ export function kontoraDetail() {
           this.settingsField = r.settingsField || '';
           // Restoring a guarded route must not move focus behind its dialog.
           if (!r.restore && this.settingsApplyRoute) await this.settingsApplyRoute(r, navigation);
+          leaveList();
           return mine();
         }
         if (r.view === 'automations') {
@@ -996,9 +1115,9 @@ export function kontoraDetail() {
           if (await this.automationsApplyRoute(r, navigation) === false || !mine()) return false;
           this.automationsFilter = r.automationsFilter || 'all';
           this.automationsQuery = r.automationsQuery || '';
+          leaveList();
           return true;
         }
-        if (this.sheet && (r.ticketId || r.epicId)) this.closeSheet(false);
         // The two overlays are exclusive, so the epic branch closes whichever
         // one the hash does not name.
         if (r.epicId) {
@@ -1045,6 +1164,25 @@ export function kontoraDetail() {
           this.closeDetail(false);
         }
         if (!mine()) return false;
+        if (toList) {
+          const key = r.columnKey || '';
+          const status = key ? this.ticketColumnRouteStatus(key) : 'missing';
+          const nextColumn = status === 'missing' ? '' : key;
+          const switchedList = listChanged || this.mobileColumnKey !== nextColumn;
+          this.mobileColumnKey = nextColumn;
+          this.mobileColumnRouteError = status === 'unverified' ? 'Couldn’t verify this list' : '';
+          if (!r.restore && (switchedList || r.selectColumn)) {
+            this._rememberMobileList(from, outgoing);
+            this._resetMobileListInteraction();
+            if (this.isMobile) {
+              const incoming = nextColumn === key && historyEntry;
+              const position = incoming ? mobileLists.get(incoming.entry) ?? incoming.mobileList ?? null : null;
+              if (switchedList && (!firstRoute || nextColumn || position)) this.mobileRestoreList?.(position);
+              if (r.selectColumn && this.mobileColumnKey === 'open' && status === 'valid') this.mobileStartSelection?.();
+            }
+          }
+        } else if (r.view !== 'board' || this.currentView !== 'board') leaveList();
+        else if (!r.restore) this._rememberMobileList(from, outgoing);
         if (r.view === 'board' && this.terminalWanted()) this.openTerminal();
         return true;
       } finally {
@@ -1072,16 +1210,6 @@ export function kontoraDetail() {
       navigator.clipboard.writeText(cmd);
       this.copiedCmd = cmd;
       setTimeout(() => { this.copiedCmd = null; }, 1200);
-    },
-
-    // One button, one endpoint. Only the word changes: retry reads right for a
-    // ticket that stopped mid-pipeline, restart for one that already finished.
-    // Both queue the stage the ticket currently sits on; neither rewinds it.
-    retryLabel() {
-      if (this.workflowWaiting?.(this.selectedTicket) && this.selectedTicket.graph_execution.wait.disarmed) return 'rearm wait';
-      const restart = ['done', 'cancelled'].includes(this.selectedTicket?.status);
-      if (this.actionLoading === 'retry') return restart ? 'restarting...' : 'retrying...';
-      return restart ? 'restart' : 'retry';
     },
 
     async action(type) {
@@ -1865,7 +1993,7 @@ export function kontoraDetail() {
     },
 
     statusLabel(status) {
-      return status === 'todo' ? 'Todo' : (status || '').replace(/_/g, ' ');
+      return status === 'todo' ? 'queued' : (status || '').replace(/_/g, ' ');
     },
 
     // Duration between two timestamps, for history rows ("38m", "1h 4m", "45s").
@@ -1877,19 +2005,6 @@ export function kontoraDetail() {
       var mins = Math.floor(secs / 60);
       if (mins < 60) return mins + 'm';
       return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
-    },
-
-    // "⌁ attach tmux session": running tickets jump to the live terminal,
-    // otherwise the attach command is copied.
-    attachTerminal() {
-      if (!this.selectedTicket) return;
-      if (this.executionActive(this.selectedTicket)) {
-        this.logViewContent = null;
-        this.logViewStage = null;
-        this.switchTab('session');
-      } else {
-        this.copyCmd('kontora attach ' + this.selectedTicket.id);
-      }
     },
 
     // Follow (autoscroll) toggle for the log pane. The live terminal already

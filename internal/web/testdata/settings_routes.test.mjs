@@ -6,6 +6,7 @@ import { kontoraDetail } from '../ui/detail.js';
 import { kontoraSettings } from '../ui/settings.js';
 import { kontoraAutomations } from '../ui/automations.js';
 import { kontoraTickets } from '../ui/tickets.js';
+import { kontoraSources } from '../ui/sources.js';
 
 // Use the shipped Alpine proxies: a guard target read back from component
 // state is not the plain destination object passed into gotoView.
@@ -15,6 +16,7 @@ const alpine = vm.createContext({
   MutationObserver: class { observe() {} }, queueMicrotask() {},
 });
 vm.runInContext(readFileSync(new URL('../static/vendor/alpinejs@3.14.8/cdn.min.js', import.meta.url), 'utf8'), alpine);
+alpine.queueMicrotask = queueMicrotask;
 
 // Both native go() AND assigning location.hash emit popstate + hashchange in
 // Chromium. pushState/replaceState emit neither. Replace cannot masquerade as
@@ -570,6 +572,353 @@ for (const action of ['section', 'view']) {
     assert.equal(h.state.settingsSection, 'stages');
   });
 }
+
+function columnHarness(hash = '#/', { reactive = false } = {}) {
+  const h = harness(hash, { reactive });
+  const { state } = h;
+  Object.defineProperties(state, Object.getOwnPropertyDescriptors(kontoraTickets()));
+  Object.assign(state, kontoraSources(), {
+    isMobile: true, outputSubject: () => null,
+    tickets: [], ticketsLastLoaded: 1, ticketSourcesLoaded: true, configCache: {},
+    _builtinColumns: ['open', 'human_review', 'done'].map(key => ({ key, statuses: [key] })),
+    _knownCustomStatuses: {}, mobileStatusFilter: ':all', _editorSaves: {},
+    rememberDetailView() {}, noteResetDrafts() {}, syncDetailCoverage() {}, _resetActivity() {}, _resetTicketCost() {},
+  });
+  return h;
+}
+
+function openPhoneTicket(state, ticket) {
+  state.selectedTicket = ticket;
+  state.acceptMobileDetailRoute(ticket);
+}
+
+function ticketEvents(state) {
+  const listeners = new Map();
+  const original = globalThis.EventSource;
+  globalThis.EventSource = class {
+    addEventListener(name, handler) { listeners.set(name, handler); }
+  };
+  try { state.connectSSE(); } finally { globalThis.EventSource = original; }
+  return (name, ticket) => listeners.get(name)({ data: JSON.stringify(ticket) });
+}
+
+test('column keys encode as one segment; ticket and Epic routes take precedence', () => {
+  const { state } = columnHarness();
+  state.mobileColumnKey = 'QA / café?#';
+  assert.equal(state.routeHash(), '#/column/QA%20%2F%20caf%C3%A9%3F%23');
+  assert.deepEqual(state.parseHash(state.routeHash()), { view: 'board', ticketId: null, columnKey: 'QA / café?#' });
+  state.selectedTicket = { id: 'kon-1' };
+  assert.equal(state.routeHash(), '#/t/kon-1');
+  state.selectedTicket.source = 'team/one';
+  assert.equal(state.routeHash(), '#/s/team%2Fone/t/kon-1');
+  state.selectedTicket = null;
+  state.selectedEpic = { id: 'kon-epic' };
+  assert.equal(state.routeHash(), '#/e/kon-epic');
+});
+
+for (const hash of ['#/column/%', '#/column/', '#/column/open/extra', '#/column/open?q=filter', '#/column/unknown']) {
+  test(`invalid column link ${hash} replaces the current entry with Tickets`, async () => {
+    const h = columnHarness(hash);
+    h.state.setupSettingsHistory();
+    await h.state.applyRoute();
+    assert.equal(h.location.hash, '#/');
+    assert.equal(h.entries.length, 1);
+    assert.equal(h.state.mobileColumnKey, '');
+    assert.equal(h.state.mobileColumnRouteError, '');
+  });
+}
+
+test('desktop keeps a column URL, and on-screen Back from a direct column replaces it', async () => {
+  const h = columnHarness('#/column/done');
+  h.state.isMobile = false;
+  h.state.setupSettingsHistory();
+  await h.state.applyRoute();
+  assert.equal(h.state.currentView, 'board');
+  assert.equal(h.state.mobileColumnKey, 'done');
+  assert.equal(h.location.hash, '#/column/done');
+  h.state.isMobile = true;
+  assert.equal(h.state.mobileColumnKey, 'done');
+  await h.state.mobileColumnBack();
+  assert.equal(h.location.hash, '#/');
+  assert.equal(h.entries.length, 1);
+  assert.deepEqual(h.traversals, []);
+});
+
+test('Open Select intent is applied only after Settings accepts the destination', async () => {
+  const h = columnHarness('#/', { reactive: true });
+  const { state } = h;
+  const events = [];
+  state.mobileResetListInteraction = () => { if (state.sheet) state.closeSheet(); events.push('reset'); };
+  state.mobileStartSelection = () => events.push('select');
+  state.mobileRestoreList = position => events.push(['restore', position]);
+  state.closeSheet = () => { events.push('close'); state.sheet = null; };
+  state.setupSettingsHistory();
+  await h.go('general');
+  events.length = 0;
+  state.dirty = true;
+  state.sheet = { type: 'filters' };
+  assert.equal(await state.openMobileColumn('open', true, 'open-select'), false);
+  assert.equal(state.mobileColumnKey, '');
+  assert.deepEqual(events, []);
+  state.settingsGuardKeepEditing();
+  assert.equal(h.location.hash, '#/settings/general');
+  assert.equal(await state.openMobileColumn('open', true, 'open-select'), false);
+  await state.settingsGuardDiscard();
+  assert.equal(h.location.hash, '#/column/open');
+  assert.deepEqual(events, ['close', 'reset', ['restore', null], 'select']);
+  assert.equal(h.entries.length, 3);
+});
+
+test('ticket Back follows its column entry after a status move; Forward preserves the canonical ticket URL', async () => {
+  const h = columnHarness('#/', { reactive: true });
+  const { state } = h;
+  const ticket = { id: 'kon-1', source: 'team/one', status: 'human_review' };
+  state.secondaryTickets = [ticket];
+  const restored = [];
+  let top = 21;
+  state.mobileCaptureList = opener => ({ top, opener, filter: 'filter', anchor: 'another-row', offset: -13 });
+  state.mobileRestoreList = position => { restored.push(position); if (position) top = position.top; };
+  state.closeDetail = () => { state.selectedTicket = null; };
+  state.openMobileTicket = row => { state.selectedTicket = row; state.acceptMobileDetailRoute(row); };
+  state.setupSettingsHistory();
+  await state.openMobileColumn('human_review', false, 'review-tile');
+  assert.equal(h.entries[0].state.__kontoraHistory.mobileList.opener, 'review-tile');
+  top = 182;
+  state.openMobileTicket(ticket);
+  const ticketHash = '#/s/team%2Fone/t/kon-1';
+  assert.equal(h.location.hash, ticketHash);
+  const saved = { top: 182, opener: 'team%2Fone/kon-1', filter: 'filter', anchor: 'another-row', offset: -13 };
+  assert.deepEqual(h.entries[1].state.__kontoraHistory.mobileList, saved);
+
+  ticket.status = 'done';
+  state.mobileDetailBack(); await h.flush();
+  assert.equal(h.location.hash, '#/column/human_review');
+  assert.deepEqual(restored.at(-1), saved, 'the mount receives the original source-qualified opener and scroll');
+  h.history.forward(); await h.flush();
+  assert.equal(h.location.hash, ticketHash);
+  assert.equal(state.selectedTicket.status, 'done');
+  state.mobileDetailBack(); await h.flush();
+  state.mobileColumnBack(); await h.flush();
+  assert.equal(h.location.hash, '#/');
+  assert.equal(restored.at(-1).opener, 'review-tile');
+  assert.equal(top, 21);
+  assert.equal(h.entries.length, 3);
+});
+
+test('dismissing a phone ticket on desktop returns to its original column entry', async () => {
+  const h = columnHarness();
+  const { state } = h;
+  state.setupSettingsHistory();
+  await state.openMobileColumn('human_review');
+  openPhoneTicket(state, { id: 'kon-1' });
+
+  state.isMobile = false;
+  state.closeDetail();
+  await h.flush();
+  assert.equal(state.selectedTicket, null);
+  assert.equal(h.location.hash, '#/column/human_review');
+  assert.equal(h.cursor(), 1);
+  assert.equal(h.entries.length, 3);
+
+  state.isMobile = true;
+  state.mobileColumnBack(); await h.flush();
+  assert.equal(h.location.hash, '#/');
+  assert.equal(state.selectedTicket, null);
+});
+
+test('column Back never uses a preceding ticket as its parent', async () => {
+  const h = columnHarness();
+  const { state } = h;
+  state.setupSettingsHistory();
+  openPhoneTicket(state, { id: 'kon-1' });
+  await state.openMobileColumn('done');
+  await state.mobileColumnBack(); await h.flush();
+  assert.equal(h.location.hash, '#/');
+  assert.equal(state.selectedTicket, null);
+  assert.deepEqual(h.traversals, []);
+});
+
+test('Escape in phone Settings dismisses the retained detail without changing routes', async () => {
+  const h = columnHarness();
+  const { state } = h;
+  state.setupSettingsHistory();
+  openPhoneTicket(state, { id: 'kon-1' });
+  await h.go('web');
+  assert.equal(state.selectedTicket.id, 'kon-1');
+
+  await state.mobileDetailBack(); await h.flush();
+  assert.equal(state.selectedTicket, null);
+  assert.equal(state.currentView, 'settings');
+  assert.equal(h.location.hash, '#/settings/web');
+  assert.equal(h.entries.length, 3);
+  assert.deepEqual(h.traversals, []);
+});
+
+for (const event of ['ticket_updated', 'ticket_deleted']) {
+  for (const columnKey of ['', 'human_review']) {
+    test(`${event} restores the ${columnKey || 'filtered home'} position when the open phone ticket disappears`, async () => {
+      const h = columnHarness();
+      const { state } = h;
+      const ticket = { id: 'kon-1', status: 'human_review' };
+      const restored = [];
+      Object.assign(state, {
+        tickets: [ticket], createForm: {}, _selectedTicketUpdateSeq: 0,
+        refreshInitContext() {}, archiveDropRow() {}, scheduleBoardFlush() {},
+        mobileCaptureList: opener => ({ top: 182, opener, filter: 'project:repo', anchor: 'kon-2', offset: -13 }),
+        mobileRestoreList: position => restored.push(position),
+      });
+      const emit = ticketEvents(state);
+      state.setupSettingsHistory();
+      if (columnKey) await state.openMobileColumn(columnKey);
+      const list = h.location.hash;
+      restored.length = 0;
+      openPhoneTicket(state, ticket);
+
+      emit(event, { ...ticket, status: 'archived' });
+      await h.flush();
+      assert.equal(state.selectedTicket, null);
+      assert.deepEqual(state.tickets, []);
+      assert.equal(h.location.hash, list);
+      assert.deepEqual(restored, [{ top: 182, opener: 'kon-1', filter: 'project:repo', anchor: 'kon-2', offset: -13 }]);
+      assert.deepEqual(h.traversals, [-1]);
+    });
+  }
+}
+
+test('positions belong to history entries, not the column key', async () => {
+  const h = columnHarness();
+  const { state } = h;
+  let top = 10;
+  state.mobileCaptureList = () => ({ top });
+  state.mobileRestoreList = position => { top = position?.top || 0; };
+  state.setupSettingsHistory();
+  await state.openMobileColumn('human_review');
+  top = 11;
+  await state.openMobileColumn('done');
+  top = 22;
+  await state.openMobileColumn('human_review');
+  top = 33;
+  h.history.go(-2); await h.flush();
+  assert.equal(state.mobileColumnKey, 'human_review');
+  assert.equal(top, 11);
+  h.history.go(2); await h.flush();
+  assert.equal(state.mobileColumnKey, 'human_review');
+  assert.equal(top, 33);
+});
+
+function columnStartup(hash) {
+  const h = columnHarness(hash, { reactive: true });
+  const { state } = h;
+  const config = { custom_statuses: ['release'] };
+  const folder = [{ id: 'kon-1', status: 'external_status' }];
+  const response = data => ({ ok: true, json: async () => data });
+  const requests = {
+    '/api/config': () => response(config),
+    '/api/ticket-sources': () => response([{ id: 'team', available: true }]),
+    '/api/sources/team/tickets': () => response(folder),
+  };
+  globalThis.fetch = url => requests[url]();
+  globalThis.document = {};
+  const noop = () => {};
+  Object.assign(state, {
+    loading: true, ticketSourcesLoaded: false, ticketsLastLoaded: null, configCache: null,
+    initTheme: noop, initMobile: noop, setupSettingsLifecycle: noop,
+    _bindGlobalEvents: noop, setupAgentPicker: noop, setupTicketRefresh: noop, applyConfigTheme: noop,
+    _mountBoard: noop, automationsRefresh: noop, initAssistant: noop, companionInit: noop,
+    $watch(key, callback) {
+      const read = () => key.endsWith('()') ? this[key.slice(0, -2)]() : this[key];
+      return alpine.window.Alpine.watch(read, callback);
+    },
+    $nextTick: callback => callback?.(),
+    recomputeBoard() { this._deriveColumns(); },
+    scheduleBoardFlush() { this.recomputeBoard(); },
+    connectSSE() { this._releaseInitialSnapshot(); },
+    async fetchTasks() { this.ticketsLastLoaded = 1; },
+  });
+  return { ...h, config, folder, requests, response, async start() {
+    try { await state.init(); } finally { clearInterval(state._nowTimer); }
+  } };
+}
+
+for (const [key, delayedRead] of [['release', '/api/config'], ['external_status', '/api/sources/team/tickets']]) {
+  test(`startup waits for ${delayedRead} before validating ${key}`, async () => {
+    const h = columnStartup('#/column/' + key);
+    const read = h.requests[delayedRead];
+    let release;
+    h.requests[delayedRead] = () => new Promise(resolve => { release = () => resolve(read()); });
+    const startup = h.start();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.state.loading, true);
+    assert.equal(h.state.mobileColumnKey, '');
+    assert.equal(h.location.hash, '#/column/' + key);
+    release();
+    await startup;
+    assert.equal(h.state.loading, false);
+    assert.equal(h.state.mobileColumnKey, key);
+    assert.equal(h.state.mobileColumnRouteError, '');
+    assert.equal(h.location.hash, '#/column/' + key);
+  });
+}
+
+for (const [failedRead, recoveredKey] of [['/api/config', 'release'], ['/api/ticket-sources', 'external_status'],
+  ['/api/sources/team/tickets', 'external_status'], ['/api/config', '']]) {
+  test(`failed ${failedRead} keeps the column URL until Retry ${recoveredKey ? 'confirms it' : 'rules it out'}`, async () => {
+    const key = recoveredKey || 'missing';
+    // Noncanonical but equivalent escapes must not be rewritten on failure.
+    const hash = '#/column/%' + key.charCodeAt(0).toString(16) + key.slice(1);
+    const h = columnStartup(hash);
+    const read = h.requests[failedRead];
+    h.requests[failedRead] = () => ({ ok: false, status: 500 });
+    await h.start();
+    assert.equal(h.state.mobileColumnKey, key);
+    assert.equal(h.state.mobileColumnRouteError, 'Couldn’t verify this list');
+    assert.equal(h.location.hash, hash);
+    h.requests[failedRead] = read;
+    let configReads = 0, ticketReads = 0;
+    const readConfig = h.requests['/api/config'];
+    h.requests['/api/config'] = () => { ++configReads; return readConfig(); };
+    h.state.fetchTasks = async () => { ++ticketReads; };
+    await h.state.retryMobileColumnRoute();
+    await h.flush();
+    assert.equal(configReads, 1);
+    assert.equal(ticketReads, 1);
+    assert.equal(h.state.mobileColumnRouteError, '');
+    assert.equal(h.state.mobileColumnKey, recoveredKey);
+    assert.equal(h.location.hash, recoveredKey ? '#/column/' + key : '#/');
+    assert.equal(h.entries.length, 1);
+  });
+}
+
+for (const failedConfig of [false, true]) {
+  test(`losing the last inferred status row ${failedConfig ? 'offers list Retry after a failed read' : 'returns to Tickets'}`, async () => {
+    const hash = '#/column/external_status';
+    const h = columnStartup(hash);
+    await h.start();
+    assert.equal(h.state.mobileColumnKey, 'external_status');
+    h.state.ticketColumnConfigFailed = failedConfig;
+    h.state.queueTicketUpdate({ ...h.state.secondaryTickets[0], status: 'done' });
+    await h.flush();
+    assert.equal(h.location.hash, failedConfig ? hash : '#/');
+    assert.equal(h.state.mobileColumnKey, failedConfig ? 'external_status' : '');
+    assert.equal(h.state.mobileColumnRouteError, failedConfig ? 'Couldn’t verify this list' : '');
+    assert.equal(h.entries.length, 1);
+  });
+}
+
+test('Retry cannot restore the failed column after a newer navigation', async () => {
+  const h = columnStartup('#/column/release');
+  h.requests['/api/config'] = () => ({ ok: false, status: 500 });
+  await h.start();
+  let finish;
+  h.requests['/api/config'] = () => new Promise(resolve => { finish = resolve; });
+  const retry = h.state.retryMobileColumnRoute();
+  await h.state.openMobileColumn('done');
+  finish(h.response(h.config));
+  await retry;
+  assert.equal(h.state.mobileColumnKey, 'done');
+  assert.equal(h.location.hash, '#/column/done');
+  assert.equal(h.entries.length, 2);
+});
 
 test('existing route identities remain compatible', () => {
   const { state } = harness();

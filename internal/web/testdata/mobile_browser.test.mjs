@@ -10076,9 +10076,10 @@ test('Mobile Archive gestures offer Copy ID and Restore without opening the tick
     await managementTouch(page, opener, 'swipe');
     await expect(picker).toBeVisible();
     assert.equal(restores, 0, 'A gesture only reveals the action; it cannot restore on its own');
-    await picker.getByRole('button', { name: 'Restore to board', exact: true }).tap();
-    await expect(opener).toHaveCount(0);
+    // A Playwright tap immediately after the CDP swipe can miss the button in Chromium CI.
+    await picker.getByRole('button', { name: 'Restore to board', exact: true }).click();
     await expect.poll(() => restores).toBe(1);
+    await expect(opener).toHaveCount(0);
     await expect(page.getByRole('heading', { name: 'Archive', exact: true })).toBeFocused();
     assert.equal(new URL(page.url()).hash, '#/archive');
   }, { hasTouch: true, height: 844 });
@@ -10123,7 +10124,7 @@ test('Mobile Automations derives counts and next run and reveals Run now', async
     const run = list.getByRole('button', { name: 'Run now', exact: true });
     await expect(run).toBeVisible();
     assert.ok(!fixture.requests.includes('POST /api/automations/auto-review/run'), 'Swiping does not start the run');
-    await run.tap();
+    await run.click();
     await expect.poll(() => fixture.requests.filter(r => r === 'POST /api/automations/auto-review/run').length).toBe(1);
     await expect(openReview).toBeVisible();
     await noPageOverflow(page);

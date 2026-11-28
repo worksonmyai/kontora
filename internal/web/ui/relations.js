@@ -81,8 +81,7 @@ export function kontoraRelations() {
       return holder?.direction === 'upstream' ? holder : null;
     },
 
-    chainResumeMove() {
-      var holder = this.upstreamHolder();
+    chainResumeMove(holder = this.upstreamHolder()) {
       if (!holder || holder.missing || this.isSecondary(holder)) return null;
       var endpoint = holder.status === 'open' ? 'run' : holder.status === 'paused' ? 'retry' : '';
       if (!endpoint) return null;

@@ -15,6 +15,7 @@ function runReviewKey(ticket) {
 
 export function kontoraRunConfirm() {
   let previewSequence = 0;
+  let mobileOrigin = null;
   return {
     runConfirmOpen: false,
     runConfirmLoading: false,
@@ -30,7 +31,10 @@ export function kontoraRunConfirm() {
       const key = this.ticketKey(ticket);
       const seq = ++previewSequence;
       const origin = globalThis.document?.activeElement;
-      const current = () => this.runConfirmOpen && seq === previewSequence && !this._appDestroyed && this.ticketKey(this.selectedTicket) === key;
+      const sheet = this.sheet?.type === 'run' ? this.sheet : null;
+      mobileOrigin = sheet ? origin : null;
+      const current = () => this.runConfirmOpen && seq === previewSequence && !this._appDestroyed &&
+        (sheet ? this.sheet === sheet : this.ticketKey(this.selectedTicket) === key);
       this.runConfirmOpen = true;
       this.runConfirmLoading = true;
       this.runConfirmError = '';
@@ -69,7 +73,9 @@ export function kontoraRunConfirm() {
       this.runConfirmLoading = false;
       this.runConfirmPreview = null;
       this.runConfirmError = '';
-      if (restoreFocus) this.$refs.runConfirmTrigger?.focus({ preventScroll: true });
+      mobileOrigin = null;
+      if (this.sheet?.type === 'run') this.closeSheet(restoreFocus);
+      else if (restoreFocus) this.$refs.runConfirmTrigger?.focus({ preventScroll: true });
     },
 
     ticketBlocker(ticket) {
@@ -91,10 +97,15 @@ export function kontoraRunConfirm() {
       return blocker ? { kind: 'blocked', ...blocker } : { kind: 'queued' };
     },
 
+    runConfirmBlockerMove(blocker = this.runConfirmPreview?.blocker) {
+      if (!blocker || blocker.missing) return null;
+      return this.sheet?.type === 'run' ? this.chainResumeMove(blocker.ref) : this.chainResumeMove();
+    },
+
     runConfirmView() {
       const preview = this.runConfirmPreview;
       const blocker = preview?.blocker;
-      const move = blocker && this.chainResumeMove();
+      const move = this.runConfirmBlockerMove(blocker);
       const error = this.runConfirmError || preview?.error || '';
       return {
         stages: preview?.stages || [],
@@ -118,7 +129,7 @@ export function kontoraRunConfirm() {
     async confirmRun() {
       const preview = this.runConfirmPreview;
       if (!this.runConfirmOpen || !preview || this.runConfirmView().error) return;
-      const ticket = this.selectedTicket;
+      const ticket = this.sheet?.type === 'run' ? this.sheet.ticket : this.selectedTicket;
       const seq = previewSequence;
       const result = await this.dispatchLifecycle(ticket, preview.command, {
         validateBeforeWrite: async current => {
@@ -144,8 +155,8 @@ export function kontoraRunConfirm() {
 
     runBlockerFirst() {
       if (!this.runConfirmOpen || !this.runConfirmView().blocker?.action) return;
-      const move = this.chainResumeMove();
-      const origin = this.$refs.runConfirmTrigger;
+      const move = this.runConfirmBlockerMove();
+      const origin = mobileOrigin || this.$refs.runConfirmTrigger;
       this.closeRunConfirm(true);
       return this.dispatchWithDialogOrigin('init', this.ticketKey(move.ref), origin, () =>
         this.lifecycleCanQueueSaved(move.ref)

@@ -1,4 +1,5 @@
 import { filterSplitTerms, filterUnquote } from './filter.js';
+import { managementRowClickConsumed, managementRowGesture } from './mobile-management.js';
 
 // Archive view: the list of archived tickets, its filters, and the read-only
 // detail overlay one row opens. Merged into the kontora() component by
@@ -30,6 +31,8 @@ const ARCHIVE_SORT_DESC_FIRST = { archived: true, wall: true };
 // archive of a few thousand tickets rendered whole costs hundreds of megabytes
 // in effects alone. activity.js windows its tape for the same reason.
 const ARCHIVE_WINDOW = 100;
+const ARCHIVE_MOBILE_FILTERS = { status: 'Status', project: 'Project', pipeline: 'Pipeline', agent: 'Agent', range: 'Any time' };
+const archiveMonth = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' });
 
 // A row whose ticket carries no archived_from — archived before that field
 // existed — still needs a value to chip, group and filter by.
@@ -195,6 +198,8 @@ export function kontoraArchive() {
     archiveWindow: ARCHIVE_WINDOW,
     archiveTab: 'ticket',
     archiveDetailLoading: false,
+    archiveMobileFilters: ARCHIVE_MOBILE_FILTERS,
+    archiveMobilePicker: null,
     // The note prompt both entry points open. archivePromptId names the ticket
     // being archived, and is what makes the modal visible.
     archivePromptId: null,
@@ -230,6 +235,7 @@ export function kontoraArchive() {
       if (this._archiveFlight) this._archiveFlight.again = false;
       this.archiveLoading = false;
       this.archiveError = null;
+      this.archiveMobileClosePicker();
       if (this._archiveDetailId && this.selectedTicket && this.selectedTicket.id === this._archiveDetailId) {
         this._archiveClearDetail();
       }
@@ -420,6 +426,120 @@ export function kontoraArchive() {
       this.archiveResetWindow();
     },
 
+    // ---- mobile list and picker --------------------------------------------
+
+    archiveMobileSummary() {
+      if (this.archiveLoading) return 'Loading archive…';
+      if (this.archiveError && !this.archiveRows.length) return 'Archive unavailable';
+      const { total, shown } = this.archiveView();
+      const count = total.toLocaleString() + (total === 1 ? ' ticket' : ' tickets');
+      const order = this.archiveSortKey === 'archived' ? (this.archiveSortDir === 'asc' ? 'Oldest first' : 'Newest first')
+        : this.archiveSortLabels[this.archiveSortKey] + (this.archiveSortDir === 'asc' ? ' ↑' : ' ↓');
+      return [count, shown !== total ? shown.toLocaleString() + ' shown' : '', order].filter(Boolean).join(' · ');
+    },
+
+    archiveMobileGroups() {
+      const rows = this.archiveVisibleRows();
+      // An explicit non-date sort orders the whole result, not each month.
+      if (this.archiveSortKey !== 'archived') return [{ key: 'all', label: '', rows }];
+      const groups = new Map();
+      for (const row of rows) {
+        const at = archiveKeys(row).archivedAt;
+        const date = at > 0 ? new Date(at) : null;
+        const key = date ? date.getFullYear() + '-' + date.getMonth() : 'unknown';
+        if (!groups.has(key)) groups.set(key, { key, label: date ? archiveMonth.format(date) : 'Unknown archive date', rows: [] });
+        groups.get(key).rows.push(row);
+      }
+      return [...groups.values()];
+    },
+
+    archiveMobileStatus(status) {
+      if (status === 'unknown') return 'Unknown status';
+      const label = this.mobileTicketStatus({ status });
+      return label.charAt(0).toUpperCase() + label.slice(1);
+    },
+
+    archiveMobileAge(row) {
+      return archiveKeys(row).archivedAt > 0 ? this.archiveWhen(row) : '—';
+    },
+
+    archiveMobileOption(field, value) {
+      if (field === 'range') return value === 'all' ? 'Any time' : this.archiveRangeLabel(value);
+      if (value === 'all') return 'Any ' + field;
+      return field === 'status' ? this.archiveMobileStatus(value) : value;
+    },
+
+    archiveMobileChip(field) {
+      const value = this.archiveFilterValue(field);
+      return value === 'all' ? ARCHIVE_MOBILE_FILTERS[field] : this.archiveMobileOption(field, value);
+    },
+
+    archiveMobileOpenPicker(field, trigger, id = null) {
+      if (!this.isMobile || this.currentView !== 'archive' || this.archiveDetailOpen() || this.interactionOwner()) return false;
+      if (id && !this.archiveRows.some(row => row.id === id)) return false;
+      this.rememberDialogTrigger('archive-mobile', trigger);
+      this.archiveMobilePicker = { field, id };
+      return true;
+    },
+
+    archiveMobileClosePicker() {
+      this.archiveMobilePicker = null;
+    },
+
+    archiveMobileChoose(field, value) {
+      if (field === 'range') this.archiveSetRange(value);
+      else this.archiveSetFilter(field, value);
+      this.archiveMobileClosePicker();
+    },
+
+    archiveMobileRowGesture(event, row) {
+      const opener = event.currentTarget;
+      managementRowGesture(event, () => this.archiveMobileOpenPicker('actions', opener, row.id), true);
+    },
+
+    archiveMobileOpenRow(row, event) {
+      if (managementRowClickConsumed(event) || this.interactionOwner()) return;
+      this.archiveOpenRow(row);
+      this.$nextTick(() => {
+        if (this.isMobile && this._archiveDetailId === row.id) this.restoreUiFocus(this.$refs.archiveDetailBack);
+      });
+    },
+
+    archiveMobileFocusList(id) {
+      if (!this.isMobile || this.currentView !== 'archive' || this.archiveDetailOpen()) return;
+      const opener = id && [...(this.$refs.archiveMobileList?.querySelectorAll('[data-archive-mobile-open]') || [])]
+        .find(button => button.dataset.archiveMobileOpen === id);
+      this.restoreUiFocus(opener || this.$refs.archiveMobileHeading);
+    },
+
+    archiveMobileBackToList() {
+      const id = this._archiveDetailId;
+      this.archiveCloseDetail();
+      this.$nextTick(() => this.archiveMobileFocusList(id));
+    },
+
+    async archiveMobileCopyID(id) {
+      if (!id) return;
+      // Invoke clipboard in the button's user activation, then dismiss.
+      try {
+        const copied = navigator.clipboard.writeText(id);
+        this.archiveMobileClosePicker();
+        await copied;
+        this.showToast('Copied ' + id);
+      } catch {
+        this.archiveMobileClosePicker();
+        this.error = 'Could not copy ' + id;
+      }
+    },
+
+    archiveMobileRestore(id) {
+      const fromDetail = this.archiveDetailOpen();
+      this.archiveMobileClosePicker();
+      this.archiveRestore(id);
+      // The global dialog owner handles focus when a restore came from the picker.
+      if (fromDetail) this.$nextTick(() => this.archiveMobileFocusList());
+    },
+
     // ---- sidebar facets ----------------------------------------------------
 
     // While the archive is open the sidebar's project and agent rows drive the
@@ -509,6 +629,7 @@ export function kontoraArchive() {
     async archiveOpenRow(row, navigation = ++this._navigationSeq) {
       if (!row || !row.id || this.currentView !== 'archive' || navigation !== this._navigationSeq) return;
       if (this.archiveDetailOpen() && this.selectedTicket.id === row.id && !this.isSecondary(this.selectedTicket)) return;
+      this.archiveMobileClosePicker();
       this.flushEditSave();
       this.editing = false;
       this.editingBody = false;

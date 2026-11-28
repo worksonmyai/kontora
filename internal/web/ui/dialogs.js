@@ -9,9 +9,10 @@ const dialogStates = [
   ['note-delete', 'noteDeleteTarget'],
   ['delete', 'deleteModal'],
   ['init', 'initModal'],
+  ['archive-mobile', 'archiveMobilePicker'],
 ];
 const tabbable = 'a[href], button, input, select, textarea, [tabindex], [contenteditable="true"]';
-const mobileDetail = '.mobile-detail, .mobile-epic';
+const mobileDetail = '.mobile-detail, .mobile-epic, .mobile-duo-ticket-controls';
 const coveredElements = new WeakMap();
 
 export function activeDialog(app) {
@@ -23,7 +24,7 @@ export function blockingInteraction(app) {
 }
 
 export function mobileDetailCovered(app) {
-  return app.isMobile && app.currentView === 'board' && !!(app.selectedTicket || app.selectedEpic);
+  return app.isMobile && app.currentView === 'board' && (!!app.selectedEpic || (!!app.selectedTicket && app.mobileLayout !== 'duo-split'));
 }
 
 export function focusAvailable(el) {
@@ -193,6 +194,9 @@ export function kontoraDialogs() {
               this._focusMobileSheet?.();
             } else if (closed && mobileDetailCovered(this)) {
               this.focusMobileDetail?.();
+            } else if (previous === 'archive-mobile') {
+              // Restoring an archived ticket removes the dialog's opener.
+              this.archiveMobileFocusList?.();
             }
             return;
           }
@@ -233,6 +237,7 @@ export function kontoraDialogs() {
             switch (name) {
               case 'automation-delete': this.automationsCloseDelete(); break;
               case 'archive': this.closeArchivePrompt(); break;
+              case 'archive-mobile': this.archiveMobileClosePicker(); break;
               case 'settings': if (!this.settingsSaving) this.settingsGuardKeepEditing(); break;
               case 'palette': this.palettePop(); break;
               case 'note-delete': this.noteCloseDelete(); break;

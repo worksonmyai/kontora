@@ -41,15 +41,14 @@ export function kontoraDetail() {
     mobileColumnKey: '',
     mobileColumnRouteError: '',
 
-    // What the assistant is told about the open ticket. Null when none is open,
-    // so the pane leaves the line out rather than saying "no ticket". The panel
-    // only renders on the board and gotoView never clears selectedTicket, so a
-    // ticket left open on another view would otherwise be described as on screen.
+    // Only the visible board selection or the Assistant route's explicit
+    // context describes a ticket; other views may retain a hidden selection.
     detailPageContext() {
-      const t = this.selectedTicket;
-      if (!t || this.currentView !== 'board') return null;
+      const t = this.currentView === 'assistant' ? this.mobileAssistantTicketContext() :
+        this.currentView === 'board' ? this.selectedTicket : null;
+      if (!t) return null;
       return [
-        'Open ticket: ' + t.id + ' (' + t.status + (t.stage ? ', stage ' + t.stage : '') + ')',
+        'Open ticket: ' + t.id + (t.status ? ' (' + t.status + (t.stage ? ', stage ' + t.stage : '') + ')' : ''),
         t.title ? 'Title: ' + t.title : null,
         t.branch ? 'Branch: ' + t.branch : null,
       ];
@@ -710,8 +709,15 @@ export function kontoraDetail() {
           automationsMode: id === 'new' ? 'new' : automationsRoute[2] ? 'edit' : id ? 'detail' : 'list',
           automationsFilter: ['enabled', 'paused'].includes(filter) ? filter : 'all', automationsQuery: params.get('q') || '' };
       }
+      if (h === '/assistant' || h.startsWith('/assistant?')) {
+        const params = new URLSearchParams(h.slice('/assistant'.length));
+        const id = params.get('ticket');
+        const source = params.get('source') || 'primary';
+        return { view: 'assistant', assistantTicket: id ? { id, source, kind: source === 'primary' && params.has('epic') ? 'epic' : '' } : null };
+      }
       if (h === '/new') return { view: 'new', ticketId: null };
       if (h === '/stats') return { view: 'stats', ticketId: null };
+      if (h === '/more') return { view: 'more', ticketId: null };
       if (h.startsWith('/archive/t/') && h.length > 11) {
         const raw = h.slice(11);
         let id;
@@ -733,6 +739,14 @@ export function kontoraDetail() {
 
     // Serialize the current view back to a hash. Inverse of parseHash.
     routeHash() {
+      if (this.currentView === 'assistant') {
+        const t = this.mobileAssistantContext;
+        if (!t) return '#/assistant';
+        const params = new URLSearchParams({ ticket: t.id });
+        if (this.isSecondary(t)) params.set('source', t.source);
+        else if (t.kind === 'epic') params.set('epic', '1');
+        return '#/assistant?' + params.toString();
+      }
       if (this.currentView === 'automations') {
         const params = new URLSearchParams();
         if (this.automationsFilter !== 'all') params.set('state', this.automationsFilter);
@@ -745,6 +759,7 @@ export function kontoraDetail() {
       if (this.currentView === 'archive') return this.archiveDetailOpen() ? '#/archive/t/' + encodeURIComponent(this.selectedTicket.id) : '#/archive';
       if (this.currentView === 'new') return '#/new';
       if (this.currentView === 'stats') return '#/stats';
+      if (this.currentView === 'more') return '#/more';
       if (this.currentView === 'settings') {
         const params = new URLSearchParams();
         if (this.settingsQuery) params.set('q', this.settingsQuery);
@@ -793,6 +808,7 @@ export function kontoraDetail() {
         } else mobileLists.delete(physical.entry);
       } else if (physical.entry === adapter.current.entry && location.hash === adapter.current.hash) {
         if (this.currentView === 'board' && (this.selectedTicket || this.selectedEpic)) entry.mobileParent = 'detail';
+        else if (this.currentView === 'assistant') entry.mobileParent = 'assistant';
         else if (this.parseHash(next).columnKey && this._mobileHistoryIsList(adapter.current)) entry.mobileParent = 'column';
       }
       history[replace ? 'replaceState' : 'pushState'](historyState(entry), '', next);
@@ -1072,6 +1088,9 @@ export function kontoraDetail() {
     async navigateDestination(r, navigation, historyEntry, firstRoute = false) {
       const resumed = this.resumeSettingsHistory(r);
       if (resumed) return resumed;
+      // The desktop keeps its dock, even when opening a link copied on a phone.
+      const desktopAssistant = r.view === 'assistant' && !this.isMobile;
+      if (desktopAssistant) r = { ...r, ...this.mobileAssistantReturnRoute(r.assistantTicket) };
       if (navigation == null) navigation = ++this._navigationSeq;
       var mine = () => navigation === this._navigationSeq;
       const adapter = this._settingsHistory;
@@ -1098,6 +1117,13 @@ export function kontoraDetail() {
       try {
         if (this.currentView !== r.view) {
           if (await this.gotoView(r.view, navigation, r) === false || !mine()) return false;
+        }
+        if (r.view === 'assistant') {
+          // Keep a ticket's selected panel alive for native Back. A visit to
+          // another tab still clears it through the usual destination logic.
+          this.mobileAssistantEnter(r.assistantTicket, !!historyEntry || r.restore, !r.restore);
+          leaveList();
+          return mine();
         }
         if (r.view === 'settings') {
           this.settingsSection = SETTINGS_ROUTE_KEYS.includes(r.settingsSection) ? r.settingsSection : 'general';
@@ -1184,6 +1210,10 @@ export function kontoraDetail() {
         } else if (r.view !== 'board' || this.currentView !== 'board') leaveList();
         else if (!r.restore) this._rememberMobileList(from, outgoing);
         if (r.view === 'board' && this.terminalWanted()) this.openTerminal();
+        if (r.view === 'board' && this.isMobile && (r.ticketId || r.epicId) && this.parseHash(from?.hash).view === 'assistant') {
+          this.$nextTick(() => { if (mine() && this.currentView === 'board') this.focusMobileDetail?.(); });
+        }
+        if (desktopAssistant && !r.restore && (!this.assistantOpen || this.assistantRail)) this.toggleAssistant();
         return true;
       } finally {
         if (this._applyingRoute === navigation) this._applyingRoute = null;

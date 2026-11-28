@@ -738,7 +738,7 @@ test('a reader holding older history keeps the visible start when new rows arriv
 test('shipped desktop tool bodies use x-if, and both histories expose load-earlier controls', () => {
   const html = source('static/index.html');
   const fragments = kontoraAssistantMarkup();
-  for (const name of ['assistantTranscriptMarkup', 'assistantSheetTranscriptMarkup']) {
+  for (const name of ['assistantTranscriptMarkup', 'assistantPageTranscriptMarkup']) {
     assert.match(html, new RegExp(`x-html="${name}"`));
     assert.match(fragments[name], /<template x-if="assistantToolExpanded\(row.event, row.index\)">/);
     assert.doesNotMatch(fragments[name], /<div x-show="assistantToolExpanded/);

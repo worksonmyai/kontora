@@ -14,17 +14,29 @@ export function registerIOSPwaTests(test, withPage) {
   const requestPaths = (fixture, action) => fixture.requests.filter(req => req.startsWith('POST ') && req.endsWith('/' + action)).map(req => req.slice(5));
   const record = (fixture, id) => fixture.records.get('primary/' + id);
 
+  async function openRun(page, key) {
+    await row(page, key).getByRole('button', { name: /^Run / }).press('Enter');
+    const dialog = page.getByRole('dialog', { name: 'Run ' + key, exact: true });
+    await expect(dialog).toBeVisible();
+    return dialog;
+  }
+
   async function selectOpen(page) {
     await action(page, 'Select').click();
     await action(page, 'Select All').click();
     await expect(page.getByText('3 selected', { exact: true })).toBeVisible();
   }
 
-  test('iOS PWA one-tap Queue preserves saved settings and excludes ineligible rows', async t => {
+  test('iOS PWA review before Run preserves saved settings and excludes ineligible rows', async t => {
     const data = options();
     data.records.push(ticket('ios-import', 'Imported task', { source, status: 'open', updated_at: now.toISOString() }));
     await withPage(t, 390, 'dark', async (page, fixture) => {
-      await row(page, 'ios-112').getByRole('button', { name: /^Queue / }).click();
+      const preview = await openRun(page, 'ios-112');
+      assert.deepEqual(requestPaths(fixture, 'run'), []);
+      await preview.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(row(page, 'ios-112').getByRole('button', { name: /^Run / })).toBeFocused();
+      assert.deepEqual(requestPaths(fixture, 'run'), []);
+      await (await openRun(page, 'ios-112')).getByRole('button', { name: 'Run', exact: true }).click();
       await expect(opener(page, 'ios-112')).toContainText('Queued');
       assert.equal(new URL(page.url()).hash, '#/');
       assert.deepEqual(requestPaths(fixture, 'run'), ['/api/tickets/ios-112/run']);
@@ -41,7 +53,7 @@ export function registerIOSPwaTests(test, withPage) {
       const key = 'ios-112', ack = deferred();
       fixture.behavior.lifecycleAckWait = ack.promise;
       try {
-        await row(page, key).getByRole('button', { name: /^Queue / }).click();
+        await (await openRun(page, key)).getByRole('button', { name: 'Run', exact: true }).click();
         await expect.poll(() => fixture.mutations.length).toBe(1);
         const running = { ...record(fixture, key), status: 'in_progress', execution_active: true, started_at: now.toISOString() };
         await page.evaluate(ticket => window.__fixtureSSE.at(-1).dispatchEvent(new MessageEvent('ticket_updated', { data: JSON.stringify(ticket) })), running);
@@ -111,7 +123,7 @@ export function registerIOSPwaTests(test, withPage) {
       await action(page, 'Cancel').click();
       const refresh = row(page, key).getByRole('button', { name: 'Refresh ticket' });
       await expect(refresh).toBeVisible();
-      await expect(row(page, key).getByRole('button', { name: /^Queue / })).toHaveCount(0);
+      await expect(row(page, key).getByRole('button', { name: /^Run / })).toHaveCount(0);
       await action(page, 'Select').click();
       await action(page, 'Select All').click();
       await expect(page.getByText('2 selected', { exact: true })).toBeVisible();
@@ -119,7 +131,7 @@ export function registerIOSPwaTests(test, withPage) {
       await action(page, 'Cancel').click();
       await refresh.click();
       await expect(refresh).toHaveCount(0);
-      await expect(row(page, key).getByRole('button', { name: /^Queue / })).toHaveCount(0);
+      await expect(row(page, key).getByRole('button', { name: /^Run / })).toHaveCount(0);
       assert.equal(record(fixture, key).scheduled_at, '2026-11-10T12:00:00Z');
       assert.deepEqual(requestPaths(fixture, 'run'), []);
     }, options());
@@ -150,7 +162,7 @@ export function registerIOSPwaTests(test, withPage) {
   test('iOS PWA Home search leaves independently searchable lists reachable', async t => {
     await withPage(t, 390, 'dark', async page => {
       const homeSearch = page.getByRole('searchbox', { name: 'Search tickets' });
-      const link = page.getByRole('region', { name: 'Lists' }).getByRole('button', { name: /^Human review 0$/ });
+      const link = page.locator('.mobile-ios-tiles').getByRole('button', { name: '0 Human review', exact: true });
       await homeSearch.fill('no tickets match this search');
       await link.click();
       await expect(page).toHaveURL(/#\/column\/human_review$/);
@@ -320,20 +332,26 @@ export function registerIOSPwaTests(test, withPage) {
         await composer.fill(message);
         const send = detail.getByRole('button', { name: 'Send', exact: true });
         await expect(send).toBeEnabled();
+        const nextQuestion = 'Use a separate endpoint instead?';
         if (changed) {
-          const next = { ...record(fixture, iosPwa.running), waiting_question: 'Use a separate endpoint instead?' };
+          const next = { ...record(fixture, iosPwa.running), waiting_question: nextQuestion };
           await page.evaluate(({ next, message }) => {
-            const socket = window.__fixtureSockets.at(-1), send = socket.send;
-            socket.send = function(data) {
-              const result = send.call(this, data);
+            // The terminal can replace its socket after the Send button becomes enabled.
+            const sockets = window.WebSocket.prototype, originalSend = sockets.send;
+            sockets.send = function(data) {
+              const result = originalSend.call(this, data);
               if (typeof data === 'string' && data.includes(message)) {
-                window.__fixtureSSE.at(-1).dispatchEvent(new MessageEvent('ticket_updated', { data: JSON.stringify(next) }));
+                sockets.send = originalSend;
+                for (const stream of window.__fixtureSSE) {
+                  if (stream.url === '/api/events') stream.emit('ticket_updated', next);
+                }
               }
               return result;
             };
           }, { next, message });
         }
         await send.click();
+        if (changed) await expect(detail.getByText(nextQuestion, { exact: true })).toBeVisible();
         const result = changed ? 'Enter wasn’t sent. Your draft was kept. Check Terminal before opening Reply again.' : 'Sent to terminal';
         await expect(detail.getByRole('status').filter({ hasText: result })).toBeVisible();
         assert.ok(fixture.terminalInputs[0].data.includes(message));

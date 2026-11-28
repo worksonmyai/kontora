@@ -142,26 +142,38 @@ async function iosHome(page, fixture) {
   const board = page.locator('.mobile-board-layer');
   await expect(board.getByRole('heading', { name: 'Tickets', exact: true })).toBeInViewport();
   await expect(board.getByRole('heading', { name: 'In progress', exact: true })).toBeInViewport();
-  // Measure the row buttons, not the title spans (which may ellipsize).
-  const rows = iosPwa.progress.map(id => board.getByRole('button').filter({
-    has: page.getByText(iosTicket(fixture, id).title, { exact: true }),
-  }));
-  rows.push(board.getByRole('heading', { name: 'Open', exact: true }));
-  const positions = [];
-  for (const row of rows) {
-    await expect(row).toBeInViewport({ ratio: 1 });
-    positions.push((await row.boundingBox()).y);
-  }
-  assert.ok(positions.every((y, index) => index === 0 || y > positions[index - 1]), 'Active rows must precede Open, with the waiting row first');
-  await expect(board.getByRole('button', { name: 'Reply', exact: true })).toBeInViewport({ ratio: 1 });
-  const firstQueue = board.getByRole('button', { name: /^Queue\b/i }).first();
-  await expect(firstQueue).toBeInViewport({ ratio: 1 });
-  await expect(firstQueue).toBeEnabled();
-  // Hit-test for dock overlap without clicking; even a trial click can scroll.
-  assert.ok(await firstQueue.evaluate(button => {
+  const waiting = board.locator('[data-mobile-section=input]');
+  await expect(waiting.getByText(iosTicket(fixture, iosPwa.running).title, { exact: true })).toBeInViewport({ ratio: 1 });
+  const reply = waiting.getByRole('button', { name: 'Reply', exact: true });
+  await expect(reply).toBeInViewport({ ratio: 1 });
+  assert.ok(await reply.evaluate(button => {
     const { left, top, width, height } = button.getBoundingClientRect();
     return button.contains(document.elementFromPoint(left + width / 2, top + height / 2));
-  }), 'The first Queue button must be hit-testable at the initial fold');
+  }), 'Reply must be hit-testable at the initial fold');
+  await expect(board.locator('[data-mobile-section=in_progress] .mobile-ios-row')).toHaveCount(iosPwa.progress.length - 1);
+  await expect(board.locator('[data-mobile-section=open] .mobile-ios-row')).toHaveCount(4);
+}
+
+async function duoLayout(page, fixture, pose) {
+  const body = page.locator('body');
+  if (pose.startsWith('closed')) {
+    await page.evaluate(() => {
+      document.documentElement.style.setProperty('--mobile-safe-right', '60px');
+      window.dispatchEvent(new Event('resize'));
+    });
+    await expect(body).toHaveAttribute('data-mobile-rail', 'right');
+  }
+  if (pose === 'closed-ticket' || pose === 'open-landscape') await iosRunningTicket(page, fixture);
+  else await iosHome(page, fixture);
+  if (pose === 'open-landscape') await expect(body).toHaveAttribute('data-mobile-layout', 'duo-split');
+  if (pose === 'open-portrait') await expect(body).toHaveAttribute('data-mobile-layout', 'duo-portrait');
+}
+
+async function mobileMore(page) {
+  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'More' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'More' })).toBeInViewport();
+  await expect(page.getByText('Connected', { exact: true })).toBeInViewport();
+  await expect(page.getByRole('button', { name: 'Archive, 1', exact: true })).toBeVisible();
 }
 
 async function iosOpenSelection(page) {
@@ -185,6 +197,26 @@ async function iosQueueSheet(page, fixture) {
     await expect(dialog.getByText(label, { exact: true })).toBeInViewport();
   }
   await expect(dialog.getByRole('button', { name: /^Queue 3 tickets$/i })).toBeInViewport({ ratio: 1 });
+}
+
+function iosBlockedRunOptions() {
+  const options = iosOptions();
+  const draft = options.records.find(record => record.id === 'ios-111');
+  const blocker = options.records.find(record => record.id === 'ios-113');
+  const ref = { id: blocker.id, title: blocker.title, status: blocker.status, source: 'primary' };
+  draft.blockers = [ref.id];
+  draft.deps = [ref];
+  options.chains = { [draft.id]: { id: draft.id, verdict: 'blocked', nodes: [{ ...ref, direction: 'upstream', holds_chain: true }] } };
+  return options;
+}
+
+async function iosBlockedRun(page) {
+  await openTicket(page, 'ios-111');
+  const detail = page.locator('.mobile-detail');
+  await detail.getByRole('button', { name: 'Run…', exact: true }).click();
+  const sheet = page.getByRole('dialog', { name: 'Run ios-111', exact: true });
+  await expect(sheet.getByRole('button', { name: 'Queue', exact: true })).toBeInViewport();
+  await expect(sheet.getByRole('button', { name: 'Run ios-113 first', exact: true })).toBeInViewport();
 }
 
 async function iosRunningTicket(page, fixture) {
@@ -310,18 +342,19 @@ async function recordedAssistant(page) {
   const approve = surface.getByRole('button', { name: 'Approve', exact: true });
   await (page.viewportSize().width < 768 ? proposal : approve).scrollIntoViewIfNeeded();
   await expect(approve).toBeInViewport();
-  await expect(proposal.getByText('move_ticket', { exact: true })).toBeInViewport();
+  await expect(proposal.getByText(page.viewportSize().width < 768 ? 'kon-draft → Open' : 'move_ticket', { exact: true })).toBeInViewport();
   for (const output of results) await expect(output).toBeInViewport();
 }
 
 async function assistantApprovalWithDraft(page) {
   await openTicket(page, 'kon-draft');
   await openAssistantControl(page);
-  const dialog = page.getByRole('dialog', { name: 'Assistant', exact: true });
-  const composer = dialog.getByRole('combobox', { name: 'Message the assistant', exact: true });
+  const surface = assistantSurface(page);
+  const composer = surface.getByRole('combobox', { name: 'Message the assistant', exact: true });
   await composer.fill('Check the ticket before moving it.');
   await expect(composer).toBeFocused();
-  const approval = dialog.getByRole('group', { name: 'Pending approval' });
+  const approval = surface.getByRole('group', { name: 'Pending approval' });
+  await approval.scrollIntoViewIfNeeded();
   for (const control of [composer, approval.getByRole('button', { name: 'Approve' }), approval.getByRole('button', { name: 'Skip' })]) {
     await expect(control).toBeInViewport({ ratio: 1 });
   }
@@ -365,7 +398,7 @@ async function phoneArchive(page) {
 async function phoneAutomations(page) {
   await routeTo(page, '#/automations');
   const list = page.getByRole('region', { name: 'Automation list' });
-  await expect(list.getByRole('button', { name: /^\[Fixture repository\] Repository review$/ })).toBeInViewport();
+  await expect(list.getByRole('button', { name: 'Open Repository review', exact: true })).toBeInViewport();
 }
 
 async function automationDetail(page) {
@@ -459,8 +492,14 @@ const scenes = [
   { name: 'board-mobile-light', width: 390, height: 844, theme: 'light', options: iosOptions, run: iosHome },
   { name: 'open-selection-mobile-dark', width: 390, height: 844, theme: 'dark', options: iosOptions, run: iosOpenSelection },
   { name: 'queue-sheet-mobile-dark', width: 390, height: 844, theme: 'dark', options: iosOptions, run: iosQueueSheet },
+  { name: 'blocked-run-sheet-mobile-dark', width: 390, height: 844, theme: 'dark', options: iosBlockedRunOptions, run: iosBlockedRun },
   { name: 'running-ticket-mobile-dark', width: 390, height: 844, theme: 'dark', options: iosOptions, run: iosRunningTicket },
   { name: 'human-review-mobile-dark', width: 390, height: 844, theme: 'dark', options: iosOptions, run: iosHumanReview },
+  { name: 'duo-closed-home-dark', width: 466, height: 678, theme: 'dark', options: iosOptions, run: (page, fixture) => duoLayout(page, fixture, 'closed-home') },
+  { name: 'duo-closed-ticket-dark', width: 466, height: 678, theme: 'dark', options: iosOptions, run: (page, fixture) => duoLayout(page, fixture, 'closed-ticket') },
+  { name: 'duo-open-landscape-dark', width: 951, height: 669, hasTouch: true, theme: 'dark', options: iosOptions, run: (page, fixture) => duoLayout(page, fixture, 'open-landscape') },
+  { name: 'duo-open-portrait-dark', width: 669, height: 951, theme: 'dark', options: iosOptions, run: (page, fixture) => duoLayout(page, fixture, 'open-portrait') },
+  { name: 'more-mobile-dark', width: 390, height: 844, theme: 'dark', run: mobileMore },
   { name: 'board-empty-mobile-light', width: 390, theme: 'light', options: () => ({ empty: true }), run: emptyBoard },
   { name: 'ticket-panel-desktop-light', width: 1280, theme: 'light', run: ticketPanel },
   { name: 'archive-confirm-short-desktop-light', width: 1280, height: 293, theme: 'light', run: archiveConfirmation },
@@ -482,9 +521,9 @@ const scenes = [
   { name: 'terminal-compose-mobile-dark', width: 390, height: 555, theme: 'dark', run: terminalCompose },
 ];
 
-for (const { name, width, height = 900, theme, options, run } of scenes) {
+for (const { name, width, height = 900, hasTouch = width < 768, theme, options, run } of scenes) {
   test.describe(() => {
-    test.use({ viewport: { width, height }, colorScheme: theme, hasTouch: width < 768 });
+    test.use({ viewport: { width, height }, colorScheme: theme, hasTouch });
     test(name, async ({ context }, testInfo) => {
       await withCapturePage(context, testInfo, name, theme, options?.(), run);
     });

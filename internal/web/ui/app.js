@@ -47,7 +47,7 @@ export function kontoraApp() {
     needsAuth: false,
     tokenInput: '',
     authError: null,
-    isMobile: window.innerWidth < 768,
+    isMobile: window.innerWidth < 768 || (window.innerWidth < 1100 && !!window.matchMedia?.('(pointer: coarse)').matches),
 
     detailTab: 'ticket',
     sheet: null,
@@ -136,6 +136,7 @@ export function kontoraApp() {
     searchQuery: '',
     needsInputOnly: false,
     needsInputCount: 0,
+    globalNeedsInputCount: 0,
     // Command palette (⌘K), desktop only. paletteGroups is the rendered model,
     // rebuilt by recomputePalette() at the mutation points — open, query, scope,
     // SSE flush — the same imperative-cache shape as _board.

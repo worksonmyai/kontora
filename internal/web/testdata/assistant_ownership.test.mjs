@@ -232,7 +232,9 @@ for (const choice of ['chat', 'history', 'inbox', 'draft', 'none']) {
     if (choice === 'inbox') h.state.companionOpenInbox();
     if (choice === 'draft') h.edit('unsent');
     snapshot.resolve(response({ enabled: true })); await init;
-    h.state.openAssistantSheet();
+    h.state.isMobile = true;
+    h.state.currentView = 'assistant';
+    h.state.mobileAssistantEnter(null);
     assert.equal(h.state.assistantView, choice === 'history' ? 'history' : choice === 'inbox' || choice === 'none' ? 'inbox' : 'thread');
     h.state.companionDestroy(); h.state.assistantDestroy();
   });

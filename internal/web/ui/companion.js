@@ -78,7 +78,6 @@ const COMPANION_EVIDENCE = `
 export function kontoraCompanion() {
   return {
     companionHeaderMarkup: COMPANION_STATUS + companionTabs('companionThread() && assistantStreaming') + COMPANION_CHAT_HINT,
-    companionSheetTabsMarkup: companionTabs("assistantStreaming && (assistantView !== 'thread' || !assistantThreadVisible() || (!assistantEnabled() && !companionThread()))"),
     companionStatusMarkup: COMPANION_STATUS,
     companionChatHintMarkup: COMPANION_CHAT_HINT,
     companionInboxMarkup: COMPANION_INBOX,
@@ -150,7 +149,7 @@ export function kontoraCompanion() {
     companionEnabled() { return Boolean(this.companionSnapshot?.enabled); },
     _companionAdoptSnapshot(snapshot) {
       this.companionSnapshot = snapshot;
-      if (!this.companionEnabled() && this.assistantView === 'inbox') this.assistantView = 'thread';
+      if (!this.companionEnabled() && this.assistantView === 'inbox' && this.currentView !== 'assistant') this.assistantView = 'thread';
     },
     companionName() { return this.companionSnapshot?.name || 'Kotik'; },
     companionThread() { return this.assistantThread?.purpose === 'companion'; },
@@ -198,7 +197,7 @@ export function kontoraCompanion() {
     },
     companionOpenInbox() {
       this.assistantViewIntent = 'inbox';
-      if (!this.companionEnabled()) return;
+      if (!this.companionEnabled() && this.currentView !== 'assistant') return;
       this._assistantNoteScroll();
       if (this._assistantSelecting || this.assistantView !== 'inbox') {
         this._assistantSelectionSeq++;
@@ -210,13 +209,11 @@ export function kontoraCompanion() {
     },
     async companionOpenTicket(item) {
       if (!item.ticket_id) return;
-      const ticket = this.tickets.find(t => t.id === item.ticket_id) || { id: item.ticket_id };
-      if (await this._paletteOpenTicket(ticket)) {
-        if (this.isMobile) {
-          this.closeAssistant();
-          this.closeSheet();
-        }
+      if (this.isMobile && this.currentView === 'assistant') {
+        return this.navigateDestination({ view: 'board', ticketId: item.ticket_id });
       }
+      const ticket = this.tickets.find(t => t.id === item.ticket_id) || { id: item.ticket_id };
+      return this._paletteOpenTicket(ticket);
     },
     async companionPatch(path, body) {
       if (!this.companionCanWrite()) return;

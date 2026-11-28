@@ -153,8 +153,10 @@ type GraphWakeView struct {
 }
 
 type GraphConditionView struct {
-	Field  string `json:"field"`
-	Equals any    `json:"equals"`
+	Field     string `json:"field"`
+	Equals    any    `json:"equals,omitempty"`
+	NotEquals any    `json:"not_equals,omitempty"`
+	In        []any  `json:"in,omitempty"`
 }
 
 type GraphEdgeView struct {
@@ -215,7 +217,8 @@ func BuildGraphDefinition(graph *config.WorkflowGraph) *GraphDefinitionView {
 			node.Timeout = n.Timeout.String()
 		}
 		if n.When != nil {
-			node.When = &GraphConditionView{Field: n.When.Field, Equals: n.When.Equals}
+			node.When = &GraphConditionView{Field: n.When.Field, Equals: n.When.Equals,
+				NotEquals: n.When.NotEquals, In: slices.Clone(n.When.In)}
 		}
 		v.Nodes = append(v.Nodes, node)
 	}

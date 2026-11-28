@@ -45,11 +45,20 @@ func TestWorkflowAdmissionFingerprintOrdering(t *testing.T) {
 entry: review
 nodes:
   - {id: review, type: agent, stage: step1, agent: agent1, verdicts: [approve, changes]}
+  - {id: verdict, type: condition, when: {field: verdict, in: [approve, changes]}}
+  - {id: test, type: check, command: 'go test ./...', timeout: 1m}
+  - {id: code, type: condition, when: {field: exit_code, in: [2, 10]}}
   - {id: end, type: end, status: human_review}
   - {id: stop, type: end, status: paused}
 edges:
-  - {from: {node: review, port: complete}, to: end}
+  - {from: {node: review, port: complete}, to: verdict}
   - {from: {node: review, port: failed}, to: stop}
+  - {from: {node: verdict, port: true}, to: test}
+  - {from: {node: verdict, port: false}, to: stop}
+  - {from: {node: test, port: pass}, to: end}
+  - {from: {node: test, port: fail}, to: code}
+  - {from: {node: code, port: true}, to: end}
+  - {from: {node: code, port: false}, to: stop}
 `
 	var original config.WorkflowGraph
 	require.NoError(t, yaml.Unmarshal([]byte(source), &original))
@@ -60,17 +69,26 @@ edges:
 		nodes    bool
 		edges    bool
 		verdicts bool
+		members  bool
 	}{
 		{name: "nodes", nodes: true},
 		{name: "edges", edges: true},
 		{name: "verdicts", verdicts: true},
-		{name: "all", nodes: true, edges: true, verdicts: true},
+		{name: "condition members", members: true},
+		{name: "all", nodes: true, edges: true, verdicts: true, members: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var graph config.WorkflowGraph
 			require.NoError(t, yaml.Unmarshal([]byte(source), &graph))
 			if tc.verdicts {
 				slices.Reverse(graph.Nodes[0].Verdicts)
+			}
+			if tc.members {
+				for _, node := range graph.Nodes {
+					if node.When != nil {
+						slices.Reverse(node.When.In)
+					}
+				}
 			}
 			if tc.nodes {
 				slices.Reverse(graph.Nodes)

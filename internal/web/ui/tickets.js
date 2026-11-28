@@ -1,4 +1,4 @@
-import { buildWorkflowGraph } from './workflow_graph.js';
+import { buildWorkflowGraph, conditionLabel } from './workflow_graph.js';
 
 // Ticket store and app lifecycle: the columns, the initial load, the SSE
 // stream that keeps them current, and the per-ticket presentation helpers.
@@ -1208,7 +1208,7 @@ export function kontoraTickets() {
     workflowConfigText(d) {
       if (!d) return 'No graph is configured for this pipeline.';
       const lines = ['Entry: ' + d.entry];
-      for (const n of d.nodes || []) lines.push(n.id + ' [' + n.type + ']' + (n.template ? ' · template ' + n.template : '') + (n.command ? ' · ' + n.command : '') + (n.when ? ' · ' + n.when.field + ' = ' + JSON.stringify(n.when.equals) : '') + (n.type === 'loop' ? ' · max ' + n.max : '') + (n.mode ? ' · mode ' + n.mode : '') + (n.environment ? ' · environment ' + n.environment : '') + (n.timeout ? ' · timeout ' + n.timeout : '') + (n.wake ? ' · wake max ' + n.wake.max + ' · check timeout ' + n.wake.check_timeout : '') + (n.status ? ' · ' + n.status : ''));
+      for (const n of d.nodes || []) lines.push(n.id + ' [' + n.type + ']' + (n.template ? ' · template ' + n.template : '') + (n.agent ? ' · ' + n.agent : '') + (n.command ? ' · ' + n.command : '') + (n.when ? ' · ' + conditionLabel(n) : '') + (n.type === 'loop' ? ' · max ' + n.max : '') + (n.mode ? ' · mode ' + n.mode : '') + (n.environment ? ' · environment ' + n.environment : '') + (n.timeout ? ' · timeout ' + n.timeout : '') + (n.wake ? ' · wake max ' + n.wake.max + ' · check timeout ' + n.wake.check_timeout : '') + (n.status ? ' · ' + n.status : ''));
       for (const e of d.edges || []) lines.push(e.from.node + '.' + e.from.port + ' -> ' + e.to);
       return lines.join('\n');
     },

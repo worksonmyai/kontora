@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -47,8 +48,20 @@ func workflowFingerprint(cfg *config.Config, t *ticket.Ticket, graph *config.Wor
 	stages := make(map[string]config.Stage)
 	agents := make(map[string]config.Agent)
 	for i := range normalized.Nodes {
-		normalized.Nodes[i].Verdicts = slices.Clone(normalized.Nodes[i].Verdicts)
-		slices.Sort(normalized.Nodes[i].Verdicts)
+		node := &normalized.Nodes[i]
+		node.Verdicts = slices.Clone(node.Verdicts)
+		slices.Sort(node.Verdicts)
+		if node.When != nil && len(node.When.In) > 1 {
+			when := *node.When
+			when.In = slices.Clone(when.In)
+			slices.SortFunc(when.In, func(a, b any) int {
+				if when.Field == "exit_code" {
+					return cmp.Compare(a.(int), b.(int))
+				}
+				return strings.Compare(a.(string), b.(string))
+			})
+			node.When = &when
+		}
 	}
 	for _, node := range normalized.Nodes {
 		if node.Type != "agent" {

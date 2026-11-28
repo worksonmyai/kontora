@@ -908,7 +908,16 @@ func assistantGraph(graph *config.WorkflowGraph) string {
 			detail += fmt.Sprintf(" command=%q timeout=%s", node.Command, node.Timeout.Duration)
 		case "condition":
 			if node.When != nil {
-				detail += fmt.Sprintf(" %s equals %v", node.When.Field, node.When.Equals)
+				operator, values := node.When.Comparison()
+				if operator == "in" {
+					operands := make([]string, 0, len(values))
+					for _, value := range values {
+						operands = append(operands, assistantConditionOperand(value))
+					}
+					detail += fmt.Sprintf(" %s in [%s]", node.When.Field, strings.Join(operands, ", "))
+				} else if len(values) == 1 {
+					detail += fmt.Sprintf(" %s %s %s", node.When.Field, operator, assistantConditionOperand(values[0]))
+				}
 			}
 		case "loop":
 			detail += fmt.Sprintf(" max=%d", node.Max)
@@ -925,6 +934,13 @@ func assistantGraph(graph *config.WorkflowGraph) string {
 	slices.Sort(edges)
 	return fmt.Sprintf("graph v%d entry=%s; nodes (unordered): %s; edges: %s", graph.Version, graph.Entry,
 		strings.Join(nodes, ", "), strings.Join(edges, ", "))
+}
+
+func assistantConditionOperand(value any) string {
+	if verdict, ok := value.(string); ok {
+		return fmt.Sprintf("%q", verdict)
+	}
+	return fmt.Sprint(value)
 }
 
 // assistantCounts counts the tickets the daemon holds in memory, per status, in

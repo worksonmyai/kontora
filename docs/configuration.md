@@ -837,15 +837,27 @@ pipelines:
 | `agent` | `stage` names a prompt template; `agent` names a configured agent. Optional `verdicts` declares allowed result strings; `wake` permits suspension; `handoff: previous` supplies predecessor evidence. | `complete`, `failed` |
 | `wait` | `mode: human` or `deployment`; deployment requires `environment`. Optional positive `timeout`. | `released`; also `timeout` when a timeout is configured |
 | `check` | `command` runs in the worktree; `timeout` must be positive. | `pass` (exit zero), `fail` (nonzero) |
-| `condition` | `when: {field: verdict, equals: approved}` or `when: {field: exit_code, equals: 0}`. | `true`, `false` |
+| `condition` | `when` names a `field` (`verdict` or `exit_code`) and gives one comparison (`equals`, `not_equals`, or `in`) a non-null value. | `true`, `false` |
 | `loop` | Positive `max`, the total allowance of `repeat` transitions for this loop in one execution. | `repeat`, `exhausted` |
 | `end` | `status`: `done`, `human_review`, `paused`, or a declared custom parked status. | None |
 
-Conditions inspect the most recent executable result on the current path.
-A verdict comparison requires a successful agent result with a declared verdict;
-an exit-code comparison requires a check result and an integer `equals`.
-Consecutive conditions can inspect that same result until another executable
-node replaces it. A missing, stale, or incompatible result pauses execution.
+A condition reads only the latest executable result on the current path.
+It never falls back to an earlier result. Consecutive conditions read the same
+result until another executable node replaces it. A missing, stale, or
+incompatible result pauses execution.
+
+In each `when`, give exactly one of `equals`, `not_equals`, or `in` a non-null
+value. A `null` value counts as omitted.
+
+- `when: {field: exit_code, equals: 0}` takes `true` if the check exits with code 0.
+- `when: {field: verdict, not_equals: approved}` takes `true` if the verdict differs from `approved`.
+- `when: {field: exit_code, in: [1, 2]}` takes `true` if the check exits with code 1 or 2.
+
+`exit_code` requires a check result and integer comparison values. `verdict`
+requires a successful agent result with a declared verdict. Use nonblank strings
+for `verdict` comparisons. For `not_equals` and `in`, those strings cannot
+contain NUL characters. An `in` list must be nonempty and cannot contain duplicates.
+
 Quote `"true"` and `"false"` port names in YAML.
 
 Each port must have exactly one edge. All nodes must be reachable from `entry`.
@@ -882,6 +894,10 @@ workflows do not support epic supervisors. Use YAML for graph authoring, not a
 legacy stage-list editor. Upgrade all CLI and daemon binaries that read the
 config or share the ticket store together before enabling graphs. Older loaders
 and clients cannot interpret graph definitions or cursor state.
+
+Upgrade the daemon and every CLI that reads the config before adding
+`not_equals` or `in`, even to an existing graph. Older versions accept only
+`equals`.
 
 Recovery does not promise exactly-once shell or hook
 effects, host-power-loss durability, or containment of arbitrary detached

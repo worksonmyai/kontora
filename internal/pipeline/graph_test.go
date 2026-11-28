@@ -281,6 +281,52 @@ func TestAdvanceGraphConditions(t *testing.T) {
 			}
 		})
 	}
+
+	for _, tc := range []struct {
+		name                  string
+		when                  config.WorkflowCondition
+		exit                  int
+		verdict, port, reason string
+	}{
+		{name: "check in", when: config.WorkflowCondition{Field: "exit_code", In: []any{1, 2}}, exit: 2, port: "true"},
+		{name: "check outside set", when: config.WorkflowCondition{Field: "exit_code", In: []any{1, 2}}, exit: 3, port: "false"},
+		{name: "check not equal", when: config.WorkflowCondition{Field: "exit_code", NotEquals: 0}, exit: 2, port: "true"},
+		{name: "check equals excluded value", when: config.WorkflowCondition{Field: "exit_code", NotEquals: 0}, port: "false"},
+		{name: "verdict in", when: config.WorkflowCondition{Field: "verdict", In: []any{"approved", "minor"}}, verdict: "approved", port: "true"},
+		{name: "verdict outside set", when: config.WorkflowCondition{Field: "verdict", In: []any{"approved", "minor"}}, verdict: "changes_requested", port: "false"},
+		{name: "verdict not equal", when: config.WorkflowCondition{Field: "verdict", NotEquals: "approved"}, verdict: "changes_requested", port: "true"},
+		{name: "verdict equals excluded value", when: config.WorkflowCondition{Field: "verdict", NotEquals: "approved"}, verdict: "approved", port: "false"},
+		{name: "failed agent cannot compare inequality", when: config.WorkflowCondition{Field: "verdict", NotEquals: "approved"}, exit: 1, reason: "condition requires a successful declared agent verdict"},
+		{name: "failed agent cannot compare membership", when: config.WorkflowCondition{Field: "verdict", In: []any{"approved", "minor"}}, exit: 1, reason: "condition requires a successful declared agent verdict"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			graph := conditionGraph(tc.when.Field, nil)
+			graph.Nodes[3].When = &tc.when
+			graph.Edges[1].To = "condition"
+			if tc.when.Field == "exit_code" {
+				graph.Nodes[0].Type = "check"
+				graph.Edges[0].From.Port, graph.Edges[1].From.Port = "pass", "fail"
+			} else {
+				graph.Nodes[0].Verdicts = []string{"approved", "minor", "changes_requested"}
+			}
+			start := AdvanceGraph(graph, "", freshGraphState(), nil)
+			completion := completeGraphNode(start)
+			completion.ExitCode, completion.Verdict = tc.exit, tc.verdict
+			if tc.reason != "" {
+				completion.Outcome = "failed"
+			}
+			result := AdvanceGraph(graph, start.Stage, start.State, completion)
+			if tc.reason != "" {
+				require.Equal(t, ticket.StatusPaused, result.Status)
+				require.Equal(t, "condition", result.Stage)
+				require.Equal(t, tc.reason, result.Reason)
+				require.Len(t, result.Edges, 1)
+				return
+			}
+			require.Len(t, result.Edges, 2)
+			require.Equal(t, tc.port, result.Edges[1].Port)
+		})
+	}
 }
 
 func TestAdvanceGraphMissingVerdict(t *testing.T) {

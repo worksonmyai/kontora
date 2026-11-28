@@ -141,8 +141,14 @@ function configRows(node, ports, wait) {
   return config;
 }
 
-function conditionLabel(node) {
-  return node.when ? node.when.field + ' = ' + node.when.equals : '';
+export function conditionLabel(node) {
+  const when = node.when;
+  if (!when) return '';
+  const format = value => typeof value === 'string' ? JSON.stringify(value) : String(value);
+  if (Array.isArray(when.in)) return `${when.field} in [${when.in.map(format).join(', ')}]`;
+  if (when.not_equals != null) return `${when.field} != ${format(when.not_equals)}`;
+  if (when.equals != null) return `${when.field} = ${format(when.equals)}`;
+  return '';
 }
 
 function description(node, released) {

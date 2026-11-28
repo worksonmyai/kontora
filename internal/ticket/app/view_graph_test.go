@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"gopkg.in/yaml.v3"
 )
 
 func graphViewFixture() (*config.Config, *ticket.Ticket) {
@@ -64,6 +65,26 @@ func TestBuildView_GraphTopologyAndExecution(t *testing.T) {
 	}
 	tk.GraphState.Transitions = append(tk.GraphState.Transitions, ticket.GraphTransition{From: "again", Port: "exhausted", To: "stop", Revision: 7})
 	assert.True(t, BuildView(cfg, tk, false).GraphExecution.Loops[0].Exhausted)
+}
+
+func TestBuildGraphDefinitionConditions(t *testing.T) {
+	for _, tc := range []struct {
+		name, when, want string
+	}{
+		{"equals", "{field: exit_code, equals: 0}", `{"field":"exit_code","equals":0}`},
+		{"not_equals", "{field: exit_code, not_equals: 0}", `{"field":"exit_code","not_equals":0}`},
+		{"in", "{field: verdict, in: [approved, minor]}", `{"field":"verdict","in":["approved","minor"]}`},
+		{"octal exit code", "{field: exit_code, in: [010, 10]}", `{"field":"exit_code","in":[8,10]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var when config.WorkflowCondition
+			require.NoError(t, yaml.Unmarshal([]byte(tc.when), &when))
+			graph := &config.WorkflowGraph{Nodes: []config.WorkflowNode{{ID: "choose", Type: "condition", When: &when}}}
+			data, err := json.Marshal(BuildGraphDefinition(graph).Nodes[0].When)
+			require.NoError(t, err)
+			require.JSONEq(t, tc.want, string(data))
+		})
+	}
 }
 
 func TestBuildView_GraphExecutionSurvivesConfigReload(t *testing.T) {

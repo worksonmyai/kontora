@@ -5048,7 +5048,7 @@
                       <header :id="settingsFieldID(['pipelines', name])" tabindex="-1" :aria-label="name + ' pipeline, read-only'" class="flex items-center gap-2.5 p-[13px] px-[18px] border-b border-surface-700/40" style="background: hsl(var(--pipe-h) / .07)">
                         <span class="pipe-tag shrink-0" x-text="name"></span>
                         <span class="font-mono text-[11px] text-tx-4 truncate">
-                          <span x-text="settingsPipelineGraph(name) ? 'graph · entry ' + settingsPipelineGraph(name).entry : settingsPlural(settingsPipelineSteps(name).length, 'step', 'steps')"></span><span x-show="!settingsPipelineGraph(name)"> · <span x-text="settingsPlural(new Set(settingsPipelineSteps(name).map(s => s.agent)).size, 'agent', 'agents')"></span></span>
+                          <span x-text="settingsPipelineGraph(name) ? 'graph' : settingsPlural(settingsPipelineSteps(name).length, 'step', 'steps')"></span><span x-show="!settingsPipelineGraph(name)"> · <span x-text="settingsPlural(new Set(settingsPipelineSteps(name).map(s => s.agent)).size, 'agent', 'agents')"></span></span>
                         </span>
                       </header>
                       <pre x-show="settingsPipelineGraph(name)" class="p-4 font-mono text-[11px] text-tx-3 whitespace-pre-wrap" x-text="settingsPipelineGraphText(name)"></pre>

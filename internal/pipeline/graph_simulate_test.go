@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -93,7 +94,23 @@ func TestPreflightExitCodeDomainAndCap(t *testing.T) {
 		require.Equal(t, code, *report.Diagnostics[0].Producer.ExitCode)
 		require.Equal(t, "true", report.Diagnostics[0].Path[1].Port)
 	}
-	graph.Nodes[1].When.Equals = 0
+	for _, tc := range []struct {
+		name  string
+		when  config.WorkflowCondition
+		codes []int
+	}{
+		{"in", config.WorkflowCondition{Field: "exit_code", In: []any{3, 4}}, []int{0, 1, 3, 4}},
+		{"not_equals", config.WorkflowCondition{Field: "exit_code", NotEquals: 3}, []int{0, 1, 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			graph.Nodes[1].When = &tc.when
+			require.Equal(t, tc.codes, representativeCheckCodes(graph)["check"])
+			report := PreflightGraph(graph, GraphPreflightLimit)
+			require.False(t, report.Inconclusive)
+			require.Equal(t, len(tc.codes)+1, report.Explored)
+		})
+	}
+	graph.Nodes[1].When = &config.WorkflowCondition{Field: "exit_code", Equals: 0}
 	capped := PreflightGraph(graph, 2)
 	require.True(t, capped.Inconclusive)
 	require.Equal(t, 2, capped.Explored)
@@ -101,6 +118,70 @@ func TestPreflightExitCodeDomainAndCap(t *testing.T) {
 	complete := PreflightGraph(graph, 3)
 	require.False(t, complete.Inconclusive, "the last available step exactly completed exploration")
 	require.Equal(t, 3, complete.Explored)
+}
+
+func TestPreflightExitCodeListAfterRetryingChecks(t *testing.T) {
+	var values []any
+	for code := 128; code <= 255; code++ {
+		values = append(values, code)
+	}
+	graph := &config.WorkflowGraph{Version: 2, Nodes: []config.WorkflowNode{
+		{ID: "final", Type: "check"},
+		{ID: "by-code", Type: "condition", When: &config.WorkflowCondition{Field: "exit_code", In: values}},
+		{ID: "end", Type: "end", Status: "done"},
+	}, Edges: []config.WorkflowEdge{
+		graphEdge("final", "pass", "by-code"), graphEdge("final", "fail", "by-code"),
+		graphEdge("by-code", "true", "end"), graphEdge("by-code", "false", "end"),
+	}}
+	next := "final"
+	for i := 4; i > 0; i-- {
+		check := fmt.Sprintf("check-%d", i)
+		retry := "retry-" + check
+		graph.Nodes = append(graph.Nodes, config.WorkflowNode{ID: check, Type: "check"},
+			config.WorkflowNode{ID: retry, Type: "loop", Max: 1})
+		graph.Edges = append(graph.Edges, graphEdge(check, "pass", next), graphEdge(check, "fail", retry),
+			graphEdge(retry, "repeat", check), graphEdge(retry, "exhausted", "end"))
+		next = check
+	}
+	graph.Entry = next
+
+	report := PreflightGraph(graph, GraphPreflightLimit)
+	require.False(t, report.Inconclusive, "only the final check should try the codes in the list")
+	require.Empty(t, report.Diagnostics)
+}
+
+func TestPreflightExitCodeConsumersAcrossControls(t *testing.T) {
+	graph := &config.WorkflowGraph{Version: 2, Entry: "check", Nodes: []config.WorkflowNode{
+		{ID: "check", Type: "check"},
+		{ID: "retry", Type: "loop", Max: 1},
+		{ID: "gate", Type: "wait", Mode: "human", Timeout: config.Duration{Duration: time.Hour}},
+		{ID: "choose", Type: "condition", When: &config.WorkflowCondition{Field: "exit_code", Equals: 7}},
+		{ID: "by-release", Type: "condition", When: &config.WorkflowCondition{Field: "exit_code", In: []any{42}}},
+		{ID: "by-timeout", Type: "condition", When: &config.WorkflowCondition{Field: "exit_code", Equals: 43}},
+		{ID: "release-verdict", Type: "condition", When: &config.WorkflowCondition{Field: "verdict", Equals: "approved"}},
+		{ID: "timeout-verdict", Type: "condition", When: &config.WorkflowCondition{Field: "verdict", Equals: "approved"}},
+		{ID: "end", Type: "end", Status: "done"},
+	}, Edges: []config.WorkflowEdge{
+		graphEdge("check", "pass", "end"), graphEdge("check", "fail", "retry"),
+		graphEdge("retry", "repeat", "check"), graphEdge("retry", "exhausted", "gate"),
+		graphEdge("gate", "released", "choose"), graphEdge("gate", "timeout", "by-timeout"),
+		graphEdge("choose", "true", "end"), graphEdge("choose", "false", "by-release"),
+		graphEdge("by-release", "true", "release-verdict"), graphEdge("by-release", "false", "end"),
+		graphEdge("by-timeout", "true", "timeout-verdict"), graphEdge("by-timeout", "false", "end"),
+		graphEdge("release-verdict", "true", "end"), graphEdge("release-verdict", "false", "end"),
+		graphEdge("timeout-verdict", "true", "end"), graphEdge("timeout-verdict", "false", "end"),
+	}}
+	report := PreflightGraph(graph, GraphPreflightLimit)
+	require.False(t, report.Inconclusive)
+	require.Len(t, report.Diagnostics, 2)
+	codes := make(map[string]int)
+	for _, diagnostic := range report.Diagnostics {
+		require.NotNil(t, diagnostic.Producer)
+		require.Equal(t, "check", diagnostic.Producer.NodeID)
+		require.NotNil(t, diagnostic.Producer.ExitCode)
+		codes[diagnostic.Node] = *diagnostic.Producer.ExitCode
+	}
+	require.Equal(t, map[string]int{"release-verdict": 42, "timeout-verdict": 43}, codes)
 }
 
 func TestPreflightVerdictResultSize(t *testing.T) {

@@ -82,12 +82,17 @@ const graphYAML = `pipelines:
 test('unrelated settings save preserves all wait graph YAML and comments', async () => {
   const raw = settingsFixture + graphYAML;
   let saved;
-  const s = await settingsState(raw, { fetch: async (_url, options) => {
-    if (!options) return { ok: true, json: async () => ({ content: raw }) };
-    saved = JSON.parse(options.body).content;
-    return { status: 204 };
-  } });
-  assert.match(s.settingsPipelineGraphText('repair'), /wake max 3 · check timeout 60s/);
+  const graph = parse(raw).pipelines.repair;
+  graph.nodes[0].wake.check_timeout = '1m0s';
+  const s = await settingsState(raw, {
+    state: { configCache: { pipelines: [{ name: 'repair', graph_definition: graph }] } },
+    fetch: async (_url, options) => {
+      if (!options) return { ok: true, json: async () => ({ content: raw }) };
+      saved = JSON.parse(options.body).content;
+      return { status: 204 };
+    },
+  });
+  assert.match(s.settingsPipelineGraphText('repair'), /wake max 3 · check timeout 1m0s/);
   assert.match(s.settingsPipelineGraphText('repair'), /mode deployment · environment production/);
   s.settingsConfig.general.branch_prefix = 'changed';
   assert.equal(await s.saveSettings(), true);

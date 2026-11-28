@@ -1,19 +1,107 @@
 # kontora CLI
 
 Use `kontora <command> [flags] [arguments]` to create tickets, control runs,
-and inspect results. Both `-flag` and `--flag` work.
+and inspect results. Both `-flag` and `--flag` work. `kontora <command> -h`
+prints the command's synopsis, description and flags, and names its section in
+this topic.
 
 Put flags before positional arguments. For `new`, put them before the title;
 for `edit`, before the ticket ID.
 For `note` and `summary`, put all flags before the ticket ID, including when using stdin.
+`new`, `note` and `summary` check the words of their text. A word that names
+one of the command's own flags, such as `--status`, makes the command fail
+instead of becoming part of the text.
 
 Verbs that take a `TICKET_ID` accept a unique prefix, except for `result`,
-which requires the exact invocation ticket ID. `kontora view kon-q` finds
-`kon-q88f`. A prefix matching two tickets is an error naming both.
-Matching is from the start of the id only.
+which requires the exact ticket or automation ID of the invocation.
+`kontora view kon-q` finds `kon-q88f`. A prefix matching two tickets is an
+error naming both. Matching is from the start of the id only.
 
 Exit codes: 0 on success, non-zero on failure with the reason on stderr. A
 search that matches nothing still exits 0.
+
+## Common tasks
+
+Replace `TICKET_ID`, the `/absolute/path/...` values and the other
+placeholders with real values.
+
+Create a draft from a description file, read it, then start it:
+
+```sh
+kontora new --status open --quiet --path /absolute/path/to/repo \
+  --description-file /absolute/path/brief.md "Add a health check endpoint"
+kontora view --body TICKET_ID
+kontora run TICKET_ID
+```
+
+`--quiet` prints only the new ID. Without `--status open` the ticket is `todo`,
+and a daemon with `auto_pick_up: true` can start it before you read it.
+
+Make one ticket wait for another:
+
+```sh
+kontora dep SECOND_ID FIRST_ID
+```
+
+`SECOND_ID` stays in `todo` until `FIRST_ID` is `human_review`, `done`,
+`cancelled` or `archived`. `kontora ls --blocked` lists the `todo` tickets that
+still wait.
+
+Find out why a ticket stopped:
+
+```sh
+kontora view TICKET_ID
+kontora view --last 3 TICKET_ID
+kontora logs TICKET_ID
+kontora activity TICKET_ID
+```
+
+`view` prints the status, stage, run history and last error. `--last 3` prints
+the three newest notes. `logs` prints the newest stage log. `activity` prints
+one run's transcript and needs a running daemon.
+
+Review a ticket in `human_review`, then close it:
+
+```sh
+kontora view TICKET_ID
+kontora changes TICKET_ID
+git -C /absolute/path/to/repo worktree list
+git -C /absolute/path/to/worktree status --short
+kontora done TICKET_ID
+```
+
+`view` prints the repository `path` and the `branch`. Find the worktree of that
+branch in `git worktree list`. `changes` shows committed work only and needs a
+running daemon, so check the worktree for uncommitted and untracked files.
+`done` does not commit, merge or push the work. The `kontora done` section
+says what cleanup keeps.
+
+Send a ticket back for another pass:
+
+```sh
+kontora note TICKET_ID < /absolute/path/feedback.md
+kontora retry TICKET_ID
+```
+
+Write the feedback file with a file-writing tool. `retry` sets the ticket back
+to `todo` at its current stage. In local mode with `auto_pick_up: false`,
+follow it with `kontora run TICKET_ID`. A graph workflow at an `end` node
+refuses `retry`. For such a ticket, use `kontora workflow-restart TICKET_ID`,
+which starts the graph again at its entry node.
+
+Start work later:
+
+```sh
+kontora schedule TICKET_ID --after 2h
+kontora new --after 24h --path /absolute/path/to/repo "Rerun the nightly checks"
+```
+
+List the tickets in `human_review` or `paused`:
+
+```sh
+kontora ls --json --status human_review
+kontora ls --json --status paused
+```
 
 ## If you are a stage agent
 
@@ -75,6 +163,13 @@ Mandatory for activated epic supervisors and their actual children, including
 fresh, resumed, and rework runs. Unrelated tickets, passive-epic children,
 annotations, and assistant-only runs retain their existing requirements.
 Graph agent nodes always require results: version 2, or version 3 with `wake`.
+
+Automation runs always require a result. Pass the automation ID in place of the
+ticket ID: `kontora result --input-file /absolute/path/result.json AUTOMATION_ID`.
+A zero exit without a result is a failed run.
+
+`--verdict VALUE` sets the verdict for result version 2 or 3. If the JSON also
+has a `verdict`, the two must match.
 
 Prefer Pi's `kontora_result({outcome, summary, next_step?, verdict?})` tool when available;
 it is independent of checkpoint compaction and binds the current invocation.
@@ -219,13 +314,51 @@ it print a table instead. Prefer `--json` when parsing.
 - `--json` — print JSON.
 - `--static` — print the table even on a terminal.
 
+```sh
+kontora ls --json
+kontora ls --json --closed --archived
+kontora ls --static --ready --project myrepo
+```
+
 `--ready` and `--blocked` cannot be combined. `--json` prints an array of
-objects with `id`, `title`, `status`, `kontora`, `path`, `project`, `pipeline`,
-`stage`, `agent`, `created_at`, `started_at`, `completed_at`, `deps`, `links`,
-`parent`, `kind`, `epic_execution`, `child_order`, `branch`, `base_branch`,
-`ready` and `blockers`. `epic_execution: "agent"` identifies a supervisor.
+objects with `id`, `title`, `status`, `execution_active`, `kontora`, `path`,
+`project`, `pipeline`, `stage`, `agent`, `created_at`, `started_at`,
+`completed_at`, `scheduled_at`, `deps`, `links`, `parent`, `kind`,
+`epic_execution`, `child_order`, `branch`, `base_branch`, `ready` and
+`blockers`. `epic_execution: "agent"` identifies a supervisor.
 `child_order` is stored display order, not membership. Read each child's `parent`
 across the complete listing to find all children. The listing omits the ticket body.
+
+The object omits an empty `path`, `project`, `pipeline`, `stage`, `agent`,
+`parent`, `scheduled_at` or timestamp. `stage` is `standalone` for a ticket
+without a pipeline. Kontora derives `ready` and `blockers` on every read.
+`ready` means something only for a `todo` ticket. One object, for a paused
+ticket:
+
+```json
+{
+  "id": "app-q88f",
+  "title": "Add a health check endpoint",
+  "status": "paused",
+  "execution_active": false,
+  "kontora": true,
+  "path": "/home/me/projects/app",
+  "pipeline": "default",
+  "stage": "implement",
+  "agent": "claude",
+  "created_at": "2026-11-27T09:00:00Z",
+  "started_at": "2026-11-27T09:01:00Z",
+  "deps": [],
+  "links": [],
+  "kind": "",
+  "epic_execution": "",
+  "child_order": [],
+  "branch": "kontora/add-health-check-endpoint-app-q88f",
+  "base_branch": "",
+  "ready": true,
+  "blockers": []
+}
+```
 
 ## Polling for ticket attention
 
@@ -273,6 +406,11 @@ in front of it: `kontora search -- -race`.
 - `--body` — search the body only, not the frontmatter.
 - `--json` — print JSON. Cannot be combined with `-l`.
 - `--status`, `--project`, `--path`, `--pipeline`, `--agent` — narrow the set.
+
+```sh
+kontora search -l --status paused 'timeout|deadline'
+kontora search -F --body 'go test ./...'
+```
 
 Exits 0 whether or not anything matched.
 
@@ -375,6 +513,31 @@ markdown without a pager in local and remote mode.
 and unpaged. Use it when you need the ticket history and the full output is too
 long to read in one tool call.
 
+Default output for a paused ticket. `stage:` lists the pipeline's stages and
+puts the current one in brackets. `unknown/unverified` marks a run with no
+recorded outcome:
+
+```text
+app-q88f  paused
+Add a health check endpoint
+pipeline:  default
+stage:     [implement]
+path:      /home/me/projects/app
+branch:    kontora/add-health-check-endpoint-app-q88f
+agent:     claude
+started:   16h ago
+attempt:   1
+
+History:
+  implement (claude) outcome: unknown/unverified · runner exit 1
+
+⚠ Last error: agent exited with code 1
+
+# Add a health check endpoint
+
+Serve `GET /healthz` with status 200.
+```
+
 ## kontora edit
 
 `kontora edit TICKET_ID` — open the ticket file in `$EDITOR`. Local only, and
@@ -395,6 +558,15 @@ which stores persistent Off.
   `none` silences delivery).
 - `--branch NAME` — set the work branch (`""` clears it).
 - `--base-branch NAME` — set the base branch (`""` clears it).
+
+```sh
+kontora view --body TICKET_ID
+kontora update TICKET_ID --body-file /absolute/path/body.md
+kontora update TICKET_ID --pipeline default --base-branch release-2.0
+```
+
+Read the complete body before you replace it. Keep its title heading and its
+`## Notes` section.
 
 A passive epic's brief is editable in every status, including `in_progress`,
 through `--body-file`. Agent epics and ordinary tickets reject edits while
@@ -423,6 +595,10 @@ always name them from a script or an agent.
 - `--agent NAME` — agent, or `none` to skip the project default.
 - `--stage NAME` — starting legacy stage. Graphs must start at `entry`; arbitrary starting nodes are refused.
 - `--status STATUS` — `open` or `todo`. Defaults to asking.
+
+```sh
+kontora init TICKET_ID --path /absolute/path/to/repo --pipeline default --status open
+```
 
 For ordinary tickets, pipeline precedence is explicit request, stored nonempty
 pipeline, project `epic_child_pipeline` for an actual epic child, project `pipeline`,
@@ -482,6 +658,12 @@ daemon. Exactly one of the three flags is required.
 - `--after DURATION` — a duration from now (Go's units plus `d` and `w`, so
   `3d` and `1w2d3h` both work), resolved on this machine's clock.
 - `--clear` — remove the schedule. The ticket stays `open`.
+
+```sh
+kontora schedule TICKET_ID --at "2099-09-01 09:00"
+kontora schedule TICKET_ID --after 3d
+kontora schedule TICKET_ID --clear
+```
 
 Scheduling a `todo` ticket returns it to `open` and drops it from the queue.
 Setting a schedule is refused on a running, closed or archived ticket, and while
@@ -568,11 +750,16 @@ Keep wait state and invocation/probe journals for recovery. See `kontora skills 
 agent and cleaning up its worktree. Refused when the ticket is the one this
 process is a stage of; the pipeline sets the status on exit.
 
+Cleanup removes the worktree only when it has no uncommitted or untracked
+files. A worktree with such files stays for inspection. The branch always
+stays. Kontora does not commit, merge or push the work.
+
 ## kontora cancel
 
 `kontora cancel TICKET_ID` — move the ticket to `cancelled`, stopping any
 running agent and cleaning up its worktree. Refused on your own ticket, like
-`done`.
+`done`. Cleanup keeps the branch and any worktree with uncommitted or
+untracked files, as for `done`.
 
 ## kontora move
 
@@ -582,6 +769,10 @@ custom status from `statuses:`. This is the only way to reach `human_review` or
 a custom status from the command line. `archived` is not accepted; use
 `kontora archive`. Refused on your own ticket, whatever the target status: the
 run's history entry is lost with it.
+
+```sh
+kontora move TICKET_ID human_review
+```
 
 ## kontora skip
 
@@ -652,6 +843,8 @@ Put both flags before the ticket ID, including when using stdin:
 kontora note --reply-to NOTE_ID TICKET_ID < /absolute/path/note.md
 ```
 
+A flag written after the ticket ID is refused.
+
 ## kontora summary
 
 `kontora summary TICKET_ID [TEXT]` — set the ticket's summary.
@@ -677,6 +870,14 @@ cuts text above 4,000 bytes at a UTF-8 boundary and appends `\n[truncated]`.
 (`blocks`) is derived on read. A dependency that would close a cycle is
 rejected and the error names the cycle.
 
+```sh
+kontora dep SECOND_ID FIRST_ID
+```
+
+`SECOND_ID` stays in `todo` until `FIRST_ID` is `human_review`, `done`,
+`cancelled`, `archived` or legacy `closed`. See
+`kontora skills show tickets Relations`.
+
 ## kontora undep
 
 `kontora undep TICKET_ID DEPENDENCY_ID` — drop the dependency edge.
@@ -685,6 +886,10 @@ rejected and the error names the cycle.
 
 `kontora link TICKET_ID TICKET_ID...` — relate the first ticket to each of the
 others, and not the others to each other. Both sides of each link are written.
+
+```sh
+kontora link TICKET_ID OTHER_ID THIRD_ID
+```
 
 ## kontora unlink
 
@@ -704,6 +909,11 @@ ticket and each of the others, on both sides.
 - `-y`, `--yes` — skip the confirmation prompt. Required when stdin is not a
   terminal, so an agent must pass it or the run fails.
 
+```sh
+kontora archive --days 30 --dry-run
+kontora archive --days 30 --yes
+```
+
 ## kontora logs
 
 `kontora logs [--stage NAME] TICKET_ID` — print the agent's plaintext log.
@@ -711,12 +921,21 @@ Without `--stage` it shows the most recent one. Paged only on a terminal.
 Graph logs retain `<node>.<visit-id>.<invocation-id>.log`, with older visit-log fallback.
 Probe output is `<logs_dir>/<ticket>/waits/<wait-id>/<poll-id>.log`; wait projections retain a log reference.
 
+```sh
+kontora logs TICKET_ID
+kontora logs --stage implement TICKET_ID
+```
+
 ## kontora activity
 
 `kontora activity [--stage NAME] [--run N] TICKET_ID` — print one stage run's
 structured transcript: the agent's messages and tool calls, one per line.
 Falls back to the plaintext log for agents that write no session record. Needs
 a running daemon.
+
+```sh
+kontora activity --stage implement --run 2 TICKET_ID
+```
 
 ## kontora sessions
 
@@ -748,9 +967,16 @@ and per-stage, per-agent and per-project breakdowns. Needs a running daemon.
 - `--project NAME` — only this configured project.
 - `--pipeline NAME` — only this pipeline.
 
+```sh
+kontora stats --range 1w --project myrepo
+```
+
 ## kontora automation
 
 `kontora automation COMMAND [flags]` manages scheduled agents without tickets.
+An automation runs an agent on a saved prompt, repository and schedule. See
+`kontora skills show config automations` for the YAML, schedule syntax, overlap
+policies, workspaces and prompt data.
 All operations use the daemon API, including local reads and schedule preview.
 There is no offline fallback to runtime storage. An explicit `--url` works without
 local configuration. Parent and child `-h` work offline.
@@ -807,6 +1033,13 @@ Scheduling defaults to disabled.
 - `--timeout DURATION` — positive duration, default `30m`.
 - `--enabled` — enable scheduling, default false. `--enabled=false` sets false explicitly.
 - `--request-id ID` — stable request identity, generated once when omitted.
+
+```sh
+kontora automation preview --schedule "0 9 * * 1-5" --timezone Europe/Berlin
+kontora automation new --name "Morning report" --path /absolute/path/to/repo \
+  --agent claude --schedule "0 9 * * 1-5" --timezone Europe/Berlin \
+  --prompt-file /absolute/path/prompt.md
+```
 
 Creation, duplication, and manual runs print the request ID to stderr before
 sending. Mutations do not retry automatically. Keep the identity after an
@@ -1035,8 +1268,9 @@ from an agent, and it is classified as a change.
 `kontora skills show TOPIC SECTION` — print one section.
 
 SECTION matches a heading exactly first, then as a unique case-insensitive
-substring, so `kontora skills show cli new` prints `## kontora new`. An
-ambiguous match prints the candidates and exits 1; so does an unknown topic.
+substring, so `kontora skills show cli "kontora new"` prints `## kontora new`.
+An ambiguous match prints the candidates and exits 1; so does an unknown topic.
+A bare `new` is ambiguous because it also matches `kontora automation new`.
 
 Reads neither config nor ticket store, so it works in remote mode and before
 `kontora setup`.
@@ -1057,6 +1291,7 @@ Takes no flags and talks to nothing.
 ## kontora help
 
 `kontora help` — print the command list. `kontora <verb> -h` prints that verb's
-own usage and exits without doing anything. Write it with nothing after the
-flag: `kontora note kon-1 -h` appends a note reading `-h` instead of showing help.
-Use `kontora note -h`, without a ticket ID.
+synopsis, description, flags and section name in this topic, and exits without
+doing anything. Put `-h` right after the verb: `kontora note kon-1 -h` fails
+because `-h` comes after the ticket ID. Use `kontora note -h`, without a ticket
+ID.

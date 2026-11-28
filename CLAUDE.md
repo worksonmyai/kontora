@@ -77,7 +77,7 @@ These regeneration steps are NOT part of `go build`: the outputs are committed a
 
 ## Go Version
 
-This project uses Go 1.26. Notable language features:
+This project uses Go 1.27. Notable language features:
 - `new(value)` is valid — returns a pointer to the given value (e.g., `new(true)` returns `*bool`).
 
 ## Git Operations

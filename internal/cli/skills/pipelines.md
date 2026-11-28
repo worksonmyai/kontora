@@ -42,7 +42,25 @@ stages:
     prompt: |
       {{ .Ticket.Description }}
     timeout: 30m
+  commit:
+    prompt: Stage and commit the changes. Do not push.
+    timeout: 5m
+    model:
+      claude: haiku
+      pi: anthropic/claude-haiku-4-5
+    effort: low
 ```
+
+| Field | Description |
+|-------|-------------|
+| `prompt` | Required. Go template, rendered before it is passed to the agent. |
+| `timeout` | Longest time the agent may run, such as `30m` or `1h30m`. |
+| `model` | Passed as `--model`, replacing any `--model` in the agent's `args`. One value for every agent, or a map from agent name or agent kind (`claude`, `pi`) to a value. An agent name wins over its kind. |
+| `effort` | Reasoning effort, passed as `--effort` to `claude` and `--thinking` to `pi`. It takes the same two forms as `model` and overrides the agent's own `effort`. |
+
+Only `claude` and `pi` take `model` and `effort`. A pipeline step whose stage
+resolves either one for another agent fails to load. When a ticket's own
+`agent` field picks such an agent, the ticket pauses instead.
 
 Prompt templates are Go `text/template` with these expressions:
 
@@ -436,6 +454,7 @@ Defaults; the config can move all three.
 | Worktrees | `~/.kontora/worktrees/<repo>/<id>/` |
 | Stage log | `~/.kontora/logs/<id>/<stage>.log` |
 | Activity sidecar | `~/.kontora/logs/<id>/<stage>.<run>.events.json` |
+| Hook output | `~/.kontora/logs/<id>/hooks/hooks.log` |
 | Assistant chats | `~/.kontora/logs/assistant/<chat-id>/` |
 
 `kontora logs ID` prints the stage log and `kontora activity ID` the structured

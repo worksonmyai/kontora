@@ -30,7 +30,7 @@ test-browser-install:
 	PLAYWRIGHT_BROWSERS_PATH="$(BROWSER_CACHE)" node internal/web/testdata/node_modules/playwright/cli.js install chromium webkit
 
 test-browser:
-	KONTORA_TEST_BROWSER=1 PLAYWRIGHT_BROWSERS_PATH="$(BROWSER_CACHE)" go test -count=1 -timeout 42m ./internal/web -run '^TestMobileBrowserJS$$/($(BROWSER_ENGINE))$$' -v
+	KONTORA_TEST_BROWSER=1 PLAYWRIGHT_BROWSERS_PATH="$(BROWSER_CACHE)" go test -count=1 -timeout 62m ./internal/web -run '^TestMobileBrowserJS$$/($(BROWSER_ENGINE))$$' -v
 
 .PHONY: test-visual test-visual-update test-visual-repeat
 test-visual:

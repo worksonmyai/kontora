@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -158,6 +159,8 @@ func TestSetupRecipePreview(t *testing.T) {
 	}{
 		{name: "review with existing config", args: []string{"--recipe", "implement-review"}, existing: true, pipeline: "implement-review", stages: []string{"starter-implement", "starter-review"}},
 		{name: "plan without config or store", args: []string{"--recipe=plan-only"}, pipeline: "plan-only", stages: []string{"starter-plan"}},
+		{name: "graph with existing config", args: []string{"--recipe=implement-test-review"}, existing: true, pipeline: "implement-test-review", stages: []string{"starter-graph-implement", "starter-graph-repair", "starter-graph-review"}},
+		{name: "graph without config or store", args: []string{"--recipe=implement-test-review"}, pipeline: "implement-test-review", stages: []string{"starter-graph-implement", "starter-graph-repair", "starter-graph-review"}},
 		{name: "empty", args: []string{"--recipe="}, wantErr: "--recipe requires a name"},
 		{name: "omitted value", args: []string{"--recipe"}, wantErr: "flag needs an argument"},
 		{name: "unknown", args: []string{"--recipe=unknown"}, wantErr: "unknown setup recipe"},
@@ -171,7 +174,7 @@ func TestSetupRecipePreview(t *testing.T) {
 			configPath := filepath.Join(dir, "config.yaml")
 			storeDir := filepath.Join(dir, "tickets")
 			ticketPath := filepath.Join(storeDir, "tst-1234.md")
-			configData := fmt.Sprintf("tickets_dir: %q\nagents:\n  pi:\n    binary: pi\n", storeDir)
+			configData := fmt.Sprintf("tickets_dir: %q\nlogs_dir: %q\nworktrees_dir: %q\nagents:\n  pi:\n    binary: pi\n", storeDir, filepath.Join(dir, "logs"), filepath.Join(dir, "worktrees"))
 			const ticketData = "---\nid: tst-1234\nstatus: todo\n---\n# Existing ticket\n"
 			if tc.existing {
 				require.NoError(t, os.Mkdir(storeDir, 0o755))
@@ -190,7 +193,7 @@ func TestSetupRecipePreview(t *testing.T) {
 				assert.Empty(t, stderr)
 				var fragment struct {
 					Stages    map[string]config.Stage
-					Pipelines map[string]config.Pipeline
+					Pipelines map[string]config.PipelineDefinition
 				}
 				dec := yaml.NewDecoder(strings.NewReader(stdout))
 				dec.KnownFields(true)
@@ -198,12 +201,18 @@ func TestSetupRecipePreview(t *testing.T) {
 				require.ErrorIs(t, dec.Decode(new(any)), io.EOF)
 				require.Len(t, fragment.Pipelines, 1)
 				require.Len(t, fragment.Stages, len(tc.stages))
-				steps := fragment.Pipelines[tc.pipeline]
-				require.Len(t, steps, len(tc.stages))
-				for i, stage := range tc.stages {
-					assert.Equal(t, stage, steps[i].Stage)
-					assert.Equal(t, "YOUR_AGENT", steps[i].Agent)
-					assert.NotEmpty(t, fragment.Stages[stage].Prompt)
+				def, ok := fragment.Pipelines[tc.pipeline]
+				require.True(t, ok)
+				if tc.pipeline == "implement-test-review" {
+					require.NotNil(t, def.Graph)
+					testGraphPreview(t, stdout, configData, tc.stages)
+				} else {
+					require.Len(t, def.Legacy, len(tc.stages))
+					for i, stage := range tc.stages {
+						assert.Equal(t, stage, def.Legacy[i].Stage)
+						assert.Equal(t, "YOUR_AGENT", def.Legacy[i].Agent)
+						assert.NotEmpty(t, fragment.Stages[stage].Prompt)
+					}
 				}
 			}
 
@@ -221,6 +230,42 @@ func TestSetupRecipePreview(t *testing.T) {
 			entries, err := os.ReadDir(storeDir)
 			require.NoError(t, err)
 			require.Len(t, entries, 1)
+			require.NoDirExists(t, filepath.Join(dir, "logs"))
+			require.NoDirExists(t, filepath.Join(dir, "worktrees"))
 		})
 	}
+}
+
+func testGraphPreview(t *testing.T, fragment, base string, stages []string) {
+	t.Helper()
+	require.Equal(t, 3, strings.Count(fragment, "YOUR_AGENT"))
+	cfg, err := config.LoadReader(strings.NewReader(base + strings.ReplaceAll(fragment, "YOUR_AGENT", "pi")))
+	require.NoError(t, err)
+	graph := cfg.Pipelines["implement-test-review"].Graph
+	require.NotNil(t, graph)
+	for i, id := range []string{"implement", "repair", "review"} {
+		node, ok := graph.Node(id)
+		require.True(t, ok)
+		assert.Equal(t, "pi", node.Agent)
+		assert.Equal(t, stages[i], node.Stage)
+		assert.Empty(t, node.Handoff, "predecessor evidence remains opt-in")
+		prompt := cfg.Stages[node.Stage].Prompt
+		for _, disallowed := range []string{"commit", "push", "pull request"} {
+			assert.Contains(t, prompt, disallowed)
+		}
+	}
+	check, _ := graph.Node("tests")
+	assert.Equal(t, "exit 2", check.Command)
+	assert.Contains(t, fragment, "1 only for repairable test failures")
+	assert.Contains(t, fragment, "Use the same command in place of YOUR_TEST_COMMAND")
+	repair := cfg.Stages[stages[1]].Prompt
+	assert.Contains(t, repair, "Use **Workflow predecessor evidence** if supplied.")
+	assert.Contains(t, repair, "If the command is not configured, report what you need to continue.")
+	assert.Contains(t, repair, "Test command: YOUR_TEST_COMMAND")
+	review := cfg.Stages[stages[2]].Prompt
+	assert.Contains(t, review, "If you cannot verify the candidate, skip inspection, explain why, and report complete with changes_requested.")
+	assert.Contains(t, review, "Report complete with approved only after verifying and inspecting a candidate that needs no changes.")
+	wait, _ := graph.Node("release")
+	assert.Equal(t, "human", wait.Mode)
+	assert.Equal(t, 24*time.Hour, wait.Timeout.Duration)
 }

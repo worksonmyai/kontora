@@ -99,6 +99,60 @@ func TestAdvanceGraphExecutable(t *testing.T) {
 	}
 }
 
+func TestGraphPredecessorHandoffVisits(t *testing.T) {
+	graph := &config.WorkflowGraph{Version: 2, Entry: "tests", Nodes: []config.WorkflowNode{
+		{ID: "tests", Type: "check"},
+		{ID: "repairable", Type: "condition", When: &config.WorkflowCondition{Field: "exit_code", Equals: 1}},
+		{ID: "budget", Type: "loop", Max: 2},
+		{ID: "repair", Type: "agent", Handoff: config.WorkflowHandoffPrevious},
+		{ID: "stop", Type: "end", Status: "paused"},
+	}, Edges: []config.WorkflowEdge{
+		graphEdge("tests", "pass", "stop"), graphEdge("tests", "fail", "repairable"),
+		graphEdge("repairable", "true", "budget"), graphEdge("repairable", "false", "stop"),
+		graphEdge("budget", "repeat", "repair"), graphEdge("budget", "exhausted", "stop"),
+		graphEdge("repair", "complete", "tests"), graphEdge("repair", "failed", "stop"),
+	}}
+	tests := AdvanceGraph(graph, "", freshGraphState(), nil)
+	for range 2 {
+		require.Nil(t, tests.State.Handoff, "a check visit cannot inherit agent input")
+		completion := completeGraphNode(tests)
+		completion.ExitCode = 1
+		repair := AdvanceGraph(graph, tests.Stage, tests.State, completion)
+		require.Equal(t, "repair", repair.Stage)
+		want := &ticket.GraphHandoff{ExecutionID: tests.State.ExecutionID, NodeID: "tests", VisitID: tests.State.VisitID,
+			InvocationID: completion.InvocationID, DestinationVisitID: repair.State.VisitID, Check: &ticket.GraphCheckHandoff{ExitCode: 1}}
+		require.Equal(t, want, repair.State.Handoff)
+		require.NotEqual(t, want.VisitID, want.DestinationVisitID)
+		stale := AdvanceGraph(graph, repair.Stage, repair.State, completion)
+		require.True(t, stale.Rejected)
+		require.Equal(t, want, stale.State.Handoff)
+		retry := AdvanceGraph(graph, repair.Stage, repair.State, nil)
+		require.Equal(t, repair.State.VisitID, retry.State.VisitID)
+		require.Equal(t, want, retry.State.Handoff)
+		tests = AdvanceGraph(graph, retry.Stage, retry.State, completeGraphNode(retry))
+		require.Equal(t, "tests", tests.Stage)
+	}
+	completion := completeGraphNode(tests)
+	completion.ExitCode = 1
+	end := AdvanceGraph(graph, tests.Stage, tests.State, completion)
+	require.Equal(t, "stop", end.Stage)
+	require.Nil(t, end.State.Handoff)
+
+	// A check is not an accepted producer if control traversal fails.
+	graph.Nodes[1].When = &config.WorkflowCondition{Field: "verdict", Equals: "approve"}
+	rejected := AdvanceGraph(graph, tests.Stage, tests.State, completion)
+	require.True(t, rejected.Rejected)
+	require.Nil(t, rejected.State.Handoff)
+	graph.Nodes[1].When = &config.WorkflowCondition{Field: "exit_code", Equals: 1}
+	graph.Nodes[3].Handoff = ""
+	tests = AdvanceGraph(graph, "", freshGraphState(), nil)
+	completion = completeGraphNode(tests)
+	completion.ExitCode = 1
+	repair := AdvanceGraph(graph, tests.Stage, tests.State, completion)
+	require.Equal(t, "repair", repair.Stage)
+	require.Nil(t, repair.State.Handoff)
+}
+
 func TestAdvanceGraphSafetyPrecedence(t *testing.T) {
 	for _, kind := range []string{"agent", "check"} {
 		for _, tc := range []struct {

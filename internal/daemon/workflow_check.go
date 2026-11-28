@@ -17,7 +17,8 @@ func (d *Daemon) runCheckNode(ctx context.Context, cfg *config.Config, t *ticket
 	params := RunnerParams{Binary: "/bin/sh", Args: []string{"-c", node.Command}, Dir: worktree,
 		Timeout: node.Timeout.Duration, TicketID: t.ID, SessionName: d.tmuxSession,
 		LogFile: graphLogPath(cfg, t), RequireTermination: true,
-		Env: agentEnv(cfg, config.Agent{}, d.configPath, "", node.ID, t.ID)}
+		WaitForLog: cfg.Pipelines[t.Pipeline].Graph.UsesPreviousHandoff(),
+		Env:        agentEnv(cfg, config.Agent{}, d.configPath, "", node.ID, t.ID)}
 	maps.Copy(params.Env, rec.Invocation.Env())
 	rec.Phase = "running"
 	if err := saveExecution(cfg, rec); err != nil {

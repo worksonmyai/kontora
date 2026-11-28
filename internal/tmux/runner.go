@@ -33,6 +33,7 @@ type RunParams struct {
 	AttemptID       string
 	SessionName     string // tmux session name; defaults to DefaultSessionName if empty
 	LogFile         string
+	WaitForLog      bool
 	FailurePatterns []string
 	logScan         *paneLogScan
 	// RequireTermination rejects completion unless the tmux window is confirmed
@@ -160,7 +161,7 @@ func Run(ctx context.Context, p RunParams) (process.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return process.Result{ExitCode: -1}, err
 	}
-	if len(p.FailurePatterns) > 0 {
+	if p.WaitForLog || len(p.FailurePatterns) > 0 {
 		scan, err := newPaneLogScan(p.FailurePatterns)
 		if err != nil {
 			return process.Result{ExitCode: -1, ExitedAt: time.Now(), Termination: process.TerminationNotStarted}, fmt.Errorf("preparing PTY failure scan: %w", err)
@@ -175,7 +176,10 @@ func Run(ctx context.Context, p RunParams) (process.Result, error) {
 	} else {
 		result, err = runStandard(ctx, p)
 	}
-	if p.logScan != nil && result.ExitCode == 0 && err == nil {
+	if p.WaitForLog && err == nil {
+		// The pane can disappear before its separate sink finishes writing the capture.
+		result.FailurePattern, result.LogCaptureError = p.logScan.wait(ctx)
+	} else if p.logScan != nil && result.ExitCode == 0 && err == nil {
 		if p.Timeout > 0 {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithDeadline(ctx, result.StartedAt.Add(p.Timeout))

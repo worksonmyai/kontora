@@ -11,8 +11,9 @@ import (
 )
 
 type GraphCompletion struct {
-	NodeID, VisitID, InvocationID, Outcome, Verdict                  string
+	NodeID, VisitID, InvocationID, Outcome, Verdict, Summary         string
 	ExitCode                                                         int
+	SuppressHandoff                                                  bool
 	Interrupted, TimedOut, InfrastructureError, TerminationUncertain bool
 }
 
@@ -27,6 +28,16 @@ type GraphAdvance struct {
 	Reason   string
 	Rejected bool `json:"rejected,omitempty"`
 	Edges    []ticket.GraphTransition
+}
+
+// The persisted state format is independent of the definition version. Do not use this to upgrade existing state.
+func GraphStateVersion(graph *config.WorkflowGraph) int {
+	for _, node := range graph.Nodes {
+		if node.Type == "wait" || node.Wake != nil {
+			return 2
+		}
+	}
+	return 1
 }
 
 func AdvanceGraph(graph *config.WorkflowGraph, stage string, state *ticket.GraphState, completion *GraphCompletion) GraphAdvance {
@@ -53,7 +64,12 @@ func AdvanceGraph(graph *config.WorkflowGraph, stage string, state *ticket.Graph
 		a.Next = cloneWorkflowNode(node)
 		return a
 	}
-	return a.traverse(graph)
+	a = a.traverse(graph)
+	if a.Rejected && completion != nil {
+		// A failed control traversal did not accept a new producer.
+		a.State.Handoff = nil
+	}
+	return a
 }
 
 // ReleaseGraphWait follows an explicitly accepted release or timeout of a
@@ -127,11 +143,8 @@ func (a *GraphAdvance) validateInput(graph *config.WorkflowGraph) string {
 	if s.ExecutionID == "" || s.DefinitionFingerprint == "" {
 		return "missing graph execution identity"
 	}
-	// Persisted state versions are independent of the definition version.
-	// The daemon selects version 2 for wait-enabled executions; unchanged
-	// executions continue to initialize as version 1.
 	if s.Version == 0 && a.Stage == "" {
-		s.Version = 1
+		s.Version = GraphStateVersion(graph)
 	}
 	if s.Version != 1 && s.Version != 2 {
 		return "unsupported graph state version"
@@ -188,7 +201,7 @@ func validateGraphState(graph *config.WorkflowGraph, s *ticket.GraphState) strin
 func (a *GraphAdvance) prepareCursor(graph *config.WorkflowGraph, completion *GraphCompletion) (config.WorkflowNode, string) {
 	if a.Stage == "" {
 		s := a.State
-		if s.Visit != 0 || s.LastResult != nil || len(s.LoopCounts) != 0 || len(s.Transitions) != 0 || completion != nil || s.Wait != nil || s.Wake != nil || s.WakeCount != 0 || len(s.WaitHistory) != 0 || s.Continuation {
+		if s.Visit != 0 || s.LastResult != nil || s.Handoff != nil || len(s.LoopCounts) != 0 || len(s.Transitions) != 0 || completion != nil || s.Wait != nil || s.Wake != nil || s.WakeCount != 0 || len(s.WaitHistory) != 0 || s.Continuation {
 			return config.WorkflowNode{}, "empty cursor with existing execution evidence"
 		}
 		a.Stage = graph.Entry
@@ -232,6 +245,19 @@ func (a *GraphAdvance) complete(graph *config.WorkflowGraph, node config.Workflo
 	if !a.follow(graph, node.ID, port, 0) {
 		return "missing executable transition"
 	}
+	s.Handoff = nil
+	if !completion.SuppressHandoff && graph.UsesPreviousHandoff() {
+		handoff := &ticket.GraphHandoff{
+			ExecutionID: s.ExecutionID, NodeID: node.ID, VisitID: s.VisitID, InvocationID: completion.InvocationID,
+		}
+		switch {
+		case node.Type == "check":
+			handoff.Check = &ticket.GraphCheckHandoff{ExitCode: exitCode}
+		case port == "complete":
+			handoff.Summary, handoff.Verdict = completion.Summary, completion.Verdict
+		}
+		s.Handoff = handoff
+	}
 	return ""
 }
 
@@ -268,6 +294,11 @@ func (a GraphAdvance) traverse(graph *config.WorkflowGraph) GraphAdvance {
 			}
 			s.Visit++
 			s.VisitID = graphVisitID(s)
+			if node.Type == "agent" && node.Handoff == config.WorkflowHandoffPrevious && matchesPendingHandoff(s) {
+				s.Handoff.DestinationVisitID = s.VisitID
+			} else {
+				s.Handoff = nil
+			}
 			s.LastResult = nil
 			s.Wake = nil
 			s.WakeCount = 0
@@ -301,6 +332,7 @@ func (a GraphAdvance) traverse(graph *config.WorkflowGraph) GraphAdvance {
 			if status != ticket.StatusDone && status != ticket.StatusHumanReview && status != ticket.StatusPaused && !ticket.IsCustomRunningStatus(status) {
 				return a.pause("invalid end status")
 			}
+			s.Handoff = nil
 			a.Status = status
 			return a
 		default:
@@ -308,6 +340,12 @@ func (a GraphAdvance) traverse(graph *config.WorkflowGraph) GraphAdvance {
 		}
 	}
 	return a.pause("graph control traversal limit exceeded")
+}
+
+func matchesPendingHandoff(s *ticket.GraphState) bool {
+	h, r := s.Handoff, s.LastResult
+	return h != nil && h.DestinationVisitID == "" && r != nil && h.ExecutionID == s.ExecutionID &&
+		h.NodeID == r.NodeID && h.VisitID == r.VisitID && h.InvocationID == r.InvocationID
 }
 
 func (a *GraphAdvance) advanceLoop(graph *config.WorkflowGraph, node config.WorkflowNode) string {

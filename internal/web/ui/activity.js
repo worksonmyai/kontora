@@ -33,7 +33,7 @@ export function kontoraActivity() {
     // when a run ends, so the running one is the next index.
     runningRun() {
       var t = this.outputSubject();
-      if (!this.executionActive(t) || !t.stage) return null;
+      if (!this.executionActive(t) || !t.stage || t._graphDetailPending) return null;
       if (t.graph_definition && !(t.graph_definition.nodes || []).some(n => n.id === t.stage && ['agent', 'check'].includes(n.type))) return null;
       var run = 0;
       (t.history || []).forEach(function (h) { if (h.stage === t.stage) run++; });
@@ -325,10 +325,10 @@ export function kontoraActivity() {
         }
       } else if (openTerminal && this.outputTab() === 'session' && !this.terminalOpen) {
         this.openTerminal();
-      } else if (this.outputTab() === 'activity' && !this._activityExplicit) {
+      } else if (this.outputTab() === 'activity' && !this._activityExplicit && !t._graphDetailPending) {
         // History arrives before final status. Stay on the displayed execution
         // until a new start or stage, rather than inventing the next attempt.
-        if (this.executionActive(previous) && previous.stage === t.stage &&
+        if (!previous._graphDetailPending && this.executionActive(previous) && previous.stage === t.stage &&
             previous.started_at === t.started_at && previous.history !== undefined && this.activityStage !== null) return;
         var run = this.activityTarget();
         if (run && (run.stage !== this.activityStage || run.run !== this.activityRun)) {
@@ -446,6 +446,7 @@ export function kontoraActivity() {
         const tooltip = root.querySelector('.stage-ribbon-tooltip');
         const stages = viewport.parentElement, pane = root.parentElement;
         const tabs = pane.querySelector('[data-ticket-tabs]');
+        const releaseBand = pane.querySelector('[data-workflow-release-slot]');
         var frame = null, seen = null, pending = null, openKey = null, cancelledHydration = null;
         let focused = null, hover = null, dwell = null, shownCard = null;
         function openingKey() {
@@ -522,10 +523,11 @@ export function kontoraActivity() {
             const { width, height } = tooltip.getBoundingClientRect();
             // The stages container includes the overflow arrows when they are visible.
             const below = stages.getBoundingClientRect().bottom + 4;
-            const tabBounds = tabs.getBoundingClientRect();
+            const tabBounds = tabs.getBoundingClientRect(), bandBounds = releaseBand?.getBoundingClientRect();
+            const controlsTop = bandBounds?.height ? bandBounds.top : tabBounds.top;
             const candidates = [clip.top - 4 - height, below, Math.max(below, tabBounds.bottom + 4)];
             const top = candidates.find(y => y >= minY + 4 && y + height <= maxY - 4 &&
-              (y + height <= tabBounds.top || y >= tabBounds.bottom));
+              (y + height <= controlsTop || y >= tabBounds.bottom));
             if (top === undefined || width > maxX - minX - 12) return false;
             tooltip.style.left = Math.max(minX + 6, Math.min(maxX - 6 - width, (left + right - width) / 2)) - origin.left + 'px';
             tooltip.style.top = top - origin.top + 'px';
@@ -681,9 +683,9 @@ export function kontoraActivity() {
         ro.observe(root);
         ro.observe(pane);
         ro.observe(tabs);
-        // The identity block and workflow graph can move the ribbon without resizing it.
+        if (releaseBand) ro.observe(releaseBand);
+        // The title can move the ribbon without resizing it.
         if (pane.firstElementChild) ro.observe(pane.firstElementChild);
-        if (root.previousElementSibling) ro.observe(root.previousElementSibling);
         sync();
         return function () {
           stop();

@@ -106,14 +106,7 @@ func (d *Daemon) WorkflowRestart(id string) error {
 		if err != nil {
 			return err
 		}
-		version := 1
-		for _, node := range graph.Nodes {
-			if node.Type == "wait" || node.Wake != nil {
-				version = 2
-				break
-			}
-		}
-		state := &ticket.GraphState{Version: version, ExecutionID: newSessionID(), DefinitionFingerprint: fingerprint}
+		state := &ticket.GraphState{Version: workflowStateVersion(graph), ExecutionID: newSessionID(), DefinitionFingerprint: fingerprint}
 		populateWorkflowDisplay(state, graph)
 		state.RetainExecution(t.GraphState)
 		after := pipeline.AdvanceGraph(graph, "", state, nil)

@@ -588,10 +588,12 @@ func TestRunLogCapture(t *testing.T) {
 		locale             string
 		requireTermination bool
 		wantCode           int
+		captureFailure     bool
 	}{
 		{name: "inherited locale"},
 		{name: "C locale", locale: "C"},
 		{name: "required failure retains logs not shell", requireTermination: true, wantCode: 7},
+		{name: "capture failure preserves the check exit code", requireTermination: true, wantCode: 1, captureFailure: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.locale != "" {
@@ -602,6 +604,9 @@ func TestRunLogCapture(t *testing.T) {
 			}
 			dir := t.TempDir()
 			logPath := filepath.Join(dir, "test.log")
+			if tc.captureFailure {
+				require.NoError(t, os.Mkdir(logPath, 0o700))
+			}
 			ticketID := "test-rlog-" + randomSuffix()
 			t.Cleanup(func() { _ = KillWindow(testSession, ticketID) })
 
@@ -612,6 +617,7 @@ func TestRunLogCapture(t *testing.T) {
 				Dir:                dir,
 				TicketID:           ticketID,
 				LogFile:            logPath,
+				WaitForLog:         tc.requireTermination,
 				RequireTermination: tc.requireTermination,
 			})
 			require.NoError(t, err)
@@ -620,6 +626,11 @@ func TestRunLogCapture(t *testing.T) {
 				assert.Equal(t, process.TerminationWindowGone, result.Termination)
 			}
 
+			if tc.captureFailure {
+				require.ErrorContains(t, result.LogCaptureError, "incomplete")
+				return
+			}
+			require.NoError(t, result.LogCaptureError)
 			data, err := os.ReadFile(logPath)
 			require.NoError(t, err)
 			assert.Contains(t, string(data), "RUNNER_LOG_TEST")

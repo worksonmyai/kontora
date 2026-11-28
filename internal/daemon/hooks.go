@@ -24,9 +24,14 @@ import (
 // The ticket is left untouched: what a failure does to it differs by event, so
 // each call site applies its own policy to the returned error.
 func (d *Daemon) runHooks(ctx context.Context, cfg *config.Config, log *slog.Logger, hc hook.Context) error {
+	_, err := d.runHooksWithWarnings(ctx, cfg, log, hc)
+	return err
+}
+
+func (d *Daemon) runHooksWithWarnings(ctx context.Context, cfg *config.Config, log *slog.Logger, hc hook.Context) (warned bool, hookErr error) {
 	hooks := cfg.HooksFor(hc.RepoPath, hc.Event)
 	if len(hooks) == 0 {
-		return nil
+		return false, nil
 	}
 	rec := workflowExecutionFrom(ctx)
 	if rec != nil {
@@ -35,7 +40,7 @@ func (d *Daemon) runHooks(ctx context.Context, cfg *config.Config, log *slog.Log
 		rec.HookTermination = "pending"
 		if err := saveExecution(cfg, rec); err != nil {
 			rec.HookTermination = previous
-			return fmt.Errorf("journal hook start: %w", err)
+			return false, fmt.Errorf("journal hook start: %w", err)
 		}
 		hc.RequireTermination = true
 	}
@@ -56,6 +61,7 @@ func (d *Daemon) runHooks(ctx context.Context, cfg *config.Config, log *slog.Log
 
 	log.Info("running hooks", "event", hc.Event, "count", len(specs))
 	err := hook.Run(ctx, specs, hc, out, func(_ hook.Spec, warn error) {
+		warned = true
 		log.Warn("hook failed, continuing", "event", hc.Event, "err", warn)
 	})
 	if rec != nil {
@@ -73,7 +79,7 @@ func (d *Daemon) runHooks(ctx context.Context, cfg *config.Config, log *slog.Log
 	if err != nil && ctx.Err() == nil {
 		log.Error("hook failed", "event", hc.Event, "err", err)
 	}
-	return err
+	return warned, err
 }
 
 // runWorktreeCreatedHooks fires the worktree_created event for the worktree the

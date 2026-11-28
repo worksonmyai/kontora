@@ -141,6 +141,7 @@ export function kontoraDetail() {
             if (updateSeq !== this._selectedTicketUpdateSeq) continue;
             if (full.id !== ticket.id || (full.source && full.source !== (ticket.source || 'primary'))) return;
             const updated = { ...full, source: ticket.source || full.source };
+            this._reconcileWorkflowReleaseReceipts?.(updated);
             this._noteReconcileTicket?.(updated);
             this.selectedTicket = updated;
             this._touchTicket(updated);
@@ -559,7 +560,7 @@ export function kontoraDetail() {
     },
 
     switchTab(tab) {
-      if (this.isSecondary(this.selectedTicket) && !['ticket', 'summary', 'notes'].includes(tab)) return;
+      if (this.isSecondary(this.selectedTicket) && !['ticket', 'summary', 'notes', 'workflow'].includes(tab)) return;
       // The tab content uses x-show, so leaving it would otherwise keep a
       // focused textarea mounted and bring it back with stale geometry.
       if (tab !== 'ticket' && this.editingBody) {

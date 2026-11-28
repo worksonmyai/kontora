@@ -272,6 +272,9 @@ func materializeUploadMerges(content []byte) ([]byte, error) {
 		return content, nil
 	}
 	root := doc.Content[0]
+	if err := ticket.RejectGraphStateAliases(root); err != nil {
+		return nil, err
+	}
 	hasMerge := false
 	for i := 0; i < len(root.Content); i += 2 {
 		hasMerge = hasMerge || root.Content[i].Tag == "!!merge"

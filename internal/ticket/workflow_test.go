@@ -127,6 +127,37 @@ func TestTicketWorkflowMutationRollback(t *testing.T) {
 	}
 }
 
+func TestGraphHandoffPersistenceAndRestart(t *testing.T) {
+	state := workflowState()
+	state.LastResult = nil
+	state.Handoff = &GraphHandoff{ExecutionID: state.ExecutionID, NodeID: "test", VisitID: "execution.1", InvocationID: "check-1",
+		DestinationVisitID: state.VisitID, Check: &GraphCheckHandoff{ExitCode: 1, LogPath: "test.execution.1.check-1.log", Output: "diagnostic 雪", OutputAvailable: true, OutputTruncated: true}}
+	original, err := ParseBytes([]byte("---\nid: graph\nstatus: todo\nstage: review\n---\n# Graph\n"))
+	require.NoError(t, err)
+	require.NoError(t, original.SetField("graph_state", state))
+	cloned := original.Clone()
+	cloned.GraphState.Handoff.Check.Output = "changed"
+	cloned.GraphState.Handoff.InvocationID = "other"
+	require.Equal(t, state, original.GraphState)
+	yamlBytes, err := original.Marshal()
+	require.NoError(t, err)
+	parsed, err := ParseBytes(yamlBytes)
+	require.NoError(t, err)
+	require.Equal(t, state, parsed.GraphState)
+	journal, err := json.Marshal(state)
+	require.NoError(t, err)
+	var decoded GraphState
+	require.NoError(t, json.Unmarshal(journal, &decoded))
+	require.Equal(t, state, &decoded)
+
+	restarted := &GraphState{ExecutionID: "new"}
+	restarted.RetainExecution(state)
+	require.Nil(t, restarted.Handoff)
+	retained, err := json.Marshal(restarted)
+	require.NoError(t, err)
+	require.NotContains(t, string(retained), "diagnostic")
+}
+
 func TestGraphStateRetainsDisplayEvidence(t *testing.T) {
 	previous := workflowState()
 	next := &GraphState{ExecutionID: "next"}

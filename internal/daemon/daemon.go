@@ -161,6 +161,7 @@ type RunnerParams struct {
 	RequireTermination   bool
 	SessionName          string // tmux session; ignored by DirectRunner
 	LogFile              string // path for agent output log (PTY capture or materialized session log)
+	WaitForLog           bool   // wait for the log sink or report a capture error separately from the exit
 	FailurePatterns      []string
 	Interactive          bool              // use interactive tmux wait-for flow (for Claude agents)
 	SessionID            string            // Claude session ID; used for session JSONL materialization after agent exit
@@ -254,6 +255,7 @@ func tmuxRunner(ctx context.Context, p RunnerParams) (process.Result, error) {
 		AttemptID:            p.AttemptID,
 		SessionName:          p.SessionName,
 		LogFile:              p.LogFile,
+		WaitForLog:           p.WaitForLog,
 		FailurePatterns:      patterns,
 		Interactive:          p.Interactive,
 		SessionID:            p.SessionID,

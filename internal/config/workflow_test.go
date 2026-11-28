@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +74,21 @@ func TestWorkflowConfig(t *testing.T) {
 	assert.NotContains(t, string(data), "graph:")
 }
 
+func TestWorkflowHandoffFingerprintEncoding(t *testing.T) {
+	// Exact pre-handoff encoding for an agent (including other optional fields).
+	const before = `{"ID":"repair","Type":"agent","Stage":"code","Agent":"claude","Verdicts":null,"Command":"","Timeout":{"Duration":0},"When":null,"Max":0,"Status":"","wake":{"max":1}}`
+	node := WorkflowNode{ID: "repair", Type: "agent", Stage: "code", Agent: "claude", Wake: &WorkflowWake{Max: 1}}
+	data, err := json.Marshal(node)
+	require.NoError(t, err)
+	require.Equal(t, before, string(data))
+	node.Handoff = WorkflowHandoffPrevious
+	data, err = json.Marshal(node)
+	require.NoError(t, err)
+	require.Contains(t, string(data), `"handoff":"previous"`)
+	require.ErrorContains(t, (&Config{}).validateWorkflowNode(WorkflowNode{Type: "check", Handoff: WorkflowHandoffPrevious}), "not supported")
+	require.ErrorContains(t, (&Config{}).validateWorkflowNode(WorkflowNode{Type: "agent", Handoff: "all"}), "handoff must be previous")
+}
+
 func TestWorkflowValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name, old, replacement, want string
@@ -87,6 +103,11 @@ func TestWorkflowValidation(t *testing.T) {
 		{"unknown edge field", "to: test}", "to: test, surprise: true}", "field surprise"},
 		{"unknown port field", "node: implement, port: complete", "node: implement, port: complete, surprise: true", "field surprise"},
 		{"agent command even empty", "type: agent, stage: code", "type: agent, command: '', stage: code", "not supported"},
+		{"agent previous handoff", "type: agent, stage: code", "type: agent, handoff: previous, stage: code", ""},
+		{"agent unknown handoff", "type: agent, stage: code", "type: agent, handoff: all, stage: code", "handoff must be previous"},
+		{"agent empty handoff", "type: agent, stage: code", "type: agent, handoff: '', stage: code", "handoff must be previous"},
+		{"agent null handoff", "type: agent, stage: code", "type: agent, handoff: null, stage: code", "handoff must be previous"},
+		{"check handoff", "type: check, command:", "type: check, handoff: previous, command:", "not supported"},
 		{"check agent even empty", "type: check, command:", "type: check, agent: '', command:", "not supported"},
 		{"condition max even zero", "type: condition, when:", "type: condition, max: 0, when:", "not supported"},
 		{"loop verdicts even empty", "type: loop, max: 3", "type: loop, verdicts: [], max: 3", "not supported"},

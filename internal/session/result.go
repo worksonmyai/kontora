@@ -264,6 +264,23 @@ func validateVerdicts(verdicts []string) error {
 	return nil
 }
 
+// GraphVerdictFitsResult reports whether the verdict fits in a minimal complete result.
+func GraphVerdictFitsResult(verdict string) bool {
+	// A nonblank one-byte summary is sufficient; next_step is optional.
+	size := len(`{"outcome":"complete","summary":"x","verdict":""}`) + len(verdict)
+	for i := 0; i < len(verdict) && size <= MaxResultBytes; i++ {
+		switch c := verdict[i]; c {
+		case '"', '\\', '\b', '\f', '\n', '\r', '\t':
+			size++
+		default:
+			if c < 0x20 {
+				size += 5 // \u00XX
+			}
+		}
+	}
+	return size <= MaxResultBytes
+}
+
 func ValidateGraphResult(result Result, verdicts []string) error {
 	if err := validateVersionResult(result, GraphResultVersion); err != nil {
 		return err

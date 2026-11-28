@@ -67,7 +67,7 @@ func DrainPaneLog(input io.Reader, logPath string, scanPaths ...string) error {
 		}
 	}
 	if scanner != nil {
-		return errors.Join(captureErr, scanner.finish())
+		return errors.Join(captureErr, scanner.finish(captureErr))
 	}
 	return captureErr
 }
